@@ -60,17 +60,17 @@ pub struct Waitable<'b> {
 }
 
 impl Waitable<'_> {
-    /// Wait for the chosen events to occur.
+    /// Wait for the chosen events to occur, returning which events actually occurred.
     ///
     /// Note that this function is allowed to get spurious wake-ups.
-    pub fn wait(&self) -> Result<(), WaitError> {
+    pub fn wait(&self) -> Result<Events, WaitError> {
         todo!()
     }
 
     /// Wait for the chosen events to occur, timing out after a specified duration.
     ///
     /// Note that this function is allowed to get spurious wake-ups.
-    pub fn wait_timeout(&self, timeout: core::time::Duration) -> Result<(), WaitError> {
+    pub fn wait_timeout(&self, timeout: core::time::Duration) -> Result<Events, WaitError> {
         todo!()
     }
 }
