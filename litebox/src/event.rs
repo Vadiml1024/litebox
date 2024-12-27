@@ -22,7 +22,6 @@ impl<Platform: platform::Provider> EventManager<Platform> {
     /// and the created `EventManager` handle is expected to be shared across all usage over the
     /// system.
     pub fn new(platform: &'static Platform) -> Self {
-        // TODO: Initialize the manager instance to invoke relevant `epoll_create` or such
         Self { platform }
     }
 }
@@ -49,6 +48,7 @@ impl<Platform: platform::Provider> EventManager<Platform> {
 pub struct WaitableBuilder {
     raw_fd: RawFd,
     events: Events,
+    spurious_wakeups: SpuriousWakeups,
 }
 
 /// A [`register`](EventManager::register)ed interest in waiting that actually allows performing a
@@ -60,18 +60,45 @@ pub struct Waitable<'b> {
 }
 
 impl Waitable<'_> {
+    /// Wait for the chosen events to occur, returning which events actually occurred, up to a
+    /// specified time-out; spurious wake-ups are always allowed.
+    fn wait_with_possible_spurious(
+        &self,
+        timeout: Option<core::time::Duration>,
+    ) -> Result<Events, WaitError> {
+        todo!()
+    }
+
+    /// Wait for the chosen events to occur, returning which events actually occurred, up to a
+    /// specified time-out; spurious wake-ups are suppressed if builder said so.
+    fn wait_with_suppression_if_needed(
+        &self,
+        timeout: Option<core::time::Duration>,
+    ) -> Result<Events, WaitError> {
+        loop {
+            let events = self.wait_with_possible_spurious(timeout)?;
+            if matches!(self.builder.spurious_wakeups, SpuriousWakeups::Allowed)
+                || !events.is_empty()
+            {
+                return Ok(events);
+            }
+        }
+    }
+
     /// Wait for the chosen events to occur, returning which events actually occurred.
     ///
-    /// Note that this function is allowed to get spurious wake-ups.
+    /// Note that this function is allowed to get spurious wake-ups if the builder didn't explicitly
+    /// set up suppression.
     pub fn wait(&self) -> Result<Events, WaitError> {
-        todo!()
+        self.wait_with_suppression_if_needed(None)
     }
 
     /// Wait for the chosen events to occur, timing out after a specified duration.
     ///
-    /// Note that this function is allowed to get spurious wake-ups.
+    /// Note that this function is allowed to get spurious wake-ups if the builder didn't explicitly
+    /// set up suppression.
     pub fn wait_timeout(&self, timeout: core::time::Duration) -> Result<Events, WaitError> {
-        todo!()
+        self.wait_with_suppression_if_needed(Some(timeout))
     }
 }
 
@@ -82,6 +109,7 @@ impl WaitableBuilder {
         Self {
             raw_fd: fd.as_raw_fd(),
             events: Events::empty(),
+            spurious_wakeups: SpuriousWakeups::Allowed,
         }
     }
 
@@ -91,6 +119,7 @@ impl WaitableBuilder {
         Self {
             raw_fd: fd.fd.as_raw_fd(),
             events: Events::empty(),
+            spurious_wakeups: SpuriousWakeups::Allowed,
         }
     }
 
@@ -117,6 +146,20 @@ impl WaitableBuilder {
     pub fn events(&self) -> Events {
         self.events
     }
+
+    /// Set spurious wake-up control
+    pub fn set_spurious_wakeups(&mut self, control: SpuriousWakeups) -> &mut Self {
+        self.spurious_wakeups = control;
+        self
+    }
+}
+
+/// Whether spurious wake-ups are allowed
+pub enum SpuriousWakeups {
+    /// Automatically re-wait to prevent spurious wake-ups
+    Suppressed,
+    /// Allow spurious wake-ups
+    Allowed,
 }
 
 #[derive(Error, Debug)]
