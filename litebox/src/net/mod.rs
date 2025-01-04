@@ -9,12 +9,16 @@ use crate::platform::Instant;
 
 use bitflags::bitflags;
 use smoltcp::socket::{icmp, raw, tcp, udp};
-use thiserror::Error;
 
+pub mod errors;
 mod local_ports;
 mod phy;
 
-use local_ports::{LocalPort, LocalPortAllocationError, LocalPortAllocator};
+use errors::{
+    AcceptError, BindError, CloseError, ConnectError, ListenError, ReceiveError, SendError,
+    SocketError,
+};
+use local_ports::{LocalPort, LocalPortAllocator};
 
 /// Maximum number of sockets that can ever be active
 const MAX_NUMBER_OF_SOCKETS: usize = 1024;
@@ -43,24 +47,6 @@ pub struct Network<Platform: platform::IPInterfaceProvider + platform::TimeProvi
     zero_time: Platform::Instant,
     /// An allocator for local ports
     local_port_allocator: LocalPortAllocator,
-}
-
-/// Possible errors from a [`Network`]
-#[non_exhaustive]
-#[derive(Error, Debug)]
-pub enum NetError {
-    #[error("Unsupported protocol {0}")]
-    UnsupportedProtocol(u8),
-    #[error("Unsupported address {0}")]
-    UnsupportedAddress(SocketAddr),
-    #[error("Not a valid open file descriptor")]
-    InvalidFd,
-    #[error("Port allocation failed: {0}")]
-    PortAllocationFailure(#[from] LocalPortAllocationError),
-    #[error("Socket is in an invalid state")]
-    SocketInInvalidState,
-    #[error("Operation finished")]
-    OperationFinished,
 }
 
 impl<Platform: platform::IPInterfaceProvider + platform::TimeProvider + 'static> Network<Platform> {
@@ -128,7 +114,7 @@ impl<Platform: platform::IPInterfaceProvider + platform::TimeProvider + 'static>
     }
 
     /// Creates a socket.
-    pub fn socket(&mut self, protocol: Protocol) -> Result<SocketFd, NetError> {
+    pub fn socket(&mut self, protocol: Protocol) -> Result<SocketFd, SocketError> {
         let handle = match protocol {
             Protocol::Tcp => self.socket_set.add(tcp::Socket::new(
                 smoltcp::storage::RingBuffer::new(vec![0u8; SOCKET_BUFFER_SIZE]),
@@ -158,7 +144,7 @@ impl<Platform: platform::IPInterfaceProvider + platform::TimeProvider + 'static>
                 // TODO: Should we maintain a specific allow-list of protocols for raw sockets?
                 // Should we allow everything except TCP/UDP/ICMP? Should we allow everything? These
                 // questions should be resolved; for now I am disallowing everything else.
-                return Err(NetError::UnsupportedProtocol(protocol));
+                return Err(SocketError::UnsupportedProtocol(protocol));
 
                 self.socket_set.add(raw::Socket::new(
                     smoltcp::wire::IpVersion::Ipv4,
@@ -195,9 +181,9 @@ impl<Platform: platform::IPInterfaceProvider + platform::TimeProvider + 'static>
     }
 
     /// Close the socket at `fd`
-    pub fn close(&mut self, fd: SocketFd) -> Result<(), NetError> {
+    pub fn close(&mut self, fd: SocketFd) -> Result<(), CloseError> {
         let mut socket_handle =
-            core::mem::take(&mut self.handles[fd.as_usize()]).ok_or(NetError::InvalidFd)?;
+            core::mem::take(&mut self.handles[fd.as_usize()]).ok_or(CloseError::InvalidFd)?;
         let socket = self.socket_set.remove(socket_handle.handle);
         match socket {
             smoltcp::socket::Socket::Raw(_) | smoltcp::socket::Socket::Icmp(_) => {
@@ -220,14 +206,14 @@ impl<Platform: platform::IPInterfaceProvider + platform::TimeProvider + 'static>
     }
 
     /// Initiate a connection to an IP address
-    pub fn connect(&mut self, fd: &SocketFd, addr: &SocketAddr) -> Result<(), NetError> {
+    pub fn connect(&mut self, fd: &SocketFd, addr: &SocketAddr) -> Result<(), ConnectError> {
         let SocketAddr::V4(addr) = addr else {
-            return Err(NetError::UnsupportedAddress(*addr));
+            return Err(ConnectError::UnsupportedAddress(*addr));
         };
 
         let socket_handle = self.handles[fd.as_usize()]
             .as_mut()
-            .ok_or(NetError::InvalidFd)?;
+            .ok_or(ConnectError::InvalidFd)?;
 
         match socket_handle.protocol {
             Protocol::Tcp => {
@@ -249,25 +235,30 @@ impl<Platform: platform::IPInterfaceProvider + platform::TimeProvider + 'static>
     }
 
     /// Bind a socket to a specific address and port.
-    pub fn bind(&mut self, fd: &SocketFd, addr: &SocketAddr) -> Result<(), NetError> {
+    pub fn bind(&mut self, fd: &SocketFd, addr: &SocketAddr) -> Result<(), BindError> {
         todo!()
     }
 
     /// Prepare a socket to accept incoming connections.
-    pub fn listen(&mut self, fd: &SocketFd, backlog: i32) -> Result<(), NetError> {
+    pub fn listen(&mut self, fd: &SocketFd, backlog: i32) -> Result<(), ListenError> {
         todo!()
     }
 
     /// Accept a new incoming connection on a listening socket.
-    pub fn accept(&mut self, fd: &SocketFd) -> Result<SocketFd, NetError> {
+    pub fn accept(&mut self, fd: &SocketFd) -> Result<SocketFd, AcceptError> {
         todo!()
     }
 
     /// Send data over a connected socket.
-    pub fn send(&mut self, fd: &SocketFd, buf: &[u8], flags: SendFlags) -> Result<usize, NetError> {
+    pub fn send(
+        &mut self,
+        fd: &SocketFd,
+        buf: &[u8],
+        flags: SendFlags,
+    ) -> Result<usize, SendError> {
         let socket_handle = self.handles[fd.as_usize()]
             .as_mut()
-            .ok_or(NetError::InvalidFd)?;
+            .ok_or(SendError::InvalidFd)?;
 
         if !flags.is_empty() {
             unimplemented!()
@@ -278,7 +269,7 @@ impl<Platform: platform::IPInterfaceProvider + platform::TimeProvider + 'static>
                 .socket_set
                 .get_mut::<tcp::Socket>(socket_handle.handle)
                 .send_slice(buf)
-                .map_err(|tcp::SendError::InvalidState| NetError::SocketInInvalidState),
+                .map_err(|tcp::SendError::InvalidState| SendError::SocketInInvalidState),
             Protocol::Udp => unimplemented!(),
             Protocol::Icmp => unimplemented!(),
             Protocol::Raw { protocol } => unimplemented!(),
@@ -291,10 +282,10 @@ impl<Platform: platform::IPInterfaceProvider + platform::TimeProvider + 'static>
         fd: &SocketFd,
         buf: &mut [u8],
         flags: ReceiveFlags,
-    ) -> Result<usize, NetError> {
+    ) -> Result<usize, ReceiveError> {
         let socket_handle = self.handles[fd.as_usize()]
             .as_mut()
-            .ok_or(NetError::InvalidFd)?;
+            .ok_or(ReceiveError::InvalidFd)?;
 
         if !flags.is_empty() {
             unimplemented!()
@@ -306,8 +297,8 @@ impl<Platform: platform::IPInterfaceProvider + platform::TimeProvider + 'static>
                 .get_mut::<tcp::Socket>(socket_handle.handle)
                 .recv_slice(buf)
                 .map_err(|e| match e {
-                    tcp::RecvError::InvalidState => NetError::OperationFinished,
-                    tcp::RecvError::Finished => NetError::SocketInInvalidState,
+                    tcp::RecvError::InvalidState => ReceiveError::OperationFinished,
+                    tcp::RecvError::Finished => ReceiveError::SocketInInvalidState,
                 }),
             Protocol::Udp => unimplemented!(),
             Protocol::Icmp => unimplemented!(),
