@@ -12,6 +12,7 @@ use litebox_shim_windows::loader::pe::{
 };
 
 /// Create a minimal valid PE file for testing.
+#[allow(clippy::items_after_statements, clippy::cast_possible_truncation)]
 fn create_minimal_pe() -> Vec<u8> {
     let mut data = vec![0u8; 4096];
 
