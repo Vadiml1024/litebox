@@ -1,0 +1,10 @@
+[package]
+name = "litebox_platform_linux_for_windows"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+litebox = { path = "../litebox/", version = "0.1.0" }
+
+[lints]
+workspace = true
