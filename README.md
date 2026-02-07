@@ -19,8 +19,13 @@ Example use cases include:
 - Run programs on top of SEV SNP
 - Running OP-TEE programs on Linux
 - Running on LVBS
+- Running unmodified Windows programs on Linux (planned - see [implementation plan](./docs/windows_on_linux_implementation_plan.md))
 
 ![LiteBox and related projects](./.figures/litebox.svg)
+
+## Documentation
+
+- [Windows on Linux Implementation Plan](./docs/windows_on_linux_implementation_plan.md) - Comprehensive design for running Windows programs on Linux with API tracing
 
 ## Contributing
 
