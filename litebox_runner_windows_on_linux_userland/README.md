@@ -1,67 +1,53 @@
 # litebox_runner_windows_on_linux_userland
 
-CLI runner for executing Windows programs on Linux with API tracing.
+CLI runner for executing Windows programs on Linux.
 
 ## Overview
 
-This is the main executable that combines the Windows shim and Linux platform layers to run Windows PE binaries on Linux. It provides comprehensive API tracing capabilities for security analysis and debugging.
+This is the main executable that combines the Windows shim and Linux platform layers to run Windows PE binaries on Linux.
 
 ## Usage
 
 ```bash
 # Run a Windows executable on Linux
 litebox_runner_windows_on_linux_userland program.exe [args...]
-
-# Enable API tracing (text format to stdout)
-litebox_runner_windows_on_linux_userland --trace-apis program.exe
-
-# Trace to JSON format
-litebox_runner_windows_on_linux_userland --trace-apis --trace-format json program.exe
-
-# Save trace to file
-litebox_runner_windows_on_linux_userland --trace-apis --trace-output trace.log program.exe
-
-# Filter specific API calls
-litebox_runner_windows_on_linux_userland --trace-apis --trace-filter "Nt*File" program.exe
-
-# Filter by category (file_io, memory, console_io)
-litebox_runner_windows_on_linux_userland --trace-apis --trace-category file_io program.exe
 ```
 
 ## Current Status
 
 ### Phase 1: Foundation ✅
 - PE binary loading and parsing
+- Section enumeration and metadata extraction
 
 ### Phase 2: Core APIs ✅
 - File I/O APIs (NtCreateFile, NtReadFile, NtWriteFile, NtClose)
 - Console I/O (WriteConsole)
 - Memory management APIs (NtAllocateVirtualMemory, NtFreeVirtualMemory)
-- Path translation (Windows → Linux)
+- Path translation (Windows → Linux paths)
+- Trait-based integration between shim and platform layers
 
-### Phase 3: API Tracing ✅
-- Configurable tracing framework
-- Multiple output formats (text, JSON)
-- Filtering by function pattern or category
-- Output to stdout or file
-- Transparent wrapper for all NTDLL APIs
+### Phase 3: PE Loading ✅
+- Memory allocation for PE image
+- Section loading into allocated memory
+- Memory cleanup
 
 ### What Works
 - Loading Windows PE executables
-- Parsing PE headers
-- Basic console output
-- File operations (through NTDLL API layer)
-- Comprehensive API call tracing
+- Parsing PE headers and sections
+- Allocating memory for the PE image
+- Loading sections into memory
+- Basic console output through platform API
+- Memory management (allocation and deallocation)
 
 ### What's Next (Phase 4+)
-- Actual program execution
+- Actual program execution (calling entry point)
+- API call tracing framework
 - Threading support
-- DLL loading
-- More Windows APIs
+- DLL loading and import resolution
+- Exception handling
 
-## Examples
+## Example Output
 
-### Basic Usage
 ```bash
 litebox_runner_windows_on_linux_userland hello.exe
 
@@ -70,33 +56,24 @@ litebox_runner_windows_on_linux_userland hello.exe
 #   Entry point: 0x1400
 #   Image base: 0x140000000
 #   Sections: 4
+# 
+# Sections:
+#   .text - VA: 0x1000, Size: 8192 bytes, Characteristics: 0x60000020
+#   .data - VA: 0x3000, Size: 4096 bytes, Characteristics: 0xC0000040
+#   .rdata - VA: 0x4000, Size: 2048 bytes, Characteristics: 0x40000040
+#   .pdata - VA: 0x5000, Size: 512 bytes, Characteristics: 0x40000040
+# 
+# Allocating memory for PE image:
+#   Image size: 20480 bytes (20 KB)
+#   Allocated at: 0x7F1234567000
+# 
+# Loading sections into memory...
+#   Loaded 14848 bytes
+# 
 # Hello from Windows on Linux!
-# [Phase 3 Complete: API tracing framework implemented]
-```
-
-### API Tracing (Text Format)
-```bash
-litebox_runner_windows_on_linux_userland --trace-apis hello.exe
-
-# Output includes:
-# [1234567890.123] [TID:main] CALL   WriteConsole(handle=0xFFFFFFFF0001, text="Hello from Windows on Linux!\n")
-# [1234567890.124] [TID:main] RETURN WriteConsole() -> Ok(bytes_written=29)
-```
-
-### API Tracing (JSON Format)
-```bash
-litebox_runner_windows_on_linux_userland --trace-apis --trace-format json hello.exe
-
-# Output includes:
-# {"timestamp":1234567890.123456789,"thread_id":null,"event":"call","category":"console_io","function":"WriteConsole","args":"handle=0xFFFFFFFF0001, text=\"Hello from Windows on Linux!\\n\""}
-# {"timestamp":1234567890.124567890,"thread_id":null,"event":"return","category":"console_io","function":"WriteConsole","return":"Ok(bytes_written=29)"}
-```
-
-### Filtered Tracing
-```bash
-# Only trace file I/O operations
-litebox_runner_windows_on_linux_userland --trace-apis --trace-category file_io program.exe
-
-# Only trace functions matching pattern
-litebox_runner_windows_on_linux_userland --trace-apis --trace-filter "Nt*File" program.exe
+# 
+# Memory deallocated successfully.
+# 
+# [Progress: PE loader, section loading, and basic NTDLL APIs implemented]
+# Note: Actual program execution not yet implemented - working on foundation.
 ```
