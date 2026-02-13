@@ -101,18 +101,21 @@ impl TraceEvent {
     }
 
     /// Set the arguments for this event
+    #[must_use]
     pub fn with_args(mut self, args: String) -> Self {
         self.args = Some(args);
         self
     }
 
     /// Set the return value for this event
+    #[must_use]
     pub fn with_return_value(mut self, return_value: String) -> Self {
         self.return_value = Some(return_value);
         self
     }
 
     /// Set the thread ID for this event
+    #[must_use]
     pub fn with_thread_id(mut self, thread_id: u64) -> Self {
         self.thread_id = Some(thread_id);
         self

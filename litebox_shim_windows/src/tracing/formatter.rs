@@ -5,6 +5,7 @@
 
 use super::config::TraceConfig;
 use super::event::TraceEvent;
+use std::fmt::Write as FmtWrite;
 use std::io::{self, Write};
 use std::time::SystemTime;
 
@@ -57,33 +58,33 @@ impl TraceFormatter for TextFormatter {
 
         // Add timestamp if configured
         if config.include_timestamps {
-            output.push_str(&format!("[{}] ", Self::format_timestamp(event.timestamp)));
+            write!(output, "[{}] ", Self::format_timestamp(event.timestamp)).unwrap();
         }
 
         // Add thread ID if configured and available
         if config.include_thread_ids {
             if let Some(tid) = event.thread_id {
-                output.push_str(&format!("[TID:{tid:04}] "));
+                write!(output, "[TID:{tid:04}] ").unwrap();
             } else {
                 output.push_str("[TID:main] ");
             }
         }
 
         // Add event type
-        output.push_str(&format!("{:<6} ", event.event_type));
+        write!(output, "{:<6} ", event.event_type).unwrap();
 
         // Add function name
         output.push_str(&event.function);
 
         // Add arguments or return value
         if let Some(ref args) = event.args {
-            output.push_str(&format!("({args})"));
+            write!(output, "({args})").unwrap();
         } else {
             output.push_str("()");
         }
 
         if let Some(ref ret) = event.return_value {
-            output.push_str(&format!(" -> {ret}"));
+            write!(output, " -> {ret}").unwrap();
         }
 
         writeln!(writer, "{output}")

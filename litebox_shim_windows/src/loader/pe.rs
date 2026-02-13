@@ -113,8 +113,10 @@ impl PeLoader {
             ));
         }
 
-        // SAFETY: We just checked the size is sufficient for DosHeader
-        let dos_header = unsafe { &*data.as_ptr().cast::<DosHeader>() };
+        // SAFETY: We just checked the size is sufficient for DosHeader.
+        // Using read_unaligned to avoid alignment issues.
+        #[allow(clippy::cast_ptr_alignment)]
+        let dos_header = unsafe { data.as_ptr().cast::<DosHeader>().read_unaligned() };
 
         if dos_header.e_magic != DOS_SIGNATURE {
             return Err(WindowsShimError::InvalidPeBinary(format!(
@@ -130,8 +132,10 @@ impl PeLoader {
             ));
         }
 
-        // SAFETY: We checked bounds above
-        let pe_signature = unsafe { *data.as_ptr().add(pe_offset).cast::<u32>() };
+        // SAFETY: We checked bounds above.
+        // Using read_unaligned to avoid alignment issues.
+        #[allow(clippy::cast_ptr_alignment)]
+        let pe_signature = unsafe { data.as_ptr().add(pe_offset).cast::<u32>().read_unaligned() };
 
         if pe_signature != PE_SIGNATURE {
             return Err(WindowsShimError::InvalidPeBinary(format!(
@@ -146,8 +150,15 @@ impl PeLoader {
             ));
         }
 
-        // SAFETY: We checked bounds above
-        let file_header = unsafe { &*data.as_ptr().add(file_header_offset).cast::<FileHeader>() };
+        // SAFETY: We checked bounds above.
+        // Using read_unaligned to avoid alignment issues.
+        #[allow(clippy::cast_ptr_alignment)]
+        let file_header = unsafe {
+            data.as_ptr()
+                .add(file_header_offset)
+                .cast::<FileHeader>()
+                .read_unaligned()
+        };
 
         if file_header.machine != MACHINE_AMD64 {
             return Err(WindowsShimError::UnsupportedFeature(format!(
@@ -163,12 +174,14 @@ impl PeLoader {
             ));
         }
 
-        // SAFETY: We checked bounds above
+        // SAFETY: We checked bounds above.
+        // Using read_unaligned to avoid alignment issues.
+        #[allow(clippy::cast_ptr_alignment)]
         let optional_header = unsafe {
-            &*data
-                .as_ptr()
+            data.as_ptr()
                 .add(optional_header_offset)
                 .cast::<OptionalHeader64>()
+                .read_unaligned()
         };
 
         // Section headers start after the optional header
@@ -218,13 +231,15 @@ impl PeLoader {
                 ));
             }
 
-            // SAFETY: We checked bounds above
+            // SAFETY: We checked bounds above.
+            // Using read_unaligned to avoid alignment issues.
+            #[allow(clippy::cast_ptr_alignment)]
             let section_header = unsafe {
-                &*self
-                    .data
+                self.data
                     .as_ptr()
                     .add(section_offset)
                     .cast::<SectionHeader>()
+                    .read_unaligned()
             };
 
             // Extract section name (null-terminated)
