@@ -12,6 +12,7 @@ extern crate std;
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
 
@@ -64,34 +65,40 @@ struct EventObject {
     state: Arc<(Mutex<bool>, Condvar)>,
 }
 
-/// Linux platform for Windows API implementation
-pub struct LinuxPlatformForWindows {
+/// Internal platform state (thread-safe)
+struct PlatformState {
     /// Handle to file descriptor mapping
     handles: HashMap<u64, File>,
-    /// Next handle ID
-    next_handle: u64,
     /// Thread handle mapping
     threads: HashMap<u64, ThreadInfo>,
     /// Event handle mapping
     events: HashMap<u64, EventObject>,
 }
 
+/// Linux platform for Windows API implementation
+pub struct LinuxPlatformForWindows {
+    /// Thread-safe interior state
+    state: Mutex<PlatformState>,
+    /// Atomic handle ID generator
+    next_handle: AtomicU64,
+}
+
 impl LinuxPlatformForWindows {
     /// Create a new platform instance
     pub fn new() -> Self {
         Self {
-            handles: HashMap::new(),
-            next_handle: 0x1000, // Start at a high value to avoid conflicts
-            threads: HashMap::new(),
-            events: HashMap::new(),
+            state: Mutex::new(PlatformState {
+                handles: HashMap::new(),
+                threads: HashMap::new(),
+                events: HashMap::new(),
+            }),
+            next_handle: AtomicU64::new(0x1000), // Start at a high value to avoid conflicts
         }
     }
 
-    /// Allocate a new handle ID
-    fn allocate_handle(&mut self) -> u64 {
-        let handle = self.next_handle;
-        self.next_handle += 1;
-        handle
+    /// Allocate a new handle ID (thread-safe)
+    fn allocate_handle(&self) -> u64 {
+        self.next_handle.fetch_add(1, Ordering::SeqCst)
     }
 
     /// NtCreateFile - Create or open a file (internal implementation)
@@ -132,14 +139,15 @@ impl LinuxPlatformForWindows {
 
         let file = options.open(&linux_path)?;
         let handle = self.allocate_handle();
-        self.handles.insert(handle, file);
+        self.state.lock().unwrap().handles.insert(handle, file);
 
         Ok(handle)
     }
 
     /// NtReadFile - Read from a file (internal implementation)
     fn nt_read_file_impl(&mut self, handle: u64, buffer: &mut [u8]) -> Result<usize> {
-        let file = self
+        let mut state = self.state.lock().unwrap();
+        let file = state
             .handles
             .get_mut(&handle)
             .ok_or(PlatformError::InvalidHandle(handle))?;
@@ -148,7 +156,8 @@ impl LinuxPlatformForWindows {
 
     /// NtWriteFile - Write to a file (internal implementation)
     fn nt_write_file_impl(&mut self, handle: u64, buffer: &[u8]) -> Result<usize> {
-        let file = self
+        let mut state = self.state.lock().unwrap();
+        let file = state
             .handles
             .get_mut(&handle)
             .ok_or(PlatformError::InvalidHandle(handle))?;
@@ -157,7 +166,10 @@ impl LinuxPlatformForWindows {
 
     /// NtClose - Close a handle (internal implementation)
     fn nt_close_impl(&mut self, handle: u64) -> Result<()> {
-        self.handles
+        self.state
+            .lock()
+            .unwrap()
+            .handles
             .remove(&handle)
             .ok_or(PlatformError::InvalidHandle(handle))?;
         Ok(())
@@ -255,7 +267,7 @@ impl LinuxPlatformForWindows {
         });
 
         let handle = self.allocate_handle();
-        self.threads.insert(
+        self.state.lock().unwrap().threads.insert(
             handle,
             ThreadInfo {
                 join_handle: Some(join_handle),
@@ -268,7 +280,8 @@ impl LinuxPlatformForWindows {
 
     /// NtTerminateThread - Terminate a thread (internal implementation)
     fn nt_terminate_thread_impl(&mut self, handle: u64, exit_code: u32) -> Result<()> {
-        let thread_info = self
+        let mut state = self.state.lock().unwrap();
+        let thread_info = state
             .threads
             .get_mut(&handle)
             .ok_or(PlatformError::InvalidHandle(handle))?;
@@ -284,12 +297,20 @@ impl LinuxPlatformForWindows {
 
     /// NtWaitForSingleObject - Wait for a thread (internal implementation)
     fn nt_wait_for_single_object_impl(&mut self, handle: u64, timeout_ms: u32) -> Result<u32> {
-        let thread_info = self
-            .threads
-            .get_mut(&handle)
-            .ok_or(PlatformError::InvalidHandle(handle))?;
+        // Take the join handle from the state
+        let (join_handle_opt, exit_code) = {
+            let mut state = self.state.lock().unwrap();
+            let thread_info = state
+                .threads
+                .get_mut(&handle)
+                .ok_or(PlatformError::InvalidHandle(handle))?;
+            (
+                thread_info.join_handle.take(),
+                Arc::clone(&thread_info.exit_code),
+            )
+        };
 
-        if let Some(join_handle) = thread_info.join_handle.take() {
+        if let Some(join_handle) = join_handle_opt {
             if timeout_ms == u32::MAX {
                 // Infinite wait
                 join_handle
@@ -301,10 +322,9 @@ impl LinuxPlatformForWindows {
                 use std::time::Duration;
                 let start = std::time::Instant::now();
                 let timeout = Duration::from_millis(u64::from(timeout_ms));
-                let exit_code = Arc::clone(&thread_info.exit_code);
 
                 loop {
-                    if let Some(_code) = *exit_code.lock().unwrap() {
+                    if (*exit_code.lock().unwrap()).is_some() {
                         // Thread completed
                         join_handle.join().map_err(|_| {
                             PlatformError::ThreadError("Thread join failed".to_string())
@@ -314,7 +334,10 @@ impl LinuxPlatformForWindows {
 
                     if start.elapsed() >= timeout {
                         // Store the join handle back for later
-                        thread_info.join_handle = Some(join_handle);
+                        let mut state = self.state.lock().unwrap();
+                        if let Some(thread_info) = state.threads.get_mut(&handle) {
+                            thread_info.join_handle = Some(join_handle);
+                        }
                         return Ok(0x00000102); // WAIT_TIMEOUT
                     }
 
@@ -334,18 +357,22 @@ impl LinuxPlatformForWindows {
             manual_reset,
             state: Arc::new((Mutex::new(initial_state), Condvar::new())),
         };
-        self.events.insert(handle, event);
+        self.state.lock().unwrap().events.insert(handle, event);
         handle
     }
 
     /// NtSetEvent - Signal an event (internal implementation)
     fn nt_set_event_impl(&mut self, handle: u64) -> Result<()> {
-        let event = self
-            .events
-            .get(&handle)
-            .ok_or(PlatformError::InvalidHandle(handle))?;
+        let event_state = {
+            let state = self.state.lock().unwrap();
+            let event = state
+                .events
+                .get(&handle)
+                .ok_or(PlatformError::InvalidHandle(handle))?;
+            Arc::clone(&event.state)
+        };
 
-        let (lock, cvar) = &*event.state;
+        let (lock, cvar) = &*event_state;
         *lock.lock().unwrap() = true;
         cvar.notify_all();
         Ok(())
@@ -353,24 +380,33 @@ impl LinuxPlatformForWindows {
 
     /// NtResetEvent - Reset an event (internal implementation)
     fn nt_reset_event_impl(&mut self, handle: u64) -> Result<()> {
-        let event = self
-            .events
-            .get(&handle)
-            .ok_or(PlatformError::InvalidHandle(handle))?;
+        let event_state = {
+            let state = self.state.lock().unwrap();
+            let event = state
+                .events
+                .get(&handle)
+                .ok_or(PlatformError::InvalidHandle(handle))?;
+            Arc::clone(&event.state)
+        };
 
-        let (lock, _cvar) = &*event.state;
+        let (lock, _cvar) = &*event_state;
         *lock.lock().unwrap() = false;
         Ok(())
     }
 
     /// NtWaitForEvent - Wait for an event (internal implementation)
     fn nt_wait_for_event_impl(&mut self, handle: u64, timeout_ms: u32) -> Result<u32> {
-        let event = self
-            .events
-            .get(&handle)
-            .ok_or(PlatformError::InvalidHandle(handle))?;
+        // Get event from state (clone Arc to avoid holding lock)
+        let (event_state, manual_reset) = {
+            let state = self.state.lock().unwrap();
+            let event = state
+                .events
+                .get(&handle)
+                .ok_or(PlatformError::InvalidHandle(handle))?;
+            (Arc::clone(&event.state), event.manual_reset)
+        };
 
-        let (lock, cvar) = &*event.state;
+        let (lock, cvar) = &*event_state;
         let mut signaled = lock.lock().unwrap();
 
         if timeout_ms == u32::MAX {
@@ -379,7 +415,7 @@ impl LinuxPlatformForWindows {
                 signaled = cvar.wait(signaled).unwrap();
             }
             // Auto-reset for non-manual reset events
-            if !event.manual_reset {
+            if !manual_reset {
                 *signaled = false;
             }
             Ok(0) // WAIT_OBJECT_0
@@ -392,7 +428,7 @@ impl LinuxPlatformForWindows {
 
             if *signaled {
                 // Auto-reset for non-manual reset events
-                if !event.manual_reset {
+                if !manual_reset {
                     *signaled = false;
                 }
                 Ok(0) // WAIT_OBJECT_0
@@ -404,8 +440,9 @@ impl LinuxPlatformForWindows {
 
     /// NtCloseHandle - Close thread or event handle (internal implementation)
     fn nt_close_handle_impl(&mut self, handle: u64) -> Result<()> {
+        let mut state = self.state.lock().unwrap();
         // Try to remove from threads or events
-        if self.threads.remove(&handle).is_some() || self.events.remove(&handle).is_some() {
+        if state.threads.remove(&handle).is_some() || state.events.remove(&handle).is_some() {
             Ok(())
         } else {
             Err(PlatformError::InvalidHandle(handle))
@@ -599,7 +636,7 @@ mod tests {
 
     #[test]
     fn test_handle_allocation() {
-        let mut platform = LinuxPlatformForWindows::new();
+        let platform = LinuxPlatformForWindows::new();
         let h1 = platform.allocate_handle();
         let h2 = platform.allocate_handle();
         assert_ne!(h1, h2);
@@ -614,16 +651,13 @@ mod tests {
     #[test]
     fn test_thread_creation() {
         let mut platform = LinuxPlatformForWindows::new();
-        
-        let result = platform.nt_create_thread(
-            simple_thread_func,
-            std::ptr::null_mut(),
-            1024 * 1024,
-        );
-        
+
+        let result =
+            platform.nt_create_thread(simple_thread_func, std::ptr::null_mut(), 1024 * 1024);
+
         assert!(result.is_ok());
         let handle = result.unwrap();
-        
+
         // Wait for thread to complete
         let wait_result = platform.nt_wait_for_single_object(handle, u32::MAX);
         assert!(wait_result.is_ok());
@@ -644,28 +678,30 @@ mod tests {
         let mut platform = LinuxPlatformForWindows::new();
         let mut counter: u32 = 0;
         let counter_ptr = &mut counter as *mut u32 as *mut core::ffi::c_void;
-        
+
         let handle = platform
             .nt_create_thread(incrementing_thread_func, counter_ptr, 1024 * 1024)
             .unwrap();
-        
+
         // Wait for thread
-        platform.nt_wait_for_single_object(handle, u32::MAX).unwrap();
-        
+        platform
+            .nt_wait_for_single_object(handle, u32::MAX)
+            .unwrap();
+
         assert_eq!(counter, 1);
     }
 
     #[test]
     fn test_event_creation_and_signal() {
         let mut platform = LinuxPlatformForWindows::new();
-        
+
         // Create an event in non-signaled state
         let event = platform.nt_create_event(false, false).unwrap();
-        
+
         // Set the event
         let result = platform.nt_set_event(event);
         assert!(result.is_ok());
-        
+
         // Wait should succeed immediately
         let wait_result = platform.nt_wait_for_event(event, 100);
         assert!(wait_result.is_ok());
@@ -675,19 +711,19 @@ mod tests {
     #[test]
     fn test_event_manual_reset() {
         let mut platform = LinuxPlatformForWindows::new();
-        
+
         // Create a manual reset event in signaled state
         let event = platform.nt_create_event(true, true).unwrap();
-        
+
         // Wait should succeed
         platform.nt_wait_for_event(event, 100).unwrap();
-        
+
         // Wait again should still succeed (manual reset stays signaled)
         platform.nt_wait_for_event(event, 100).unwrap();
-        
+
         // Reset the event
         platform.nt_reset_event(event).unwrap();
-        
+
         // Now wait should timeout
         let result = platform.nt_wait_for_event(event, 100).unwrap();
         assert_eq!(result, 0x00000102); // WAIT_TIMEOUT
@@ -696,14 +732,14 @@ mod tests {
     #[test]
     fn test_event_auto_reset() {
         let mut platform = LinuxPlatformForWindows::new();
-        
+
         // Create an auto-reset event in signaled state
         let event = platform.nt_create_event(false, true).unwrap();
-        
+
         // First wait should succeed and auto-reset
         let result = platform.nt_wait_for_event(event, 100).unwrap();
         assert_eq!(result, 0); // WAIT_OBJECT_0
-        
+
         // Second wait should timeout (auto-reset)
         let result = platform.nt_wait_for_event(event, 100).unwrap();
         assert_eq!(result, 0x00000102); // WAIT_TIMEOUT
@@ -712,19 +748,19 @@ mod tests {
     #[test]
     fn test_close_handles() {
         let mut platform = LinuxPlatformForWindows::new();
-        
+
         // Create thread handle
         let thread_handle = platform
             .nt_create_thread(simple_thread_func, std::ptr::null_mut(), 1024 * 1024)
             .unwrap();
-        
+
         // Create event handle
         let event_handle = platform.nt_create_event(false, false).unwrap();
-        
+
         // Close both handles
         assert!(platform.nt_close_handle(thread_handle.0).is_ok());
         assert!(platform.nt_close_handle(event_handle.0).is_ok());
-        
+
         // Trying to close again should fail
         assert!(platform.nt_close_handle(thread_handle.0).is_err());
         assert!(platform.nt_close_handle(event_handle.0).is_err());

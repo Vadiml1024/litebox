@@ -45,9 +45,8 @@ impl<T: NtdllApi> NtdllApi for TracedNtdllApi<T> {
     ) -> Result<FileHandle> {
         // Trace call
         if self.tracer.is_enabled() {
-            let args = format!(
-                "path=\"{path}\", access=0x{access:08X}, disposition={create_disposition}"
-            );
+            let args =
+                format!("path=\"{path}\", access=0x{access:08X}, disposition={create_disposition}");
             let event = TraceEvent::call("NtCreateFile", ApiCategory::FileIo).with_args(args);
             self.tracer.trace(event);
         }
@@ -326,9 +325,7 @@ impl<T: NtdllApi> NtdllApi for TracedNtdllApi<T> {
     fn nt_create_event(&mut self, manual_reset: bool, initial_state: bool) -> Result<EventHandle> {
         // Trace call
         if self.tracer.is_enabled() {
-            let args = format!(
-                "manual_reset={manual_reset}, initial_state={initial_state}"
-            );
+            let args = format!("manual_reset={manual_reset}, initial_state={initial_state}");
             let event =
                 TraceEvent::call("NtCreateEvent", ApiCategory::Synchronization).with_args(args);
             self.tracer.trace(event);
