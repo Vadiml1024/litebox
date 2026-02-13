@@ -13,6 +13,12 @@ use clap::Parser;
 use litebox_platform_linux_for_windows::LinuxPlatformForWindows;
 use litebox_shim_windows::loader::PeLoader;
 use litebox_shim_windows::syscalls::ntdll::{NtdllApi, memory_protection};
+use litebox_shim_windows::tracing::{
+    ApiCategory, FilterRule, TraceConfig, TraceFilter, TraceFormat, TraceOutput, TracedNtdllApi,
+    Tracer,
+};
+use std::path::PathBuf;
+use std::sync::Arc;
 
 /// Run Windows programs with LiteBox on unmodified Linux
 #[derive(Parser, Debug)]
@@ -24,6 +30,26 @@ pub struct CliArgs {
     /// Arguments to pass to the program
     #[arg(trailing_var_arg = true)]
     pub arguments: Vec<String>,
+
+    /// Enable API call tracing
+    #[arg(long = "trace-apis")]
+    pub trace_apis: bool,
+
+    /// Trace output format: text or json
+    #[arg(long = "trace-format", default_value = "text")]
+    pub trace_format: String,
+
+    /// Trace output file (defaults to stdout)
+    #[arg(long = "trace-output")]
+    pub trace_output: Option<PathBuf>,
+
+    /// Filter traces by function pattern (e.g., "Nt*File")
+    #[arg(long = "trace-filter")]
+    pub trace_filter: Option<String>,
+
+    /// Filter traces by category (file_io, console_io, memory)
+    #[arg(long = "trace-category")]
+    pub trace_category: Option<String>,
 }
 
 /// Run Windows programs with LiteBox on unmodified Linux
@@ -52,8 +78,53 @@ pub fn run(cli_args: CliArgs) -> Result<()> {
         );
     }
 
-    // Initialize the platform
-    let mut platform = LinuxPlatformForWindows::new();
+    // Set up tracing if enabled
+    let trace_config = if cli_args.trace_apis {
+        let format = match cli_args.trace_format.as_str() {
+            "json" => TraceFormat::Json,
+            _ => TraceFormat::Text,
+        };
+
+        let output = match &cli_args.trace_output {
+            Some(path) => TraceOutput::File(path.clone()),
+            None => TraceOutput::Stdout,
+        };
+
+        TraceConfig::enabled()
+            .with_format(format)
+            .with_output(output)
+    } else {
+        TraceConfig::default()
+    };
+
+    // Set up trace filters
+    let mut trace_filter = TraceFilter::new();
+    if let Some(pattern) = &cli_args.trace_filter {
+        trace_filter = trace_filter.add_rule(FilterRule::Pattern(pattern.clone()));
+    }
+    if let Some(category_str) = &cli_args.trace_category {
+        let category = match category_str.as_str() {
+            "file_io" => ApiCategory::FileIo,
+            "console_io" => ApiCategory::ConsoleIo,
+            "memory" => ApiCategory::Memory,
+            _ => {
+                return Err(anyhow!(
+                    "Invalid category '{category_str}'. Valid options: file_io, console_io, memory",
+                ));
+            }
+        };
+        trace_filter = trace_filter.add_rule(FilterRule::Category(vec![category]));
+    }
+
+    // Create tracer
+    let tracer = Arc::new(
+        Tracer::new(trace_config, trace_filter)
+            .map_err(|e| anyhow!("Failed to create tracer: {e}"))?,
+    );
+
+    // Initialize the platform (wrapped with tracing if enabled)
+    let platform = LinuxPlatformForWindows::new();
+    let mut platform = TracedNtdllApi::new(platform, tracer);
 
     // Calculate total image size (find max virtual address + size)
     let image_size = sections
@@ -93,7 +164,19 @@ pub fn run(cli_args: CliArgs) -> Result<()> {
     platform.nt_free_virtual_memory(base_address, image_size)?;
     println!("\nMemory deallocated successfully.");
 
-    println!("\n[Progress: PE loader, section loading, and basic NTDLL APIs implemented]");
+    println!(
+        "\n[Progress: PE loader, section loading, basic NTDLL APIs, and API tracing implemented]"
+    );
+    if cli_args.trace_apis {
+        println!(
+            "Tracing enabled: format={}, output={:?}",
+            cli_args.trace_format,
+            cli_args
+                .trace_output
+                .as_ref()
+                .map_or("stdout", |p| p.to_str().unwrap_or("?"))
+        );
+    }
     println!("Note: Actual program execution not yet implemented - working on foundation.");
 
     Ok(())
