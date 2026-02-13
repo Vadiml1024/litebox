@@ -19,6 +19,12 @@ pub enum ApiCategory {
     Threading,
     /// Synchronization operations
     Synchronization,
+    /// Environment variables
+    Environment,
+    /// Process information
+    Process,
+    /// Registry operations
+    Registry,
     /// Unknown/uncategorized
     Unknown,
 }
@@ -31,6 +37,9 @@ impl fmt::Display for ApiCategory {
             ApiCategory::Memory => write!(f, "memory"),
             ApiCategory::Threading => write!(f, "threading"),
             ApiCategory::Synchronization => write!(f, "synchronization"),
+            ApiCategory::Environment => write!(f, "environment"),
+            ApiCategory::Process => write!(f, "process"),
+            ApiCategory::Registry => write!(f, "registry"),
             ApiCategory::Unknown => write!(f, "unknown"),
         }
     }

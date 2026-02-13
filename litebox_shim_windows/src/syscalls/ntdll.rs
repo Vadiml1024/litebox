@@ -6,6 +6,7 @@
 //! This module defines the Windows NTDLL API interface:
 //! - Phase 2: File I/O, Console I/O, Memory management
 //! - Phase 4: Threading and Synchronization
+//! - Phase 5: Environment variables, Process information, Registry emulation
 
 use crate::Result;
 
@@ -24,6 +25,10 @@ pub struct ThreadHandle(pub u64);
 /// Windows event handle (for synchronization)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EventHandle(pub u64);
+
+/// Windows registry key handle
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RegKeyHandle(pub u64);
 
 /// Thread entry point function type
 pub type ThreadEntryPoint = extern "C" fn(*mut core::ffi::c_void) -> u32;
@@ -127,6 +132,44 @@ pub trait NtdllApi {
     ///
     /// Generic handle close for thread and event handles.
     fn nt_close_handle(&mut self, handle: u64) -> Result<()>;
+
+    // Phase 5: Environment Variables
+
+    /// Get environment variable value
+    ///
+    /// Returns the value of the specified environment variable.
+    /// Returns None if the variable doesn't exist.
+    fn get_environment_variable(&self, name: &str) -> Option<String>;
+
+    /// Set environment variable
+    ///
+    /// Sets the value of the specified environment variable.
+    fn set_environment_variable(&mut self, name: &str, value: &str) -> Result<()>;
+
+    // Phase 5: Process Information
+
+    /// Get current process ID
+    fn get_current_process_id(&self) -> u32;
+
+    /// Get current thread ID
+    fn get_current_thread_id(&self) -> u32;
+
+    // Phase 5: Registry Emulation
+
+    /// Open registry key
+    ///
+    /// Opens a registry key for read access.
+    /// Returns a handle to the key.
+    fn reg_open_key_ex(&mut self, key: &str, subkey: &str) -> Result<RegKeyHandle>;
+
+    /// Query registry value
+    ///
+    /// Queries a value from a registry key.
+    /// Returns None if the value doesn't exist.
+    fn reg_query_value_ex(&self, handle: RegKeyHandle, value_name: &str) -> Option<String>;
+
+    /// Close registry key
+    fn reg_close_key(&mut self, handle: RegKeyHandle) -> Result<()>;
 }
 
 /// Windows file access flags (simplified)
@@ -169,4 +212,22 @@ pub mod thread_flags {
     pub const CREATE_SUSPENDED: u32 = 0x00000004;
     /// Default stack size
     pub const DEFAULT_STACK_SIZE: usize = 1024 * 1024; // 1 MB
+}
+
+/// Registry root keys (simplified)
+pub mod registry_keys {
+    /// HKEY_LOCAL_MACHINE
+    pub const HKEY_LOCAL_MACHINE: &str = "HKEY_LOCAL_MACHINE";
+    /// HKEY_CURRENT_USER
+    pub const HKEY_CURRENT_USER: &str = "HKEY_CURRENT_USER";
+    /// HKEY_CLASSES_ROOT
+    pub const HKEY_CLASSES_ROOT: &str = "HKEY_CLASSES_ROOT";
+}
+
+/// Registry value types (simplified)
+pub mod registry_types {
+    /// String value
+    pub const REG_SZ: u32 = 1;
+    /// DWORD value
+    pub const REG_DWORD: u32 = 4;
 }
