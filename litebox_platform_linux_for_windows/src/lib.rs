@@ -667,7 +667,7 @@ mod tests {
     extern "C" fn incrementing_thread_func(param: *mut core::ffi::c_void) -> u32 {
         // SAFETY: Test code controls the pointer validity
         unsafe {
-            let counter = param as *mut u32;
+            let counter = param.cast::<u32>();
             *counter += 1;
         }
         0
@@ -677,7 +677,7 @@ mod tests {
     fn test_thread_with_parameter() {
         let mut platform = LinuxPlatformForWindows::new();
         let mut counter: u32 = 0;
-        let counter_ptr = &mut counter as *mut u32 as *mut core::ffi::c_void;
+        let counter_ptr = (&raw mut counter).cast::<core::ffi::c_void>();
 
         let handle = platform
             .nt_create_thread(incrementing_thread_func, counter_ptr, 1024 * 1024)
