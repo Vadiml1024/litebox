@@ -8,11 +8,11 @@
 
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use clap::Parser;
 use litebox_platform_linux_for_windows::LinuxPlatformForWindows;
 use litebox_shim_windows::loader::PeLoader;
-use litebox_shim_windows::syscalls::ntdll::{memory_protection, NtdllApi};
+use litebox_shim_windows::syscalls::ntdll::{NtdllApi, memory_protection};
 
 /// Run Windows programs with LiteBox on unmodified Linux
 #[derive(Parser, Debug)]
