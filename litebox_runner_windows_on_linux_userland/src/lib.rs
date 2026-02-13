@@ -156,16 +156,94 @@ pub fn run(cli_args: CliArgs) -> Result<()> {
     };
     println!("  Loaded {loaded_size} bytes");
 
-    // For Phase 2/3 demo: Show that we can do basic console I/O through the platform
+    // Apply relocations if needed
+    println!("\nApplying relocations...");
+    let image_base = pe_loader.image_base();
+    if base_address == image_base {
+        println!("  No relocations needed (loaded at preferred base)");
+    } else {
+        println!("  Rebasing from 0x{image_base:X} to 0x{base_address:X}");
+        // SAFETY: We allocated the memory and just loaded the sections
+        unsafe {
+            pe_loader
+                .apply_relocations(image_base, base_address)
+                .map_err(|e| anyhow!("Failed to apply relocations: {e}"))?;
+        }
+        println!("  Relocations applied successfully");
+    }
+
+    // Resolve imports
+    println!("\nResolving imports...");
+    let imports = pe_loader
+        .imports()
+        .map_err(|e| anyhow!("Failed to get imports: {e}"))?;
+
+    if imports.is_empty() {
+        println!("  No imports found");
+    } else {
+        for import_dll in &imports {
+            println!("  DLL: {}", import_dll.name);
+            println!("    Functions: {}", import_dll.functions.len());
+
+            // Load the DLL and resolve function addresses
+            let dll_handle = platform
+                .load_library(&import_dll.name)
+                .map_err(|e| anyhow!("Failed to load DLL {}: {e}", import_dll.name))?;
+
+            let mut resolved_addresses = Vec::new();
+            for func_name in &import_dll.functions {
+                match platform.get_proc_address(dll_handle, func_name) {
+                    Ok(addr) => {
+                        resolved_addresses.push(addr);
+                        println!("      {func_name} -> 0x{addr:X}");
+                    }
+                    Err(e) => {
+                        println!("      {func_name} -> NOT FOUND ({e})");
+                        // Use a stub address (0) for missing functions
+                        resolved_addresses.push(0);
+                    }
+                }
+            }
+
+            // Write resolved addresses to IAT
+            // SAFETY: We allocated the memory and loaded the sections
+            unsafe {
+                pe_loader
+                    .write_iat(
+                        base_address,
+                        &import_dll.name,
+                        import_dll.iat_rva,
+                        &resolved_addresses,
+                    )
+                    .map_err(|e| anyhow!("Failed to write IAT: {e}"))?;
+            }
+        }
+        println!("  Import resolution complete");
+    }
+
+    // For Phase 6 demo: Show that we can do basic console I/O through the platform
     let stdout_handle = platform.get_std_output();
     platform.write_console(stdout_handle, "\nHello from Windows on Linux!\n")?;
+
+    // TODO: Call PE entry point here in future enhancement
+    // For now, we've successfully loaded, relocated, and resolved imports
+    let entry_point = pe_loader.entry_point();
+    println!("\n[Phase 6 Progress]");
+    println!("  ✓ PE loader");
+    println!("  ✓ Section loading");
+    println!("  ✓ Relocation processing");
+    println!("  ✓ Import resolution");
+    println!("  ✓ IAT patching");
+    println!("  → Entry point at: 0x{entry_point:X} (not yet called)");
+    println!("\nNote: Entry point execution requires TEB/PEB setup and ABI translation.");
+    println!("      This will be completed in a future enhancement.");
 
     // Clean up allocated memory
     platform.nt_free_virtual_memory(base_address, image_size)?;
     println!("\nMemory deallocated successfully.");
 
     println!(
-        "\n[Progress: PE loader, section loading, basic NTDLL APIs, and API tracing implemented]"
+        "\n[Progress: PE loader, section loading, basic NTDLL APIs, API tracing, and DLL loading implemented]"
     );
     if cli_args.trace_apis {
         println!(
@@ -177,7 +255,6 @@ pub fn run(cli_args: CliArgs) -> Result<()> {
                 .map_or("stdout", |p| p.to_str().unwrap_or("?"))
         );
     }
-    println!("Note: Actual program execution not yet implemented - working on foundation.");
 
     Ok(())
 }

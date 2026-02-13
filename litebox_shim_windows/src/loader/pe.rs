@@ -500,6 +500,70 @@ impl PeLoader {
         )))
     }
 
+    /// Read a u64 value at the given RVA (for Import Lookup Table entries)
+    fn read_u64_at_rva(&self, rva: u32) -> Result<u64> {
+        let sections = self.sections()?;
+
+        // Find which section contains this RVA
+        for section in sections {
+            if rva >= section.virtual_address
+                && rva < section.virtual_address + section.virtual_size
+            {
+                let offset_in_section = (rva - section.virtual_address) as usize;
+                if offset_in_section + 8 <= section.data.len() {
+                    // SAFETY: We checked bounds above. Using read_unaligned to avoid alignment issues.
+                    #[allow(clippy::cast_ptr_alignment)]
+                    let value = unsafe {
+                        section
+                            .data
+                            .as_ptr()
+                            .add(offset_in_section)
+                            .cast::<u64>()
+                            .read_unaligned()
+                    };
+                    return Ok(value);
+                }
+            }
+        }
+
+        Err(WindowsShimError::InvalidPeBinary(format!(
+            "u64 at RVA 0x{rva:X} not found or out of bounds"
+        )))
+    }
+
+    /// Parse the Import Lookup Table to get function names for a DLL
+    fn parse_import_lookup_table(&self, ilt_rva: u32) -> Result<Vec<String>> {
+        let mut functions = Vec::new();
+        let mut current_rva = ilt_rva;
+
+        // For 64-bit PE, each entry is 8 bytes
+        loop {
+            let entry = self.read_u64_at_rva(current_rva)?;
+
+            // Null entry marks end of list
+            if entry == 0 {
+                break;
+            }
+
+            // Check if import is by ordinal (bit 63 set)
+            if (entry & 0x8000_0000_0000_0000) != 0 {
+                // Import by ordinal - store as "Ordinal_N"
+                let ordinal = entry & 0xFFFF;
+                functions.push(format!("Ordinal_{ordinal}"));
+            } else {
+                // Import by name - RVA points to IMAGE_IMPORT_BY_NAME structure
+                // Skip the hint (first 2 bytes) and read the function name
+                let name_rva = (entry & 0x7FFF_FFFF) as u32;
+                let function_name = self.read_string_at_rva(name_rva + 2)?;
+                functions.push(function_name);
+            }
+
+            current_rva += 8; // Move to next entry (8 bytes for 64-bit)
+        }
+
+        Ok(functions)
+    }
+
     /// Parse import directory and return list of imported DLLs
     pub fn imports(&self) -> Result<Vec<ImportedDll>> {
         let import_dir = self.get_data_directory(IMAGE_DIRECTORY_ENTRY_IMPORT)?;
@@ -557,12 +621,20 @@ impl PeLoader {
             // Read DLL name
             let dll_name = self.read_string_at_rva(descriptor.name)?;
 
-            // For now, just record the DLL name and IAT RVA
-            // Function names would require parsing the Import Lookup Table
+            // Parse the Import Lookup Table to get function names
+            // Use original_first_thunk if available, otherwise use first_thunk
+            let ilt_rva = if descriptor.original_first_thunk != 0 {
+                descriptor.original_first_thunk
+            } else {
+                descriptor.first_thunk
+            };
+
+            let functions = self.parse_import_lookup_table(ilt_rva)?;
+
             imports.push(ImportedDll {
                 name: dll_name,
                 iat_rva: descriptor.first_thunk,
-                functions: Vec::new(), // Will be populated when needed
+                functions,
             });
 
             descriptor_offset += core::mem::size_of::<ImportDescriptor>();
@@ -705,6 +777,38 @@ impl PeLoader {
                 _ => {
                     // Ignore unknown relocation types
                 }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Write resolved function addresses to the Import Address Table
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that:
+    /// - `base_address` points to a valid, writable memory region
+    /// - The memory region contains the loaded PE image
+    /// - `resolved_functions` contains valid function addresses for all imports
+    pub unsafe fn write_iat(
+        &self,
+        base_address: u64,
+        _dll_name: &str,
+        iat_rva: u32,
+        resolved_functions: &[u64],
+    ) -> Result<()> {
+        // Calculate the actual IAT address
+        let iat_address = base_address + u64::from(iat_rva);
+
+        // Write each function address to the IAT
+        for (i, &func_addr) in resolved_functions.iter().enumerate() {
+            let entry_address = iat_address + (i as u64 * 8); // 8 bytes per entry for 64-bit
+
+            // SAFETY: Caller guarantees base_address is valid
+            unsafe {
+                let ptr = entry_address as *mut u64;
+                ptr.write_unaligned(func_addr);
             }
         }
 
