@@ -133,8 +133,7 @@ impl LinuxPlatformForWindows {
             4 => {
                 options.create(true);
             } // OPEN_ALWAYS
-            3 => { /* OPEN_EXISTING - default */ }
-            _ => { /* Unknown - treat as OPEN_EXISTING */ }
+            _ => { /* OPEN_EXISTING or unknown - default */ }
         }
 
         let file = options.open(&linux_path)?;
@@ -176,12 +175,14 @@ impl LinuxPlatformForWindows {
     }
 
     /// Get standard output handle (internal implementation)
+    #[allow(clippy::unused_self)]
     fn get_std_output_impl(&self) -> u64 {
         // Use a special handle value for stdout
         0xFFFF_FFFF_0001
     }
 
     /// Write to console (internal implementation)
+    #[allow(clippy::unused_self)]
     fn write_console_impl(&mut self, handle: u64, text: &str) -> Result<usize> {
         if handle == 0xFFFF_FFFF_0001 {
             print!("{text}");
@@ -193,6 +194,7 @@ impl LinuxPlatformForWindows {
     }
 
     /// NtAllocateVirtualMemory - Allocate virtual memory (internal implementation)
+    #[allow(clippy::unused_self)]
     fn nt_allocate_virtual_memory_impl(&mut self, size: usize, protect: u32) -> Result<u64> {
         use std::ptr;
 
@@ -230,6 +232,7 @@ impl LinuxPlatformForWindows {
     }
 
     /// NtFreeVirtualMemory - Free virtual memory (internal implementation)
+    #[allow(clippy::unused_self)]
     fn nt_free_virtual_memory_impl(&mut self, address: u64, size: usize) -> Result<()> {
         // SAFETY: munmap is called with valid parameters
         let result = unsafe { libc::munmap(address as *mut libc::c_void, size) };
@@ -244,6 +247,7 @@ impl LinuxPlatformForWindows {
     // Phase 4: Threading implementation
 
     /// NtCreateThread - Create a new thread (internal implementation)
+    #[allow(clippy::unnecessary_wraps)]
     fn nt_create_thread_impl(
         &mut self,
         entry_point: ThreadEntryPoint,

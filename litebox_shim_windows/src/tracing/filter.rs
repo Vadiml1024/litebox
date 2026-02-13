@@ -39,6 +39,7 @@ impl TraceFilter {
     }
 
     /// Add a filter rule
+    #[must_use]
     pub fn add_rule(mut self, rule: FilterRule) -> Self {
         // If this is the first non-All rule, clear the default All rule
         if self.rules.len() == 1 && matches!(self.rules[0], FilterRule::All) {

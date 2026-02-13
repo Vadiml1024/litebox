@@ -60,24 +60,28 @@ impl TraceConfig {
     }
 
     /// Set the output format
+    #[must_use]
     pub fn with_format(mut self, format: TraceFormat) -> Self {
         self.format = format;
         self
     }
 
     /// Set the output destination
+    #[must_use]
     pub fn with_output(mut self, output: TraceOutput) -> Self {
         self.output = output;
         self
     }
 
     /// Enable or disable timestamps
+    #[must_use]
     pub fn with_timestamps(mut self, enable: bool) -> Self {
         self.include_timestamps = enable;
         self
     }
 
     /// Enable or disable thread IDs
+    #[must_use]
     pub fn with_thread_ids(mut self, enable: bool) -> Self {
         self.include_thread_ids = enable;
         self

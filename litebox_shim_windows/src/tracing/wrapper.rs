@@ -555,8 +555,8 @@ mod tests {
     fn test_traced_api_disabled() {
         let mock = MockNtdllApi;
         let config = TraceConfig::default(); // disabled
-        let tracer = Arc::new(Tracer::new(config, TraceFilter::default()).unwrap());
-        let mut traced = TracedNtdllApi::new(mock, tracer);
+        let trace_ctx = Arc::new(Tracer::new(config, TraceFilter::default()).unwrap());
+        let mut traced = TracedNtdllApi::new(mock, trace_ctx);
 
         let result = traced.nt_create_file(
             "test.txt",
@@ -570,8 +570,8 @@ mod tests {
     fn test_traced_api_enabled() {
         let mock = MockNtdllApi;
         let config = TraceConfig::enabled();
-        let tracer = Arc::new(Tracer::new(config, TraceFilter::default()).unwrap());
-        let mut traced = TracedNtdllApi::new(mock, tracer);
+        let trace_ctx = Arc::new(Tracer::new(config, TraceFilter::default()).unwrap());
+        let mut traced = TracedNtdllApi::new(mock, trace_ctx);
 
         let result = traced.nt_create_file(
             "test.txt",
@@ -585,8 +585,8 @@ mod tests {
     fn test_traced_memory_operations() {
         let mock = MockNtdllApi;
         let config = TraceConfig::enabled();
-        let tracer = Arc::new(Tracer::new(config, TraceFilter::default()).unwrap());
-        let mut traced = TracedNtdllApi::new(mock, tracer);
+        let trace_ctx = Arc::new(Tracer::new(config, TraceFilter::default()).unwrap());
+        let mut traced = TracedNtdllApi::new(mock, trace_ctx);
 
         let alloc_result =
             traced.nt_allocate_virtual_memory(4096, memory_protection::PAGE_READWRITE);
