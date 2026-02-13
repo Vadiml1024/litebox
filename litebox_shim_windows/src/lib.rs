@@ -26,6 +26,9 @@ pub enum WindowsShimError {
 
     #[error("I/O error: {0}")]
     IoError(String),
+
+    #[error("Invalid parameter: {0}")]
+    InvalidParameter(String),
 }
 
 pub type Result<T> = core::result::Result<T, WindowsShimError>;

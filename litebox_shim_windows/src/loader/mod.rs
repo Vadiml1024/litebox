@@ -6,6 +6,8 @@
 //! This module provides a minimal PE loader for loading Windows executables
 //! into memory. This is Phase 1 of the Windows on Linux implementation.
 
+pub mod dll;
 pub mod pe;
 
+pub use dll::{DllFunction, DllHandle, DllManager};
 pub use pe::PeLoader;

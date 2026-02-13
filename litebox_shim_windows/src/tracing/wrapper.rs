@@ -633,6 +633,83 @@ impl<T: NtdllApi> NtdllApi for TracedNtdllApi<T> {
 
         result
     }
+
+    // Phase 6: DLL Loading
+
+    fn load_library(&mut self, name: &str) -> Result<u64> {
+        // Trace call
+        if self.tracer.is_enabled() {
+            let args = format!("name=\"{name}\"");
+            let event = TraceEvent::call("LoadLibrary", ApiCategory::Dll).with_args(args);
+            self.tracer.trace(event);
+        }
+
+        // Call the inner implementation
+        let result = self.inner.load_library(name);
+
+        // Trace return
+        if self.tracer.is_enabled() {
+            let ret_str = match &result {
+                Ok(handle) => format!("Ok(handle=0x{handle:X})"),
+                Err(e) => format!("Err({e})"),
+            };
+            let event = TraceEvent::return_event("LoadLibrary", ApiCategory::Dll)
+                .with_return_value(ret_str);
+            self.tracer.trace(event);
+        }
+
+        result
+    }
+
+    fn get_proc_address(&self, dll_handle: u64, name: &str) -> Result<u64> {
+        // Trace call
+        if self.tracer.is_enabled() {
+            let args = format!("dll_handle=0x{dll_handle:X}, name=\"{name}\"");
+            let event = TraceEvent::call("GetProcAddress", ApiCategory::Dll).with_args(args);
+            self.tracer.trace(event);
+        }
+
+        // Call the inner implementation
+        let result = self.inner.get_proc_address(dll_handle, name);
+
+        // Trace return
+        if self.tracer.is_enabled() {
+            let ret_str = match &result {
+                Ok(address) => format!("Ok(address=0x{address:X})"),
+                Err(e) => format!("Err({e})"),
+            };
+            let event = TraceEvent::return_event("GetProcAddress", ApiCategory::Dll)
+                .with_return_value(ret_str);
+            self.tracer.trace(event);
+        }
+
+        result
+    }
+
+    fn free_library(&mut self, dll_handle: u64) -> Result<()> {
+        // Trace call
+        if self.tracer.is_enabled() {
+            let args = format!("dll_handle=0x{dll_handle:X}");
+            let event = TraceEvent::call("FreeLibrary", ApiCategory::Dll).with_args(args);
+            self.tracer.trace(event);
+        }
+
+        // Call the inner implementation
+        let result = self.inner.free_library(dll_handle);
+
+        // Trace return
+        if self.tracer.is_enabled() {
+            let ret_str = match &result {
+                Ok(()) => "Ok(())".to_string(),
+                Err(e) => format!("Err({e})"),
+            };
+            let event = TraceEvent::return_event("FreeLibrary", ApiCategory::Dll)
+                .with_return_value(ret_str);
+            self.tracer.trace(event);
+        }
+
+        result
+    }
 }
 
 #[cfg(test)]
@@ -758,6 +835,20 @@ mod tests {
         }
 
         fn reg_close_key(&mut self, _handle: RegKeyHandle) -> Result<()> {
+            Ok(())
+        }
+
+        // Phase 6: DLL Loading
+
+        fn load_library(&mut self, _name: &str) -> Result<u64> {
+            Ok(0x10000000) // Mock DLL handle
+        }
+
+        fn get_proc_address(&self, _dll_handle: u64, _name: &str) -> Result<u64> {
+            Ok(0x20000000) // Mock function address
+        }
+
+        fn free_library(&mut self, _dll_handle: u64) -> Result<()> {
             Ok(())
         }
     }

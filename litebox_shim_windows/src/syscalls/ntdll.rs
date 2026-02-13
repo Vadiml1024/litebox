@@ -170,6 +170,24 @@ pub trait NtdllApi {
 
     /// Close registry key
     fn reg_close_key(&mut self, handle: RegKeyHandle) -> Result<()>;
+
+    // Phase 6: DLL Loading APIs
+
+    /// LoadLibrary - Load a DLL
+    ///
+    /// Loads a DLL by name and returns a handle.
+    /// Case-insensitive name matching.
+    fn load_library(&mut self, name: &str) -> Result<u64>;
+
+    /// GetProcAddress - Get address of a function in a DLL
+    ///
+    /// Returns the address of the specified exported function.
+    fn get_proc_address(&self, dll_handle: u64, name: &str) -> Result<u64>;
+
+    /// FreeLibrary - Unload a DLL
+    ///
+    /// Frees a previously loaded DLL.
+    fn free_library(&mut self, dll_handle: u64) -> Result<()>;
 }
 
 /// Windows file access flags (simplified)

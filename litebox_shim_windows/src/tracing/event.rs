@@ -25,6 +25,8 @@ pub enum ApiCategory {
     Process,
     /// Registry operations
     Registry,
+    /// DLL loading operations
+    Dll,
     /// Unknown/uncategorized
     Unknown,
 }
@@ -40,6 +42,7 @@ impl fmt::Display for ApiCategory {
             ApiCategory::Environment => write!(f, "environment"),
             ApiCategory::Process => write!(f, "process"),
             ApiCategory::Registry => write!(f, "registry"),
+            ApiCategory::Dll => write!(f, "dll"),
             ApiCategory::Unknown => write!(f, "unknown"),
         }
     }
