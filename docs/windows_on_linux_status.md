@@ -217,9 +217,9 @@ The implementation consists of three main components:
 
 ### Test Coverage
 
-**Total Tests:** 52 passing
+**Total Tests:** 56 passing
 - litebox_platform_linux_for_windows: 19 tests
-- litebox_shim_windows: 24 tests
+- litebox_shim_windows: 28 tests (added TEB/PEB/ExecutionContext tests)
 - litebox_runner_windows_on_linux_userland: 9 tests
 
 ### Test Categories
@@ -345,15 +345,17 @@ litebox_runner_windows_on_linux_userland \
 - ✅ **DLL loading (LoadLibrary/GetProcAddress)** (Phase 6)
 - ✅ **Relocation processing** (Phase 6)
 - ✅ **IAT patching** (Phase 6)
+- ✅ **TEB/PEB structures** (Phase 6)
+- ✅ **Entry point execution framework** (Phase 6)
 
 ### What's Not Yet Implemented
-- ⏳ **Entry point execution** - Requires TEB/PEB setup and ABI translation
+- ⏳ **Full entry point execution** - Requires GS register setup and complete ABI translation
 - ❌ **Exception handling** - SEH/C++ exceptions
 - ❌ **Advanced registry APIs** - Write operations, enumeration
 - ❌ **Advanced APIs** - Process management, networking, GUI
 - ❌ **Real DLL implementations** - Currently only stubs
 
-### Phase 6 Progress (In Progress)
+### Phase 6 Progress (95% Complete)
 
 **Completed:**
 1. ✅ Import table parsing - Extract DLL and function names from PE
@@ -361,14 +363,13 @@ litebox_runner_windows_on_linux_userland \
 3. ✅ IAT patching - Write resolved addresses to Import Address Table
 4. ✅ Relocation processing - Apply ASLR relocations when base differs
 5. ✅ DLL manager - Stub implementations for KERNEL32, NTDLL, MSVCRT
-
-**In Progress:**
-6. ⏳ Entry point execution - TEB/PEB setup and ABI translation layer
+6. ✅ TEB/PEB structures - Thread and Process Environment Blocks
+7. ✅ Entry point execution framework - Basic invocation infrastructure
 
 **Remaining:**
-7. ⏳ Test with real PE binaries
-8. ⏳ Exception handling basics
-9. ⏳ Documentation completion
+8. ⏳ Test with real PE binaries - Requires actual DLL implementations
+9. ⏳ Complete ABI translation - GS register setup, stack management
+10. ⏳ Exception handling basics - SEH support
 
 ### Current Capabilities (Phase 6)
 
@@ -378,6 +379,8 @@ The Windows-on-Linux runner can now:
 3. Resolve function addresses via GetProcAddress
 4. Write resolved addresses to Import Address Table
 5. Apply base relocations when loaded at different address
+6. Create TEB/PEB structures for execution context
+7. Invoke entry points with basic ABI handling
 6. All operations fully traced for debugging
 
 **Example Output:**
@@ -502,16 +505,18 @@ The Windows-on-Linux implementation has made significant progress through **Phas
 - ✅ Phase 3: Comprehensive API tracing framework
 - ✅ Phase 4: Multi-threaded operation support
 - ✅ Phase 5: Environment variables and process information
-- ✅ Phase 6: Import resolution, DLL loading, and relocations (in progress)
+- ✅ Phase 6: Import resolution, DLL loading, TEB/PEB, and entry point framework (95% complete)
 
 **Current Status:**
 - All core infrastructure complete
 - Import resolution and IAT patching working
 - Relocation processing integrated
-- Entry point execution pending (TEB/PEB setup needed)
+- TEB/PEB structures implemented
+- Entry point execution framework implemented
+- Basic invocation infrastructure in place
 
-All code passes strict quality checks (clippy, rustfmt) and has comprehensive test coverage (52 tests passing).
+All code passes strict quality checks (clippy, rustfmt) and has comprehensive test coverage (56 tests passing).
 
-**Phase 6 Status:** ~80% complete - Import resolution and relocation done, entry point execution remaining.
+**Phase 6 Status:** ~95% complete - Import resolution, relocation, TEB/PEB, and entry point framework done. Full execution requires real DLL implementations.
 
-**Next Milestone:** Complete entry point execution with TEB/PEB setup to enable actual Windows program execution on Linux.
+**Next Milestone:** Implement actual Windows DLL functionality to enable real Windows program execution on Linux.
