@@ -12,10 +12,14 @@ extern crate std;
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
+use std::sync::{Arc, Condvar, Mutex};
+use std::thread::{self, JoinHandle};
 
 use thiserror::Error;
 
-use litebox_shim_windows::syscalls::ntdll::{ConsoleHandle, FileHandle, NtdllApi};
+use litebox_shim_windows::syscalls::ntdll::{
+    ConsoleHandle, EventHandle, FileHandle, NtdllApi, ThreadEntryPoint, ThreadHandle,
+};
 
 /// Platform errors
 #[derive(Debug, Error)]
@@ -31,6 +35,15 @@ pub enum PlatformError {
 
     #[error("Memory error: {0}")]
     MemoryError(String),
+
+    #[error("Thread error: {0}")]
+    ThreadError(String),
+
+    #[error("Synchronization error: {0}")]
+    SyncError(String),
+
+    #[error("Timeout")]
+    Timeout,
 }
 
 pub type Result<T> = core::result::Result<T, PlatformError>;
@@ -39,12 +52,28 @@ pub type Result<T> = core::result::Result<T, PlatformError>;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct WinHandle(u64);
 
+/// Thread information
+struct ThreadInfo {
+    join_handle: Option<JoinHandle<u32>>,
+    exit_code: Arc<Mutex<Option<u32>>>,
+}
+
+/// Event object for synchronization
+struct EventObject {
+    manual_reset: bool,
+    state: Arc<(Mutex<bool>, Condvar)>,
+}
+
 /// Linux platform for Windows API implementation
 pub struct LinuxPlatformForWindows {
     /// Handle to file descriptor mapping
     handles: HashMap<u64, File>,
     /// Next handle ID
     next_handle: u64,
+    /// Thread handle mapping
+    threads: HashMap<u64, ThreadInfo>,
+    /// Event handle mapping
+    events: HashMap<u64, EventObject>,
 }
 
 impl LinuxPlatformForWindows {
@@ -53,6 +82,8 @@ impl LinuxPlatformForWindows {
         Self {
             handles: HashMap::new(),
             next_handle: 0x1000, // Start at a high value to avoid conflicts
+            threads: HashMap::new(),
+            events: HashMap::new(),
         }
     }
 
@@ -197,6 +228,189 @@ impl LinuxPlatformForWindows {
 
         Ok(())
     }
+
+    // Phase 4: Threading implementation
+
+    /// NtCreateThread - Create a new thread (internal implementation)
+    fn nt_create_thread_impl(
+        &mut self,
+        entry_point: ThreadEntryPoint,
+        parameter: *mut core::ffi::c_void,
+        _stack_size: usize,
+    ) -> Result<u64> {
+        let exit_code = Arc::new(Mutex::new(None));
+        let exit_code_clone = Arc::clone(&exit_code);
+
+        // Convert pointer to usize for Send across threads
+        let param_addr = parameter as usize;
+
+        // SAFETY: We're spawning a thread with a valid entry point function.
+        // The caller is responsible for ensuring the parameter pointer is valid
+        // for the lifetime of the thread.
+        let join_handle = thread::spawn(move || {
+            let param_ptr = param_addr as *mut core::ffi::c_void;
+            let result = entry_point(param_ptr);
+            *exit_code_clone.lock().unwrap() = Some(result);
+            result
+        });
+
+        let handle = self.allocate_handle();
+        self.threads.insert(
+            handle,
+            ThreadInfo {
+                join_handle: Some(join_handle),
+                exit_code,
+            },
+        );
+
+        Ok(handle)
+    }
+
+    /// NtTerminateThread - Terminate a thread (internal implementation)
+    fn nt_terminate_thread_impl(&mut self, handle: u64, exit_code: u32) -> Result<()> {
+        let thread_info = self
+            .threads
+            .get_mut(&handle)
+            .ok_or(PlatformError::InvalidHandle(handle))?;
+
+        // Set the exit code
+        *thread_info.exit_code.lock().unwrap() = Some(exit_code);
+
+        // Note: Rust doesn't support forcefully terminating threads safely
+        // The thread will exit when it reaches a natural exit point
+        // For now, we just mark it as terminated
+        Ok(())
+    }
+
+    /// NtWaitForSingleObject - Wait for a thread (internal implementation)
+    fn nt_wait_for_single_object_impl(&mut self, handle: u64, timeout_ms: u32) -> Result<u32> {
+        let thread_info = self
+            .threads
+            .get_mut(&handle)
+            .ok_or(PlatformError::InvalidHandle(handle))?;
+
+        if let Some(join_handle) = thread_info.join_handle.take() {
+            if timeout_ms == u32::MAX {
+                // Infinite wait
+                join_handle
+                    .join()
+                    .map_err(|_| PlatformError::ThreadError("Thread join failed".to_string()))?;
+                Ok(0) // WAIT_OBJECT_0
+            } else {
+                // Timed wait - spawn a timeout checker
+                use std::time::Duration;
+                let start = std::time::Instant::now();
+                let timeout = Duration::from_millis(u64::from(timeout_ms));
+                let exit_code = Arc::clone(&thread_info.exit_code);
+
+                loop {
+                    if let Some(_code) = *exit_code.lock().unwrap() {
+                        // Thread completed
+                        join_handle.join().map_err(|_| {
+                            PlatformError::ThreadError("Thread join failed".to_string())
+                        })?;
+                        return Ok(0); // WAIT_OBJECT_0
+                    }
+
+                    if start.elapsed() >= timeout {
+                        // Store the join handle back for later
+                        thread_info.join_handle = Some(join_handle);
+                        return Ok(0x00000102); // WAIT_TIMEOUT
+                    }
+
+                    thread::sleep(Duration::from_millis(10));
+                }
+            }
+        } else {
+            // Thread already waited on
+            Ok(0) // WAIT_OBJECT_0
+        }
+    }
+
+    /// NtCreateEvent - Create an event object (internal implementation)
+    fn nt_create_event_impl(&mut self, manual_reset: bool, initial_state: bool) -> u64 {
+        let handle = self.allocate_handle();
+        let event = EventObject {
+            manual_reset,
+            state: Arc::new((Mutex::new(initial_state), Condvar::new())),
+        };
+        self.events.insert(handle, event);
+        handle
+    }
+
+    /// NtSetEvent - Signal an event (internal implementation)
+    fn nt_set_event_impl(&mut self, handle: u64) -> Result<()> {
+        let event = self
+            .events
+            .get(&handle)
+            .ok_or(PlatformError::InvalidHandle(handle))?;
+
+        let (lock, cvar) = &*event.state;
+        *lock.lock().unwrap() = true;
+        cvar.notify_all();
+        Ok(())
+    }
+
+    /// NtResetEvent - Reset an event (internal implementation)
+    fn nt_reset_event_impl(&mut self, handle: u64) -> Result<()> {
+        let event = self
+            .events
+            .get(&handle)
+            .ok_or(PlatformError::InvalidHandle(handle))?;
+
+        let (lock, _cvar) = &*event.state;
+        *lock.lock().unwrap() = false;
+        Ok(())
+    }
+
+    /// NtWaitForEvent - Wait for an event (internal implementation)
+    fn nt_wait_for_event_impl(&mut self, handle: u64, timeout_ms: u32) -> Result<u32> {
+        let event = self
+            .events
+            .get(&handle)
+            .ok_or(PlatformError::InvalidHandle(handle))?;
+
+        let (lock, cvar) = &*event.state;
+        let mut signaled = lock.lock().unwrap();
+
+        if timeout_ms == u32::MAX {
+            // Infinite wait
+            while !*signaled {
+                signaled = cvar.wait(signaled).unwrap();
+            }
+            // Auto-reset for non-manual reset events
+            if !event.manual_reset {
+                *signaled = false;
+            }
+            Ok(0) // WAIT_OBJECT_0
+        } else {
+            // Timed wait
+            use std::time::Duration;
+            let timeout = Duration::from_millis(u64::from(timeout_ms));
+            let result = cvar.wait_timeout(signaled, timeout).unwrap();
+            signaled = result.0;
+
+            if *signaled {
+                // Auto-reset for non-manual reset events
+                if !event.manual_reset {
+                    *signaled = false;
+                }
+                Ok(0) // WAIT_OBJECT_0
+            } else {
+                Ok(0x00000102) // WAIT_TIMEOUT
+            }
+        }
+    }
+
+    /// NtCloseHandle - Close thread or event handle (internal implementation)
+    fn nt_close_handle_impl(&mut self, handle: u64) -> Result<()> {
+        // Try to remove from threads or events
+        if self.threads.remove(&handle).is_some() || self.events.remove(&handle).is_some() {
+            Ok(())
+        } else {
+            Err(PlatformError::InvalidHandle(handle))
+        }
+    }
 }
 
 impl Default for LinuxPlatformForWindows {
@@ -292,6 +506,73 @@ impl NtdllApi for LinuxPlatformForWindows {
         size: usize,
     ) -> litebox_shim_windows::Result<()> {
         self.nt_free_virtual_memory_impl(address, size)
+            .map_err(|e| litebox_shim_windows::WindowsShimError::IoError(e.to_string()))
+    }
+
+    // Phase 4: Threading APIs
+
+    fn nt_create_thread(
+        &mut self,
+        entry_point: ThreadEntryPoint,
+        parameter: *mut core::ffi::c_void,
+        stack_size: usize,
+    ) -> litebox_shim_windows::Result<ThreadHandle> {
+        let handle = self
+            .nt_create_thread_impl(entry_point, parameter, stack_size)
+            .map_err(|e| litebox_shim_windows::WindowsShimError::IoError(e.to_string()))?;
+        Ok(ThreadHandle(handle))
+    }
+
+    fn nt_terminate_thread(
+        &mut self,
+        handle: ThreadHandle,
+        exit_code: u32,
+    ) -> litebox_shim_windows::Result<()> {
+        self.nt_terminate_thread_impl(handle.0, exit_code)
+            .map_err(|e| litebox_shim_windows::WindowsShimError::IoError(e.to_string()))
+    }
+
+    fn nt_wait_for_single_object(
+        &mut self,
+        handle: ThreadHandle,
+        timeout_ms: u32,
+    ) -> litebox_shim_windows::Result<u32> {
+        self.nt_wait_for_single_object_impl(handle.0, timeout_ms)
+            .map_err(|e| litebox_shim_windows::WindowsShimError::IoError(e.to_string()))
+    }
+
+    // Phase 4: Synchronization APIs
+
+    fn nt_create_event(
+        &mut self,
+        manual_reset: bool,
+        initial_state: bool,
+    ) -> litebox_shim_windows::Result<EventHandle> {
+        let handle = self.nt_create_event_impl(manual_reset, initial_state);
+        Ok(EventHandle(handle))
+    }
+
+    fn nt_set_event(&mut self, handle: EventHandle) -> litebox_shim_windows::Result<()> {
+        self.nt_set_event_impl(handle.0)
+            .map_err(|e| litebox_shim_windows::WindowsShimError::IoError(e.to_string()))
+    }
+
+    fn nt_reset_event(&mut self, handle: EventHandle) -> litebox_shim_windows::Result<()> {
+        self.nt_reset_event_impl(handle.0)
+            .map_err(|e| litebox_shim_windows::WindowsShimError::IoError(e.to_string()))
+    }
+
+    fn nt_wait_for_event(
+        &mut self,
+        handle: EventHandle,
+        timeout_ms: u32,
+    ) -> litebox_shim_windows::Result<u32> {
+        self.nt_wait_for_event_impl(handle.0, timeout_ms)
+            .map_err(|e| litebox_shim_windows::WindowsShimError::IoError(e.to_string()))
+    }
+
+    fn nt_close_handle(&mut self, handle: u64) -> litebox_shim_windows::Result<()> {
+        self.nt_close_handle_impl(handle)
             .map_err(|e| litebox_shim_windows::WindowsShimError::IoError(e.to_string()))
     }
 }

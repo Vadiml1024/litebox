@@ -7,7 +7,9 @@
 //! for tracing purposes.
 
 use crate::Result;
-use crate::syscalls::ntdll::{ConsoleHandle, FileHandle, NtdllApi};
+use crate::syscalls::ntdll::{
+    ConsoleHandle, EventHandle, FileHandle, NtdllApi, ThreadEntryPoint, ThreadHandle,
+};
 use crate::tracing::{ApiCategory, TraceEvent, Tracer};
 use std::sync::Arc;
 
@@ -44,8 +46,7 @@ impl<T: NtdllApi> NtdllApi for TracedNtdllApi<T> {
         // Trace call
         if self.tracer.is_enabled() {
             let args = format!(
-                "path=\"{}\", access=0x{:08X}, disposition={}",
-                path, access, create_disposition
+                "path=\"{path}\", access=0x{access:08X}, disposition={create_disposition}"
             );
             let event = TraceEvent::call("NtCreateFile", ApiCategory::FileIo).with_args(args);
             self.tracer.trace(event);
@@ -58,7 +59,7 @@ impl<T: NtdllApi> NtdllApi for TracedNtdllApi<T> {
         if self.tracer.is_enabled() {
             let ret_str = match &result {
                 Ok(handle) => format!("Ok(handle=0x{:X})", handle.0),
-                Err(e) => format!("Err({})", e),
+                Err(e) => format!("Err({e})"),
             };
             let event = TraceEvent::return_event("NtCreateFile", ApiCategory::FileIo)
                 .with_return_value(ret_str);
@@ -82,8 +83,8 @@ impl<T: NtdllApi> NtdllApi for TracedNtdllApi<T> {
         // Trace return
         if self.tracer.is_enabled() {
             let ret_str = match &result {
-                Ok(bytes_read) => format!("Ok(bytes_read={})", bytes_read),
-                Err(e) => format!("Err({})", e),
+                Ok(bytes_read) => format!("Ok(bytes_read={bytes_read})"),
+                Err(e) => format!("Err({e})"),
             };
             let event = TraceEvent::return_event("NtReadFile", ApiCategory::FileIo)
                 .with_return_value(ret_str);
@@ -107,8 +108,8 @@ impl<T: NtdllApi> NtdllApi for TracedNtdllApi<T> {
         // Trace return
         if self.tracer.is_enabled() {
             let ret_str = match &result {
-                Ok(bytes_written) => format!("Ok(bytes_written={})", bytes_written),
-                Err(e) => format!("Err({})", e),
+                Ok(bytes_written) => format!("Ok(bytes_written={bytes_written})"),
+                Err(e) => format!("Err({e})"),
             };
             let event = TraceEvent::return_event("NtWriteFile", ApiCategory::FileIo)
                 .with_return_value(ret_str);
@@ -133,7 +134,7 @@ impl<T: NtdllApi> NtdllApi for TracedNtdllApi<T> {
         if self.tracer.is_enabled() {
             let ret_str = match &result {
                 Ok(()) => "Ok(())".to_string(),
-                Err(e) => format!("Err({})", e),
+                Err(e) => format!("Err({e})"),
             };
             let event =
                 TraceEvent::return_event("NtClose", ApiCategory::FileIo).with_return_value(ret_str);
@@ -163,8 +164,8 @@ impl<T: NtdllApi> NtdllApi for TracedNtdllApi<T> {
         // Trace return
         if self.tracer.is_enabled() {
             let ret_str = match &result {
-                Ok(bytes_written) => format!("Ok(bytes_written={})", bytes_written),
-                Err(e) => format!("Err({})", e),
+                Ok(bytes_written) => format!("Ok(bytes_written={bytes_written})"),
+                Err(e) => format!("Err({e})"),
             };
             let event = TraceEvent::return_event("WriteConsole", ApiCategory::ConsoleIo)
                 .with_return_value(ret_str);
@@ -177,7 +178,7 @@ impl<T: NtdllApi> NtdllApi for TracedNtdllApi<T> {
     fn nt_allocate_virtual_memory(&mut self, size: usize, protect: u32) -> Result<u64> {
         // Trace call
         if self.tracer.is_enabled() {
-            let args = format!("size={}, protect=0x{:08X}", size, protect);
+            let args = format!("size={size}, protect=0x{protect:08X}");
             let event =
                 TraceEvent::call("NtAllocateVirtualMemory", ApiCategory::Memory).with_args(args);
             self.tracer.trace(event);
@@ -189,8 +190,8 @@ impl<T: NtdllApi> NtdllApi for TracedNtdllApi<T> {
         // Trace return
         if self.tracer.is_enabled() {
             let ret_str = match &result {
-                Ok(addr) => format!("Ok(address=0x{:X})", addr),
-                Err(e) => format!("Err({})", e),
+                Ok(addr) => format!("Ok(address=0x{addr:X})"),
+                Err(e) => format!("Err({e})"),
             };
             let event = TraceEvent::return_event("NtAllocateVirtualMemory", ApiCategory::Memory)
                 .with_return_value(ret_str);
@@ -203,7 +204,7 @@ impl<T: NtdllApi> NtdllApi for TracedNtdllApi<T> {
     fn nt_free_virtual_memory(&mut self, address: u64, size: usize) -> Result<()> {
         // Trace call
         if self.tracer.is_enabled() {
-            let args = format!("address=0x{:X}, size={}", address, size);
+            let args = format!("address=0x{address:X}, size={size}");
             let event =
                 TraceEvent::call("NtFreeVirtualMemory", ApiCategory::Memory).with_args(args);
             self.tracer.trace(event);
@@ -216,9 +217,242 @@ impl<T: NtdllApi> NtdllApi for TracedNtdllApi<T> {
         if self.tracer.is_enabled() {
             let ret_str = match &result {
                 Ok(()) => "Ok(())".to_string(),
-                Err(e) => format!("Err({})", e),
+                Err(e) => format!("Err({e})"),
             };
             let event = TraceEvent::return_event("NtFreeVirtualMemory", ApiCategory::Memory)
+                .with_return_value(ret_str);
+            self.tracer.trace(event);
+        }
+
+        result
+    }
+
+    // Phase 4: Threading APIs
+
+    fn nt_create_thread(
+        &mut self,
+        entry_point: ThreadEntryPoint,
+        parameter: *mut core::ffi::c_void,
+        stack_size: usize,
+    ) -> Result<ThreadHandle> {
+        // Trace call
+        if self.tracer.is_enabled() {
+            let args = format!(
+                "entry_point=0x{:X}, parameter=0x{:X}, stack_size={}",
+                entry_point as usize, parameter as usize, stack_size
+            );
+            let event = TraceEvent::call("NtCreateThread", ApiCategory::Threading).with_args(args);
+            self.tracer.trace(event);
+        }
+
+        // Call the inner implementation
+        let result = self
+            .inner
+            .nt_create_thread(entry_point, parameter, stack_size);
+
+        // Trace return
+        if self.tracer.is_enabled() {
+            let ret_str = match &result {
+                Ok(handle) => format!("Ok(handle=0x{:X})", handle.0),
+                Err(e) => format!("Err({e})"),
+            };
+            let event = TraceEvent::return_event("NtCreateThread", ApiCategory::Threading)
+                .with_return_value(ret_str);
+            self.tracer.trace(event);
+        }
+
+        result
+    }
+
+    fn nt_terminate_thread(&mut self, handle: ThreadHandle, exit_code: u32) -> Result<()> {
+        // Trace call
+        if self.tracer.is_enabled() {
+            let args = format!("handle=0x{:X}, exit_code={}", handle.0, exit_code);
+            let event =
+                TraceEvent::call("NtTerminateThread", ApiCategory::Threading).with_args(args);
+            self.tracer.trace(event);
+        }
+
+        // Call the inner implementation
+        let result = self.inner.nt_terminate_thread(handle, exit_code);
+
+        // Trace return
+        if self.tracer.is_enabled() {
+            let ret_str = match &result {
+                Ok(()) => "Ok(())".to_string(),
+                Err(e) => format!("Err({e})"),
+            };
+            let event = TraceEvent::return_event("NtTerminateThread", ApiCategory::Threading)
+                .with_return_value(ret_str);
+            self.tracer.trace(event);
+        }
+
+        result
+    }
+
+    fn nt_wait_for_single_object(&mut self, handle: ThreadHandle, timeout_ms: u32) -> Result<u32> {
+        // Trace call
+        if self.tracer.is_enabled() {
+            let timeout_str = if timeout_ms == u32::MAX {
+                "INFINITE".to_string()
+            } else {
+                format!("{timeout_ms}ms")
+            };
+            let args = format!("handle=0x{:X}, timeout={}", handle.0, timeout_str);
+            let event =
+                TraceEvent::call("NtWaitForSingleObject", ApiCategory::Threading).with_args(args);
+            self.tracer.trace(event);
+        }
+
+        // Call the inner implementation
+        let result = self.inner.nt_wait_for_single_object(handle, timeout_ms);
+
+        // Trace return
+        if self.tracer.is_enabled() {
+            let ret_str = match &result {
+                Ok(wait_result) => format!("Ok(wait_result=0x{wait_result:08X})"),
+                Err(e) => format!("Err({e})"),
+            };
+            let event = TraceEvent::return_event("NtWaitForSingleObject", ApiCategory::Threading)
+                .with_return_value(ret_str);
+            self.tracer.trace(event);
+        }
+
+        result
+    }
+
+    // Phase 4: Synchronization APIs
+
+    fn nt_create_event(&mut self, manual_reset: bool, initial_state: bool) -> Result<EventHandle> {
+        // Trace call
+        if self.tracer.is_enabled() {
+            let args = format!(
+                "manual_reset={manual_reset}, initial_state={initial_state}"
+            );
+            let event =
+                TraceEvent::call("NtCreateEvent", ApiCategory::Synchronization).with_args(args);
+            self.tracer.trace(event);
+        }
+
+        // Call the inner implementation
+        let result = self.inner.nt_create_event(manual_reset, initial_state);
+
+        // Trace return
+        if self.tracer.is_enabled() {
+            let ret_str = match &result {
+                Ok(handle) => format!("Ok(handle=0x{:X})", handle.0),
+                Err(e) => format!("Err({e})"),
+            };
+            let event = TraceEvent::return_event("NtCreateEvent", ApiCategory::Synchronization)
+                .with_return_value(ret_str);
+            self.tracer.trace(event);
+        }
+
+        result
+    }
+
+    fn nt_set_event(&mut self, handle: EventHandle) -> Result<()> {
+        // Trace call
+        if self.tracer.is_enabled() {
+            let args = format!("handle=0x{:X}", handle.0);
+            let event =
+                TraceEvent::call("NtSetEvent", ApiCategory::Synchronization).with_args(args);
+            self.tracer.trace(event);
+        }
+
+        // Call the inner implementation
+        let result = self.inner.nt_set_event(handle);
+
+        // Trace return
+        if self.tracer.is_enabled() {
+            let ret_str = match &result {
+                Ok(()) => "Ok(())".to_string(),
+                Err(e) => format!("Err({e})"),
+            };
+            let event = TraceEvent::return_event("NtSetEvent", ApiCategory::Synchronization)
+                .with_return_value(ret_str);
+            self.tracer.trace(event);
+        }
+
+        result
+    }
+
+    fn nt_reset_event(&mut self, handle: EventHandle) -> Result<()> {
+        // Trace call
+        if self.tracer.is_enabled() {
+            let args = format!("handle=0x{:X}", handle.0);
+            let event =
+                TraceEvent::call("NtResetEvent", ApiCategory::Synchronization).with_args(args);
+            self.tracer.trace(event);
+        }
+
+        // Call the inner implementation
+        let result = self.inner.nt_reset_event(handle);
+
+        // Trace return
+        if self.tracer.is_enabled() {
+            let ret_str = match &result {
+                Ok(()) => "Ok(())".to_string(),
+                Err(e) => format!("Err({e})"),
+            };
+            let event = TraceEvent::return_event("NtResetEvent", ApiCategory::Synchronization)
+                .with_return_value(ret_str);
+            self.tracer.trace(event);
+        }
+
+        result
+    }
+
+    fn nt_wait_for_event(&mut self, handle: EventHandle, timeout_ms: u32) -> Result<u32> {
+        // Trace call
+        if self.tracer.is_enabled() {
+            let timeout_str = if timeout_ms == u32::MAX {
+                "INFINITE".to_string()
+            } else {
+                format!("{timeout_ms}ms")
+            };
+            let args = format!("handle=0x{:X}, timeout={}", handle.0, timeout_str);
+            let event =
+                TraceEvent::call("NtWaitForEvent", ApiCategory::Synchronization).with_args(args);
+            self.tracer.trace(event);
+        }
+
+        // Call the inner implementation
+        let result = self.inner.nt_wait_for_event(handle, timeout_ms);
+
+        // Trace return
+        if self.tracer.is_enabled() {
+            let ret_str = match &result {
+                Ok(wait_result) => format!("Ok(wait_result=0x{wait_result:08X})"),
+                Err(e) => format!("Err({e})"),
+            };
+            let event = TraceEvent::return_event("NtWaitForEvent", ApiCategory::Synchronization)
+                .with_return_value(ret_str);
+            self.tracer.trace(event);
+        }
+
+        result
+    }
+
+    fn nt_close_handle(&mut self, handle: u64) -> Result<()> {
+        // Trace call
+        if self.tracer.is_enabled() {
+            let args = format!("handle=0x{handle:X}");
+            let event =
+                TraceEvent::call("NtCloseHandle", ApiCategory::Synchronization).with_args(args);
+            self.tracer.trace(event);
+        }
+
+        // Call the inner implementation
+        let result = self.inner.nt_close_handle(handle);
+
+        // Trace return
+        if self.tracer.is_enabled() {
+            let ret_str = match &result {
+                Ok(()) => "Ok(())".to_string(),
+                Err(e) => format!("Err({e})"),
+            };
+            let event = TraceEvent::return_event("NtCloseHandle", ApiCategory::Synchronization)
                 .with_return_value(ret_str);
             self.tracer.trace(event);
         }
@@ -271,6 +505,51 @@ mod tests {
         }
 
         fn nt_free_virtual_memory(&mut self, _address: u64, _size: usize) -> Result<()> {
+            Ok(())
+        }
+
+        fn nt_create_thread(
+            &mut self,
+            _entry_point: ThreadEntryPoint,
+            _parameter: *mut core::ffi::c_void,
+            _stack_size: usize,
+        ) -> Result<ThreadHandle> {
+            Ok(ThreadHandle(100))
+        }
+
+        fn nt_terminate_thread(&mut self, _handle: ThreadHandle, _exit_code: u32) -> Result<()> {
+            Ok(())
+        }
+
+        fn nt_wait_for_single_object(
+            &mut self,
+            _handle: ThreadHandle,
+            _timeout_ms: u32,
+        ) -> Result<u32> {
+            Ok(0) // WAIT_OBJECT_0
+        }
+
+        fn nt_create_event(
+            &mut self,
+            _manual_reset: bool,
+            _initial_state: bool,
+        ) -> Result<EventHandle> {
+            Ok(EventHandle(200))
+        }
+
+        fn nt_set_event(&mut self, _handle: EventHandle) -> Result<()> {
+            Ok(())
+        }
+
+        fn nt_reset_event(&mut self, _handle: EventHandle) -> Result<()> {
+            Ok(())
+        }
+
+        fn nt_wait_for_event(&mut self, _handle: EventHandle, _timeout_ms: u32) -> Result<u32> {
+            Ok(0) // WAIT_OBJECT_0
+        }
+
+        fn nt_close_handle(&mut self, _handle: u64) -> Result<()> {
             Ok(())
         }
     }
