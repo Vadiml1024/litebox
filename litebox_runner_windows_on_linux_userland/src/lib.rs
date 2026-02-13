@@ -58,9 +58,9 @@ pub fn run(cli_args: CliArgs) -> Result<()> {
     // Calculate total image size (find max virtual address + size)
     let image_size = sections
         .iter()
-        .map(|s| s.virtual_address as usize + s.virtual_size as usize)
+        .filter_map(|s| (s.virtual_address as usize).checked_add(s.virtual_size as usize))
         .max()
-        .unwrap_or(0);
+        .ok_or_else(|| anyhow!("Failed to calculate image size: overflow or no sections"))?;
 
     println!("\nAllocating memory for PE image:");
     println!(
