@@ -18,6 +18,7 @@ use std::thread::{self, JoinHandle};
 
 use thiserror::Error;
 
+use litebox_shim_windows::loader::DllManager;
 use litebox_shim_windows::syscalls::ntdll::{
     ConsoleHandle, EventHandle, FileHandle, NtdllApi, RegKeyHandle, ThreadEntryPoint, ThreadHandle,
 };
@@ -90,6 +91,8 @@ struct PlatformState {
     registry_keys: HashMap<u64, RegistryKey>,
     /// Environment variables
     environment: HashMap<String, String>,
+    /// DLL manager for LoadLibrary/GetProcAddress
+    dll_manager: DllManager,
 }
 
 /// Linux platform for Windows API implementation
@@ -116,6 +119,7 @@ impl LinuxPlatformForWindows {
                 events: HashMap::new(),
                 registry_keys: HashMap::new(),
                 environment,
+                dll_manager: DllManager::new(),
             }),
             next_handle: AtomicU64::new(0x1000), // Start at a high value to avoid conflicts
         }
@@ -506,7 +510,11 @@ impl LinuxPlatformForWindows {
     }
 
     /// Get current thread ID (internal implementation)
-    #[allow(clippy::unused_self, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    #[allow(
+        clippy::unused_self,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
     fn get_current_thread_id_impl(&self) -> u32 {
         // SAFETY: gettid() is safe to call on Linux
         #[cfg(target_os = "linux")]
@@ -786,6 +794,38 @@ impl NtdllApi for LinuxPlatformForWindows {
         self.reg_close_key_impl(handle.0)
             .map_err(|e| litebox_shim_windows::WindowsShimError::IoError(e.to_string()))
     }
+
+    // Phase 6: DLL Loading
+
+    fn load_library(&mut self, name: &str) -> litebox_shim_windows::Result<u64> {
+        let mut state = self.state.lock().unwrap();
+        state
+            .dll_manager
+            .load_library(name)
+            .map(|handle| handle.as_raw())
+            .map_err(|e| litebox_shim_windows::WindowsShimError::IoError(e.to_string()))
+    }
+
+    fn get_proc_address(&self, dll_handle: u64, name: &str) -> litebox_shim_windows::Result<u64> {
+        use litebox_shim_windows::loader::DllHandle;
+
+        let state = self.state.lock().unwrap();
+        state
+            .dll_manager
+            .get_proc_address(DllHandle::new(dll_handle), name)
+            .map(|addr| addr as u64)
+            .map_err(|e| litebox_shim_windows::WindowsShimError::IoError(e.to_string()))
+    }
+
+    fn free_library(&mut self, dll_handle: u64) -> litebox_shim_windows::Result<()> {
+        use litebox_shim_windows::loader::DllHandle;
+
+        let mut state = self.state.lock().unwrap();
+        state
+            .dll_manager
+            .free_library(DllHandle::new(dll_handle))
+            .map_err(|e| litebox_shim_windows::WindowsShimError::IoError(e.to_string()))
+    }
 }
 
 #[cfg(test)]
@@ -1038,6 +1078,61 @@ mod tests {
 
         // Try to close an invalid registry handle
         let result = platform.reg_close_key(RegKeyHandle(0xDEADBEEF));
+        assert!(result.is_err());
+    }
+
+    // Phase 6: DLL Loading Tests
+
+    #[test]
+    fn test_load_library_kernel32() {
+        let mut platform = LinuxPlatformForWindows::new();
+
+        // Load KERNEL32.dll
+        let handle = platform.load_library("KERNEL32.dll").unwrap();
+        assert!(handle > 0);
+    }
+
+    #[test]
+    fn test_load_library_case_insensitive() {
+        let mut platform = LinuxPlatformForWindows::new();
+
+        // Load with different cases
+        let handle1 = platform.load_library("kernel32.dll").unwrap();
+        let handle2 = platform.load_library("KERNEL32.DLL").unwrap();
+        assert_eq!(handle1, handle2);
+    }
+
+    #[test]
+    fn test_get_proc_address() {
+        let mut platform = LinuxPlatformForWindows::new();
+
+        // Load KERNEL32.dll and get LoadLibraryA
+        let handle = platform.load_library("KERNEL32.dll").unwrap();
+        let func = platform.get_proc_address(handle, "LoadLibraryA");
+        assert!(func.is_ok());
+    }
+
+    #[test]
+    fn test_get_proc_address_not_found() {
+        let mut platform = LinuxPlatformForWindows::new();
+
+        // Load KERNEL32.dll and try to get a non-existent function
+        let handle = platform.load_library("KERNEL32.dll").unwrap();
+        let result = platform.get_proc_address(handle, "NonExistentFunction");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_free_library() {
+        let mut platform = LinuxPlatformForWindows::new();
+
+        // Load and free MSVCRT.dll
+        let handle = platform.load_library("MSVCRT.dll").unwrap();
+        let result = platform.free_library(handle);
+        assert!(result.is_ok());
+
+        // Should not be able to get proc address after freeing
+        let result = platform.get_proc_address(handle, "printf");
         assert!(result.is_err());
     }
 }

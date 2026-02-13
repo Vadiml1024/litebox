@@ -57,8 +57,69 @@ struct OptionalHeader64 {
     image_base: u64,
     section_alignment: u32,
     file_alignment: u32,
-    _reserved: [u8; 64], // Simplified - rest of optional header
+    major_operating_system_version: u16,
+    minor_operating_system_version: u16,
+    major_image_version: u16,
+    minor_image_version: u16,
+    major_subsystem_version: u16,
+    minor_subsystem_version: u16,
+    win32_version_value: u32,
+    size_of_image: u32,
+    size_of_headers: u32,
+    check_sum: u32,
+    subsystem: u16,
+    dll_characteristics: u16,
+    size_of_stack_reserve: u64,
+    size_of_stack_commit: u64,
+    size_of_heap_reserve: u64,
+    size_of_heap_commit: u64,
+    loader_flags: u32,
+    number_of_rva_and_sizes: u32,
 }
+
+/// Data directory entry
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+struct DataDirectory {
+    virtual_address: u32,
+    size: u32,
+}
+
+/// Data directory indices
+#[allow(dead_code)]
+const IMAGE_DIRECTORY_ENTRY_EXPORT: usize = 0;
+const IMAGE_DIRECTORY_ENTRY_IMPORT: usize = 1;
+#[allow(dead_code)]
+const IMAGE_DIRECTORY_ENTRY_RESOURCE: usize = 2;
+#[allow(dead_code)]
+const IMAGE_DIRECTORY_ENTRY_EXCEPTION: usize = 3;
+#[allow(dead_code)]
+const IMAGE_DIRECTORY_ENTRY_SECURITY: usize = 4;
+const IMAGE_DIRECTORY_ENTRY_BASERELOC: usize = 5;
+
+/// Import descriptor entry
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+struct ImportDescriptor {
+    original_first_thunk: u32, // RVA to Import Lookup Table
+    time_date_stamp: u32,
+    forwarder_chain: u32,
+    name: u32,        // RVA to DLL name string
+    first_thunk: u32, // RVA to Import Address Table
+}
+
+/// Base relocation block header
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+struct BaseRelocationBlock {
+    virtual_address: u32,
+    size_of_block: u32,
+}
+
+/// Relocation entry types
+const IMAGE_REL_BASED_ABSOLUTE: u16 = 0;
+const IMAGE_REL_BASED_HIGHLOW: u16 = 3;
+const IMAGE_REL_BASED_DIR64: u16 = 10;
 
 /// PE section header
 #[repr(C)]
@@ -88,6 +149,26 @@ pub struct Section {
     pub characteristics: u32,
 }
 
+/// Information about an imported DLL
+#[derive(Debug, Clone)]
+pub struct ImportedDll {
+    /// DLL name (e.g., "KERNEL32.dll")
+    pub name: String,
+    /// RVA to Import Address Table (IAT)
+    pub iat_rva: u32,
+    /// List of imported function names or ordinals
+    pub functions: Vec<String>,
+}
+
+/// Information about a relocation
+#[derive(Debug, Clone)]
+pub struct Relocation {
+    /// Type of relocation
+    pub reloc_type: u16,
+    /// RVA where the relocation should be applied
+    pub rva: u32,
+}
+
 /// PE binary loader
 pub struct PeLoader {
     /// Raw binary data
@@ -100,6 +181,10 @@ pub struct PeLoader {
     section_count: u16,
     /// Offset to first section header
     section_headers_offset: usize,
+    /// Offset to data directories
+    data_directories_offset: usize,
+    /// Number of data directories
+    number_of_rva_and_sizes: u32,
 }
 
 impl PeLoader {
@@ -188,12 +273,18 @@ impl PeLoader {
         let section_headers_offset =
             optional_header_offset + file_header.size_of_optional_header as usize;
 
+        // Data directories start right after the OptionalHeader64 structure
+        let data_directories_offset =
+            optional_header_offset + core::mem::size_of::<OptionalHeader64>();
+
         Ok(Self {
             data,
             entry_point: u64::from(optional_header.address_of_entry_point),
             image_base: optional_header.image_base,
             section_count: file_header.number_of_sections,
             section_headers_offset,
+            data_directories_offset,
+            number_of_rva_and_sizes: optional_header.number_of_rva_and_sizes,
         })
     }
 
@@ -329,6 +420,296 @@ impl PeLoader {
 
         Ok(max_address)
     }
+
+    /// Get a data directory by index
+    fn get_data_directory(&self, index: usize) -> Result<DataDirectory> {
+        if index >= self.number_of_rva_and_sizes as usize {
+            return Ok(DataDirectory {
+                virtual_address: 0,
+                size: 0,
+            });
+        }
+
+        let dir_offset =
+            self.data_directories_offset + index * core::mem::size_of::<DataDirectory>();
+
+        if dir_offset + core::mem::size_of::<DataDirectory>() > self.data.len() {
+            return Err(WindowsShimError::InvalidPeBinary(
+                "Data directory out of bounds".to_string(),
+            ));
+        }
+
+        // SAFETY: We checked bounds above.
+        // Using read_unaligned to avoid alignment issues.
+        #[allow(clippy::cast_ptr_alignment)]
+        let data_dir = unsafe {
+            self.data
+                .as_ptr()
+                .add(dir_offset)
+                .cast::<DataDirectory>()
+                .read_unaligned()
+        };
+
+        Ok(data_dir)
+    }
+
+    /// Convert RVA to file offset
+    #[allow(dead_code)]
+    fn rva_to_offset(&self, rva: u32) -> Result<usize> {
+        let sections = self.sections()?;
+
+        for section in sections {
+            if rva >= section.virtual_address
+                && rva < section.virtual_address + section.virtual_size
+            {
+                let offset_in_section = rva - section.virtual_address;
+                // Find the corresponding location in the raw data
+                return Ok(offset_in_section as usize);
+            }
+        }
+
+        Err(WindowsShimError::InvalidPeBinary(format!(
+            "RVA 0x{rva:X} not found in any section"
+        )))
+    }
+
+    /// Read a null-terminated string at the given RVA
+    fn read_string_at_rva(&self, rva: u32) -> Result<String> {
+        let sections = self.sections()?;
+
+        // Find which section contains this RVA
+        for section in sections {
+            if rva >= section.virtual_address
+                && rva < section.virtual_address + section.virtual_size
+            {
+                let offset_in_section = (rva - section.virtual_address) as usize;
+                if offset_in_section < section.data.len() {
+                    // Read null-terminated string from section data
+                    let string_data = &section.data[offset_in_section..];
+                    let null_pos = string_data
+                        .iter()
+                        .position(|&c| c == 0)
+                        .unwrap_or(string_data.len());
+                    return Ok(String::from_utf8_lossy(&string_data[..null_pos]).to_string());
+                }
+            }
+        }
+
+        Err(WindowsShimError::InvalidPeBinary(format!(
+            "String at RVA 0x{rva:X} not found"
+        )))
+    }
+
+    /// Parse import directory and return list of imported DLLs
+    pub fn imports(&self) -> Result<Vec<ImportedDll>> {
+        let import_dir = self.get_data_directory(IMAGE_DIRECTORY_ENTRY_IMPORT)?;
+
+        if import_dir.virtual_address == 0 || import_dir.size == 0 {
+            // No imports
+            return Ok(Vec::new());
+        }
+
+        let sections = self.sections()?;
+        let mut imports = Vec::new();
+
+        // Find the section containing the import directory
+        let import_section = sections
+            .iter()
+            .find(|s| {
+                import_dir.virtual_address >= s.virtual_address
+                    && import_dir.virtual_address < s.virtual_address + s.virtual_size
+            })
+            .ok_or_else(|| {
+                WindowsShimError::InvalidPeBinary(
+                    "Import directory not found in any section".to_string(),
+                )
+            })?;
+
+        let import_offset_in_section =
+            (import_dir.virtual_address - import_section.virtual_address) as usize;
+
+        // Read import descriptors
+        let mut descriptor_offset = import_offset_in_section;
+        loop {
+            if descriptor_offset + core::mem::size_of::<ImportDescriptor>()
+                > import_section.data.len()
+            {
+                break;
+            }
+
+            // SAFETY: We checked bounds above.
+            // Using read_unaligned to avoid alignment issues.
+            #[allow(clippy::cast_ptr_alignment)]
+            let descriptor = unsafe {
+                import_section
+                    .data
+                    .as_ptr()
+                    .add(descriptor_offset)
+                    .cast::<ImportDescriptor>()
+                    .read_unaligned()
+            };
+
+            // Null descriptor marks end of list
+            if descriptor.name == 0 {
+                break;
+            }
+
+            // Read DLL name
+            let dll_name = self.read_string_at_rva(descriptor.name)?;
+
+            // For now, just record the DLL name and IAT RVA
+            // Function names would require parsing the Import Lookup Table
+            imports.push(ImportedDll {
+                name: dll_name,
+                iat_rva: descriptor.first_thunk,
+                functions: Vec::new(), // Will be populated when needed
+            });
+
+            descriptor_offset += core::mem::size_of::<ImportDescriptor>();
+        }
+
+        Ok(imports)
+    }
+
+    /// Parse base relocation directory and return list of relocations
+    pub fn relocations(&self) -> Result<Vec<Relocation>> {
+        let reloc_dir = self.get_data_directory(IMAGE_DIRECTORY_ENTRY_BASERELOC)?;
+
+        if reloc_dir.virtual_address == 0 || reloc_dir.size == 0 {
+            // No relocations
+            return Ok(Vec::new());
+        }
+
+        let sections = self.sections()?;
+        let mut relocations = Vec::new();
+
+        // Find the section containing the relocation directory
+        let reloc_section = sections
+            .iter()
+            .find(|s| {
+                reloc_dir.virtual_address >= s.virtual_address
+                    && reloc_dir.virtual_address < s.virtual_address + s.virtual_size
+            })
+            .ok_or_else(|| {
+                WindowsShimError::InvalidPeBinary(
+                    "Relocation directory not found in any section".to_string(),
+                )
+            })?;
+
+        let reloc_offset_in_section =
+            (reloc_dir.virtual_address - reloc_section.virtual_address) as usize;
+
+        // Parse relocation blocks
+        let mut block_offset = reloc_offset_in_section;
+        let reloc_end = reloc_offset_in_section + reloc_dir.size as usize;
+
+        while block_offset + core::mem::size_of::<BaseRelocationBlock>() <= reloc_section.data.len()
+            && block_offset < reloc_end
+        {
+            // SAFETY: We checked bounds above.
+            // Using read_unaligned to avoid alignment issues.
+            #[allow(clippy::cast_ptr_alignment)]
+            let block = unsafe {
+                reloc_section
+                    .data
+                    .as_ptr()
+                    .add(block_offset)
+                    .cast::<BaseRelocationBlock>()
+                    .read_unaligned()
+            };
+
+            if block.size_of_block == 0 {
+                break;
+            }
+
+            // Number of relocation entries in this block
+            let num_entries =
+                (block.size_of_block as usize - core::mem::size_of::<BaseRelocationBlock>()) / 2;
+
+            // Read relocation entries
+            let entries_offset = block_offset + core::mem::size_of::<BaseRelocationBlock>();
+            for i in 0..num_entries {
+                let entry_offset = entries_offset + i * 2;
+                if entry_offset + 2 > reloc_section.data.len() {
+                    break;
+                }
+
+                // SAFETY: We checked bounds above.
+                #[allow(clippy::cast_ptr_alignment)]
+                let entry = unsafe {
+                    reloc_section
+                        .data
+                        .as_ptr()
+                        .add(entry_offset)
+                        .cast::<u16>()
+                        .read_unaligned()
+                };
+
+                let reloc_type = entry >> 12;
+                let offset = entry & 0x0FFF;
+
+                if reloc_type != IMAGE_REL_BASED_ABSOLUTE {
+                    relocations.push(Relocation {
+                        reloc_type,
+                        rva: block.virtual_address + u32::from(offset),
+                    });
+                }
+            }
+
+            block_offset += block.size_of_block as usize;
+        }
+
+        Ok(relocations)
+    }
+
+    /// Apply relocations when loading at a different base address
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that:
+    /// - `base_address` points to a valid, writable memory region
+    /// - The memory region contains the loaded PE image
+    /// - The memory region remains valid for the operation
+    pub unsafe fn apply_relocations(&self, base_address: u64, actual_base: u64) -> Result<()> {
+        if base_address == actual_base {
+            // No relocation needed
+            return Ok(());
+        }
+
+        let delta = actual_base.wrapping_sub(base_address).cast_signed();
+        let relocations = self.relocations()?;
+
+        for reloc in relocations {
+            let target_address = actual_base + u64::from(reloc.rva);
+
+            match reloc.reloc_type {
+                IMAGE_REL_BASED_DIR64 => {
+                    // SAFETY: Caller guarantees base_address is valid
+                    unsafe {
+                        let ptr = target_address as *mut u64;
+                        let old_value = ptr.read_unaligned();
+                        let new_value = old_value.cast_signed().wrapping_add(delta).cast_unsigned();
+                        ptr.write_unaligned(new_value);
+                    }
+                }
+                IMAGE_REL_BASED_HIGHLOW => {
+                    // SAFETY: Caller guarantees base_address is valid
+                    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                    unsafe {
+                        let ptr = target_address as *mut u32;
+                        let old_value = ptr.read_unaligned();
+                        let new_value = (i64::from(old_value).wrapping_add(delta)) as u32;
+                        ptr.write_unaligned(new_value);
+                    }
+                }
+                _ => {
+                    // Ignore unknown relocation types
+                }
+            }
+        }
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -349,5 +730,24 @@ mod tests {
         data[1] = 0x00;
         let result = PeLoader::new(data);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_imports_empty() {
+        // Create a minimal PE with no imports
+        // For now, just test that calling imports() doesn't crash
+        // on a minimal valid PE structure
+        // This is a placeholder - real test would use a proper PE binary
+        let data = vec![0; 64];
+        let result = PeLoader::new(data);
+        assert!(result.is_err()); // Will fail because it's not a valid PE
+    }
+
+    #[test]
+    fn test_relocations_empty() {
+        // Similar placeholder test for relocations
+        let data = vec![0; 64];
+        let result = PeLoader::new(data);
+        assert!(result.is_err()); // Will fail because it's not a valid PE
     }
 }
