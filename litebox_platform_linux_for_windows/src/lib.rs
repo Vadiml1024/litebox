@@ -95,7 +95,8 @@ impl LinuxPlatformForWindows {
             4 => {
                 options.create(true);
             } // OPEN_ALWAYS
-            3 | _ => { /* OPEN_EXISTING - default */ }
+            3 => { /* OPEN_EXISTING - default */ }
+            _ => { /* Unknown - treat as OPEN_EXISTING */ }
         }
 
         let file = options.open(&linux_path)?;
@@ -141,7 +142,6 @@ impl LinuxPlatformForWindows {
     pub fn write_console(&mut self, handle: u64, text: &str) -> Result<usize> {
         if handle == 0xFFFF_FFFF_0001 {
             print!("{text}");
-            use std::io::Write;
             std::io::stdout().flush()?;
             Ok(text.len())
         } else {
@@ -221,7 +221,7 @@ fn translate_windows_path_to_linux(windows_path: &str) -> String {
 
     // Ensure it starts with /
     if !path.starts_with('/') {
-        path = format!("/{}", path);
+        path = format!("/{path}");
     }
 
     path

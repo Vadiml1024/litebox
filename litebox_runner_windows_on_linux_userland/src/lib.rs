@@ -32,8 +32,7 @@ pub fn run(cli_args: CliArgs) -> Result<()> {
     let pe_data = std::fs::read(&cli_args.program)?;
 
     // Load and parse the PE binary
-    let pe_loader =
-        PeLoader::new(pe_data).map_err(|e| anyhow!("Failed to load PE binary: {}", e))?;
+    let pe_loader = PeLoader::new(pe_data).map_err(|e| anyhow!("Failed to load PE binary: {e}"))?;
 
     println!("Loaded PE binary: {}", cli_args.program);
     println!("  Entry point: 0x{:X}", pe_loader.entry_point());
@@ -43,7 +42,7 @@ pub fn run(cli_args: CliArgs) -> Result<()> {
     // Get section information
     let sections = pe_loader
         .sections()
-        .map_err(|e| anyhow!("Failed to get sections: {}", e))?;
+        .map_err(|e| anyhow!("Failed to get sections: {e}"))?;
 
     println!("\nSections:");
     for section in &sections {
@@ -74,7 +73,7 @@ pub fn run(cli_args: CliArgs) -> Result<()> {
     let base_address = platform
         .nt_allocate_virtual_memory(image_size, memory_protection::PAGE_EXECUTE_READWRITE)?;
 
-    println!("  Allocated at: 0x{:X}", base_address);
+    println!("  Allocated at: 0x{base_address:X}");
 
     // Load sections into the allocated memory
     println!("\nLoading sections into memory...");
@@ -82,9 +81,9 @@ pub fn run(cli_args: CliArgs) -> Result<()> {
     let loaded_size = unsafe {
         pe_loader
             .load_sections(base_address)
-            .map_err(|e| anyhow!("Failed to load sections: {}", e))?
+            .map_err(|e| anyhow!("Failed to load sections: {e}"))?
     };
-    println!("  Loaded {} bytes", loaded_size);
+    println!("  Loaded {loaded_size} bytes");
 
     // For Phase 2/3 demo: Show that we can do basic console I/O through the platform
     let stdout_handle = platform.get_std_output();

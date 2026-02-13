@@ -114,7 +114,7 @@ impl PeLoader {
         }
 
         // SAFETY: We just checked the size is sufficient for DosHeader
-        let dos_header = unsafe { &*(data.as_ptr() as *const DosHeader) };
+        let dos_header = unsafe { &*data.as_ptr().cast::<DosHeader>() };
 
         if dos_header.e_magic != DOS_SIGNATURE {
             return Err(WindowsShimError::InvalidPeBinary(format!(
@@ -131,12 +131,11 @@ impl PeLoader {
         }
 
         // SAFETY: We checked bounds above
-        let pe_signature = unsafe { *(data.as_ptr().add(pe_offset) as *const u32) };
+        let pe_signature = unsafe { *data.as_ptr().add(pe_offset).cast::<u32>() };
 
         if pe_signature != PE_SIGNATURE {
             return Err(WindowsShimError::InvalidPeBinary(format!(
-                "Invalid PE signature: expected 0x{:08X}, found 0x{:08X}",
-                PE_SIGNATURE, pe_signature
+                "Invalid PE signature: expected 0x{PE_SIGNATURE:08X}, found 0x{pe_signature:08X}"
             )));
         }
 
@@ -148,7 +147,7 @@ impl PeLoader {
         }
 
         // SAFETY: We checked bounds above
-        let file_header = unsafe { &*(data.as_ptr().add(file_header_offset) as *const FileHeader) };
+        let file_header = unsafe { &*data.as_ptr().add(file_header_offset).cast::<FileHeader>() };
 
         if file_header.machine != MACHINE_AMD64 {
             return Err(WindowsShimError::UnsupportedFeature(format!(
@@ -165,8 +164,12 @@ impl PeLoader {
         }
 
         // SAFETY: We checked bounds above
-        let optional_header =
-            unsafe { &*(data.as_ptr().add(optional_header_offset) as *const OptionalHeader64) };
+        let optional_header = unsafe {
+            &*data
+                .as_ptr()
+                .add(optional_header_offset)
+                .cast::<OptionalHeader64>()
+        };
 
         // Section headers start after the optional header
         let section_headers_offset =
@@ -174,7 +177,7 @@ impl PeLoader {
 
         Ok(Self {
             data,
-            entry_point: optional_header.address_of_entry_point as u64,
+            entry_point: u64::from(optional_header.address_of_entry_point),
             image_base: optional_header.image_base,
             section_count: file_header.number_of_sections,
             section_headers_offset,
@@ -216,8 +219,13 @@ impl PeLoader {
             }
 
             // SAFETY: We checked bounds above
-            let section_header =
-                unsafe { &*(self.data.as_ptr().add(section_offset) as *const SectionHeader) };
+            let section_header = unsafe {
+                &*self
+                    .data
+                    .as_ptr()
+                    .add(section_offset)
+                    .cast::<SectionHeader>()
+            };
 
             // Extract section name (null-terminated)
             let name_len = section_header
@@ -234,8 +242,7 @@ impl PeLoader {
             let data = if data_start > 0 && data_size > 0 {
                 if data_start + data_size > self.data.len() {
                     return Err(WindowsShimError::InvalidPeBinary(format!(
-                        "Section {} data out of bounds",
-                        name
+                        "Section {name} data out of bounds"
                     )));
                 }
                 self.data[data_start..data_start + data_size].to_vec()
@@ -271,7 +278,7 @@ impl PeLoader {
         let mut max_address = 0usize;
 
         for section in sections {
-            let target_address = base_address + section.virtual_address as u64;
+            let target_address = base_address + u64::from(section.virtual_address);
             let size = section.data.len();
 
             if size > 0 {
