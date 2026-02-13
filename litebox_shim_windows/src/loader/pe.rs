@@ -278,7 +278,16 @@ impl PeLoader {
         let mut max_address = 0usize;
 
         for section in sections {
-            let target_address = base_address + u64::from(section.virtual_address);
+            // Check for overflow when adding virtual_address to base_address
+            let target_address = base_address
+                .checked_add(u64::from(section.virtual_address))
+                .ok_or_else(|| {
+                    WindowsShimError::InvalidPeBinary(format!(
+                        "Address overflow: base 0x{base_address:X} + VA 0x{:X}",
+                        section.virtual_address
+                    ))
+                })?;
+
             let size = section.data.len();
 
             if size > 0 {
@@ -289,8 +298,15 @@ impl PeLoader {
                 }
             }
 
-            // Track the maximum address used
-            let section_end = section.virtual_address as usize + section.virtual_size as usize;
+            // Track the maximum address used (checked to prevent overflow)
+            let section_end = (section.virtual_address as usize)
+                .checked_add(section.virtual_size as usize)
+                .ok_or_else(|| {
+                    WindowsShimError::InvalidPeBinary(format!(
+                        "Section size overflow: VA 0x{:X} + size 0x{:X}",
+                        section.virtual_address, section.virtual_size
+                    ))
+                })?;
             if section_end > max_address {
                 max_address = section_end;
             }
