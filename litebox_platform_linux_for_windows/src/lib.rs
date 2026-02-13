@@ -13,9 +13,9 @@ use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 
-use litebox_shim_windows::syscalls::ntdll::{ConsoleHandle, FileHandle, NtdllApi};
-use litebox_shim_windows::{Result as ShimResult, WindowsShimError};
 use thiserror::Error;
+
+use litebox_shim_windows::syscalls::ntdll::{ConsoleHandle, FileHandle, NtdllApi};
 
 /// Platform errors
 #[derive(Debug, Error)]
@@ -63,8 +63,8 @@ impl LinuxPlatformForWindows {
         handle
     }
 
-    /// NtCreateFile - Create or open a file
-    pub fn nt_create_file(
+    /// NtCreateFile - Create or open a file (internal implementation)
+    fn nt_create_file_impl(
         &mut self,
         path: &str,
         access: u32,
@@ -95,7 +95,8 @@ impl LinuxPlatformForWindows {
             4 => {
                 options.create(true);
             } // OPEN_ALWAYS
-            3 | _ => { /* OPEN_EXISTING - default */ }
+            3 => { /* OPEN_EXISTING - default */ }
+            _ => { /* Unknown - treat as OPEN_EXISTING */ }
         }
 
         let file = options.open(&linux_path)?;
@@ -105,8 +106,8 @@ impl LinuxPlatformForWindows {
         Ok(handle)
     }
 
-    /// NtReadFile - Read from a file
-    pub fn nt_read_file(&mut self, handle: u64, buffer: &mut [u8]) -> Result<usize> {
+    /// NtReadFile - Read from a file (internal implementation)
+    fn nt_read_file_impl(&mut self, handle: u64, buffer: &mut [u8]) -> Result<usize> {
         let file = self
             .handles
             .get_mut(&handle)
@@ -114,8 +115,8 @@ impl LinuxPlatformForWindows {
         Ok(file.read(buffer)?)
     }
 
-    /// NtWriteFile - Write to a file
-    pub fn nt_write_file(&mut self, handle: u64, buffer: &[u8]) -> Result<usize> {
+    /// NtWriteFile - Write to a file (internal implementation)
+    fn nt_write_file_impl(&mut self, handle: u64, buffer: &[u8]) -> Result<usize> {
         let file = self
             .handles
             .get_mut(&handle)
@@ -123,25 +124,24 @@ impl LinuxPlatformForWindows {
         Ok(file.write(buffer)?)
     }
 
-    /// NtClose - Close a handle
-    pub fn nt_close(&mut self, handle: u64) -> Result<()> {
+    /// NtClose - Close a handle (internal implementation)
+    fn nt_close_impl(&mut self, handle: u64) -> Result<()> {
         self.handles
             .remove(&handle)
             .ok_or(PlatformError::InvalidHandle(handle))?;
         Ok(())
     }
 
-    /// Get standard output handle
-    pub fn get_std_output(&self) -> u64 {
+    /// Get standard output handle (internal implementation)
+    fn get_std_output_impl(&self) -> u64 {
         // Use a special handle value for stdout
         0xFFFF_FFFF_0001
     }
 
-    /// Write to console
-    pub fn write_console(&mut self, handle: u64, text: &str) -> Result<usize> {
+    /// Write to console (internal implementation)
+    fn write_console_impl(&mut self, handle: u64, text: &str) -> Result<usize> {
         if handle == 0xFFFF_FFFF_0001 {
             print!("{text}");
-            use std::io::Write;
             std::io::stdout().flush()?;
             Ok(text.len())
         } else {
@@ -149,8 +149,8 @@ impl LinuxPlatformForWindows {
         }
     }
 
-    /// NtAllocateVirtualMemory - Allocate virtual memory
-    pub fn nt_allocate_virtual_memory(&mut self, size: usize, protect: u32) -> Result<u64> {
+    /// NtAllocateVirtualMemory - Allocate virtual memory (internal implementation)
+    fn nt_allocate_virtual_memory_impl(&mut self, size: usize, protect: u32) -> Result<u64> {
         use std::ptr;
 
         // Translate Windows protection flags to Linux PROT_ flags
@@ -186,8 +186,8 @@ impl LinuxPlatformForWindows {
         Ok(addr as u64)
     }
 
-    /// NtFreeVirtualMemory - Free virtual memory
-    pub fn nt_free_virtual_memory(&mut self, address: u64, size: usize) -> Result<()> {
+    /// NtFreeVirtualMemory - Free virtual memory (internal implementation)
+    fn nt_free_virtual_memory_impl(&mut self, address: u64, size: usize) -> Result<()> {
         // SAFETY: munmap is called with valid parameters
         let result = unsafe { libc::munmap(address as *mut libc::c_void, size) };
 
@@ -202,53 +202,6 @@ impl LinuxPlatformForWindows {
 impl Default for LinuxPlatformForWindows {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-/// Implement the NtdllApi trait for LinuxPlatformForWindows
-impl NtdllApi for LinuxPlatformForWindows {
-    fn nt_create_file(
-        &mut self,
-        path: &str,
-        access: u32,
-        create_disposition: u32,
-    ) -> ShimResult<FileHandle> {
-        let handle_id = Self::nt_create_file(self, path, access, create_disposition)
-            .map_err(|e| WindowsShimError::SyscallError(e.to_string()))?;
-        Ok(FileHandle(handle_id))
-    }
-
-    fn nt_read_file(&mut self, handle: FileHandle, buffer: &mut [u8]) -> ShimResult<usize> {
-        Self::nt_read_file(self, handle.0, buffer)
-            .map_err(|e| WindowsShimError::SyscallError(e.to_string()))
-    }
-
-    fn nt_write_file(&mut self, handle: FileHandle, buffer: &[u8]) -> ShimResult<usize> {
-        Self::nt_write_file(self, handle.0, buffer)
-            .map_err(|e| WindowsShimError::SyscallError(e.to_string()))
-    }
-
-    fn nt_close(&mut self, handle: FileHandle) -> ShimResult<()> {
-        Self::nt_close(self, handle.0).map_err(|e| WindowsShimError::SyscallError(e.to_string()))
-    }
-
-    fn get_std_output(&self) -> ConsoleHandle {
-        ConsoleHandle(Self::get_std_output(self))
-    }
-
-    fn write_console(&mut self, handle: ConsoleHandle, text: &str) -> ShimResult<usize> {
-        Self::write_console(self, handle.0, text)
-            .map_err(|e| WindowsShimError::SyscallError(e.to_string()))
-    }
-
-    fn nt_allocate_virtual_memory(&mut self, size: usize, protect: u32) -> ShimResult<u64> {
-        Self::nt_allocate_virtual_memory(self, size, protect)
-            .map_err(|e| WindowsShimError::SyscallError(e.to_string()))
-    }
-
-    fn nt_free_virtual_memory(&mut self, address: u64, size: usize) -> ShimResult<()> {
-        Self::nt_free_virtual_memory(self, address, size)
-            .map_err(|e| WindowsShimError::SyscallError(e.to_string()))
     }
 }
 
@@ -268,10 +221,79 @@ fn translate_windows_path_to_linux(windows_path: &str) -> String {
 
     // Ensure it starts with /
     if !path.starts_with('/') {
-        path = format!("/{}", path);
+        path = format!("/{path}");
     }
 
     path
+}
+
+/// Implement the NtdllApi trait from litebox_shim_windows
+impl NtdllApi for LinuxPlatformForWindows {
+    fn nt_create_file(
+        &mut self,
+        path: &str,
+        access: u32,
+        create_disposition: u32,
+    ) -> litebox_shim_windows::Result<FileHandle> {
+        let handle = self
+            .nt_create_file_impl(path, access, create_disposition)
+            .map_err(|e| litebox_shim_windows::WindowsShimError::IoError(e.to_string()))?;
+        Ok(FileHandle(handle))
+    }
+
+    fn nt_read_file(
+        &mut self,
+        handle: FileHandle,
+        buffer: &mut [u8],
+    ) -> litebox_shim_windows::Result<usize> {
+        self.nt_read_file_impl(handle.0, buffer)
+            .map_err(|e| litebox_shim_windows::WindowsShimError::IoError(e.to_string()))
+    }
+
+    fn nt_write_file(
+        &mut self,
+        handle: FileHandle,
+        buffer: &[u8],
+    ) -> litebox_shim_windows::Result<usize> {
+        self.nt_write_file_impl(handle.0, buffer)
+            .map_err(|e| litebox_shim_windows::WindowsShimError::IoError(e.to_string()))
+    }
+
+    fn nt_close(&mut self, handle: FileHandle) -> litebox_shim_windows::Result<()> {
+        self.nt_close_impl(handle.0)
+            .map_err(|e| litebox_shim_windows::WindowsShimError::IoError(e.to_string()))
+    }
+
+    fn get_std_output(&self) -> ConsoleHandle {
+        ConsoleHandle(self.get_std_output_impl())
+    }
+
+    fn write_console(
+        &mut self,
+        handle: ConsoleHandle,
+        text: &str,
+    ) -> litebox_shim_windows::Result<usize> {
+        self.write_console_impl(handle.0, text)
+            .map_err(|e| litebox_shim_windows::WindowsShimError::IoError(e.to_string()))
+    }
+
+    fn nt_allocate_virtual_memory(
+        &mut self,
+        size: usize,
+        protect: u32,
+    ) -> litebox_shim_windows::Result<u64> {
+        self.nt_allocate_virtual_memory_impl(size, protect)
+            .map_err(|e| litebox_shim_windows::WindowsShimError::IoError(e.to_string()))
+    }
+
+    fn nt_free_virtual_memory(
+        &mut self,
+        address: u64,
+        size: usize,
+    ) -> litebox_shim_windows::Result<()> {
+        self.nt_free_virtual_memory_impl(address, size)
+            .map_err(|e| litebox_shim_windows::WindowsShimError::IoError(e.to_string()))
+    }
 }
 
 #[cfg(test)]

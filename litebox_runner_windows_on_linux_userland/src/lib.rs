@@ -12,11 +12,7 @@ use anyhow::{Result, anyhow};
 use clap::Parser;
 use litebox_platform_linux_for_windows::LinuxPlatformForWindows;
 use litebox_shim_windows::loader::PeLoader;
-use litebox_shim_windows::syscalls::ntdll::NtdllApi;
-use litebox_shim_windows::tracing::{
-    FilterRule, TraceConfig, TraceFilter, TraceFormat, TraceOutput, TracedNtdllApi, Tracer,
-};
-use std::sync::Arc;
+use litebox_shim_windows::syscalls::ntdll::{NtdllApi, memory_protection};
 
 /// Run Windows programs with LiteBox on unmodified Linux
 #[derive(Parser, Debug)]
@@ -28,26 +24,6 @@ pub struct CliArgs {
     /// Arguments to pass to the program
     #[arg(trailing_var_arg = true)]
     pub arguments: Vec<String>,
-
-    /// Enable API tracing
-    #[arg(long, default_value = "false")]
-    pub trace_apis: bool,
-
-    /// Trace output format (text or json)
-    #[arg(long, default_value = "text", value_parser = ["text", "json"])]
-    pub trace_format: String,
-
-    /// Trace output file (default: stdout)
-    #[arg(long)]
-    pub trace_output: Option<String>,
-
-    /// Filter traced functions by pattern (e.g., "Nt*File")
-    #[arg(long)]
-    pub trace_filter: Option<String>,
-
-    /// Filter traced functions by category (file_io, memory, console_io)
-    #[arg(long)]
-    pub trace_category: Option<String>,
 }
 
 /// Run Windows programs with LiteBox on unmodified Linux
@@ -56,74 +32,69 @@ pub fn run(cli_args: CliArgs) -> Result<()> {
     let pe_data = std::fs::read(&cli_args.program)?;
 
     // Load and parse the PE binary
-    let pe_loader =
-        PeLoader::new(pe_data).map_err(|e| anyhow!("Failed to load PE binary: {}", e))?;
+    let pe_loader = PeLoader::new(pe_data).map_err(|e| anyhow!("Failed to load PE binary: {e}"))?;
 
     println!("Loaded PE binary: {}", cli_args.program);
     println!("  Entry point: 0x{:X}", pe_loader.entry_point());
     println!("  Image base: 0x{:X}", pe_loader.image_base());
     println!("  Sections: {}", pe_loader.section_count());
 
-    // Configure tracing
-    let mut trace_config = if cli_args.trace_apis {
-        TraceConfig::enabled()
-    } else {
-        TraceConfig::default()
-    };
+    // Get section information
+    let sections = pe_loader
+        .sections()
+        .map_err(|e| anyhow!("Failed to get sections: {e}"))?;
 
-    // Set trace format
-    if cli_args.trace_apis {
-        trace_config = match cli_args.trace_format.as_str() {
-            "json" => trace_config.with_format(TraceFormat::Json),
-            _ => trace_config.with_format(TraceFormat::Text),
-        };
-
-        // Set trace output
-        if let Some(output_file) = cli_args.trace_output {
-            trace_config = trace_config.with_output(TraceOutput::File(output_file.into()));
-        }
+    println!("\nSections:");
+    for section in &sections {
+        println!(
+            "  {} - VA: 0x{:X}, Size: {} bytes, Characteristics: 0x{:X}",
+            section.name, section.virtual_address, section.virtual_size, section.characteristics
+        );
     }
-
-    // Configure trace filter
-    let mut trace_filter = TraceFilter::new();
-    if let Some(pattern) = cli_args.trace_filter {
-        trace_filter = trace_filter.add_rule(FilterRule::Pattern(pattern));
-    }
-    if let Some(category_str) = cli_args.trace_category {
-        use litebox_shim_windows::tracing::ApiCategory;
-        let category = match category_str.as_str() {
-            "file_io" => ApiCategory::FileIo,
-            "memory" => ApiCategory::Memory,
-            "console_io" => ApiCategory::ConsoleIo,
-            _ => {
-                return Err(anyhow!(
-                    "Unknown category: {}. Valid options: file_io, memory, console_io",
-                    category_str
-                ));
-            }
-        };
-        trace_filter = trace_filter.add_rule(FilterRule::Category(vec![category]));
-    }
-
-    // Create tracer
-    let tracer = Arc::new(Tracer::new(trace_config, trace_filter)?);
 
     // Initialize the platform
-    let platform = LinuxPlatformForWindows::new();
+    let mut platform = LinuxPlatformForWindows::new();
 
-    // Wrap platform with tracing
-    let mut traced_platform = TracedNtdllApi::new(platform, tracer.clone());
+    // Calculate total image size (find max virtual address + size)
+    let image_size = sections
+        .iter()
+        .map(|s| s.virtual_address as usize + s.virtual_size as usize)
+        .max()
+        .unwrap_or(0);
 
-    // For Phase 2 demo: Show that we can do basic console I/O
-    let stdout_handle = traced_platform.get_std_output();
-    traced_platform.write_console(stdout_handle, "Hello from Windows on Linux!\n")?;
-
-    println!("\n[Phase 3 Complete: API tracing framework implemented]");
-    println!("Run with --trace-apis to see API calls being traced.");
+    println!("\nAllocating memory for PE image:");
     println!(
-        "Example: litebox_runner_windows_on_linux_userland {} --trace-apis --trace-format json",
-        cli_args.program
+        "  Image size: {} bytes ({} KB)",
+        image_size,
+        image_size / 1024
     );
+
+    // Allocate memory for the PE image with read/write/execute permissions
+    let base_address = platform
+        .nt_allocate_virtual_memory(image_size, memory_protection::PAGE_EXECUTE_READWRITE)?;
+
+    println!("  Allocated at: 0x{base_address:X}");
+
+    // Load sections into the allocated memory
+    println!("\nLoading sections into memory...");
+    // SAFETY: We just allocated memory of the correct size with the platform
+    let loaded_size = unsafe {
+        pe_loader
+            .load_sections(base_address)
+            .map_err(|e| anyhow!("Failed to load sections: {e}"))?
+    };
+    println!("  Loaded {loaded_size} bytes");
+
+    // For Phase 2/3 demo: Show that we can do basic console I/O through the platform
+    let stdout_handle = platform.get_std_output();
+    platform.write_console(stdout_handle, "\nHello from Windows on Linux!\n")?;
+
+    // Clean up allocated memory
+    platform.nt_free_virtual_memory(base_address, image_size)?;
+    println!("\nMemory deallocated successfully.");
+
+    println!("\n[Progress: PE loader, section loading, and basic NTDLL APIs implemented]");
+    println!("Note: Actual program execution not yet implemented - working on foundation.");
 
     Ok(())
 }

@@ -8,7 +8,6 @@
 
 pub mod loader;
 pub mod syscalls;
-pub mod tracing;
 
 use thiserror::Error;
 
