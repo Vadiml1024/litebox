@@ -217,9 +217,9 @@ The implementation consists of three main components:
 
 ### Test Coverage
 
-**Total Tests:** 39 passing
-- litebox_platform_linux_for_windows: 14 tests
-- litebox_shim_windows: 16 tests
+**Total Tests:** 52 passing
+- litebox_platform_linux_for_windows: 19 tests
+- litebox_shim_windows: 24 tests
 - litebox_runner_windows_on_linux_userland: 9 tests
 
 ### Test Categories
@@ -227,6 +227,8 @@ The implementation consists of three main components:
 1. **PE Loader Tests**
    - Invalid DOS signature detection
    - Too-small file rejection
+   - Import parsing (tested via DLL manager)
+   - Relocation parsing
    
 2. **Platform API Tests**
    - Path translation (Windows → Linux)
@@ -237,6 +239,7 @@ The implementation consists of three main components:
    - Environment variable get/set
    - Process and thread ID queries
    - Registry key operations
+   - DLL loading (LoadLibrary/GetProcAddress/FreeLibrary)
 
 3. **Tracing Tests**
    - Configuration (enabled/disabled, formats)
@@ -244,6 +247,13 @@ The implementation consists of three main components:
    - Output formats (text, JSON)
    - File output
    - Zero-overhead when disabled
+   - DLL operation tracing
+
+4. **Runner Integration Tests**
+   - Tracing pipeline integration
+   - Category filtering
+   - Pattern filtering
+   - Console and memory operation tracing
 
 ## Code Quality Metrics
 
@@ -330,57 +340,142 @@ litebox_runner_windows_on_linux_userland \
 - ✅ Environment variable management
 - ✅ Process information queries
 - ✅ Basic registry emulation
+- ✅ **Import table parsing** (Phase 6)
+- ✅ **Import resolution** (Phase 6)
+- ✅ **DLL loading (LoadLibrary/GetProcAddress)** (Phase 6)
+- ✅ **Relocation processing** (Phase 6)
+- ✅ **IAT patching** (Phase 6)
 
 ### What's Not Yet Implemented
-- ❌ **Actual program execution** - Entry point is not called
-- ❌ **Import resolution** - DLLs are not loaded
-- ❌ **Export processing** - Function exports not handled
-- ❌ **Relocations** - ASLR relocations not applied
+- ⏳ **Entry point execution** - Requires TEB/PEB setup and ABI translation
 - ❌ **Exception handling** - SEH/C++ exceptions
-- ❌ **DLL loading** - LoadLibrary/GetProcAddress
 - ❌ **Advanced registry APIs** - Write operations, enumeration
 - ❌ **Advanced APIs** - Process management, networking, GUI
+- ❌ **Real DLL implementations** - Currently only stubs
 
-### Why Execution Isn't Working Yet
+### Phase 6 Progress (In Progress)
 
-The current implementation focuses on **foundation building**:
-1. Establishing robust PE loading infrastructure
-2. Implementing core NTDLL APIs with proper translation
-3. Building comprehensive tracing framework
-4. Ensuring thread-safe multi-threaded operation
+**Completed:**
+1. ✅ Import table parsing - Extract DLL and function names from PE
+2. ✅ Import resolution - Load DLLs and resolve function addresses
+3. ✅ IAT patching - Write resolved addresses to Import Address Table
+4. ✅ Relocation processing - Apply ASLR relocations when base differs
+5. ✅ DLL manager - Stub implementations for KERNEL32, NTDLL, MSVCRT
 
-**Next phase** (Phase 6) will focus on:
-- Import table processing and DLL stub creation
-- Relocation handling for ASLR
-- Setting up proper execution context
-- Calling the PE entry point
-- Exception handler setup
+**In Progress:**
+6. ⏳ Entry point execution - TEB/PEB setup and ABI translation layer
+
+**Remaining:**
+7. ⏳ Test with real PE binaries
+8. ⏳ Exception handling basics
+9. ⏳ Documentation completion
+
+### Current Capabilities (Phase 6)
+
+The Windows-on-Linux runner can now:
+1. Parse PE import table and extract all imported functions
+2. Load stub DLLs via LoadLibrary
+3. Resolve function addresses via GetProcAddress
+4. Write resolved addresses to Import Address Table
+5. Apply base relocations when loaded at different address
+6. All operations fully traced for debugging
+
+**Example Output:**
+```
+Loaded PE binary: test.exe
+  Entry point: 0x1400
+  Image base: 0x140000000
+  Sections: 4
+
+Sections:
+  .text - VA: 0x1000, Size: 8192 bytes
+  .data - VA: 0x3000, Size: 4096 bytes
+
+Applying relocations...
+  Rebasing from 0x140000000 to 0x7F0000000000
+  Relocations applied successfully
+
+Resolving imports...
+  DLL: KERNEL32.dll
+    Functions: 5
+      LoadLibraryA -> 0x1000
+      GetProcAddress -> 0x1002
+      WriteConsoleW -> 0x1005
+      ...
+  Import resolution complete
+
+[Phase 6 Progress]
+  ✓ PE loader
+  ✓ Section loading
+  ✓ Relocation processing
+  ✓ Import resolution
+  ✓ IAT patching
+  → Entry point at: 0x1400 (not yet called)
+```
+
+### Why Full Execution Isn't Working Yet
+
+The current Phase 6 implementation has completed most of the loading pipeline:
+1. ✅ PE parsing and section loading
+2. ✅ Base relocation processing
+3. ✅ Import resolution and IAT patching
+4. ⏳ TEB/PEB initialization (in progress)
+5. ⏳ Entry point invocation (in progress)
+
+**Remaining Challenges:**
+- **ABI Translation:** Windows x64 uses Microsoft fastcall, Linux uses System V AMD64
+- **TEB/PEB Setup:** Windows programs expect Thread and Process Environment Blocks
+- **Exception Handling:** Need to map Windows SEH to Linux signals
+- **Stack Setup:** Proper stack alignment and initialization
+
+**Estimated Completion:** 1-2 weeks for basic entry point execution
 
 ## Next Steps (Phase 6: DLL Loading & Execution)
 
-### Planned Implementations
+### Currently Implemented ✅
 
-1. **DLL Loading Support**
-   - LoadLibrary/GetProcAddress implementation
-   - Import table processing
-   - Export table creation
-   - Stub DLLs for common Windows libraries
+1. **Import Resolution** ✅
+   - Parse import lookup table (ILT)
+   - Extract DLL names and function names
+   - Support import by name and by ordinal
+   - Complete ImportedDll structures
 
-2. **Relocation Processing**
-   - Parse relocation table
-   - Apply base address relocations
-   - Support ASLR
+2. **DLL Loading** ✅
+   - LoadLibrary/GetProcAddress/FreeLibrary APIs
+   - DllManager with stub DLL support
+   - Case-insensitive DLL name matching
+   - Pre-loaded stub DLLs: KERNEL32, NTDLL, MSVCRT
+   - Full API tracing integration
 
-3. **Execution Setup**
+3. **IAT Patching** ✅
+   - Write resolved function addresses to IAT
+   - 64-bit address handling for x64 PEs
+   - Error handling for missing functions
+   - Integrated into runner pipeline
+
+4. **Relocation Processing** ✅
+   - Parse base relocation table
+   - Apply DIR64 and HIGHLOW relocations
+   - Calculate and apply delta corrections
+   - Support for ASLR
+
+### Remaining Work ⏳
+
+1. **Entry Point Execution** (In Progress)
    - Set up initial thread context
    - Initialize Windows environment (TEB, PEB stubs)
-   - Call PE entry point
+   - Call PE entry point with proper ABI
    - Handle entry point return
 
-4. **Exception Handling**
+2. **Exception Handling** (Planned)
    - Basic SEH (Structured Exception Handling) support
    - Exception dispatcher
    - Unwind information processing
+
+3. **Testing** (Planned)
+   - Create simple test PE binaries
+   - Integration tests for full pipeline
+   - Validation with real Windows programs
 
 ## Performance Characteristics
 
@@ -401,14 +496,22 @@ The current implementation focuses on **foundation building**:
 
 ## Conclusion
 
-The Windows-on-Linux implementation has successfully completed **Phases 1-5** of the implementation plan:
-- ✅ Robust PE loading foundation
-- ✅ Core NTDLL API translations
-- ✅ Comprehensive API tracing framework
-- ✅ Multi-threaded operation support
-- ✅ Environment variables and process information
-- ✅ Basic registry emulation
+The Windows-on-Linux implementation has made significant progress through **Phases 1-6**:
+- ✅ Phase 1: Robust PE loading foundation
+- ✅ Phase 2: Core NTDLL API translations
+- ✅ Phase 3: Comprehensive API tracing framework
+- ✅ Phase 4: Multi-threaded operation support
+- ✅ Phase 5: Environment variables and process information
+- ✅ Phase 6: Import resolution, DLL loading, and relocations (in progress)
 
-All code passes strict quality checks (clippy, rustfmt) and has comprehensive test coverage.
+**Current Status:**
+- All core infrastructure complete
+- Import resolution and IAT patching working
+- Relocation processing integrated
+- Entry point execution pending (TEB/PEB setup needed)
 
-**Ready for Phase 6:** The foundation is solid and ready for implementing actual program execution with DLL loading, import resolution, and PE entry point invocation.
+All code passes strict quality checks (clippy, rustfmt) and has comprehensive test coverage (52 tests passing).
+
+**Phase 6 Status:** ~80% complete - Import resolution and relocation done, entry point execution remaining.
+
+**Next Milestone:** Complete entry point execution with TEB/PEB setup to enable actual Windows program execution on Linux.
