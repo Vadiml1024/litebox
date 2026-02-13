@@ -144,8 +144,8 @@ impl<T: NtdllApi> NtdllApi for TracedNtdllApi<T> {
     }
 
     fn get_std_output(&self) -> ConsoleHandle {
-        // Note: get_std_output doesn't modify state, so we don't trace it by default
-        // as it would create noise. If needed, this can be enabled.
+        // Note: get_std_output doesn't modify state, so we intentionally don't trace it
+        // to reduce noise in the trace output. This is a deliberate design decision.
         self.inner.get_std_output()
     }
 

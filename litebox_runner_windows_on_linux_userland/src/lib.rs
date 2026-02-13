@@ -121,7 +121,7 @@ pub fn run(cli_args: CliArgs) -> Result<()> {
     println!("\n[Phase 3 Complete: API tracing framework implemented]");
     println!("Run with --trace-apis to see API calls being traced.");
     println!(
-        "Example: {} --trace-apis --trace-format json",
+        "Example: litebox_runner_windows_on_linux_userland {} --trace-apis --trace-format json",
         cli_args.program
     );
 
