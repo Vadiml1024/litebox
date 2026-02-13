@@ -506,7 +506,11 @@ impl LinuxPlatformForWindows {
     }
 
     /// Get current thread ID (internal implementation)
-    #[allow(clippy::unused_self, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    #[allow(
+        clippy::unused_self,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
     fn get_current_thread_id_impl(&self) -> u32 {
         // SAFETY: gettid() is safe to call on Linux
         #[cfg(target_os = "linux")]
