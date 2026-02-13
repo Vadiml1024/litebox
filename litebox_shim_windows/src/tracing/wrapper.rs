@@ -231,6 +231,7 @@ impl<T: NtdllApi> NtdllApi for TracedNtdllApi<T> {
 mod tests {
     use super::*;
     use crate::syscalls::ntdll::{create_disposition, file_access, memory_protection};
+    use crate::tracing::{TraceConfig, TraceFilter};
 
     // Mock implementation for testing
     struct MockNtdllApi;
