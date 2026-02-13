@@ -8,7 +8,7 @@
 
 use crate::Result;
 use crate::syscalls::ntdll::{
-    ConsoleHandle, EventHandle, FileHandle, NtdllApi, ThreadEntryPoint, ThreadHandle,
+    ConsoleHandle, EventHandle, FileHandle, NtdllApi, RegKeyHandle, ThreadEntryPoint, ThreadHandle,
 };
 use crate::tracing::{ApiCategory, TraceEvent, Tracer};
 use std::sync::Arc;
@@ -456,6 +456,183 @@ impl<T: NtdllApi> NtdllApi for TracedNtdllApi<T> {
 
         result
     }
+
+    // Phase 5: Environment Variables
+
+    fn get_environment_variable(&self, name: &str) -> Option<String> {
+        // Trace call
+        if self.tracer.is_enabled() {
+            let args = format!("name=\"{name}\"");
+            let event = TraceEvent::call("GetEnvironmentVariable", ApiCategory::Environment)
+                .with_args(args);
+            self.tracer.trace(event);
+        }
+
+        // Call the inner implementation
+        let result = self.inner.get_environment_variable(name);
+
+        // Trace return
+        if self.tracer.is_enabled() {
+            let ret_str = match &result {
+                Some(value) => format!("Some(\"{value}\")"),
+                None => "None".to_string(),
+            };
+            let event =
+                TraceEvent::return_event("GetEnvironmentVariable", ApiCategory::Environment)
+                    .with_return_value(ret_str);
+            self.tracer.trace(event);
+        }
+
+        result
+    }
+
+    fn set_environment_variable(&mut self, name: &str, value: &str) -> Result<()> {
+        // Trace call
+        if self.tracer.is_enabled() {
+            let args = format!("name=\"{name}\", value=\"{value}\"");
+            let event = TraceEvent::call("SetEnvironmentVariable", ApiCategory::Environment)
+                .with_args(args);
+            self.tracer.trace(event);
+        }
+
+        // Call the inner implementation
+        let result = self.inner.set_environment_variable(name, value);
+
+        // Trace return
+        if self.tracer.is_enabled() {
+            let ret_str = match &result {
+                Ok(()) => "Ok(())".to_string(),
+                Err(e) => format!("Err({e})"),
+            };
+            let event =
+                TraceEvent::return_event("SetEnvironmentVariable", ApiCategory::Environment)
+                    .with_return_value(ret_str);
+            self.tracer.trace(event);
+        }
+
+        result
+    }
+
+    // Phase 5: Process Information
+
+    fn get_current_process_id(&self) -> u32 {
+        // Trace call
+        if self.tracer.is_enabled() {
+            let event = TraceEvent::call("GetCurrentProcessId", ApiCategory::Process);
+            self.tracer.trace(event);
+        }
+
+        // Call the inner implementation
+        let result = self.inner.get_current_process_id();
+
+        // Trace return
+        if self.tracer.is_enabled() {
+            let ret_str = format!("{result}");
+            let event = TraceEvent::return_event("GetCurrentProcessId", ApiCategory::Process)
+                .with_return_value(ret_str);
+            self.tracer.trace(event);
+        }
+
+        result
+    }
+
+    fn get_current_thread_id(&self) -> u32 {
+        // Trace call
+        if self.tracer.is_enabled() {
+            let event = TraceEvent::call("GetCurrentThreadId", ApiCategory::Threading);
+            self.tracer.trace(event);
+        }
+
+        // Call the inner implementation
+        let result = self.inner.get_current_thread_id();
+
+        // Trace return
+        if self.tracer.is_enabled() {
+            let ret_str = format!("{result}");
+            let event = TraceEvent::return_event("GetCurrentThreadId", ApiCategory::Threading)
+                .with_return_value(ret_str);
+            self.tracer.trace(event);
+        }
+
+        result
+    }
+
+    // Phase 5: Registry Emulation
+
+    fn reg_open_key_ex(&mut self, key: &str, subkey: &str) -> Result<RegKeyHandle> {
+        // Trace call
+        if self.tracer.is_enabled() {
+            let args = format!("key=\"{key}\", subkey=\"{subkey}\"");
+            let event = TraceEvent::call("RegOpenKeyEx", ApiCategory::Registry).with_args(args);
+            self.tracer.trace(event);
+        }
+
+        // Call the inner implementation
+        let result = self.inner.reg_open_key_ex(key, subkey);
+
+        // Trace return
+        if self.tracer.is_enabled() {
+            let ret_str = match &result {
+                Ok(handle) => format!("Ok(handle=0x{:X})", handle.0),
+                Err(e) => format!("Err({e})"),
+            };
+            let event = TraceEvent::return_event("RegOpenKeyEx", ApiCategory::Registry)
+                .with_return_value(ret_str);
+            self.tracer.trace(event);
+        }
+
+        result
+    }
+
+    fn reg_query_value_ex(&self, handle: RegKeyHandle, value_name: &str) -> Option<String> {
+        // Trace call
+        if self.tracer.is_enabled() {
+            let args = format!("handle=0x{:X}, value_name=\"{value_name}\"", handle.0);
+            let event = TraceEvent::call("RegQueryValueEx", ApiCategory::Registry).with_args(args);
+            self.tracer.trace(event);
+        }
+
+        // Call the inner implementation
+        let result = self.inner.reg_query_value_ex(handle, value_name);
+
+        // Trace return
+        if self.tracer.is_enabled() {
+            let ret_str = match &result {
+                Some(value) => format!("Some(\"{value}\")"),
+                None => "None".to_string(),
+            };
+            let event = TraceEvent::return_event("RegQueryValueEx", ApiCategory::Registry)
+                .with_return_value(ret_str);
+            self.tracer.trace(event);
+        }
+
+        result
+    }
+
+    fn reg_close_key(&mut self, handle: RegKeyHandle) -> Result<()> {
+        // Trace call
+        if self.tracer.is_enabled() {
+            let args = format!("handle=0x{:X}", handle.0);
+            let event = TraceEvent::call("RegCloseKey", ApiCategory::Registry).with_args(args);
+            self.tracer.trace(event);
+        }
+
+        // Call the inner implementation
+        let result = self.inner.reg_close_key(handle);
+
+        // Trace return
+        if self.tracer.is_enabled() {
+            let ret_str = match &result {
+                Ok(()) => "Ok(())".to_string(),
+                Err(e) => format!("Err({e})"),
+            };
+            let event = TraceEvent::return_event("RegCloseKey", ApiCategory::Registry)
+                .with_return_value(ret_str);
+            self.tracer.trace(event);
+        }
+
+        result
+    }
 }
 
 #[cfg(test)]
@@ -547,6 +724,40 @@ mod tests {
         }
 
         fn nt_close_handle(&mut self, _handle: u64) -> Result<()> {
+            Ok(())
+        }
+
+        // Phase 5: Environment Variables
+
+        fn get_environment_variable(&self, _name: &str) -> Option<String> {
+            Some("test_value".to_string())
+        }
+
+        fn set_environment_variable(&mut self, _name: &str, _value: &str) -> Result<()> {
+            Ok(())
+        }
+
+        // Phase 5: Process Information
+
+        fn get_current_process_id(&self) -> u32 {
+            1234
+        }
+
+        fn get_current_thread_id(&self) -> u32 {
+            5678
+        }
+
+        // Phase 5: Registry Emulation
+
+        fn reg_open_key_ex(&mut self, _key: &str, _subkey: &str) -> Result<RegKeyHandle> {
+            Ok(RegKeyHandle(300))
+        }
+
+        fn reg_query_value_ex(&self, _handle: RegKeyHandle, _value_name: &str) -> Option<String> {
+            Some("registry_value".to_string())
+        }
+
+        fn reg_close_key(&mut self, _handle: RegKeyHandle) -> Result<()> {
             Ok(())
         }
     }

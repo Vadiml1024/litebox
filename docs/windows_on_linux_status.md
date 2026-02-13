@@ -174,12 +174,51 @@ The implementation consists of three main components:
 - Threading implementation in `litebox_platform_linux_for_windows/src/lib.rs`
 - Thread handle types in `litebox_shim_windows/src/syscalls/ntdll.rs`
 
+### ✅ Phase 5: Extended API Support (Complete)
+
+**Status:** Fully implemented and tested
+
+**Implemented APIs:**
+
+#### Environment Variables
+- `GetEnvironmentVariable` → Returns environment variable value
+- `SetEnvironmentVariable` → Sets environment variable value
+
+#### Process Information
+- `GetCurrentProcessId` → Returns current process ID via `getpid()`
+- `GetCurrentThreadId` → Returns current thread ID via `gettid()`
+
+#### Registry Emulation
+- `RegOpenKeyEx` → Opens a registry key (in-memory emulation)
+- `RegQueryValueEx` → Queries a registry value
+- `RegCloseKey` → Closes a registry key handle
+
+**Features:**
+- Thread-safe environment variable storage
+- Default environment variables pre-populated (COMPUTERNAME, OS, PROCESSOR_ARCHITECTURE)
+- In-memory registry with common Windows values pre-populated
+- Registry keys include Windows version information
+- Full API tracing for all Phase 5 operations
+- Three new trace categories: Environment, Process, Registry
+
+**Code Quality:**
+- 6 unit tests covering all new functionality
+- Zero clippy warnings
+- Proper safety comments for all `unsafe` blocks
+- Comprehensive error handling
+
+**Files:**
+- API definitions in `litebox_shim_windows/src/syscalls/ntdll.rs`
+- Implementation in `litebox_platform_linux_for_windows/src/lib.rs`
+- Tracing in `litebox_shim_windows/src/tracing/wrapper.rs`
+- Categories in `litebox_shim_windows/src/tracing/event.rs`
+
 ## Testing
 
 ### Test Coverage
 
-**Total Tests:** 33 passing
-- litebox_platform_linux_for_windows: 8 tests
+**Total Tests:** 39 passing
+- litebox_platform_linux_for_windows: 14 tests
 - litebox_shim_windows: 16 tests
 - litebox_runner_windows_on_linux_userland: 9 tests
 
@@ -195,6 +234,9 @@ The implementation consists of three main components:
    - Thread creation and parameter passing
    - Event synchronization (manual/auto-reset)
    - Handle cleanup
+   - Environment variable get/set
+   - Process and thread ID queries
+   - Registry key operations
 
 3. **Tracing Tests**
    - Configuration (enabled/disabled, formats)
@@ -284,7 +326,10 @@ litebox_runner_windows_on_linux_userland \
 - ✅ Console I/O demonstration
 - ✅ API call tracing with filtering
 - ✅ Thread creation and synchronization primitives
-- ✅ Complete Windows NTDLL API surface (Phase 1-4)
+- ✅ Complete Windows NTDLL API surface (Phases 1-5)
+- ✅ Environment variable management
+- ✅ Process information queries
+- ✅ Basic registry emulation
 
 ### What's Not Yet Implemented
 - ❌ **Actual program execution** - Entry point is not called
@@ -293,7 +338,7 @@ litebox_runner_windows_on_linux_userland \
 - ❌ **Relocations** - ASLR relocations not applied
 - ❌ **Exception handling** - SEH/C++ exceptions
 - ❌ **DLL loading** - LoadLibrary/GetProcAddress
-- ❌ **Registry emulation** - Registry APIs
+- ❌ **Advanced registry APIs** - Write operations, enumeration
 - ❌ **Advanced APIs** - Process management, networking, GUI
 
 ### Why Execution Isn't Working Yet
@@ -304,14 +349,14 @@ The current implementation focuses on **foundation building**:
 3. Building comprehensive tracing framework
 4. Ensuring thread-safe multi-threaded operation
 
-**Next phase** (Phase 5) will focus on:
+**Next phase** (Phase 6) will focus on:
 - Import table processing and DLL stub creation
 - Relocation handling for ASLR
 - Setting up proper execution context
 - Calling the PE entry point
 - Exception handler setup
 
-## Next Steps (Phase 5: Extended API Support)
+## Next Steps (Phase 6: DLL Loading & Execution)
 
 ### Planned Implementations
 
@@ -332,14 +377,10 @@ The current implementation focuses on **foundation building**:
    - Call PE entry point
    - Handle entry point return
 
-4. **Registry Emulation**
-   - Minimal registry key/value support
-   - Read-only registry for compatibility
-
-5. **Process Management**
-   - CreateProcess/TerminateProcess
-   - Process handle management
-   - Environment variable support
+4. **Exception Handling**
+   - Basic SEH (Structured Exception Handling) support
+   - Exception dispatcher
+   - Unwind information processing
 
 ## Performance Characteristics
 
@@ -360,12 +401,14 @@ The current implementation focuses on **foundation building**:
 
 ## Conclusion
 
-The Windows-on-Linux implementation has successfully completed **Phases 1-4** of the implementation plan:
+The Windows-on-Linux implementation has successfully completed **Phases 1-5** of the implementation plan:
 - ✅ Robust PE loading foundation
 - ✅ Core NTDLL API translations
 - ✅ Comprehensive API tracing framework
 - ✅ Multi-threaded operation support
+- ✅ Environment variables and process information
+- ✅ Basic registry emulation
 
 All code passes strict quality checks (clippy, rustfmt) and has comprehensive test coverage.
 
-**Ready for Phase 5:** The foundation is solid and ready for implementing actual program execution with DLL loading and import resolution.
+**Ready for Phase 6:** The foundation is solid and ready for implementing actual program execution with DLL loading, import resolution, and PE entry point invocation.
