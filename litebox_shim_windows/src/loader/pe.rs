@@ -284,9 +284,7 @@ impl PeLoader {
             if size > 0 {
                 // SAFETY: Caller guarantees base_address is valid and has enough space
                 let dest = target_address as *mut u8;
-                unsafe {
-                    core::ptr::copy_nonoverlapping(section.data.as_ptr(), dest, size);
-                }
+                core::ptr::copy_nonoverlapping(section.data.as_ptr(), dest, size);
             }
 
             // Track the maximum address used
