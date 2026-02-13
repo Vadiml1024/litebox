@@ -15,6 +15,8 @@ use std::io::{Read, Write};
 
 use thiserror::Error;
 
+use litebox_shim_windows::syscalls::ntdll::{ConsoleHandle, FileHandle, NtdllApi};
+
 /// Platform errors
 #[derive(Debug, Error)]
 pub enum PlatformError {
@@ -225,17 +227,95 @@ fn translate_windows_path_to_linux(windows_path: &str) -> String {
     path
 }
 
+/// Implement the NtdllApi trait from litebox_shim_windows
+impl NtdllApi for LinuxPlatformForWindows {
+    fn nt_create_file(
+        &mut self,
+        path: &str,
+        access: u32,
+        create_disposition: u32,
+    ) -> litebox_shim_windows::Result<FileHandle> {
+        let handle = self
+            .nt_create_file(path, access, create_disposition)
+            .map_err(|e| litebox_shim_windows::WindowsShimError::IoError(e.to_string()))?;
+        Ok(FileHandle(handle))
+    }
+
+    fn nt_read_file(
+        &mut self,
+        handle: FileHandle,
+        buffer: &mut [u8],
+    ) -> litebox_shim_windows::Result<usize> {
+        self.nt_read_file(handle.0, buffer)
+            .map_err(|e| litebox_shim_windows::WindowsShimError::IoError(e.to_string()))
+    }
+
+    fn nt_write_file(
+        &mut self,
+        handle: FileHandle,
+        buffer: &[u8],
+    ) -> litebox_shim_windows::Result<usize> {
+        self.nt_write_file(handle.0, buffer)
+            .map_err(|e| litebox_shim_windows::WindowsShimError::IoError(e.to_string()))
+    }
+
+    fn nt_close(&mut self, handle: FileHandle) -> litebox_shim_windows::Result<()> {
+        self.nt_close(handle.0)
+            .map_err(|e| litebox_shim_windows::WindowsShimError::IoError(e.to_string()))
+    }
+
+    fn get_std_output(&self) -> ConsoleHandle {
+        ConsoleHandle(self.get_std_output())
+    }
+
+    fn write_console(
+        &mut self,
+        handle: ConsoleHandle,
+        text: &str,
+    ) -> litebox_shim_windows::Result<usize> {
+        self.write_console(handle.0, text)
+            .map_err(|e| litebox_shim_windows::WindowsShimError::IoError(e.to_string()))
+    }
+
+    fn nt_allocate_virtual_memory(
+        &mut self,
+        size: usize,
+        protect: u32,
+    ) -> litebox_shim_windows::Result<u64> {
+        self.nt_allocate_virtual_memory(size, protect)
+            .map_err(|e| litebox_shim_windows::WindowsShimError::IoError(e.to_string()))
+    }
+
+    fn nt_free_virtual_memory(
+        &mut self,
+        address: u64,
+        size: usize,
+    ) -> litebox_shim_windows::Result<()> {
+        self.nt_free_virtual_memory(address, size)
+            .map_err(|e| litebox_shim_windows::WindowsShimError::IoError(e.to_string()))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_path_translation() {
-        assert_eq!(translate_windows_path_to_linux("C:\\test\\file.txt"), "/test/file.txt");
-        assert_eq!(translate_windows_path_to_linux("\\test\\file.txt"), "/test/file.txt");
-        assert_eq!(translate_windows_path_to_linux("/test/file.txt"), "/test/file.txt");
+        assert_eq!(
+            translate_windows_path_to_linux("C:\\test\\file.txt"),
+            "/test/file.txt"
+        );
+        assert_eq!(
+            translate_windows_path_to_linux("\\test\\file.txt"),
+            "/test/file.txt"
+        );
+        assert_eq!(
+            translate_windows_path_to_linux("/test/file.txt"),
+            "/test/file.txt"
+        );
     }
-    
+
     #[test]
     fn test_handle_allocation() {
         let mut platform = LinuxPlatformForWindows::new();
