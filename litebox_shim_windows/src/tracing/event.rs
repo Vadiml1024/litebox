@@ -15,6 +15,10 @@ pub enum ApiCategory {
     ConsoleIo,
     /// Memory management operations
     Memory,
+    /// Threading operations
+    Threading,
+    /// Synchronization operations
+    Synchronization,
     /// Unknown/uncategorized
     Unknown,
 }
@@ -25,6 +29,8 @@ impl fmt::Display for ApiCategory {
             ApiCategory::FileIo => write!(f, "file_io"),
             ApiCategory::ConsoleIo => write!(f, "console_io"),
             ApiCategory::Memory => write!(f, "memory"),
+            ApiCategory::Threading => write!(f, "threading"),
+            ApiCategory::Synchronization => write!(f, "synchronization"),
             ApiCategory::Unknown => write!(f, "unknown"),
         }
     }

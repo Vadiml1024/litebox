@@ -33,7 +33,7 @@ impl TextFormatter {
             Ok(duration) => {
                 let secs = duration.as_secs();
                 let millis = duration.subsec_millis();
-                format!("{}.{:03}", secs, millis)
+                format!("{secs}.{millis:03}")
             }
             Err(_) => "0.000".to_string(),
         }
@@ -63,7 +63,7 @@ impl TraceFormatter for TextFormatter {
         // Add thread ID if configured and available
         if config.include_thread_ids {
             if let Some(tid) = event.thread_id {
-                output.push_str(&format!("[TID:{:04}] ", tid));
+                output.push_str(&format!("[TID:{tid:04}] "));
             } else {
                 output.push_str("[TID:main] ");
             }
@@ -77,16 +77,16 @@ impl TraceFormatter for TextFormatter {
 
         // Add arguments or return value
         if let Some(ref args) = event.args {
-            output.push_str(&format!("({})", args));
+            output.push_str(&format!("({args})"));
         } else {
             output.push_str("()");
         }
 
         if let Some(ref ret) = event.return_value {
-            output.push_str(&format!(" -> {}", ret));
+            output.push_str(&format!(" -> {ret}"));
         }
 
-        writeln!(writer, "{}", output)
+        writeln!(writer, "{output}")
     }
 }
 
@@ -129,7 +129,7 @@ impl TraceFormatter for JsonFormatter {
                 Ok(duration) => {
                     let secs = duration.as_secs();
                     let nanos = duration.subsec_nanos();
-                    write!(writer, "\"timestamp\":{}.{:09},", secs, nanos)?;
+                    write!(writer, "\"timestamp\":{secs}.{nanos:09},")?;
                 }
                 Err(_) => {
                     write!(writer, "\"timestamp\":0.0,")?;
@@ -140,7 +140,7 @@ impl TraceFormatter for JsonFormatter {
         // Thread ID
         if config.include_thread_ids {
             if let Some(tid) = event.thread_id {
-                write!(writer, "\"thread_id\":{},", tid)?;
+                write!(writer, "\"thread_id\":{tid},")?;
             } else {
                 write!(writer, "\"thread_id\":null,")?;
             }
@@ -151,7 +151,7 @@ impl TraceFormatter for JsonFormatter {
             super::event::EventType::Call => "call",
             super::event::EventType::Return => "return",
         };
-        write!(writer, "\"event\":\"{}\"", event_type_str)?;
+        write!(writer, "\"event\":\"{event_type_str}\"")?;
 
         // Category
         write!(writer, ",\"category\":\"{}\"", event.category)?;
