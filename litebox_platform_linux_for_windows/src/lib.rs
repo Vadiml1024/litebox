@@ -13,6 +13,8 @@ use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 
+use litebox_shim_windows::syscalls::ntdll::{ConsoleHandle, FileHandle, NtdllApi};
+use litebox_shim_windows::{Result as ShimResult, WindowsShimError};
 use thiserror::Error;
 
 /// Platform errors
@@ -203,6 +205,53 @@ impl Default for LinuxPlatformForWindows {
     }
 }
 
+/// Implement the NtdllApi trait for LinuxPlatformForWindows
+impl NtdllApi for LinuxPlatformForWindows {
+    fn nt_create_file(
+        &mut self,
+        path: &str,
+        access: u32,
+        create_disposition: u32,
+    ) -> ShimResult<FileHandle> {
+        let handle_id = Self::nt_create_file(self, path, access, create_disposition)
+            .map_err(|e| WindowsShimError::SyscallError(e.to_string()))?;
+        Ok(FileHandle(handle_id))
+    }
+
+    fn nt_read_file(&mut self, handle: FileHandle, buffer: &mut [u8]) -> ShimResult<usize> {
+        Self::nt_read_file(self, handle.0, buffer)
+            .map_err(|e| WindowsShimError::SyscallError(e.to_string()))
+    }
+
+    fn nt_write_file(&mut self, handle: FileHandle, buffer: &[u8]) -> ShimResult<usize> {
+        Self::nt_write_file(self, handle.0, buffer)
+            .map_err(|e| WindowsShimError::SyscallError(e.to_string()))
+    }
+
+    fn nt_close(&mut self, handle: FileHandle) -> ShimResult<()> {
+        Self::nt_close(self, handle.0).map_err(|e| WindowsShimError::SyscallError(e.to_string()))
+    }
+
+    fn get_std_output(&self) -> ConsoleHandle {
+        ConsoleHandle(Self::get_std_output(self))
+    }
+
+    fn write_console(&mut self, handle: ConsoleHandle, text: &str) -> ShimResult<usize> {
+        Self::write_console(self, handle.0, text)
+            .map_err(|e| WindowsShimError::SyscallError(e.to_string()))
+    }
+
+    fn nt_allocate_virtual_memory(&mut self, size: usize, protect: u32) -> ShimResult<u64> {
+        Self::nt_allocate_virtual_memory(self, size, protect)
+            .map_err(|e| WindowsShimError::SyscallError(e.to_string()))
+    }
+
+    fn nt_free_virtual_memory(&mut self, address: u64, size: usize) -> ShimResult<()> {
+        Self::nt_free_virtual_memory(self, address, size)
+            .map_err(|e| WindowsShimError::SyscallError(e.to_string()))
+    }
+}
+
 /// Translate Windows path to Linux path
 ///
 /// Converts Windows-style paths (C:\path\to\file.txt) to Linux paths (/path/to/file.txt)
@@ -228,14 +277,23 @@ fn translate_windows_path_to_linux(windows_path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_path_translation() {
-        assert_eq!(translate_windows_path_to_linux("C:\\test\\file.txt"), "/test/file.txt");
-        assert_eq!(translate_windows_path_to_linux("\\test\\file.txt"), "/test/file.txt");
-        assert_eq!(translate_windows_path_to_linux("/test/file.txt"), "/test/file.txt");
+        assert_eq!(
+            translate_windows_path_to_linux("C:\\test\\file.txt"),
+            "/test/file.txt"
+        );
+        assert_eq!(
+            translate_windows_path_to_linux("\\test\\file.txt"),
+            "/test/file.txt"
+        );
+        assert_eq!(
+            translate_windows_path_to_linux("/test/file.txt"),
+            "/test/file.txt"
+        );
     }
-    
+
     #[test]
     fn test_handle_allocation() {
         let mut platform = LinuxPlatformForWindows::new();

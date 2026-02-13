@@ -11,7 +11,12 @@ use std::time::SystemTime;
 /// Trait for formatting trace events
 pub trait TraceFormatter {
     /// Format a trace event to the output
-    fn format(&self, event: &TraceEvent, config: &TraceConfig, writer: &mut dyn Write) -> io::Result<()>;
+    fn format(
+        &self,
+        event: &TraceEvent,
+        config: &TraceConfig,
+        writer: &mut dyn Write,
+    ) -> io::Result<()>;
 }
 
 /// Text formatter - human-readable output
@@ -42,7 +47,12 @@ impl Default for TextFormatter {
 }
 
 impl TraceFormatter for TextFormatter {
-    fn format(&self, event: &TraceEvent, config: &TraceConfig, writer: &mut dyn Write) -> io::Result<()> {
+    fn format(
+        &self,
+        event: &TraceEvent,
+        config: &TraceConfig,
+        writer: &mut dyn Write,
+    ) -> io::Result<()> {
         let mut output = String::new();
 
         // Add timestamp if configured
@@ -105,7 +115,12 @@ impl Default for JsonFormatter {
 }
 
 impl TraceFormatter for JsonFormatter {
-    fn format(&self, event: &TraceEvent, config: &TraceConfig, writer: &mut dyn Write) -> io::Result<()> {
+    fn format(
+        &self,
+        event: &TraceEvent,
+        config: &TraceConfig,
+        writer: &mut dyn Write,
+    ) -> io::Result<()> {
         write!(writer, "{{")?;
 
         // Timestamp
@@ -142,7 +157,11 @@ impl TraceFormatter for JsonFormatter {
         write!(writer, ",\"category\":\"{}\"", event.category)?;
 
         // Function name
-        write!(writer, ",\"function\":\"{}\"", Self::escape_json_string(&event.function))?;
+        write!(
+            writer,
+            ",\"function\":\"{}\"",
+            Self::escape_json_string(&event.function)
+        )?;
 
         // Arguments
         if let Some(ref args) = event.args {
@@ -172,7 +191,7 @@ mod tests {
 
         let mut output = Vec::new();
         formatter.format(&event, &config, &mut output).unwrap();
-        
+
         let output_str = String::from_utf8(output).unwrap();
         assert!(output_str.contains("CALL"));
         assert!(output_str.contains("NtCreateFile"));
@@ -188,7 +207,7 @@ mod tests {
 
         let mut output = Vec::new();
         formatter.format(&event, &config, &mut output).unwrap();
-        
+
         let output_str = String::from_utf8(output).unwrap();
         assert!(output_str.contains("\"event\":\"call\""));
         assert!(output_str.contains("\"function\":\"NtCreateFile\""));
@@ -197,8 +216,17 @@ mod tests {
 
     #[test]
     fn test_json_escape() {
-        assert_eq!(JsonFormatter::escape_json_string("test\"quote"), "test\\\"quote");
-        assert_eq!(JsonFormatter::escape_json_string("test\\slash"), "test\\\\slash");
-        assert_eq!(JsonFormatter::escape_json_string("test\nline"), "test\\nline");
+        assert_eq!(
+            JsonFormatter::escape_json_string("test\"quote"),
+            "test\\\"quote"
+        );
+        assert_eq!(
+            JsonFormatter::escape_json_string("test\\slash"),
+            "test\\\\slash"
+        );
+        assert_eq!(
+            JsonFormatter::escape_json_string("test\nline"),
+            "test\\nline"
+        );
     }
 }

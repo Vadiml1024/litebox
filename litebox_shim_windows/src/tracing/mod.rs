@@ -11,9 +11,11 @@ pub mod event;
 pub mod filter;
 pub mod formatter;
 pub mod tracer;
+pub mod wrapper;
 
 pub use config::{TraceConfig, TraceFormat, TraceOutput};
-pub use event::TraceEvent;
-pub use filter::{TraceFilter, FilterRule};
-pub use formatter::{TraceFormatter, TextFormatter, JsonFormatter};
+pub use event::{ApiCategory, EventType, TraceEvent};
+pub use filter::{FilterRule, TraceFilter};
+pub use formatter::{JsonFormatter, TextFormatter, TraceFormatter};
 pub use tracer::Tracer;
+pub use wrapper::TracedNtdllApi;

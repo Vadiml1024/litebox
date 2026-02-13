@@ -86,7 +86,7 @@ fn matches_pattern(text: &str, pattern: &str) -> bool {
     // Simple implementation - handle * (any chars) and ? (single char)
     let pattern_chars: Vec<char> = pattern.chars().collect();
     let text_chars: Vec<char> = text.chars().collect();
-    
+
     matches_pattern_recursive(&text_chars, &pattern_chars, 0, 0)
 }
 
@@ -142,7 +142,7 @@ mod tests {
         assert!(matches_pattern("NtCreateFile", "Nt*File"));
         assert!(matches_pattern("NtCreateFile", "NtCreateFile"));
         assert!(!matches_pattern("NtCreateFile", "NtRead*"));
-        
+
         assert!(matches_pattern("NtReadFile", "Nt????File"));
         assert!(!matches_pattern("NtReadFile", "Nt???File"));
     }
@@ -156,36 +156,34 @@ mod tests {
 
     #[test]
     fn test_filter_function() {
-        let filter = TraceFilter::new()
-            .add_rule(FilterRule::Function(vec!["NtCreateFile".to_string()]));
-        
+        let filter =
+            TraceFilter::new().add_rule(FilterRule::Function(vec!["NtCreateFile".to_string()]));
+
         let event1 = TraceEvent::call("NtCreateFile", ApiCategory::FileIo);
         let event2 = TraceEvent::call("NtReadFile", ApiCategory::FileIo);
-        
+
         assert!(filter.should_trace(&event1));
         assert!(!filter.should_trace(&event2));
     }
 
     #[test]
     fn test_filter_pattern() {
-        let filter = TraceFilter::new()
-            .add_rule(FilterRule::Pattern("Nt*File".to_string()));
-        
+        let filter = TraceFilter::new().add_rule(FilterRule::Pattern("Nt*File".to_string()));
+
         let event1 = TraceEvent::call("NtCreateFile", ApiCategory::FileIo);
         let event2 = TraceEvent::call("NtAllocateVirtualMemory", ApiCategory::Memory);
-        
+
         assert!(filter.should_trace(&event1));
         assert!(!filter.should_trace(&event2));
     }
 
     #[test]
     fn test_filter_category() {
-        let filter = TraceFilter::new()
-            .add_rule(FilterRule::Category(vec![ApiCategory::FileIo]));
-        
+        let filter = TraceFilter::new().add_rule(FilterRule::Category(vec![ApiCategory::FileIo]));
+
         let event1 = TraceEvent::call("NtCreateFile", ApiCategory::FileIo);
         let event2 = TraceEvent::call("NtAllocateVirtualMemory", ApiCategory::Memory);
-        
+
         assert!(filter.should_trace(&event1));
         assert!(!filter.should_trace(&event2));
     }
