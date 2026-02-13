@@ -604,4 +604,129 @@ mod tests {
         let h2 = platform.allocate_handle();
         assert_ne!(h1, h2);
     }
+
+    // Phase 4: Threading tests
+
+    extern "C" fn simple_thread_func(_param: *mut core::ffi::c_void) -> u32 {
+        42
+    }
+
+    #[test]
+    fn test_thread_creation() {
+        let mut platform = LinuxPlatformForWindows::new();
+        
+        let result = platform.nt_create_thread(
+            simple_thread_func,
+            std::ptr::null_mut(),
+            1024 * 1024,
+        );
+        
+        assert!(result.is_ok());
+        let handle = result.unwrap();
+        
+        // Wait for thread to complete
+        let wait_result = platform.nt_wait_for_single_object(handle, u32::MAX);
+        assert!(wait_result.is_ok());
+        assert_eq!(wait_result.unwrap(), 0); // WAIT_OBJECT_0
+    }
+
+    extern "C" fn incrementing_thread_func(param: *mut core::ffi::c_void) -> u32 {
+        // SAFETY: Test code controls the pointer validity
+        unsafe {
+            let counter = param as *mut u32;
+            *counter += 1;
+        }
+        0
+    }
+
+    #[test]
+    fn test_thread_with_parameter() {
+        let mut platform = LinuxPlatformForWindows::new();
+        let mut counter: u32 = 0;
+        let counter_ptr = &mut counter as *mut u32 as *mut core::ffi::c_void;
+        
+        let handle = platform
+            .nt_create_thread(incrementing_thread_func, counter_ptr, 1024 * 1024)
+            .unwrap();
+        
+        // Wait for thread
+        platform.nt_wait_for_single_object(handle, u32::MAX).unwrap();
+        
+        assert_eq!(counter, 1);
+    }
+
+    #[test]
+    fn test_event_creation_and_signal() {
+        let mut platform = LinuxPlatformForWindows::new();
+        
+        // Create an event in non-signaled state
+        let event = platform.nt_create_event(false, false).unwrap();
+        
+        // Set the event
+        let result = platform.nt_set_event(event);
+        assert!(result.is_ok());
+        
+        // Wait should succeed immediately
+        let wait_result = platform.nt_wait_for_event(event, 100);
+        assert!(wait_result.is_ok());
+        assert_eq!(wait_result.unwrap(), 0); // WAIT_OBJECT_0
+    }
+
+    #[test]
+    fn test_event_manual_reset() {
+        let mut platform = LinuxPlatformForWindows::new();
+        
+        // Create a manual reset event in signaled state
+        let event = platform.nt_create_event(true, true).unwrap();
+        
+        // Wait should succeed
+        platform.nt_wait_for_event(event, 100).unwrap();
+        
+        // Wait again should still succeed (manual reset stays signaled)
+        platform.nt_wait_for_event(event, 100).unwrap();
+        
+        // Reset the event
+        platform.nt_reset_event(event).unwrap();
+        
+        // Now wait should timeout
+        let result = platform.nt_wait_for_event(event, 100).unwrap();
+        assert_eq!(result, 0x00000102); // WAIT_TIMEOUT
+    }
+
+    #[test]
+    fn test_event_auto_reset() {
+        let mut platform = LinuxPlatformForWindows::new();
+        
+        // Create an auto-reset event in signaled state
+        let event = platform.nt_create_event(false, true).unwrap();
+        
+        // First wait should succeed and auto-reset
+        let result = platform.nt_wait_for_event(event, 100).unwrap();
+        assert_eq!(result, 0); // WAIT_OBJECT_0
+        
+        // Second wait should timeout (auto-reset)
+        let result = platform.nt_wait_for_event(event, 100).unwrap();
+        assert_eq!(result, 0x00000102); // WAIT_TIMEOUT
+    }
+
+    #[test]
+    fn test_close_handles() {
+        let mut platform = LinuxPlatformForWindows::new();
+        
+        // Create thread handle
+        let thread_handle = platform
+            .nt_create_thread(simple_thread_func, std::ptr::null_mut(), 1024 * 1024)
+            .unwrap();
+        
+        // Create event handle
+        let event_handle = platform.nt_create_event(false, false).unwrap();
+        
+        // Close both handles
+        assert!(platform.nt_close_handle(thread_handle.0).is_ok());
+        assert!(platform.nt_close_handle(event_handle.0).is_ok());
+        
+        // Trying to close again should fail
+        assert!(platform.nt_close_handle(thread_handle.0).is_err());
+        assert!(platform.nt_close_handle(event_handle.0).is_err());
+    }
 }
