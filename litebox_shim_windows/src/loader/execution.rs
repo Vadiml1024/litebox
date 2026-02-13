@@ -48,7 +48,6 @@ pub struct ThreadEnvironmentBlock {
 impl ThreadEnvironmentBlock {
     /// Create a new TEB with the given stack range and PEB pointer
     pub fn new(stack_base: u64, stack_size: u64, peb_pointer: u64) -> Self {
-        
         Self {
             exception_list: 0,
             stack_base,
