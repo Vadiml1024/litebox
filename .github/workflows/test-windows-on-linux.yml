@@ -31,7 +31,8 @@ jobs:
 
       - name: Set up Rust
         run: |
-          rustup toolchain install $(awk -F'"' '/channel/{print $2}' rust-toolchain.toml) --profile minimal --no-self-update --target x86_64-pc-windows-gnu x86_64-unknown-linux-gnu
+          rustup toolchain install $(awk -F'"' '/channel/{print $2}' rust-toolchain.toml) --profile minimal --no-self-update --target x86_64-pc-windows-gnu
+          rustup target add x86_64-unknown-linux-gnu
 
       - name: Install MinGW cross-compiler
         run: |
