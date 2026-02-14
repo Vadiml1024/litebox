@@ -11,7 +11,7 @@
 use anyhow::{Result, anyhow};
 use clap::Parser;
 use litebox_platform_linux_for_windows::LinuxPlatformForWindows;
-use litebox_shim_windows::loader::PeLoader;
+use litebox_shim_windows::loader::{ExecutionContext, PeLoader, call_entry_point};
 use litebox_shim_windows::syscalls::ntdll::{NtdllApi, memory_protection};
 use litebox_shim_windows::tracing::{
     ApiCategory, FilterRule, TraceConfig, TraceFilter, TraceFormat, TraceOutput, TracedNtdllApi,
@@ -221,22 +221,62 @@ pub fn run(cli_args: CliArgs) -> Result<()> {
         println!("  Import resolution complete");
     }
 
-    // For Phase 6 demo: Show that we can do basic console I/O through the platform
-    let stdout_handle = platform.get_std_output();
-    platform.write_console(stdout_handle, "\nHello from Windows on Linux!\n")?;
+    // Set up execution context (TEB/PEB)
+    println!("\nSetting up execution context...");
+    let execution_context =
+        ExecutionContext::new(base_address, 0) // Use default stack size
+            .map_err(|e| anyhow!("Failed to create execution context: {e}"))?;
+    println!("  TEB created at: 0x{:X}", execution_context.teb_address);
+    println!(
+        "  PEB created with image base: 0x{:X}",
+        execution_context.peb.image_base_address
+    );
+    println!(
+        "  Stack range: 0x{:X} - 0x{:X} ({} KB)",
+        execution_context.stack_base,
+        execution_context.stack_base - execution_context.stack_size,
+        execution_context.stack_size / 1024
+    );
 
-    // TODO: Call PE entry point here in future enhancement
-    // For now, we've successfully loaded, relocated, and resolved imports
-    let entry_point = pe_loader.entry_point();
+    // Calculate entry point address
+    let entry_point_rva = pe_loader.entry_point();
+    let entry_point_address = base_address + entry_point_rva;
+
     println!("\n[Phase 6 Progress]");
     println!("  ✓ PE loader");
     println!("  ✓ Section loading");
     println!("  ✓ Relocation processing");
     println!("  ✓ Import resolution");
     println!("  ✓ IAT patching");
-    println!("  → Entry point at: 0x{entry_point:X} (not yet called)");
-    println!("\nNote: Entry point execution requires TEB/PEB setup and ABI translation.");
-    println!("      This will be completed in a future enhancement.");
+    println!("  ✓ TEB/PEB setup");
+    println!("  → Entry point at: 0x{entry_point_address:X}");
+
+    // Attempt to call the entry point
+    // NOTE: This will likely fail in practice because:
+    // 1. We don't have actual Windows DLL implementations (only stubs)
+    // 2. The TEB is not accessible via GS register
+    // 3. Stack setup is minimal
+    // 4. ABI translation is incomplete
+    println!("\nAttempting to call entry point...");
+    println!("WARNING: Entry point execution is experimental and may crash!");
+    println!("         Most Windows programs will fail due to missing DLL implementations.");
+
+    // Try to call the entry point
+    match unsafe { call_entry_point(entry_point_address, &execution_context) } {
+        Ok(exit_code) => {
+            println!("\n✓ Entry point executed successfully!");
+            println!("  Exit code: {exit_code}");
+        }
+        Err(e) => {
+            println!("\n✗ Entry point execution failed: {e}");
+            println!("  This is expected for most Windows programs at this stage.");
+            println!("  Full Windows API implementations are needed for actual execution.");
+        }
+    }
+
+    // For Phase 6 demo: Show that we can do basic console I/O through the platform
+    let stdout_handle = platform.get_std_output();
+    platform.write_console(stdout_handle, "\nHello from Windows on Linux!\n")?;
 
     // Clean up allocated memory
     platform.nt_free_virtual_memory(base_address, image_size)?;
