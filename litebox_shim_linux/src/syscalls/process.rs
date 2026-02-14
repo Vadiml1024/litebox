@@ -382,6 +382,19 @@ impl Task {
     ) -> Result<(), Errno> {
         match arg {
             #[cfg(target_arch = "x86_64")]
+            ArchPrctlArg::SetGs(addr) => {
+                let punchthrough = litebox_common_linux::PunchthroughSyscall::SetGsBase { addr };
+                let token = self
+                    .global
+                    .platform
+                    .get_punchthrough_token_for(punchthrough)
+                    .expect("Failed to get punchthrough token for SET_GS");
+                token.execute().map(|_| ()).map_err(|e| match e {
+                    litebox::platform::PunchthroughError::Failure(errno) => errno,
+                    _ => unimplemented!("Unsupported punchthrough error {:?}", e),
+                })
+            }
+            #[cfg(target_arch = "x86_64")]
             ArchPrctlArg::SetFs(addr) => {
                 let punchthrough = litebox_common_linux::PunchthroughSyscall::SetFsBase { addr };
                 let token = self
@@ -407,6 +420,21 @@ impl Task {
                     _ => unimplemented!("Unsupported punchthrough error {:?}", e),
                 })?;
                 addr.write_at_offset(0, fsbase).ok_or(Errno::EFAULT)?;
+                Ok(())
+            }
+            #[cfg(target_arch = "x86_64")]
+            ArchPrctlArg::GetGs(addr) => {
+                let punchthrough = litebox_common_linux::PunchthroughSyscall::GetGsBase;
+                let token = self
+                    .global
+                    .platform
+                    .get_punchthrough_token_for(punchthrough)
+                    .expect("Failed to get punchthrough token for GET_GS");
+                let gsbase = token.execute().map_err(|e| match e {
+                    litebox::platform::PunchthroughError::Failure(errno) => errno,
+                    _ => unimplemented!("Unsupported punchthrough error {:?}", e),
+                })?;
+                addr.write_at_offset(0, gsbase).ok_or(Errno::EFAULT)?;
                 Ok(())
             }
             ArchPrctlArg::CETStatus | ArchPrctlArg::CETDisable | ArchPrctlArg::CETLock => {
