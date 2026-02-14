@@ -10,9 +10,9 @@ extern crate alloc;
 
 use alloc::boxed::Box;
 use litebox::platform::RawConstPointer as _;
-use litebox_common_linux::{PtRegs, errno::Errno};
+use litebox_common_linux::{errno::Errno, PtRegs};
 use modular_bitfield::prelude::*;
-use modular_bitfield::specifiers::{B8, B54};
+use modular_bitfield::specifiers::{B54, B8};
 use num_enum::TryFromPrimitive;
 use syscall_nr::{LdelfSyscallNr, TeeSyscallNr};
 use zerocopy::{FromBytes, IntoBytes};

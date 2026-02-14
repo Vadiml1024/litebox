@@ -7,7 +7,7 @@
 
 use windows_sys::Win32::Storage::FileSystem;
 
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use clap::Parser;
 use litebox::fs::FileSystem as _;
 use litebox_platform_multiplex::Platform;

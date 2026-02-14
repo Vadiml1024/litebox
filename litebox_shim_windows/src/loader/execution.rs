@@ -240,7 +240,7 @@ impl ExecutionContext {
 /// # Returns
 /// The exit code returned by the entry point, or an error if execution fails
 pub unsafe fn call_entry_point(
-    entry_point_address: u64,
+    entry_point_address: usize,
     _context: &ExecutionContext,
 ) -> Result<i32> {
     // Validate entry point is not null
@@ -265,9 +265,9 @@ pub unsafe fn call_entry_point(
     // entry point can be called with no arguments and returns an int.
     // Real Windows entry points have different signatures.
     //
-    // SAFETY: We're transmuting a u64 to a function pointer, which is inherently unsafe.
+    // SAFETY: We're transmuting a usize to a function pointer, which is inherently unsafe.
     // The caller must ensure the address points to valid, executable code.
-    let entry_fn = unsafe { std::mem::transmute::<u64, EntryPointFn>(entry_point_address) };
+    let entry_fn = unsafe { core::mem::transmute::<usize, EntryPointFn>(entry_point_address) };
 
     // Call the entry point
     // NOTE: This will almost certainly crash in practice because:

@@ -6,11 +6,11 @@
 //! This module provides a wrapper that intercepts NTDLL API calls
 //! for tracing purposes.
 
-use crate::Result;
 use crate::syscalls::ntdll::{
     ConsoleHandle, EventHandle, FileHandle, NtdllApi, RegKeyHandle, ThreadEntryPoint, ThreadHandle,
 };
 use crate::tracing::{ApiCategory, TraceEvent, Tracer};
+use crate::Result;
 use std::sync::Arc;
 
 /// Wrapper for NtdllApi that adds tracing

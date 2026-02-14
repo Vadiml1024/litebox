@@ -1,7 +1,7 @@
 [package]
 name = "dev_tests"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
 
 # All dependencies here are dev dependencies, because this is just purely tests.
 [dev-dependencies]

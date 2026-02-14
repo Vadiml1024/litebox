@@ -20,14 +20,15 @@ use litebox_platform_lvbs::{
     host::{bootparam::get_vtl1_memory_info, per_cpu_variables::allocate_per_cpu_variables},
     mm::MemoryProvider,
     mshv::{
-        NUM_VTLCALL_PARAMS, VsmFunction, hvcall,
+        hvcall,
         vsm::vsm_dispatch,
         vsm_intercept::raise_vtl0_gp_fault,
-        vtl_switch::{vtl_switch, vtl_switch_init},
         vtl1_mem_layout::{
-            VTL1_INIT_HEAP_SIZE, VTL1_INIT_HEAP_START_PAGE, VTL1_PML4E_PAGE,
-            VTL1_PRE_POPULATED_MEMORY_SIZE, get_heap_start_address,
+            get_heap_start_address, VTL1_INIT_HEAP_SIZE, VTL1_INIT_HEAP_START_PAGE,
+            VTL1_PML4E_PAGE, VTL1_PRE_POPULATED_MEMORY_SIZE,
         },
+        vtl_switch::{vtl_switch, vtl_switch_init},
+        VsmFunction, NUM_VTLCALL_PARAMS,
     },
     serial_println,
 };

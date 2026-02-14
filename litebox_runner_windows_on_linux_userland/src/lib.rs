@@ -8,11 +8,11 @@
 
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use clap::Parser;
 use litebox_platform_linux_for_windows::LinuxPlatformForWindows;
-use litebox_shim_windows::loader::{ExecutionContext, PeLoader, call_entry_point};
-use litebox_shim_windows::syscalls::ntdll::{NtdllApi, memory_protection};
+use litebox_shim_windows::loader::{call_entry_point, ExecutionContext, PeLoader};
+use litebox_shim_windows::syscalls::ntdll::{memory_protection, NtdllApi};
 use litebox_shim_windows::tracing::{
     ApiCategory, FilterRule, TraceConfig, TraceFilter, TraceFormat, TraceOutput, TracedNtdllApi,
     Tracer,

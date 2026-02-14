@@ -5,12 +5,12 @@
 
 use litebox::{
     mm::linux::{
-        CreatePagesFlags, MappingError, NonZeroAddress, NonZeroPageSize, PAGE_SIZE, VmemUnmapError,
+        CreatePagesFlags, MappingError, NonZeroAddress, NonZeroPageSize, VmemUnmapError, PAGE_SIZE,
     },
-    platform::{RawConstPointer, page_mgmt::DeallocationError},
+    platform::{page_mgmt::DeallocationError, RawConstPointer},
 };
 
-use crate::{MRemapFlags, MapFlags, ProtFlags, errno::Errno};
+use crate::{errno::Errno, MRemapFlags, MapFlags, ProtFlags};
 
 const PAGE_MASK: usize = !(PAGE_SIZE - 1);
 

@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-use anyhow::{Result, bail};
+use anyhow::{bail, Result};
 use fs::File;
 use fs_err as fs;
 use std::io::BufRead as _;

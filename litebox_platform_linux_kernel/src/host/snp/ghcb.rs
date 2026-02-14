@@ -4,8 +4,8 @@
 use litebox::utils::TruncateExt as _;
 
 use crate::arch::{
-    PhysAddr, VirtAddr,
     instructions::{rdmsr, vc_vmgexit, wrmsr},
+    PhysAddr, VirtAddr,
 };
 
 // GHCB MSR
@@ -63,7 +63,11 @@ fn ghcb_msr_call(request: u64) -> u64 {
 }
 
 fn num_to_char(n: u8) -> u8 {
-    if n < 10 { n + b'0' } else { n - 10 + b'a' }
+    if n < 10 {
+        n + b'0'
+    } else {
+        n - 10 + b'a'
+    }
 }
 
 pub fn num_to_buf(buf: &mut [u8; 40], mut n: u64, base: u64) -> usize {

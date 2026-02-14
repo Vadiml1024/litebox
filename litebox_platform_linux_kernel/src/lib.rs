@@ -17,8 +17,8 @@ use litebox::platform::{
     UnblockedOrTimedOut,
 };
 use litebox::platform::{RawMutex as _, RawPointerProvider};
-use litebox_common_linux::PunchthroughSyscall;
 use litebox_common_linux::errno::Errno;
+use litebox_common_linux::PunchthroughSyscall;
 
 extern crate alloc;
 
