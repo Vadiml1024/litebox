@@ -72,7 +72,7 @@ jobs:
           EXIT_CODE=$?
           set -e
           
-          # Display output
+          # Display first 60 lines of output for debugging
           head -60 /tmp/pe_test_output.txt
           echo ""
           
@@ -99,7 +99,7 @@ jobs:
           EXIT_CODE=$?
           set -e
           
-          # Display output
+          # Display first 80 lines of output (more than PE test to show tracing)
           head -80 /tmp/trace_test_output.txt
           echo ""
           
@@ -122,7 +122,7 @@ jobs:
           EXIT_CODE=$?
           set -e
           
-          # Display output
+          # Display first 40 lines of output (shorter since GUI binary similar to CLI)
           head -40 /tmp/gui_test_output.txt
           echo ""
           
