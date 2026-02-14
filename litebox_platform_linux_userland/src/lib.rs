@@ -375,6 +375,9 @@ guest_context_top:
 .globl guest_fsbase
 guest_fsbase:
     .quad 0
+.globl guest_gsbase
+guest_gsbase:
+    .quad 0
 in_guest:
     .byte 0
 .globl interrupt
@@ -400,6 +403,30 @@ fn get_guest_fsbase() -> usize {
     unsafe {
         core::arch::asm! {
             "mov {}, fs:guest_fsbase@tpoff",
+            out(reg) value,
+            options(nostack, preserves_flags)
+        }
+    }
+    value
+}
+
+#[cfg(target_arch = "x86_64")]
+fn set_guest_gsbase(value: usize) {
+    unsafe {
+        core::arch::asm! {
+            "mov fs:guest_gsbase@tpoff, {}",
+            in(reg) value,
+            options(nostack, preserves_flags)
+        }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn get_guest_gsbase() -> usize {
+    let value: usize;
+    unsafe {
+        core::arch::asm! {
+            "mov {}, fs:guest_gsbase@tpoff",
             out(reg) value,
             options(nostack, preserves_flags)
         }
@@ -1178,12 +1205,19 @@ impl<'a> litebox::platform::PunchthroughToken for PunchthroughToken<'a> {
         match self.punchthrough {
             // We swap gs and fs before and after a syscall so at this point guest's fs base is stored in gs
             #[cfg(target_arch = "x86_64")]
+            PunchthroughSyscall::SetGsBase { addr } => {
+                set_guest_gsbase(addr);
+                Ok(0)
+            }
+            #[cfg(target_arch = "x86_64")]
             PunchthroughSyscall::SetFsBase { addr } => {
                 set_guest_fsbase(addr);
                 Ok(0)
             }
             #[cfg(target_arch = "x86_64")]
             PunchthroughSyscall::GetFsBase => Ok(get_guest_fsbase()),
+            #[cfg(target_arch = "x86_64")]
+            PunchthroughSyscall::GetGsBase => Ok(get_guest_gsbase()),
             #[cfg(target_arch = "x86")]
             PunchthroughSyscall::SetThreadArea { user_desc } => {
                 set_thread_area(user_desc).map_err(litebox::platform::PunchthroughError::Failure)

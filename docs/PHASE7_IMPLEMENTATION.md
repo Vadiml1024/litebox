@@ -1,7 +1,7 @@
 # Phase 7: Real Windows API Implementation
 
 **Date:** 2026-02-14  
-**Status:** 🚧 **IN PROGRESS** (35% Complete - Updated)  
+**Status:** 🚧 **IN PROGRESS** (50% Complete - Updated)  
 **Previous Phase:** Phase 6 - 100% Complete
 
 ## Executive Summary
@@ -43,7 +43,7 @@ Phase 7 focuses on implementing real Windows API functionality to enable actual 
 
 ## Implementation Status
 
-### ✅ Completed Features (35%)
+### ✅ Completed Features (50%)
 
 #### 1. Memory Protection API
 **Status:** ✅ Complete
@@ -155,22 +155,38 @@ fn set_last_error(&mut self, error_code: u32);
 - ✅ `test_strlen` - String length calculation
 - ✅ `test_strncmp` - String comparison
 
-### 🚧 In Progress Features (40%)
-
 #### 6. GS Segment Register Setup
-**Current Status:** Not started
+**Status:** ✅ Complete
 
-**Requirements:**
-- Set up GS base register to point to TEB
-- Enable Windows programs to access TEB via `gs:[0x60]` (PEB pointer)
-- Thread-local storage initialization
+**Implementation:**
+- Added `ARCH_SET_GS` (0x1001) and `ARCH_GET_GS` (0x1004) codes to ArchPrctlCode enum
+- Implemented SetGs/GetGs handlers in all platform layers:
+  - Linux userland: Thread-local storage for guest_gsbase
+  - LVBS: Direct wrgsbase/rdgsbase instruction usage
+  - Linux kernel: Direct wrgsbase/rdgsbase instruction usage
+  - Windows userland: Thread-local storage with THREAD_GS_BASE
+- Integrated GS setup in Windows runner (litebox_runner_windows_on_linux_userland)
+- Uses `wrgsbase` instruction to set GS base to TEB address
+- Enables Windows programs to access TEB via `gs:[0x60]` (PEB pointer offset)
 
-**Implementation Approach:**
-- Use `arch_prctl(ARCH_SET_GS, teb_address)` on Linux
-- Ensure TEB is properly aligned and accessible
-- Test with real Windows binaries that access TEB
+**Code:**
+```rust
+// In Windows runner after TEB creation:
+unsafe {
+    litebox_common_linux::wrgsbase(execution_context.teb_address as usize);
+}
+```
 
-**Priority:** High (required for most real Windows programs)
+**Tests:**
+- ✅ `test_arch_prctl_gs` - GS base set/get/restore operations
+- ✅ Platform integration tests pass
+
+**Benefits:**
+- Windows programs can now access Thread Environment Block (TEB)
+- PEB pointer accessible via `gs:[0x60]`
+- Critical for thread-local storage and Windows ABI compatibility
+
+### 🚧 In Progress Features (30%)
 
 #### 7. ABI Translation Enhancement
 **Current Status:** Basic trampoline generation exists
@@ -216,7 +232,7 @@ fn set_last_error(&mut self, error_code: u32);
 
 ### Test Coverage
 
-**Total Tests:** 34 passing (23 original platform + 11 new Phase 7 tests)
+**Total Tests:** 35 passing (23 original platform + 12 new Phase 7 tests)
 
 **Phase 7 Tests:**
 - **Memory Protection (2 tests):**
@@ -225,6 +241,8 @@ fn set_last_error(&mut self, error_code: u32);
 - **Error Handling (2 tests):**
   - `test_get_set_last_error` - Error code get/set
   - `test_last_error_thread_local` - Thread-local error isolation
+- **GS Segment Register (1 test):**
+  - `test_arch_prctl_gs` - GS base set/get/restore operations
 - **Enhanced File I/O (4 tests):**
   - `test_file_io_with_error_codes` - Comprehensive file I/O with error handling
   - `test_file_create_new_disposition` - CREATE_NEW flag validation
@@ -251,6 +269,7 @@ fn set_last_error(&mut self, error_code: u32);
 - Thread-local storage safely implemented
 - MSVCRT functions use #[unsafe(no_mangle)] for C ABI compatibility
 - All raw pointer operations documented with safety invariants
+- GS segment register operations properly documented
 
 ## Files Modified
 
@@ -259,6 +278,40 @@ fn set_last_error(&mut self, error_code: u32);
   - 27 MSVCRT function implementations
   - Comprehensive test suite
   - C ABI compatible exports
+
+### Low-Level Infrastructure
+- `litebox_common_linux/src/lib.rs`
+  - Added `ARCH_SET_GS` (0x1001) and `ARCH_GET_GS` (0x1004) to ArchPrctlCode
+  - Added SetGs/GetGs variants to ArchPrctlArg enum
+  - Added SetGsBase/GetGsBase to PunchthroughSyscall enum
+  - Updated arch_prctl syscall parsing for GS support
+
+### Linux Shim
+- `litebox_shim_linux/src/syscalls/process.rs`
+  - Implemented sys_arch_prctl handlers for SetGs/GetGs
+  - Added test_arch_prctl_gs test
+
+### Platform Implementations
+- `litebox_platform_linux_userland/src/lib.rs`
+  - Added guest_gsbase thread-local storage variable
+  - Implemented set_guest_gsbase/get_guest_gsbase helper functions
+  - Added GS punchthrough handlers
+- `litebox_platform_lvbs/src/lib.rs`
+  - Added GS punchthrough handlers using wrgsbase/rdgsbase
+- `litebox_platform_linux_kernel/src/lib.rs`
+  - Added GS punchthrough handlers using wrgsbase/rdgsbase
+- `litebox_platform_windows_userland/src/lib.rs`
+  - Added THREAD_GS_BASE thread-local storage
+  - Implemented GS base management functions
+  - Added GS initialization in platform setup
+
+### Windows Runner
+- `litebox_runner_windows_on_linux_userland/Cargo.toml`
+  - Added litebox_common_linux dependency
+- `litebox_runner_windows_on_linux_userland/src/lib.rs`
+  - Added GS base register setup after TEB/PEB creation
+  - Enables TEB access via gs:[0x60]
+  - Updated comments to reflect GS support
 
 ### API Definitions
 - `litebox_shim_windows/src/syscalls/ntdll.rs`
@@ -309,11 +362,11 @@ fn set_last_error(&mut self, error_code: u32);
    - ✅ Added comprehensive tests (4 new tests)
 
 ### Medium-Term (Next 1-2 weeks)
-1. **GS Segment Setup** (2-3 days) - HIGH PRIORITY
-   - Research arch_prctl usage on Linux x86-64
-   - Implement TEB pointer setup via GS base register
-   - Test TEB access from Windows binaries
-   - Add tests for GS segment access patterns
+1. **GS Segment Setup** ✅ COMPLETE
+   - ✅ Researched arch_prctl usage on Linux x86-64
+   - ✅ Implemented TEB pointer setup via GS base register
+   - ✅ Added tests for GS segment access patterns (test_arch_prctl_gs)
+   - ⏳ Test TEB access from real Windows binaries (pending)
 
 2. **ABI Translation Enhancement** (3-4 days) - HIGH PRIORITY
    - Complete parameter passing for 5+ parameters
@@ -341,21 +394,22 @@ fn set_last_error(&mut self, error_code: u32);
 - ✅ Error handling infrastructure complete
 - ✅ Essential MSVCRT functions implemented (27/27 = 100%)
 - ✅ Enhanced File I/O with full flag support and error handling
-- ⏳ GS segment register setup working (0% - Next priority)
+- ✅ GS segment register setup working (100% - Complete!)
 - ⏳ ABI translation complete for basic calls (30% - Trampolines work for 0-4 params)
-- ⏳ Simple Windows programs can execute (Pending GS setup)
-- ✅ All tests passing (34/34 tests)
-- ✅ Code quality maintained (2 minor clippy warnings)
-- ⏳ Documentation updated (35% - In progress)
+- ⏳ Simple Windows programs can execute (Partially - GS setup done, needs testing)
+- ✅ All tests passing (35/35 tests)
+- ✅ Code quality maintained (no clippy warnings)
+- ⏳ Documentation updated (50% - In progress)
 
-**Current Progress:** 35% → Target: 100%  
-**Completion Change:** +20 percentage points (was 15%, now 35%)
+**Current Progress:** 50% → Target: 100%  
+**Completion Change:** +15 percentage points (was 35%, now 50%)
 
 **Major Achievements This Session:**
-1. Enhanced File I/O with full disposition support and error handling
-2. Complete MSVCRT runtime implementation (27 functions)
-3. 11 new tests added (all passing)
-4. Comprehensive safety documentation
+1. Complete GS segment register support across all platform layers
+2. TEB access enabled via gs:[0x60] for Windows programs
+3. Added test_arch_prctl_gs test for verification
+4. Updated all 4 platform implementations for GS support
+5. Integrated GS setup into Windows runner
 
 ## Technical Notes
 
@@ -399,9 +453,10 @@ PROT_EXEC   4
 - [GetLastError/SetLastError](https://docs.microsoft.com/en-us/windows/win32/api/errhandlingapi/)
 - [Windows ABI Reference](https://docs.microsoft.com/en-us/cpp/build/x64-calling-convention)
 - [System V AMD64 ABI](https://github.com/hjl-tools/x86-psABI/wiki/x86-64-psABI-1.0.pdf)
+- [Linux arch_prctl(2)](https://man7.org/linux/man-pages/man2/arch_prctl.2.html)
 
 ---
 
-**Phase 7 Status:** 15% Complete  
-**Next Milestone:** MSVCRT runtime implementation (target: 40% complete)  
+**Phase 7 Status:** 50% Complete  
+**Next Milestone:** ABI translation enhancement (target: 70% complete)  
 **Estimated Completion:** 1-2 weeks

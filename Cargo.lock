@@ -1080,6 +1080,7 @@ dependencies = [
  "anyhow",
  "clap",
  "litebox",
+ "litebox_common_linux",
  "litebox_platform_linux_for_windows",
  "litebox_shim_windows",
 ]

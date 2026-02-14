@@ -243,6 +243,22 @@ pub fn run(cli_args: CliArgs) -> Result<()> {
         execution_context.stack_size / 1024
     );
 
+    // Set up GS segment register to point to TEB for Windows ABI compatibility
+    println!("\nConfiguring GS segment register for TEB access...");
+    // Set GS base to TEB address using the wrgsbase instruction
+    // This enables Windows programs to access TEB via gs:[0x60] (PEB pointer offset)
+    // SAFETY: We're setting the GS base to a valid TEB address that we just allocated.
+    // The TEB structure is properly initialized with valid pointers.
+    // On x86_64 systems (required by this crate), u64 addresses fit in usize without truncation.
+    #[allow(clippy::cast_possible_truncation)]
+    unsafe {
+        litebox_common_linux::wrgsbase(execution_context.teb_address as usize);
+    }
+    println!(
+        "  GS base register set to TEB address: 0x{:X}",
+        execution_context.teb_address
+    );
+
     // Calculate entry point address
     let entry_point_rva = pe_loader.entry_point();
     let entry_point_address = base_address + entry_point_rva;
@@ -259,9 +275,8 @@ pub fn run(cli_args: CliArgs) -> Result<()> {
     // Attempt to call the entry point
     // NOTE: This will likely fail in practice because:
     // 1. We don't have actual Windows DLL implementations (only stubs)
-    // 2. The TEB is not accessible via GS register
-    // 3. Stack setup is minimal
-    // 4. ABI translation is incomplete
+    // 2. Stack setup is minimal
+    // 3. ABI translation is incomplete
     println!("\nAttempting to call entry point...");
     println!("WARNING: Entry point execution is experimental and may crash!");
     println!("         Most Windows programs will fail due to missing DLL implementations.");
