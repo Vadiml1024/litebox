@@ -42,15 +42,36 @@ The resulting executables will be in:
 
 ## Testing
 
-These programs can be used to test the Windows-on-Linux runner:
+These programs can be used to test the Windows-on-Linux runner once the DLL loading and API implementation is complete:
 
 ```bash
-# Run the CLI program
-./litebox_runner_windows_on_linux_userland hello_cli.exe
+# Build the runner
+cd /home/runner/work/litebox/litebox
+cargo build -p litebox_runner_windows_on_linux_userland
+
+# Run the CLI program (requires Windows API implementation to be complete)
+./target/debug/litebox_runner_windows_on_linux_userland ./windows_test_programs/target/x86_64-pc-windows-gnu/release/hello_cli.exe
 
 # Run the GUI program (if GUI support is implemented)
-./litebox_runner_windows_on_linux_userland hello_gui.exe
+./target/debug/litebox_runner_windows_on_linux_userland ./windows_test_programs/target/x86_64-pc-windows-gnu/release/hello_gui.exe
 ```
+
+### Current Status
+
+As of the last update, the Windows-on-Linux platform can:
+- ✅ Load and parse PE executables
+- ✅ Apply relocations
+- ⚠️ Import resolution requires Windows DLLs to be available
+
+When running the test programs, you'll see output like:
+```
+Loaded PE binary: ./windows_test_programs/target/x86_64-pc-windows-gnu/release/hello_cli.exe
+  Entry point: 0x1410
+  Image base: 0x140000000
+  Sections: 10
+```
+
+This confirms the PE loader is working correctly. Full execution will be possible once DLL loading is implemented.
 
 ## Purpose
 
