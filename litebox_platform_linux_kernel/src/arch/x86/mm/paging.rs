@@ -2,28 +2,28 @@
 // Licensed under the MIT license.
 
 use litebox::mm::linux::{PageFaultError, PageRange, VmFlags, VmemPageFaultHandler};
-use litebox::platform::{page_mgmt, RawConstPointer as _};
+use litebox::platform::{RawConstPointer as _, page_mgmt};
 use x86_64::{
+    PhysAddr, VirtAddr,
     structures::{
         idt::PageFaultErrorCode,
         paging::{
+            FrameAllocator, FrameDeallocator, MappedPageTable, Mapper, Page, PageSize, PageTable,
+            PageTableFlags, PhysFrame, Size4KiB, Translate,
             mapper::{
                 FlagUpdateError, MapToError, PageTableFrameMapping, TranslateResult,
                 UnmapError as X64UnmapError,
             },
-            FrameAllocator, FrameDeallocator, MappedPageTable, Mapper, Page, PageSize, PageTable,
-            PageTableFlags, PhysFrame, Size4KiB, Translate,
         },
     },
-    PhysAddr, VirtAddr,
 };
 
 use crate::{
-    mm::{
-        pgtable::{PageTableAllocator, PageTableImpl},
-        MemoryProvider,
-    },
     UserMutPtr,
+    mm::{
+        MemoryProvider,
+        pgtable::{PageTableAllocator, PageTableImpl},
+    },
 };
 
 #[cfg(not(test))]

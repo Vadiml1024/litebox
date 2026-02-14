@@ -13,6 +13,6 @@ pub mod pe;
 
 pub use dll::{DllFunction, DllHandle, DllManager};
 pub use execution::{
-    call_entry_point, ExecutionContext, ProcessEnvironmentBlock, ThreadEnvironmentBlock,
+    ExecutionContext, ProcessEnvironmentBlock, ThreadEnvironmentBlock, call_entry_point,
 };
 pub use pe::PeLoader;

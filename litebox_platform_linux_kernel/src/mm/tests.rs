@@ -7,28 +7,29 @@ use alloc::vec;
 use alloc::vec::Vec;
 use arrayvec::ArrayVec;
 use litebox::{
+    LiteBox,
     mm::{
+        PageManager,
         allocator::SafeZoneAllocator,
         linux::{
-            CreatePagesFlags, NonZeroAddress, NonZeroPageSize, PageFaultError, PageRange, VmFlags,
-            PAGE_SIZE,
+            CreatePagesFlags, NonZeroAddress, NonZeroPageSize, PAGE_SIZE, PageFaultError,
+            PageRange, VmFlags,
         },
-        PageManager,
     },
     platform::RawConstPointer,
-    LiteBox,
 };
 use spin::mutex::SpinMutex;
 
 use crate::{
+    HostInterface, UserMutPtr,
     arch::{
-        mm::paging::{vmflags_to_pteflags, X64PageTable},
         MappedFrame, Page, PageFaultErrorCode, PageTableFlags, PhysAddr, Size4KiB, TranslateResult,
         VirtAddr,
+        mm::paging::{X64PageTable, vmflags_to_pteflags},
     },
     host::mock::{MockHostInterface, MockKernel},
-    mm::{pgtable::PageTableAllocator, MemoryProvider},
-    mock_log_println, HostInterface, UserMutPtr,
+    mm::{MemoryProvider, pgtable::PageTableAllocator},
+    mock_log_println,
 };
 
 use super::pgtable::PageTableImpl;
@@ -160,12 +161,14 @@ fn test_page_table() {
     let new_vmflags = VmFlags::empty();
     let new_pteflags = vmflags_to_pteflags(new_vmflags) | PageTableFlags::PRESENT;
     unsafe {
-        assert!(pgtable
-            .mprotect_pages(
-                PageRange::new(start_addr + 2 * PAGE_SIZE, start_addr + 6 * PAGE_SIZE).unwrap(),
-                new_vmflags
-            )
-            .is_ok());
+        assert!(
+            pgtable
+                .mprotect_pages(
+                    PageRange::new(start_addr + 2 * PAGE_SIZE, start_addr + 6 * PAGE_SIZE).unwrap(),
+                    new_vmflags
+                )
+                .is_ok()
+        );
     }
     for page in PageRange::<PAGE_SIZE>::new(start_addr, start_addr + 2 * PAGE_SIZE).unwrap() {
         check_flags(&pgtable, page, pteflags);
@@ -179,12 +182,14 @@ fn test_page_table() {
     // remap pages
     let new_addr: usize = 0x20_1000;
     unsafe {
-        assert!(pgtable
-            .remap_pages(
-                PageRange::new(start_addr, start_addr + 2 * PAGE_SIZE).unwrap(),
-                PageRange::new(new_addr, new_addr + 2 * PAGE_SIZE).unwrap()
-            )
-            .is_ok());
+        assert!(
+            pgtable
+                .remap_pages(
+                    PageRange::new(start_addr, start_addr + 2 * PAGE_SIZE).unwrap(),
+                    PageRange::new(new_addr, new_addr + 2 * PAGE_SIZE).unwrap()
+                )
+                .is_ok()
+        );
     }
     for page in PageRange::<PAGE_SIZE>::new(start_addr, start_addr + 2 * PAGE_SIZE).unwrap() {
         assert!(matches!(
@@ -241,13 +246,15 @@ fn test_vmm_page_fault() {
     ));
 
     // Access non-present page w/ mapping
-    assert!(unsafe {
-        vmm.handle_page_fault(
-            start_addr + 2 * PAGE_SIZE,
-            PageFaultErrorCode::USER_MODE.bits(),
-        )
-    }
-    .is_ok());
+    assert!(
+        unsafe {
+            vmm.handle_page_fault(
+                start_addr + 2 * PAGE_SIZE,
+                PageFaultErrorCode::USER_MODE.bits(),
+            )
+        }
+        .is_ok()
+    );
 
     // insert stack mapping
     let stack_addr: usize = 0x1000_0000;
@@ -265,10 +272,12 @@ fn test_vmm_page_fault() {
     }
     // [0x1_0000, 0x1_4000), [0x1000_0000, 0x1000_4000)
     // Test stack growth
-    assert!(unsafe {
-        vmm.handle_page_fault(stack_addr - PAGE_SIZE, PageFaultErrorCode::USER_MODE.bits())
-    }
-    .is_ok());
+    assert!(
+        unsafe {
+            vmm.handle_page_fault(stack_addr - PAGE_SIZE, PageFaultErrorCode::USER_MODE.bits())
+        }
+        .is_ok()
+    );
     assert_eq!(
         vmm.mappings()
             .iter()

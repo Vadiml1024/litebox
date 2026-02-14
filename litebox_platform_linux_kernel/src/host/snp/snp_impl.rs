@@ -28,8 +28,8 @@ type ArgsArray = [u64; MAX_ARGS_SIZE];
 
 #[cfg(not(test))]
 mod alloc {
-    use crate::mm::MemoryProvider;
     use crate::HostInterface;
+    use crate::mm::MemoryProvider;
     use litebox::utils::TruncateExt as _;
 
     const HEAP_ORDER: usize = super::bindings::SNP_VMPL_ALLOC_MAX_ORDER as usize + 12 + 1;

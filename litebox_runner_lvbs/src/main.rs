@@ -10,7 +10,7 @@ use litebox_platform_lvbs::{
     arch::{enable_extended_states, enable_fsgsbase, get_core_id, instrs::hlt_loop},
     host::{
         bootparam::parse_boot_info,
-        per_cpu_variables::{init_per_cpu_variables, PerCpuVariablesAsm},
+        per_cpu_variables::{PerCpuVariablesAsm, init_per_cpu_variables},
     },
     mm::MemoryProvider,
     serial_println,

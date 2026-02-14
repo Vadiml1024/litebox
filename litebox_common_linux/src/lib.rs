@@ -3215,10 +3215,6 @@ impl<T: FromBytes, P: RawConstPointer<T>>
     ReinterpretUsizeAsPtr<core::marker::PhantomData<(bool, T)>> for Option<P>
 {
     fn reinterpret_usize_as_ptr(v: usize) -> Self {
-        if v == 0 {
-            None
-        } else {
-            Some(P::from_usize(v))
-        }
+        if v == 0 { None } else { Some(P::from_usize(v)) }
     }
 }

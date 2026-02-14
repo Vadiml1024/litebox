@@ -4,7 +4,7 @@
 //! This crate only makes sense in testing mode
 #![cfg(test)]
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use std::path::PathBuf;
 
 mod boilerplate;
