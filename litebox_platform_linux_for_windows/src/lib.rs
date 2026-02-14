@@ -9,6 +9,8 @@
 
 extern crate std;
 
+pub mod msvcrt;
+
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
@@ -229,13 +231,12 @@ impl LinuxPlatformForWindows {
     /// NtReadFile - Read from a file (internal implementation)
     fn nt_read_file_impl(&mut self, handle: u64, buffer: &mut [u8]) -> Result<usize> {
         let mut state = self.state.lock().unwrap();
-        let file = match state.handles.get_mut(&handle) {
-            Some(f) => f,
-            None => {
-                drop(state);
-                self.set_last_error_impl(windows_errors::ERROR_INVALID_HANDLE);
-                return Err(PlatformError::InvalidHandle(handle));
-            }
+        let file = if let Some(f) = state.handles.get_mut(&handle) {
+            f
+        } else {
+            drop(state);
+            self.set_last_error_impl(windows_errors::ERROR_INVALID_HANDLE);
+            return Err(PlatformError::InvalidHandle(handle));
         };
 
         let result = file.read(buffer);
@@ -256,13 +257,12 @@ impl LinuxPlatformForWindows {
     /// NtWriteFile - Write to a file (internal implementation)
     fn nt_write_file_impl(&mut self, handle: u64, buffer: &[u8]) -> Result<usize> {
         let mut state = self.state.lock().unwrap();
-        let file = match state.handles.get_mut(&handle) {
-            Some(f) => f,
-            None => {
-                drop(state);
-                self.set_last_error_impl(windows_errors::ERROR_INVALID_HANDLE);
-                return Err(PlatformError::InvalidHandle(handle));
-            }
+        let file = if let Some(f) = state.handles.get_mut(&handle) {
+            f
+        } else {
+            drop(state);
+            self.set_last_error_impl(windows_errors::ERROR_INVALID_HANDLE);
+            return Err(PlatformError::InvalidHandle(handle));
         };
 
         let result = file.write(buffer);

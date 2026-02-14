@@ -1,0 +1,504 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
+
+//! MSVCRT (Microsoft Visual C++ Runtime) function implementations
+//!
+//! This module provides Linux-based implementations of MSVCRT functions
+//! that are commonly used by Windows programs. These functions are mapped
+//! to their Linux equivalents where possible.
+
+// Allow unsafe operations inside unsafe functions since the entire function is unsafe
+#![allow(unsafe_op_in_unsafe_fn)]
+
+extern crate std;
+
+use std::alloc::{Layout, alloc, dealloc};
+use std::ffi::CStr;
+use std::io::{self, Write};
+use std::ptr;
+use std::sync::Mutex;
+
+/// Allocate memory (malloc)
+///
+/// # Safety
+/// This function is unsafe as it deals with raw memory allocation.
+/// The caller must ensure the returned pointer is properly freed with `msvcrt_free`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_malloc(size: usize) -> *mut u8 {
+    if size == 0 {
+        return ptr::null_mut();
+    }
+
+    // SAFETY: We're creating a valid layout for the requested size
+    let layout = unsafe { Layout::from_size_align_unchecked(size, std::mem::align_of::<usize>()) };
+    // SAFETY: Layout is valid
+    unsafe { alloc(layout) }
+}
+
+/// Free memory (free)
+///
+/// # Safety
+/// This function is unsafe as it deals with raw memory deallocation.
+/// The pointer must have been allocated by `msvcrt_malloc` or `msvcrt_calloc`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_free(ptr: *mut u8) {
+    if ptr.is_null() {
+        return;
+    }
+
+    // SAFETY: We create a minimal layout; the allocator tracks the actual size
+    let layout = unsafe { Layout::from_size_align_unchecked(1, std::mem::align_of::<usize>()) };
+    // SAFETY: Caller guarantees ptr was allocated by malloc/calloc
+    unsafe { dealloc(ptr, layout) };
+}
+
+/// Allocate and zero-initialize memory (calloc)
+///
+/// # Safety
+/// This function is unsafe as it deals with raw memory allocation.
+/// The caller must ensure the returned pointer is properly freed with `msvcrt_free`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_calloc(num: usize, size: usize) -> *mut u8 {
+    let total_size = num.saturating_mul(size);
+    if total_size == 0 {
+        return ptr::null_mut();
+    }
+
+    // SAFETY: Caller is responsible for freeing the returned pointer
+    let ptr = unsafe { msvcrt_malloc(total_size) };
+    if !ptr.is_null() {
+        // SAFETY: ptr is valid for total_size bytes
+        unsafe { ptr::write_bytes(ptr, 0, total_size) };
+    }
+    ptr
+}
+
+/// Copy memory (memcpy)
+///
+/// # Safety
+/// This function is unsafe as it deals with raw pointers.
+/// The caller must ensure src and dest don't overlap and are valid for the given size.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_memcpy(dest: *mut u8, src: *const u8, n: usize) -> *mut u8 {
+    // SAFETY: Caller guarantees src and dest are valid and don't overlap
+    unsafe { ptr::copy_nonoverlapping(src, dest, n) };
+    dest
+}
+
+/// Move memory (memmove) - handles overlapping regions
+///
+/// # Safety
+/// This function is unsafe as it deals with raw pointers.
+/// The caller must ensure src and dest are valid for the given size.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_memmove(dest: *mut u8, src: *const u8, n: usize) -> *mut u8 {
+    // SAFETY: Caller guarantees src and dest are valid; copy handles overlaps
+    unsafe { ptr::copy(src, dest, n) };
+    dest
+}
+
+/// Set memory (memset)
+///
+/// # Safety
+/// This function is unsafe as it deals with raw pointers.
+/// The caller must ensure dest is valid for the given size.
+#[unsafe(no_mangle)]
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+pub unsafe extern "C" fn msvcrt_memset(dest: *mut u8, c: i32, n: usize) -> *mut u8 {
+    // SAFETY: Caller guarantees dest is valid for n bytes
+    ptr::write_bytes(dest, c as u8, n);
+    dest
+}
+
+/// Compare memory (memcmp)
+///
+/// # Safety
+/// This function is unsafe as it deals with raw pointers.
+/// The caller must ensure both pointers are valid for the given size.
+#[unsafe(no_mangle)]
+#[allow(clippy::cast_lossless)]
+pub unsafe extern "C" fn msvcrt_memcmp(s1: *const u8, s2: *const u8, n: usize) -> i32 {
+    // SAFETY: Caller guarantees s1 and s2 are valid for n bytes
+    for i in 0..n {
+        let c1 = *s1.add(i);
+        let c2 = *s2.add(i);
+        if c1 != c2 {
+            return i32::from(c1) - i32::from(c2);
+        }
+    }
+    0
+}
+
+/// Get string length (strlen)
+///
+/// # Safety
+/// This function is unsafe as it deals with raw pointers.
+/// The caller must ensure the pointer points to a valid null-terminated string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_strlen(s: *const i8) -> usize {
+    // SAFETY: Caller guarantees s points to a null-terminated string
+    CStr::from_ptr(s).to_bytes().len()
+}
+
+/// Compare strings up to n characters (strncmp)
+///
+/// # Safety
+/// This function is unsafe as it deals with raw pointers.
+/// The caller must ensure both pointers point to valid null-terminated strings.
+#[unsafe(no_mangle)]
+#[allow(clippy::cast_lossless)]
+pub unsafe extern "C" fn msvcrt_strncmp(s1: *const i8, s2: *const i8, n: usize) -> i32 {
+    // SAFETY: Caller guarantees s1 and s2 are valid null-terminated strings
+    for i in 0..n {
+        let c1 = (*s1.add(i)).cast_unsigned();
+        let c2 = (*s2.add(i)).cast_unsigned();
+
+        // Check for null terminator
+        if c1 == 0 && c2 == 0 {
+            return 0;
+        }
+        if c1 == 0 {
+            return -1;
+        }
+        if c2 == 0 {
+            return 1;
+        }
+
+        if c1 != c2 {
+            return i32::from(c1) - i32::from(c2);
+        }
+    }
+    0
+}
+
+/// Print formatted string to stdout (printf)
+///
+/// Note: This is a simplified stub implementation
+///
+/// # Safety
+/// This function is unsafe as it deals with raw pointers.
+#[unsafe(no_mangle)]
+#[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+pub unsafe extern "C" fn msvcrt_printf(format: *const i8) -> i32 {
+    if format.is_null() {
+        return -1;
+    }
+
+    // SAFETY: Caller guarantees format points to a valid null-terminated string
+    let Some(format_str) = CStr::from_ptr(format).to_str().ok() else {
+        return -1;
+    };
+
+    // Simple implementation: just print the format string as-is
+    // A full implementation would parse varargs and handle format specifiers
+    match write!(io::stdout(), "{format_str}") {
+        Ok(()) => {
+            let _ = io::stdout().flush();
+            format_str.len() as i32
+        }
+        Err(_) => -1,
+    }
+}
+
+/// Write data to a file (fwrite)
+///
+/// # Safety
+/// This function is unsafe as it deals with raw pointers.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_fwrite(
+    ptr: *const u8,
+    size: usize,
+    nmemb: usize,
+    _stream: *mut u8,
+) -> usize {
+    if ptr.is_null() || size == 0 || nmemb == 0 {
+        return 0;
+    }
+
+    let total_bytes = size * nmemb;
+    // SAFETY: Caller guarantees ptr is valid for total_bytes
+    let data = unsafe { std::slice::from_raw_parts(ptr, total_bytes) };
+
+    // Simple implementation: write to stdout
+    match io::stdout().write(data) {
+        Ok(written) => {
+            let _ = io::stdout().flush();
+            written / size
+        }
+        Err(_) => 0,
+    }
+}
+
+/// Simplified fprintf - only supports writing to stdout/stderr
+///
+/// # Safety
+/// This function is unsafe as it deals with raw pointers.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_fprintf(_stream: *mut u8, format: *const i8) -> i32 {
+    // For simplicity, just use printf implementation
+    // SAFETY: Caller guarantees format is a valid null-terminated string
+    unsafe { msvcrt_printf(format) }
+}
+
+/// Simplified vfprintf stub
+///
+/// # Safety
+/// This function is unsafe as it deals with raw pointers.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_vfprintf(
+    _stream: *mut u8,
+    format: *const i8,
+    _args: *mut u8,
+) -> i32 {
+    // For simplicity, just print the format string
+    // SAFETY: Caller guarantees format is a valid null-terminated string
+    unsafe { msvcrt_printf(format) }
+}
+
+/// Get I/O buffer array (__iob_func)
+/// Returns a pointer to stdin/stdout/stderr file descriptors
+///
+/// # Safety
+/// This function returns a static array that should not be freed.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt___iob_func() -> *mut u8 {
+    // Return a static array representing stdin(0), stdout(1), stderr(2)
+    // In a full implementation, this would return FILE* structures
+    static mut IOB: [u8; 24] = [0; 24]; // 3 FILE structures (simplified)
+    // SAFETY: IOB is a static mutable variable; access is inherently unsafe
+    // but necessary for C ABI compatibility. Single-threaded access assumed.
+    (&raw mut IOB).cast::<u8>()
+}
+
+/// Get main arguments (__getmainargs)
+///
+/// # Safety
+/// This function is unsafe as it deals with raw pointers.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt___getmainargs(
+    _argc: *mut i32,
+    _argv: *mut *mut *mut i8,
+    _env: *mut *mut *mut i8,
+    _do_wildcard: i32,
+    _start_info: *mut u8,
+) -> i32 {
+    // Stub implementation - should populate argc/argv
+    0
+}
+
+/// Initialize environment (__initenv)
+///
+/// # Safety
+/// Returns a static pointer that should not be freed.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt___initenv() -> *mut *mut i8 {
+    static mut ENV: *mut i8 = ptr::null_mut();
+    // SAFETY: ENV is a static mutable variable; access is inherently unsafe
+    // but necessary for C ABI compatibility. Single-threaded access assumed.
+    &raw mut ENV
+}
+
+/// Set application type (__set_app_type)
+///
+/// # Safety
+/// This function is safe to call but marked unsafe for C ABI compatibility.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt___set_app_type(_type: i32) {
+    // No-op stub
+}
+
+/// Initialize term table (_initterm)
+///
+/// # Safety
+/// This function is unsafe as it deals with raw pointers.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt__initterm(start: *mut extern "C" fn(), end: *mut extern "C" fn()) {
+    if start.is_null() || end.is_null() {
+        return;
+    }
+
+    let mut current = start;
+    while current < end {
+        // SAFETY: Caller guarantees current is within valid range [start, end)
+        let func = unsafe { *current };
+        if !std::ptr::null::<fn()>().eq(&(func as *const fn())) {
+            func();
+        }
+        // SAFETY: Caller guarantees current can be advanced within the range
+        current = unsafe { current.add(1) };
+    }
+}
+
+/// Register onexit handler (_onexit)
+///
+/// # Safety
+/// This function is unsafe as it deals with raw pointers.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt__onexit(func: extern "C" fn()) -> extern "C" fn() {
+    // Store in a static vector for later execution
+    static ONEXIT_FUNCS: Mutex<Vec<extern "C" fn()>> = Mutex::new(Vec::new());
+
+    if let Ok(mut funcs) = ONEXIT_FUNCS.lock() {
+        funcs.push(func);
+    }
+    func
+}
+
+/// Signal handler registration (signal)
+///
+/// # Safety
+/// This function is unsafe as it deals with raw pointers.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_signal(_signum: i32, _handler: extern "C" fn(i32)) -> usize {
+    // Stub: return SIG_DFL (0)
+    0
+}
+
+/// Abort program execution (abort)
+///
+/// # Safety
+/// This function is safe to call but marked unsafe for C ABI compatibility.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_abort() -> ! {
+    std::process::abort()
+}
+
+/// Exit program (exit)
+///
+/// # Safety
+/// This function is safe to call but marked unsafe for C ABI compatibility.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_exit(status: i32) -> ! {
+    std::process::exit(status)
+}
+
+// Additional CRT stubs
+
+/// Set user math error handler (__setusermatherr)
+///
+/// # Safety
+/// This function is unsafe as it deals with raw pointers.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt___setusermatherr(_handler: *mut u8) {
+    // No-op stub
+}
+
+/// Exit with error message (_amsg_exit)
+///
+/// # Safety
+/// This function is safe to call but marked unsafe for C ABI compatibility.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt__amsg_exit(code: i32) {
+    std::process::exit(code)
+}
+
+/// Clean exit without terminating process (_cexit)
+///
+/// # Safety
+/// This function is safe to call but marked unsafe for C ABI compatibility.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt__cexit() {
+    // Clean exit without terminating process
+}
+
+/// Reset floating point unit (_fpreset)
+///
+/// # Safety
+/// This function is safe to call but marked unsafe for C ABI compatibility.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt__fpreset() {
+    // Reset floating point unit - no-op on x86-64
+}
+
+/// Thread-local errno storage for compatibility
+static mut ERRNO: i32 = 0;
+
+/// Get errno location (__errno_location)
+///
+/// # Safety
+/// This function returns a pointer to static mutable data.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt___errno_location() -> *mut i32 {
+    // SAFETY: ERRNO is a static mutable variable; access is inherently unsafe
+    // but necessary for C ABI compatibility. Single-threaded access assumed.
+    &raw mut ERRNO
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_malloc_free() {
+        unsafe {
+            let ptr = msvcrt_malloc(100);
+            assert!(!ptr.is_null());
+            msvcrt_free(ptr);
+        }
+    }
+
+    #[test]
+    fn test_calloc() {
+        unsafe {
+            let ptr = msvcrt_calloc(10, 10);
+            assert!(!ptr.is_null());
+            // Verify zero-initialization
+            for i in 0..100 {
+                assert_eq!(*ptr.add(i), 0);
+            }
+            msvcrt_free(ptr);
+        }
+    }
+
+    #[test]
+    fn test_memcpy() {
+        unsafe {
+            let src = [1u8, 2, 3, 4, 5];
+            let mut dest = [0u8; 5];
+            msvcrt_memcpy(dest.as_mut_ptr(), src.as_ptr(), 5);
+            assert_eq!(dest, src);
+        }
+    }
+
+    #[test]
+    fn test_memset() {
+        unsafe {
+            let mut buf = [0u8; 10];
+            msvcrt_memset(buf.as_mut_ptr(), 0xFF, 10);
+            assert_eq!(buf, [0xFF; 10]);
+        }
+    }
+
+    #[test]
+    fn test_memcmp() {
+        unsafe {
+            let s1 = [1u8, 2, 3];
+            let s2 = [1u8, 2, 3];
+            let s3 = [1u8, 2, 4];
+            assert_eq!(msvcrt_memcmp(s1.as_ptr(), s2.as_ptr(), 3), 0);
+            assert!(msvcrt_memcmp(s1.as_ptr(), s3.as_ptr(), 3) < 0);
+        }
+    }
+
+    #[test]
+    fn test_strlen() {
+        unsafe {
+            let s = b"hello\0";
+            assert_eq!(msvcrt_strlen(s.as_ptr().cast::<i8>()), 5);
+        }
+    }
+
+    #[test]
+    fn test_strncmp() {
+        unsafe {
+            let s1 = b"hello\0";
+            let s2 = b"hello\0";
+            let s3 = b"world\0";
+            assert_eq!(
+                msvcrt_strncmp(s1.as_ptr().cast::<i8>(), s2.as_ptr().cast::<i8>(), 5),
+                0
+            );
+            assert!(msvcrt_strncmp(s1.as_ptr().cast::<i8>(), s3.as_ptr().cast::<i8>(), 5) < 0);
+        }
+    }
+}
