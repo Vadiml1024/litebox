@@ -20,7 +20,8 @@ use thiserror::Error;
 
 use litebox_shim_windows::loader::DllManager;
 use litebox_shim_windows::syscalls::ntdll::{
-    ConsoleHandle, EventHandle, FileHandle, NtdllApi, RegKeyHandle, ThreadEntryPoint, ThreadHandle,
+    ConsoleHandle, EventHandle, FileHandle, NtdllApi, RegKeyHandle, SearchHandle, ThreadEntryPoint,
+    ThreadHandle, Win32FindDataW,
 };
 
 /// Windows error codes
@@ -93,6 +94,16 @@ struct RegistryKey {
     values: HashMap<String, String>,
 }
 
+/// Directory search state
+struct SearchState {
+    /// Directory entries iterator
+    entries: Vec<std::fs::DirEntry>,
+    /// Current index in entries
+    current_index: usize,
+    /// Search pattern (glob)
+    pattern: String,
+}
+
 /// Internal platform state (thread-safe)
 struct PlatformState {
     /// Handle to file descriptor mapping
@@ -103,12 +114,16 @@ struct PlatformState {
     events: HashMap<u64, EventObject>,
     /// Registry key mapping
     registry_keys: HashMap<u64, RegistryKey>,
+    /// Search handle mapping (for FindFirstFile/FindNextFile)
+    searches: HashMap<u64, SearchState>,
     /// Environment variables
     environment: HashMap<String, String>,
     /// DLL manager for LoadLibrary/GetProcAddress
     dll_manager: DllManager,
     /// Last error code per thread (using thread ID as key)
     last_errors: HashMap<u32, u32>,
+    /// Command line arguments (stored as UTF-16)
+    command_line: Vec<u16>,
 }
 
 /// Linux platform for Windows API implementation
@@ -128,15 +143,20 @@ impl LinuxPlatformForWindows {
         environment.insert("OS".to_string(), "Windows_NT".to_string());
         environment.insert("PROCESSOR_ARCHITECTURE".to_string(), "AMD64".to_string());
 
+        // Initialize command line with program name (empty for now, will be set by runner)
+        let command_line = Vec::new();
+
         Self {
             state: Mutex::new(PlatformState {
                 handles: HashMap::new(),
                 threads: HashMap::new(),
                 events: HashMap::new(),
                 registry_keys: HashMap::new(),
+                searches: HashMap::new(),
                 environment,
                 dll_manager: DllManager::new(),
                 last_errors: HashMap::new(),
+                command_line,
             }),
             next_handle: AtomicU64::new(0x1000), // Start at a high value to avoid conflicts
         }
@@ -145,6 +165,41 @@ impl LinuxPlatformForWindows {
     /// Allocate a new handle ID (thread-safe)
     fn allocate_handle(&self) -> u64 {
         self.next_handle.fetch_add(1, Ordering::SeqCst)
+    }
+
+    /// Set the command line for the process
+    ///
+    /// This should be called by the runner to set the command line arguments
+    /// before executing the Windows program.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the state mutex is poisoned.
+    pub fn set_command_line(&mut self, args: &[String]) {
+        let mut state = self.state.lock().unwrap();
+
+        // Build command line string
+        let cmd_line = if args.is_empty() {
+            String::new()
+        } else {
+            args.iter()
+                .map(|arg| {
+                    // Quote arguments with spaces or quotes
+                    // In Windows, quotes inside quoted strings are escaped by doubling them
+                    if arg.contains(' ') || arg.contains('"') {
+                        format!("\"{}\"", arg.replace('"', "\"\""))
+                    } else {
+                        arg.clone()
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+
+        // Convert to UTF-16 with null terminator
+        let mut utf16: Vec<u16> = cmd_line.encode_utf16().collect();
+        utf16.push(0);
+        state.command_line = utf16;
     }
 
     /// NtCreateFile - Create or open a file (internal implementation)
@@ -720,6 +775,141 @@ impl LinuxPlatformForWindows {
         let mut state = self.state.lock().unwrap();
         state.last_errors.insert(thread_id, error_code);
     }
+
+    /// Internal implementation for find_first_file_w
+    fn find_first_file_w_impl(
+        &mut self,
+        pattern: &[u16],
+    ) -> Result<(SearchHandle, Win32FindDataW)> {
+        // Convert UTF-16 pattern to String
+        let pattern_str = String::from_utf16_lossy(pattern);
+        let pattern_str = pattern_str.trim_end_matches('\0');
+
+        // Translate Windows path to Linux path
+        let linux_pattern = translate_windows_path_to_linux(pattern_str);
+
+        // Parse the pattern to extract directory and filename pattern
+        let path = std::path::Path::new(&linux_pattern);
+        let (dir_path, file_pattern) = if let Some(parent) = path.parent() {
+            if parent.as_os_str().is_empty() {
+                (
+                    ".",
+                    path.file_name().and_then(|n| n.to_str()).unwrap_or("*"),
+                )
+            } else {
+                (
+                    parent.to_str().unwrap_or("."),
+                    path.file_name().and_then(|n| n.to_str()).unwrap_or("*"),
+                )
+            }
+        } else {
+            (".", path.to_str().unwrap_or("*"))
+        };
+
+        // Read directory entries
+        let entries: Vec<std::fs::DirEntry> = match std::fs::read_dir(dir_path) {
+            Ok(read_dir) => read_dir.filter_map(std::result::Result::ok).collect(),
+            Err(e) => {
+                use std::io::ErrorKind;
+                let error_code = match e.kind() {
+                    ErrorKind::NotFound => windows_errors::ERROR_FILE_NOT_FOUND,
+                    ErrorKind::PermissionDenied => windows_errors::ERROR_ACCESS_DENIED,
+                    _ => windows_errors::ERROR_INVALID_PARAMETER,
+                };
+                self.set_last_error_impl(error_code);
+                return Err(PlatformError::IoError(e));
+            }
+        };
+
+        if entries.is_empty() {
+            self.set_last_error_impl(windows_errors::ERROR_FILE_NOT_FOUND);
+            return Err(PlatformError::PathTranslation("No files found".to_string()));
+        }
+
+        // Create search state
+        let handle = self.allocate_handle();
+        let search_state = SearchState {
+            entries,
+            current_index: 0,
+            pattern: file_pattern.to_string(),
+        };
+
+        // Get first matching entry
+        let Some(first_index) = get_next_matching_entry_index(&search_state) else {
+            self.set_last_error_impl(windows_errors::ERROR_FILE_NOT_FOUND);
+            return Err(PlatformError::PathTranslation(
+                "No matching files found".to_string(),
+            ));
+        };
+
+        let find_data = entry_to_find_data(&search_state.entries[first_index])?;
+
+        // Store search state with index advanced
+        let mut state = self.state.lock().unwrap();
+        state.searches.insert(
+            handle,
+            SearchState {
+                entries: search_state.entries,
+                current_index: first_index + 1,
+                pattern: search_state.pattern,
+            },
+        );
+        drop(state);
+
+        self.set_last_error_impl(0);
+        Ok((SearchHandle(handle), find_data))
+    }
+
+    /// Internal implementation for find_next_file_w
+    fn find_next_file_w_impl(&mut self, handle: SearchHandle) -> Result<Option<Win32FindDataW>> {
+        let mut state = self.state.lock().unwrap();
+        let Some(search_state) = state.searches.get_mut(&handle.0) else {
+            drop(state);
+            self.set_last_error_impl(windows_errors::ERROR_INVALID_HANDLE);
+            return Err(PlatformError::InvalidHandle(handle.0));
+        };
+
+        // Find next matching entry
+        while search_state.current_index < search_state.entries.len() {
+            let entry = &search_state.entries[search_state.current_index];
+            search_state.current_index += 1;
+
+            if matches_pattern(&entry.file_name().to_string_lossy(), &search_state.pattern) {
+                let find_data = entry_to_find_data(entry)?;
+                drop(state);
+                self.set_last_error_impl(0);
+                return Ok(Some(find_data));
+            }
+        }
+
+        drop(state);
+        self.set_last_error_impl(0);
+        Ok(None)
+    }
+
+    /// Internal implementation for find_close
+    fn find_close_impl(&mut self, handle: SearchHandle) -> Result<()> {
+        let mut state = self.state.lock().unwrap();
+        if state.searches.remove(&handle.0).is_none() {
+            drop(state);
+            self.set_last_error_impl(windows_errors::ERROR_INVALID_HANDLE);
+            return Err(PlatformError::InvalidHandle(handle.0));
+        }
+        drop(state);
+        self.set_last_error_impl(0);
+        Ok(())
+    }
+}
+
+/// Get next matching directory entry index (helper for FindFirstFile)
+fn get_next_matching_entry_index(search_state: &SearchState) -> Option<usize> {
+    for i in search_state.current_index..search_state.entries.len() {
+        let entry = &search_state.entries[i];
+        if matches_pattern(&entry.file_name().to_string_lossy(), &search_state.pattern) {
+            return Some(i);
+        }
+    }
+    None
 }
 
 impl Default for LinuxPlatformForWindows {
@@ -748,6 +938,119 @@ fn translate_windows_path_to_linux(windows_path: &str) -> String {
     }
 
     path
+}
+
+/// Convert a directory entry to WIN32_FIND_DATAW
+fn entry_to_find_data(
+    entry: &std::fs::DirEntry,
+) -> Result<litebox_shim_windows::syscalls::ntdll::Win32FindDataW> {
+    use litebox_shim_windows::syscalls::ntdll::Win32FindDataW;
+
+    let metadata = entry.metadata().map_err(PlatformError::IoError)?;
+    let file_name = entry.file_name();
+    let file_name_str = file_name.to_string_lossy();
+
+    // Convert filename to UTF-16
+    let mut file_name_utf16 = [0u16; 260];
+    let encoded: Vec<u16> = file_name_str.encode_utf16().collect();
+    let copy_len = encoded.len().min(259); // Leave room for null terminator
+    file_name_utf16[..copy_len].copy_from_slice(&encoded[..copy_len]);
+    file_name_utf16[copy_len] = 0; // Null terminator
+
+    // Get file attributes
+    let mut attributes = 0u32;
+    if metadata.is_dir() {
+        attributes |= 0x00000010; // FILE_ATTRIBUTE_DIRECTORY
+    }
+    if attributes == 0 {
+        attributes = 0x00000080; // FILE_ATTRIBUTE_NORMAL
+    }
+
+    // Get file size
+    let file_size = metadata.len();
+    let file_size_low = (file_size & 0xFFFFFFFF) as u32;
+    let file_size_high = (file_size >> 32) as u32;
+
+    // Get file times (simplified - just use modified time for all)
+    let modified = metadata
+        .modified()
+        .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+    let duration = modified
+        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .unwrap_or_default();
+    // Convert to Windows FILETIME (100-nanosecond intervals since 1601-01-01)
+    // Unix epoch (1970-01-01) is 116444736000000000 * 100ns intervals after Windows epoch
+    let windows_time = duration.as_nanos() / 100 + 116444736000000000;
+    #[allow(clippy::cast_possible_truncation)]
+    let time_low = (windows_time & 0xFFFFFFFF) as u32;
+    #[allow(clippy::cast_possible_truncation)]
+    let time_high = (windows_time >> 32) as u32;
+
+    Ok(Win32FindDataW {
+        file_attributes: attributes,
+        creation_time_low: time_low,
+        creation_time_high: time_high,
+        last_access_time_low: time_low,
+        last_access_time_high: time_high,
+        last_write_time_low: time_low,
+        last_write_time_high: time_high,
+        file_size_high,
+        file_size_low,
+        reserved0: 0,
+        reserved1: 0,
+        file_name: file_name_utf16,
+        alternate_file_name: [0; 14],
+    })
+}
+
+/// Match a filename against a pattern (supports * and ?)
+fn matches_pattern(name: &str, pattern: &str) -> bool {
+    if pattern == "*" || pattern == "*.*" {
+        return true;
+    }
+
+    let mut name_chars = name.chars().peekable();
+    let mut pattern_chars = pattern.chars().peekable();
+
+    while let Some(&p) = pattern_chars.peek() {
+        match p {
+            '*' => {
+                pattern_chars.next();
+                if pattern_chars.peek().is_none() {
+                    return true; // * at end matches everything
+                }
+                // Try to match the rest of the pattern
+                while name_chars.peek().is_some() {
+                    if matches_pattern(
+                        &name_chars.clone().collect::<String>(),
+                        &pattern_chars.clone().collect::<String>(),
+                    ) {
+                        return true;
+                    }
+                    name_chars.next();
+                }
+                return false;
+            }
+            '?' => {
+                pattern_chars.next();
+                if name_chars.next().is_none() {
+                    return false;
+                }
+            }
+            _ => {
+                pattern_chars.next();
+                let Some(n) = name_chars.next() else {
+                    return false;
+                };
+                // Use eq_ignore_ascii_case for proper case-insensitive comparison
+                if !n.eq_ignore_ascii_case(&p) {
+                    return false;
+                }
+            }
+        }
+    }
+
+    name_chars.peek().is_none()
 }
 
 /// Implement the NtdllApi trait from litebox_shim_windows
@@ -982,6 +1285,119 @@ impl NtdllApi for LinuxPlatformForWindows {
 
     fn set_last_error(&mut self, error_code: u32) {
         self.set_last_error_impl(error_code);
+    }
+
+    // Phase 7: Command-Line Argument Parsing
+
+    fn get_command_line_w(&self) -> Vec<u16> {
+        let state = self.state.lock().unwrap();
+        state.command_line.clone()
+    }
+
+    fn command_line_to_argv_w(&self, command_line: &[u16]) -> Vec<Vec<u16>> {
+        // Convert UTF-16 to String for easier parsing
+        let cmd_str = String::from_utf16_lossy(command_line);
+        let cmd_str = cmd_str.trim_end_matches('\0');
+
+        if cmd_str.is_empty() {
+            return Vec::new();
+        }
+
+        let mut args = Vec::new();
+        let mut current_arg = Vec::new();
+        let mut in_quotes = false;
+        let mut chars = cmd_str.chars().peekable();
+
+        while let Some(ch) = chars.next() {
+            match ch {
+                '"' => {
+                    // Handle doubled quotes inside quoted strings (Windows convention)
+                    if in_quotes && chars.peek() == Some(&'"') {
+                        chars.next();
+                        current_arg.push('"');
+                    } else {
+                        in_quotes = !in_quotes;
+                    }
+                }
+                ' ' | '\t' if !in_quotes => {
+                    if !current_arg.is_empty() {
+                        // Convert to UTF-16 and add null terminator
+                        let mut utf16: Vec<u16> = current_arg
+                            .iter()
+                            .collect::<String>()
+                            .encode_utf16()
+                            .collect();
+                        utf16.push(0);
+                        args.push(utf16);
+                        current_arg.clear();
+                    }
+                }
+                '\\' => {
+                    // Count consecutive backslashes
+                    let mut backslash_count = 1;
+                    while chars.peek() == Some(&'\\') {
+                        backslash_count += 1;
+                        chars.next();
+                    }
+
+                    // Check if followed by a quote
+                    if chars.peek() == Some(&'"') {
+                        // 2n backslashes + quote = n backslashes + end quote
+                        // 2n+1 backslashes + quote = n backslashes + literal quote
+                        let num_backslashes = backslash_count / 2;
+                        current_arg.extend(std::iter::repeat_n('\\', num_backslashes));
+                        if backslash_count % 2 == 1 {
+                            // Odd number: literal quote
+                            chars.next();
+                            current_arg.push('"');
+                        }
+                        // Even number: the quote will be processed in next iteration
+                    } else {
+                        // Not followed by quote: backslashes are literal
+                        current_arg.extend(std::iter::repeat_n('\\', backslash_count));
+                    }
+                }
+                _ => {
+                    current_arg.push(ch);
+                }
+            }
+        }
+
+        // Add the last argument if any
+        if !current_arg.is_empty() {
+            let mut utf16: Vec<u16> = current_arg
+                .iter()
+                .collect::<String>()
+                .encode_utf16()
+                .collect();
+            utf16.push(0);
+            args.push(utf16);
+        }
+
+        args
+    }
+
+    // Phase 7: Advanced File Operations
+
+    fn find_first_file_w(
+        &mut self,
+        pattern: &[u16],
+    ) -> litebox_shim_windows::Result<(SearchHandle, Win32FindDataW)> {
+        self.find_first_file_w_impl(pattern)
+            .map_err(|e| litebox_shim_windows::WindowsShimError::IoError(e.to_string()))
+    }
+
+    fn find_next_file_w(
+        &mut self,
+        handle: SearchHandle,
+    ) -> litebox_shim_windows::Result<Option<Win32FindDataW>> {
+        self.find_next_file_w_impl(handle)
+            .map_err(|e| litebox_shim_windows::WindowsShimError::IoError(e.to_string()))
+    }
+
+    fn find_close(&mut self, handle: SearchHandle) -> litebox_shim_windows::Result<()> {
+        self.find_close_impl(handle)
+            .map_err(|e| litebox_shim_windows::WindowsShimError::IoError(e.to_string()))
     }
 }
 
@@ -1491,5 +1907,175 @@ mod tests {
         let result = platform.nt_close(FileHandle(0xDEADBEEF));
         assert!(result.is_err());
         assert_eq!(platform.get_last_error(), 6);
+    }
+
+    // Phase 7: Command-line argument parsing tests
+
+    #[test]
+    fn test_command_line_to_argv() {
+        let platform = LinuxPlatformForWindows::new();
+
+        // Test simple command line
+        let cmd_line: Vec<u16> = "program.exe arg1 arg2\0".encode_utf16().collect();
+        let args = platform.command_line_to_argv_w(&cmd_line);
+        assert_eq!(args.len(), 3);
+        assert_eq!(
+            String::from_utf16_lossy(&args[0]).trim_end_matches('\0'),
+            "program.exe"
+        );
+        assert_eq!(
+            String::from_utf16_lossy(&args[1]).trim_end_matches('\0'),
+            "arg1"
+        );
+        assert_eq!(
+            String::from_utf16_lossy(&args[2]).trim_end_matches('\0'),
+            "arg2"
+        );
+
+        // Test command line with quotes
+        let cmd_line: Vec<u16> = "program.exe \"arg with spaces\" arg2\0"
+            .encode_utf16()
+            .collect();
+        let args = platform.command_line_to_argv_w(&cmd_line);
+        assert_eq!(args.len(), 3);
+        assert_eq!(
+            String::from_utf16_lossy(&args[0]).trim_end_matches('\0'),
+            "program.exe"
+        );
+        assert_eq!(
+            String::from_utf16_lossy(&args[1]).trim_end_matches('\0'),
+            "arg with spaces"
+        );
+        assert_eq!(
+            String::from_utf16_lossy(&args[2]).trim_end_matches('\0'),
+            "arg2"
+        );
+    }
+
+    #[test]
+    fn test_set_get_command_line() {
+        let mut platform = LinuxPlatformForWindows::new();
+
+        let args = vec![
+            "test.exe".to_string(),
+            "arg1".to_string(),
+            "arg with spaces".to_string(),
+        ];
+        platform.set_command_line(&args);
+
+        let cmd_line = platform.get_command_line_w();
+        let cmd_str = String::from_utf16_lossy(&cmd_line)
+            .trim_end_matches('\0')
+            .to_string();
+
+        // Should contain all args, with quotes around the one with spaces
+        assert!(cmd_str.contains("test.exe"));
+        assert!(cmd_str.contains("arg1"));
+        assert!(cmd_str.contains("\"arg with spaces\""));
+    }
+
+    #[test]
+    fn test_command_line_backslash_handling() {
+        let platform = LinuxPlatformForWindows::new();
+
+        // Test: Backslashes not followed by quotes are literal
+        let cmd_line = r"program.exe C:\path\to\file.txt".to_string() + "\0";
+        let cmd_line_utf16: Vec<u16> = cmd_line.encode_utf16().collect();
+        let args = platform.command_line_to_argv_w(&cmd_line_utf16);
+        assert_eq!(args.len(), 2);
+        assert_eq!(
+            String::from_utf16_lossy(&args[1]).trim_end_matches('\0'),
+            r"C:\path\to\file.txt"
+        );
+
+        // Test: 2 backslashes + quote = 1 backslash (quote ends the string)
+        // Command line: "test\\"  -> output: test\
+        let cmd_line = r#"program.exe "test\\""#.to_string() + "\0";
+        let cmd_line_utf16: Vec<u16> = cmd_line.encode_utf16().collect();
+        let args = platform.command_line_to_argv_w(&cmd_line_utf16);
+        assert_eq!(args.len(), 2);
+        assert_eq!(
+            String::from_utf16_lossy(&args[1]).trim_end_matches('\0'),
+            r"test\"
+        );
+
+        // Test: 3 backslashes + quote = 1 backslash + literal quote (quote doesn't end string)
+        // Command line: "test\\"more"  -> output: test"more
+        let cmd_line = r#"program.exe "test\"more""#.to_string() + " \0";
+        let cmd_line_utf16: Vec<u16> = cmd_line.encode_utf16().collect();
+        let args = platform.command_line_to_argv_w(&cmd_line_utf16);
+        assert_eq!(args.len(), 2);
+        assert_eq!(
+            String::from_utf16_lossy(&args[1]).trim_end_matches('\0'),
+            r#"test"more"#
+        );
+
+        // Test: 4 backslashes + quote = 2 backslashes (quote ends the string)
+        let cmd_line = r#"program.exe "test\\\\""#.to_string() + "\0";
+        let cmd_line_utf16: Vec<u16> = cmd_line.encode_utf16().collect();
+        let args = platform.command_line_to_argv_w(&cmd_line_utf16);
+        assert_eq!(args.len(), 2);
+        assert_eq!(
+            String::from_utf16_lossy(&args[1]).trim_end_matches('\0'),
+            r"test\\"
+        );
+    }
+
+    #[test]
+    fn test_command_line_doubled_quotes() {
+        let platform = LinuxPlatformForWindows::new();
+
+        // Test: Doubled quotes inside quoted strings (Windows convention)
+        let cmd_line: Vec<u16> = "program.exe \"He said \"\"Hello\"\"\"\0"
+            .encode_utf16()
+            .collect();
+        let args = platform.command_line_to_argv_w(&cmd_line);
+        assert_eq!(args.len(), 2);
+        assert_eq!(
+            String::from_utf16_lossy(&args[1]).trim_end_matches('\0'),
+            "He said \"Hello\""
+        );
+    }
+
+    #[test]
+    fn test_set_command_line_with_quotes() {
+        let mut platform = LinuxPlatformForWindows::new();
+
+        // Test that quotes in arguments are doubled
+        let args = vec!["test.exe".to_string(), "He said \"Hello\"".to_string()];
+        platform.set_command_line(&args);
+
+        let cmd_line = platform.get_command_line_w();
+        let cmd_str = String::from_utf16_lossy(&cmd_line)
+            .trim_end_matches('\0')
+            .to_string();
+
+        // Should have doubled quotes
+        assert!(cmd_str.contains("\"\""));
+
+        // Parse it back and verify
+        let parsed_args = platform.command_line_to_argv_w(&cmd_line);
+        assert_eq!(parsed_args.len(), 2);
+        assert_eq!(
+            String::from_utf16_lossy(&parsed_args[1]).trim_end_matches('\0'),
+            "He said \"Hello\""
+        );
+    }
+
+    // Phase 7: File pattern matching tests
+
+    #[test]
+    fn test_pattern_matching() {
+        assert!(matches_pattern("test.txt", "*"));
+        assert!(matches_pattern("test.txt", "*.txt"));
+        assert!(matches_pattern("test.txt", "test.*"));
+        assert!(matches_pattern("test.txt", "test.txt"));
+        assert!(!matches_pattern("test.txt", "*.doc"));
+        assert!(matches_pattern("test.txt", "????.txt"));
+        assert!(!matches_pattern("test.txt", "?.txt"));
+
+        // Test case insensitivity
+        assert!(matches_pattern("Test.TXT", "test.txt"));
+        assert!(matches_pattern("test.txt", "TEST.TXT"));
     }
 }

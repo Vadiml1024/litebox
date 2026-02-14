@@ -30,8 +30,45 @@ pub struct EventHandle(pub u64);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RegKeyHandle(pub u64);
 
+/// Windows search handle (for FindFirstFile/FindNextFile)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SearchHandle(pub u64);
+
 /// Thread entry point function type
 pub type ThreadEntryPoint = extern "C" fn(*mut core::ffi::c_void) -> u32;
+
+/// WIN32_FIND_DATAW structure for file enumeration
+/// Simplified version with essential fields
+#[repr(C)]
+#[derive(Debug, Clone)]
+pub struct Win32FindDataW {
+    /// File attributes
+    pub file_attributes: u32,
+    /// Creation time (low DWORD)
+    pub creation_time_low: u32,
+    /// Creation time (high DWORD)
+    pub creation_time_high: u32,
+    /// Last access time (low DWORD)
+    pub last_access_time_low: u32,
+    /// Last access time (high DWORD)
+    pub last_access_time_high: u32,
+    /// Last write time (low DWORD)
+    pub last_write_time_low: u32,
+    /// Last write time (high DWORD)
+    pub last_write_time_high: u32,
+    /// File size (high DWORD)
+    pub file_size_high: u32,
+    /// File size (low DWORD)
+    pub file_size_low: u32,
+    /// Reserved
+    pub reserved0: u32,
+    /// Reserved
+    pub reserved1: u32,
+    /// File name (null-terminated UTF-16, MAX_PATH = 260)
+    pub file_name: [u16; 260],
+    /// Alternate file name (8.3 format, 14 wide chars)
+    pub alternate_file_name: [u16; 14],
+}
 
 /// NTDLL API interface
 ///
@@ -211,6 +248,39 @@ pub trait NtdllApi {
     ///
     /// Sets the last error code for the current thread.
     fn set_last_error(&mut self, error_code: u32);
+
+    // Phase 7: Command-Line Argument Parsing
+
+    /// GetCommandLineW - Get the command line for the current process
+    ///
+    /// Returns the command line string as UTF-16 encoded wide string.
+    /// The string includes the executable name and all arguments.
+    fn get_command_line_w(&self) -> Vec<u16>;
+
+    /// CommandLineToArgvW - Parse command line into arguments
+    ///
+    /// Parses a command line string into individual arguments.
+    /// Returns a vector of UTF-16 encoded argument strings.
+    fn command_line_to_argv_w(&self, command_line: &[u16]) -> Vec<Vec<u16>>;
+
+    // Phase 7: Advanced File Operations
+
+    /// FindFirstFileW - Begin directory enumeration
+    ///
+    /// Finds the first file in a directory that matches the specified pattern.
+    /// Returns a search handle and fills the WIN32_FIND_DATAW structure.
+    fn find_first_file_w(&mut self, pattern: &[u16]) -> Result<(SearchHandle, Win32FindDataW)>;
+
+    /// FindNextFileW - Continue directory enumeration
+    ///
+    /// Continues a file search started by FindFirstFileW.
+    /// Returns true if a file was found, false if no more files.
+    fn find_next_file_w(&mut self, handle: SearchHandle) -> Result<Option<Win32FindDataW>>;
+
+    /// FindClose - Close directory search handle
+    ///
+    /// Closes a file search handle opened by FindFirstFileW.
+    fn find_close(&mut self, handle: SearchHandle) -> Result<()>;
 }
 
 /// Windows file access flags (simplified)
@@ -271,4 +341,28 @@ pub mod registry_types {
     pub const REG_SZ: u32 = 1;
     /// DWORD value
     pub const REG_DWORD: u32 = 4;
+}
+
+/// Windows file attributes
+pub mod file_attributes {
+    /// File is read-only
+    pub const FILE_ATTRIBUTE_READONLY: u32 = 0x00000001;
+    /// File is hidden
+    pub const FILE_ATTRIBUTE_HIDDEN: u32 = 0x00000002;
+    /// File is a system file
+    pub const FILE_ATTRIBUTE_SYSTEM: u32 = 0x00000004;
+    /// Entry is a directory
+    pub const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x00000010;
+    /// File should be archived
+    pub const FILE_ATTRIBUTE_ARCHIVE: u32 = 0x00000020;
+    /// Entry is a device
+    pub const FILE_ATTRIBUTE_DEVICE: u32 = 0x00000040;
+    /// File is normal (no other attributes set)
+    pub const FILE_ATTRIBUTE_NORMAL: u32 = 0x00000080;
+}
+
+/// Special search handle value
+pub mod search_handles {
+    /// Invalid search handle value (returned on error)
+    pub const INVALID_HANDLE_VALUE: u64 = u64::MAX;
 }

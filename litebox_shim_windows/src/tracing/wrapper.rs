@@ -763,6 +763,121 @@ impl<T: NtdllApi> NtdllApi for TracedNtdllApi<T> {
 
         // No return value to trace
     }
+
+    // Phase 7: Command-Line Argument Parsing
+
+    fn get_command_line_w(&self) -> Vec<u16> {
+        // Don't trace to avoid noise
+        self.inner.get_command_line_w()
+    }
+
+    fn command_line_to_argv_w(&self, command_line: &[u16]) -> Vec<Vec<u16>> {
+        if self.tracer.is_enabled() {
+            let cmd_str = String::from_utf16_lossy(command_line);
+            let args = format!("command_line=\"{}\"", cmd_str.trim_end_matches('\0'));
+            let event =
+                TraceEvent::call("CommandLineToArgvW", ApiCategory::Process).with_args(args);
+            self.tracer.trace(event);
+        }
+
+        let result = self.inner.command_line_to_argv_w(command_line);
+
+        if self.tracer.is_enabled() {
+            let ret_str = format!("argc={}", result.len());
+            let event = TraceEvent::return_event("CommandLineToArgvW", ApiCategory::Process)
+                .with_return_value(ret_str);
+            self.tracer.trace(event);
+        }
+
+        result
+    }
+
+    // Phase 7: Advanced File Operations
+
+    fn find_first_file_w(
+        &mut self,
+        pattern: &[u16],
+    ) -> Result<(
+        crate::syscalls::ntdll::SearchHandle,
+        crate::syscalls::ntdll::Win32FindDataW,
+    )> {
+        if self.tracer.is_enabled() {
+            let pattern_str = String::from_utf16_lossy(pattern);
+            let args = format!("pattern=\"{}\"", pattern_str.trim_end_matches('\0'));
+            let event = TraceEvent::call("FindFirstFileW", ApiCategory::FileIo).with_args(args);
+            self.tracer.trace(event);
+        }
+
+        let result = self.inner.find_first_file_w(pattern);
+
+        if self.tracer.is_enabled() {
+            let ret_str = match &result {
+                Ok((handle, data)) => {
+                    let file_name = String::from_utf16_lossy(&data.file_name);
+                    let file_name = file_name.trim_end_matches('\0');
+                    format!("Ok(handle=0x{:X}, file=\"{}\")", handle.0, file_name)
+                }
+                Err(e) => format!("Err({e})"),
+            };
+            let event = TraceEvent::return_event("FindFirstFileW", ApiCategory::FileIo)
+                .with_return_value(ret_str);
+            self.tracer.trace(event);
+        }
+
+        result
+    }
+
+    fn find_next_file_w(
+        &mut self,
+        handle: crate::syscalls::ntdll::SearchHandle,
+    ) -> Result<Option<crate::syscalls::ntdll::Win32FindDataW>> {
+        if self.tracer.is_enabled() {
+            let args = format!("handle=0x{:X}", handle.0);
+            let event = TraceEvent::call("FindNextFileW", ApiCategory::FileIo).with_args(args);
+            self.tracer.trace(event);
+        }
+
+        let result = self.inner.find_next_file_w(handle);
+
+        if self.tracer.is_enabled() {
+            let ret_str = match &result {
+                Ok(Some(data)) => {
+                    let file_name = String::from_utf16_lossy(&data.file_name);
+                    let file_name = file_name.trim_end_matches('\0');
+                    format!("Ok(file=\"{file_name}\")")
+                }
+                Ok(None) => "Ok(None)".to_string(),
+                Err(e) => format!("Err({e})"),
+            };
+            let event = TraceEvent::return_event("FindNextFileW", ApiCategory::FileIo)
+                .with_return_value(ret_str);
+            self.tracer.trace(event);
+        }
+
+        result
+    }
+
+    fn find_close(&mut self, handle: crate::syscalls::ntdll::SearchHandle) -> Result<()> {
+        if self.tracer.is_enabled() {
+            let args = format!("handle=0x{:X}", handle.0);
+            let event = TraceEvent::call("FindClose", ApiCategory::FileIo).with_args(args);
+            self.tracer.trace(event);
+        }
+
+        let result = self.inner.find_close(handle);
+
+        if self.tracer.is_enabled() {
+            let ret_str = match &result {
+                Ok(()) => "Ok(())".to_string(),
+                Err(e) => format!("Err({e})"),
+            };
+            let event = TraceEvent::return_event("FindClose", ApiCategory::FileIo)
+                .with_return_value(ret_str);
+            self.tracer.trace(event);
+        }
+
+        result
+    }
 }
 
 #[cfg(test)]
@@ -913,6 +1028,68 @@ mod tests {
 
         fn set_last_error(&mut self, _error_code: u32) {
             // Mock implementation - do nothing
+        }
+
+        // Phase 7: Command-Line Argument Parsing
+
+        fn get_command_line_w(&self) -> Vec<u16> {
+            let cmd = "test.exe arg1 arg2";
+            let mut utf16: Vec<u16> = cmd.encode_utf16().collect();
+            utf16.push(0);
+            utf16
+        }
+
+        fn command_line_to_argv_w(&self, _command_line: &[u16]) -> Vec<Vec<u16>> {
+            vec![
+                "test.exe\0".encode_utf16().collect(),
+                "arg1\0".encode_utf16().collect(),
+                "arg2\0".encode_utf16().collect(),
+            ]
+        }
+
+        // Phase 7: Advanced File Operations
+
+        fn find_first_file_w(
+            &mut self,
+            _pattern: &[u16],
+        ) -> Result<(
+            crate::syscalls::ntdll::SearchHandle,
+            crate::syscalls::ntdll::Win32FindDataW,
+        )> {
+            Ok((
+                crate::syscalls::ntdll::SearchHandle(0x5000),
+                crate::syscalls::ntdll::Win32FindDataW {
+                    file_attributes: 0x00000080, // FILE_ATTRIBUTE_NORMAL
+                    creation_time_low: 0,
+                    creation_time_high: 0,
+                    last_access_time_low: 0,
+                    last_access_time_high: 0,
+                    last_write_time_low: 0,
+                    last_write_time_high: 0,
+                    file_size_high: 0,
+                    file_size_low: 1024,
+                    reserved0: 0,
+                    reserved1: 0,
+                    file_name: {
+                        let mut name = [0u16; 260];
+                        let test: Vec<u16> = "test.txt\0".encode_utf16().collect();
+                        name[..test.len()].copy_from_slice(&test);
+                        name
+                    },
+                    alternate_file_name: [0; 14],
+                },
+            ))
+        }
+
+        fn find_next_file_w(
+            &mut self,
+            _handle: crate::syscalls::ntdll::SearchHandle,
+        ) -> Result<Option<crate::syscalls::ntdll::Win32FindDataW>> {
+            Ok(None) // No more files
+        }
+
+        fn find_close(&mut self, _handle: crate::syscalls::ntdll::SearchHandle) -> Result<()> {
+            Ok(())
         }
 
         fn nt_protect_virtual_memory(
