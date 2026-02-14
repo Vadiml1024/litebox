@@ -267,7 +267,11 @@ pub fn run(cli_args: CliArgs) -> Result<()> {
     println!("         Most Windows programs will fail due to missing DLL implementations.");
 
     // Try to call the entry point
-    match unsafe { call_entry_point(entry_point_address, &execution_context) } {
+    // Note: On 64-bit systems, u64 addresses fit in usize. On 32-bit systems,
+    // addresses > 4GB would be truncated, but Windows PE files on 32-bit systems
+    // use 32-bit addresses anyway, so this is safe in practice.
+    #[allow(clippy::cast_possible_truncation)]
+    match unsafe { call_entry_point(entry_point_address as usize, &execution_context) } {
         Ok(exit_code) => {
             println!("\n✓ Entry point executed successfully!");
             println!("  Exit code: {exit_code}");

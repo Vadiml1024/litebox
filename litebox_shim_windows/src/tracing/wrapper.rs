@@ -226,6 +226,39 @@ impl<T: NtdllApi> NtdllApi for TracedNtdllApi<T> {
         result
     }
 
+    fn nt_protect_virtual_memory(
+        &mut self,
+        address: u64,
+        size: usize,
+        new_protect: u32,
+    ) -> Result<u32> {
+        // Trace call
+        if self.tracer.is_enabled() {
+            let args = format!("address=0x{address:X}, size={size}, new_protect=0x{new_protect:X}");
+            let event =
+                TraceEvent::call("NtProtectVirtualMemory", ApiCategory::Memory).with_args(args);
+            self.tracer.trace(event);
+        }
+
+        // Call the inner implementation
+        let result = self
+            .inner
+            .nt_protect_virtual_memory(address, size, new_protect);
+
+        // Trace return
+        if self.tracer.is_enabled() {
+            let ret_str = match &result {
+                Ok(old_protect) => format!("Ok(old_protect=0x{old_protect:X})"),
+                Err(e) => format!("Err({e})"),
+            };
+            let event = TraceEvent::return_event("NtProtectVirtualMemory", ApiCategory::Memory)
+                .with_return_value(ret_str);
+            self.tracer.trace(event);
+        }
+
+        result
+    }
+
     // Phase 4: Threading APIs
 
     fn nt_create_thread(
@@ -710,6 +743,26 @@ impl<T: NtdllApi> NtdllApi for TracedNtdllApi<T> {
 
         result
     }
+
+    // Phase 7: Error Handling
+
+    fn get_last_error(&self) -> u32 {
+        // Note: We don't trace get_last_error to avoid noise, as it's called very frequently
+        self.inner.get_last_error()
+    }
+
+    fn set_last_error(&mut self, error_code: u32) {
+        // Trace call for debugging purposes
+        if self.tracer.is_enabled() {
+            let args = format!("error_code={error_code}");
+            let event = TraceEvent::call("SetLastError", ApiCategory::Process).with_args(args);
+            self.tracer.trace(event);
+        }
+
+        self.inner.set_last_error(error_code);
+
+        // No return value to trace
+    }
 }
 
 #[cfg(test)]
@@ -850,6 +903,25 @@ mod tests {
 
         fn free_library(&mut self, _dll_handle: u64) -> Result<()> {
             Ok(())
+        }
+
+        // Phase 7: Error Handling
+
+        fn get_last_error(&self) -> u32 {
+            0
+        }
+
+        fn set_last_error(&mut self, _error_code: u32) {
+            // Mock implementation - do nothing
+        }
+
+        fn nt_protect_virtual_memory(
+            &mut self,
+            _address: u64,
+            _size: usize,
+            new_protect: u32,
+        ) -> Result<u32> {
+            Ok(new_protect) // Return the new protection as old protection
         }
     }
 

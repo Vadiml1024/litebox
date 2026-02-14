@@ -79,6 +79,17 @@ pub trait NtdllApi {
     /// Maps to Linux `munmap()` syscall
     fn nt_free_virtual_memory(&mut self, address: u64, size: usize) -> Result<()>;
 
+    /// NtProtectVirtualMemory - Change memory protection
+    ///
+    /// Maps to Linux `mprotect()` syscall
+    /// Phase 7: Real API Implementation
+    fn nt_protect_virtual_memory(
+        &mut self,
+        address: u64,
+        size: usize,
+        new_protect: u32,
+    ) -> Result<u32>;
+
     // Phase 4: Threading APIs
 
     /// NtCreateThread - Create a new thread
@@ -188,6 +199,18 @@ pub trait NtdllApi {
     ///
     /// Frees a previously loaded DLL.
     fn free_library(&mut self, dll_handle: u64) -> Result<()>;
+
+    // Phase 7: Error Handling
+
+    /// GetLastError - Get the last Win32 error code
+    ///
+    /// Returns the last error code set by a Win32 API call.
+    fn get_last_error(&self) -> u32;
+
+    /// SetLastError - Set the last Win32 error code
+    ///
+    /// Sets the last error code for the current thread.
+    fn set_last_error(&mut self, error_code: u32);
 }
 
 /// Windows file access flags (simplified)

@@ -62,7 +62,7 @@ pub struct LinuxKernel<Host: HostInterface> {
     page_table: mm::PageTable<PAGE_SIZE>,
     vtl1_phys_frame_range: PhysFrameRange<Size4KiB>,
     vtl0_kernel_info: Vtl0KernelInfo,
-    #[expect(dead_code)]
+    #[allow(dead_code)]
     user_contexts: UserContextMap,
 }
 

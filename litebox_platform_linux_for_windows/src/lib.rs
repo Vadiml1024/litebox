@@ -93,6 +93,8 @@ struct PlatformState {
     environment: HashMap<String, String>,
     /// DLL manager for LoadLibrary/GetProcAddress
     dll_manager: DllManager,
+    /// Last error code per thread (using thread ID as key)
+    last_errors: HashMap<u32, u32>,
 }
 
 /// Linux platform for Windows API implementation
@@ -120,6 +122,7 @@ impl LinuxPlatformForWindows {
                 registry_keys: HashMap::new(),
                 environment,
                 dll_manager: DllManager::new(),
+                last_errors: HashMap::new(),
             }),
             next_handle: AtomicU64::new(0x1000), // Start at a high value to avoid conflicts
         }
@@ -271,6 +274,43 @@ impl LinuxPlatformForWindows {
         }
 
         Ok(())
+    }
+
+    /// NtProtectVirtualMemory - Change memory protection (internal implementation)
+    /// Phase 7: Real API Implementation
+    #[allow(clippy::unused_self)]
+    fn nt_protect_virtual_memory_impl(
+        &mut self,
+        address: u64,
+        size: usize,
+        new_protect: u32,
+    ) -> Result<u32> {
+        // Translate Windows protection flags to Linux PROT_ flags
+        let mut prot = 0;
+        if new_protect & 0x04 != 0 || new_protect & 0x40 != 0 {
+            // PAGE_READWRITE or PAGE_EXECUTE_READWRITE
+            prot |= libc::PROT_READ | libc::PROT_WRITE;
+        } else if new_protect & 0x02 != 0 || new_protect & 0x20 != 0 {
+            // PAGE_READONLY or PAGE_EXECUTE_READ
+            prot |= libc::PROT_READ;
+        } else if new_protect & 0x01 != 0 {
+            // PAGE_NOACCESS
+            prot = libc::PROT_NONE;
+        }
+        if new_protect & 0x10 != 0 || new_protect & 0x20 != 0 || new_protect & 0x40 != 0 {
+            // Any EXECUTE flag
+            prot |= libc::PROT_EXEC;
+        }
+
+        // SAFETY: mprotect is called with valid parameters
+        let result = unsafe { libc::mprotect(address as *mut libc::c_void, size, prot) };
+
+        if result != 0 {
+            return Err(PlatformError::MemoryError("mprotect failed".to_string()));
+        }
+
+        // Return the old protection flags (we don't track these, so return new_protect)
+        Ok(new_protect)
     }
 
     // Phase 4: Threading implementation
@@ -583,6 +623,22 @@ impl LinuxPlatformForWindows {
             .ok_or(PlatformError::InvalidHandle(handle))?;
         Ok(())
     }
+
+    // Phase 7: Error Handling
+
+    /// Get last error (internal implementation)
+    fn get_last_error_impl(&self) -> u32 {
+        let thread_id = self.get_current_thread_id_impl();
+        let state = self.state.lock().unwrap();
+        state.last_errors.get(&thread_id).copied().unwrap_or(0)
+    }
+
+    /// Set last error (internal implementation)
+    fn set_last_error_impl(&mut self, error_code: u32) {
+        let thread_id = self.get_current_thread_id_impl();
+        let mut state = self.state.lock().unwrap();
+        state.last_errors.insert(thread_id, error_code);
+    }
 }
 
 impl Default for LinuxPlatformForWindows {
@@ -678,6 +734,16 @@ impl NtdllApi for LinuxPlatformForWindows {
         size: usize,
     ) -> litebox_shim_windows::Result<()> {
         self.nt_free_virtual_memory_impl(address, size)
+            .map_err(|e| litebox_shim_windows::WindowsShimError::IoError(e.to_string()))
+    }
+
+    fn nt_protect_virtual_memory(
+        &mut self,
+        address: u64,
+        size: usize,
+        new_protect: u32,
+    ) -> litebox_shim_windows::Result<u32> {
+        self.nt_protect_virtual_memory_impl(address, size, new_protect)
             .map_err(|e| litebox_shim_windows::WindowsShimError::IoError(e.to_string()))
     }
 
@@ -825,6 +891,16 @@ impl NtdllApi for LinuxPlatformForWindows {
             .dll_manager
             .free_library(DllHandle::new(dll_handle))
             .map_err(|e| litebox_shim_windows::WindowsShimError::IoError(e.to_string()))
+    }
+
+    // Phase 7: Error Handling
+
+    fn get_last_error(&self) -> u32 {
+        self.get_last_error_impl()
+    }
+
+    fn set_last_error(&mut self, error_code: u32) {
+        self.set_last_error_impl(error_code);
     }
 }
 
@@ -1134,5 +1210,98 @@ mod tests {
         // Should not be able to get proc address after freeing
         let result = platform.get_proc_address(handle, "printf");
         assert!(result.is_err());
+    }
+
+    // Phase 7: Memory Protection tests
+
+    #[test]
+    fn test_memory_protection() {
+        let mut platform = LinuxPlatformForWindows::new();
+
+        // Allocate memory with read-write protection
+        let size = 4096;
+        let address = platform
+            .nt_allocate_virtual_memory(size, 0x04) // PAGE_READWRITE
+            .unwrap();
+        assert_ne!(address, 0);
+
+        // Change protection to read-only
+        let result = platform.nt_protect_virtual_memory(address, size, 0x02); // PAGE_READONLY
+        assert!(result.is_ok());
+
+        // Free the memory
+        let result = platform.nt_free_virtual_memory(address, size);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_memory_protection_execute() {
+        let mut platform = LinuxPlatformForWindows::new();
+
+        // Allocate memory with execute-read-write protection
+        let size = 4096;
+        let address = platform
+            .nt_allocate_virtual_memory(size, 0x40) // PAGE_EXECUTE_READWRITE
+            .unwrap();
+        assert_ne!(address, 0);
+
+        // Change protection to execute-read
+        let result = platform.nt_protect_virtual_memory(address, size, 0x20); // PAGE_EXECUTE_READ
+        assert!(result.is_ok());
+
+        // Free the memory
+        let result = platform.nt_free_virtual_memory(address, size);
+        assert!(result.is_ok());
+    }
+
+    // Phase 7: Error Handling tests
+
+    #[test]
+    fn test_get_set_last_error() {
+        let mut platform = LinuxPlatformForWindows::new();
+
+        // Initially should be 0
+        assert_eq!(platform.get_last_error(), 0);
+
+        // Set an error
+        platform.set_last_error(123);
+        assert_eq!(platform.get_last_error(), 123);
+
+        // Set another error
+        platform.set_last_error(456);
+        assert_eq!(platform.get_last_error(), 456);
+
+        // Set back to 0
+        platform.set_last_error(0);
+        assert_eq!(platform.get_last_error(), 0);
+    }
+
+    #[test]
+    fn test_last_error_thread_local() {
+        use std::sync::Arc;
+        use std::sync::Mutex;
+
+        let platform = Arc::new(Mutex::new(LinuxPlatformForWindows::new()));
+
+        // Set error in main thread
+        platform.lock().unwrap().set_last_error(100);
+
+        // Spawn a thread and check that it has its own error code
+        let platform_clone = Arc::clone(&platform);
+        let handle = std::thread::spawn(move || {
+            // Should be 0 in new thread
+            let error = platform_clone.lock().unwrap().get_last_error();
+            assert_eq!(error, 0);
+
+            // Set error in this thread
+            platform_clone.lock().unwrap().set_last_error(200);
+            let error = platform_clone.lock().unwrap().get_last_error();
+            assert_eq!(error, 200);
+        });
+
+        handle.join().unwrap();
+
+        // Main thread should still have its own error
+        assert_eq!(platform.lock().unwrap().get_last_error(), 100);
     }
 }
