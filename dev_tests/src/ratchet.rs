@@ -10,7 +10,7 @@ use std::io::BufReader;
 #[test]
 fn ratchet_transmutes() -> Result<()> {
     ratchet(
-        &[    
+        &[
             ("dev_tests/", 2),
             ("litebox/", 8),
             ("litebox_platform_linux_userland/", 2),
