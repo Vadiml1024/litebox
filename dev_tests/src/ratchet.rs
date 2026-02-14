@@ -36,6 +36,7 @@ fn ratchet_globals() -> Result<()> {
         &[
             ("dev_bench/", 1),
             ("litebox/", 9),
+            ("litebox_platform_linux_for_windows/", 4),
             ("litebox_platform_linux_kernel/", 5),
             ("litebox_platform_linux_userland/", 5),
             ("litebox_platform_lvbs/", 20),
@@ -53,7 +54,7 @@ fn ratchet_globals() -> Result<()> {
                 .filter(|line| {
                     // Heuristic: detect "static" at the start of a line, excluding whitespace. This should
                     // prevent us from accidentally including code that contains the word in a comment, or
-                    // is referring to the `'static` lifetime.
+                    // is referring to the 'static lifetime.
                     let trimmed = line.as_ref().unwrap().trim_start();
                     trimmed.starts_with("static ")
                         || trimmed.split_once(' ').is_some_and(|(a, b)| {
@@ -128,7 +129,8 @@ fn ratchet(expected: &[(&str, usize)], f: impl Fn(BufReader<File>) -> Result<usi
             && f(BufReader::new(File::open(p).unwrap()))? > 0
         {
             errors.push(format!(
-                "The file '{file_name}'  that with a non-zero ratchet value is not covered by any prefix.\nPlease make sure all files are covered by some prefix."
+                "The file '{file_name}'  that with a non-zero ratchet value is not covered by any prefix.
+Please make sure all files are covered by some prefix."
             ));
         }
     }
@@ -144,7 +146,9 @@ fn ratchet(expected: &[(&str, usize)], f: impl Fn(BufReader<File>) -> Result<usi
         match count.cmp(expected_count) {
             std::cmp::Ordering::Less => {
                 errors.push(format!(
-                    "Good news!! Ratched count for paths starting with '{prefix}' decreased! :)\n\nPlease reduce the expected count in the ratchet to {count}"
+                    "Good news!! Ratched count for paths starting with '{prefix}' decreased! :)
+
+Please reduce the expected count in the ratchet to {count}"
                 ));
             }
             std::cmp::Ordering::Equal => {
@@ -156,7 +160,13 @@ fn ratchet(expected: &[(&str, usize)], f: impl Fn(BufReader<File>) -> Result<usi
             }
             std::cmp::Ordering::Greater => {
                 errors.push(format!(
-                    "Ratcheted count for paths starting with '{prefix}' increased by {} :(\n\nYou might be using a feature that is ratcheted (i.e., we are aiming to reduce usage of in the codebase).\nTips:\n\tTry if you can work without using this feature.\n\tIf you think the heuristic detection is incorrect, you might need to update the ratchet's heuristic.\n\tIf the heuristic is correct, you might need to update the count.",
+                    "Ratcheted count for paths starting with '{prefix}' increased by {} :(
+
+You might be using a feature that is ratcheted (i.e., we are aiming to reduce usage of in the codebase).
+Tips:
+\tTry if you can work without using this feature.
+\tIf you think the heuristic detection is incorrect, you might need to update the ratchet's heuristic.
+\tIf the heuristic is correct, you might need to update the count.",
                     count - expected_count
                 ));
             }
@@ -165,7 +175,8 @@ fn ratchet(expected: &[(&str, usize)], f: impl Fn(BufReader<File>) -> Result<usi
 
     if !errors.is_empty() {
         bail!(
-            "Ratchet test failed in {}:\n{}",
+            "Ratchet test failed in {}:
+{}",
             std::panic::Location::caller(),
             errors.join("\n\n")
         );

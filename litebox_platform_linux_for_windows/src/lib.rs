@@ -7,7 +7,7 @@
 //! This is the "South" platform layer that translates Windows API calls
 //! to Linux syscalls.
 
-extern crate std;
+pub mod msvcrt;
 
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
@@ -22,6 +22,20 @@ use litebox_shim_windows::loader::DllManager;
 use litebox_shim_windows::syscalls::ntdll::{
     ConsoleHandle, EventHandle, FileHandle, NtdllApi, RegKeyHandle, ThreadEntryPoint, ThreadHandle,
 };
+
+/// Windows error codes
+mod windows_errors {
+    /// The system cannot find the file specified
+    pub const ERROR_FILE_NOT_FOUND: u32 = 2;
+    /// Access is denied
+    pub const ERROR_ACCESS_DENIED: u32 = 5;
+    /// The handle is invalid
+    pub const ERROR_INVALID_HANDLE: u32 = 6;
+    /// The file exists
+    pub const ERROR_FILE_EXISTS: u32 = 80;
+    /// The parameter is incorrect
+    pub const ERROR_INVALID_PARAMETER: u32 = 87;
+}
 
 /// Platform errors
 #[derive(Debug, Error)]
@@ -155,55 +169,122 @@ impl LinuxPlatformForWindows {
         }
 
         // Translate creation disposition
+        // CREATE_NEW = 1: Creates a new file, fails if file already exists
+        // CREATE_ALWAYS = 2: Creates a new file, always (overwrites if exists)
+        // OPEN_EXISTING = 3: Opens existing file, fails if doesn't exist
+        // OPEN_ALWAYS = 4: Opens file if exists, creates if doesn't exist
+        // TRUNCATE_EXISTING = 5: Opens and truncates existing file, fails if doesn't exist
         match create_disposition {
             1 => {
-                options.create_new(true);
-            } // CREATE_NEW
+                // CREATE_NEW
+                options.create_new(true).write(true);
+            }
             2 => {
-                options.create(true).truncate(true);
-            } // CREATE_ALWAYS
+                // CREATE_ALWAYS
+                options.create(true).truncate(true).write(true);
+            }
+            3 => {
+                // OPEN_EXISTING - default behavior
+            }
             4 => {
-                options.create(true);
-            } // OPEN_ALWAYS
-            _ => { /* OPEN_EXISTING or unknown - default */ }
+                // OPEN_ALWAYS
+                options.create(true).write(true);
+            }
+            5 => {
+                // TRUNCATE_EXISTING
+                options.truncate(true).write(true);
+            }
+            _ => {
+                // Invalid disposition
+                self.set_last_error_impl(windows_errors::ERROR_INVALID_PARAMETER);
+                return Err(PlatformError::PathTranslation(
+                    "Invalid create disposition".to_string(),
+                ));
+            }
         }
 
-        let file = options.open(&linux_path)?;
-        let handle = self.allocate_handle();
-        self.state.lock().unwrap().handles.insert(handle, file);
-
-        Ok(handle)
+        // Try to open the file and set appropriate error codes on failure
+        match options.open(&linux_path) {
+            Ok(file) => {
+                let handle = self.allocate_handle();
+                self.state.lock().unwrap().handles.insert(handle, file);
+                self.set_last_error_impl(0); // Success
+                Ok(handle)
+            }
+            Err(e) => {
+                // Map IO error to Windows error code
+                use std::io::ErrorKind;
+                let error_code = match e.kind() {
+                    ErrorKind::NotFound => windows_errors::ERROR_FILE_NOT_FOUND,
+                    ErrorKind::PermissionDenied => windows_errors::ERROR_ACCESS_DENIED,
+                    ErrorKind::AlreadyExists => windows_errors::ERROR_FILE_EXISTS,
+                    _ => windows_errors::ERROR_INVALID_PARAMETER,
+                };
+                self.set_last_error_impl(error_code);
+                Err(PlatformError::IoError(e))
+            }
+        }
     }
 
     /// NtReadFile - Read from a file (internal implementation)
     fn nt_read_file_impl(&mut self, handle: u64, buffer: &mut [u8]) -> Result<usize> {
         let mut state = self.state.lock().unwrap();
-        let file = state
-            .handles
-            .get_mut(&handle)
-            .ok_or(PlatformError::InvalidHandle(handle))?;
-        Ok(file.read(buffer)?)
+        let Some(file) = state.handles.get_mut(&handle) else {
+            drop(state);
+            self.set_last_error_impl(windows_errors::ERROR_INVALID_HANDLE);
+            return Err(PlatformError::InvalidHandle(handle));
+        };
+
+        let result = file.read(buffer);
+        drop(state);
+
+        match result {
+            Ok(bytes_read) => {
+                self.set_last_error_impl(0); // Success
+                Ok(bytes_read)
+            }
+            Err(e) => {
+                self.set_last_error_impl(windows_errors::ERROR_INVALID_PARAMETER);
+                Err(PlatformError::IoError(e))
+            }
+        }
     }
 
     /// NtWriteFile - Write to a file (internal implementation)
     fn nt_write_file_impl(&mut self, handle: u64, buffer: &[u8]) -> Result<usize> {
         let mut state = self.state.lock().unwrap();
-        let file = state
-            .handles
-            .get_mut(&handle)
-            .ok_or(PlatformError::InvalidHandle(handle))?;
-        Ok(file.write(buffer)?)
+        let Some(file) = state.handles.get_mut(&handle) else {
+            drop(state);
+            self.set_last_error_impl(windows_errors::ERROR_INVALID_HANDLE);
+            return Err(PlatformError::InvalidHandle(handle));
+        };
+
+        let result = file.write(buffer);
+        drop(state);
+
+        match result {
+            Ok(bytes_written) => {
+                self.set_last_error_impl(0); // Success
+                Ok(bytes_written)
+            }
+            Err(e) => {
+                self.set_last_error_impl(windows_errors::ERROR_INVALID_PARAMETER);
+                Err(PlatformError::IoError(e))
+            }
+        }
     }
 
     /// NtClose - Close a handle (internal implementation)
     fn nt_close_impl(&mut self, handle: u64) -> Result<()> {
-        self.state
-            .lock()
-            .unwrap()
-            .handles
-            .remove(&handle)
-            .ok_or(PlatformError::InvalidHandle(handle))?;
-        Ok(())
+        let result = self.state.lock().unwrap().handles.remove(&handle);
+
+        if result.is_some() {
+            self.set_last_error_impl(0); // Success
+            Ok(())
+        } else {
+            self.set_last_error_impl(windows_errors::ERROR_INVALID_HANDLE);
+            Err(PlatformError::InvalidHandle(handle))
+        }
     }
 
     /// Get standard output handle (internal implementation)
@@ -1303,5 +1384,112 @@ mod tests {
 
         // Main thread should still have its own error
         assert_eq!(platform.lock().unwrap().get_last_error(), 100);
+    }
+
+    // Phase 7: Enhanced File I/O tests
+
+    #[test]
+    fn test_file_io_with_error_codes() {
+        let mut platform = LinuxPlatformForWindows::new();
+
+        // Try to open a non-existent file with OPEN_EXISTING (disposition 3)
+        let result = platform.nt_create_file("/tmp/nonexistent_test_file.txt", 0x80000000, 3);
+        assert!(result.is_err());
+        // Should set ERROR_FILE_NOT_FOUND (2)
+        assert_eq!(platform.get_last_error(), 2);
+
+        // Create a new file successfully
+        let handle = platform
+            .nt_create_file("/tmp/test_file_io.txt", 0xC0000000, 2) // CREATE_ALWAYS
+            .unwrap();
+        // Should set error code to 0 (success)
+        assert_eq!(platform.get_last_error(), 0);
+
+        // Write to the file
+        let data = b"Hello, World!";
+        let bytes_written = platform.nt_write_file(handle, data).unwrap();
+        assert_eq!(bytes_written, data.len());
+        assert_eq!(platform.get_last_error(), 0);
+
+        // Close the file
+        platform.nt_close(handle).unwrap();
+        assert_eq!(platform.get_last_error(), 0);
+
+        // Clean up
+        let _ = std::fs::remove_file("/tmp/test_file_io.txt");
+    }
+
+    #[test]
+    fn test_file_create_new_disposition() {
+        let mut platform = LinuxPlatformForWindows::new();
+        let test_path = "/tmp/test_create_new.txt";
+
+        // Clean up any existing file
+        let _ = std::fs::remove_file(test_path);
+
+        // CREATE_NEW (1) - should succeed if file doesn't exist
+        let handle = platform.nt_create_file(test_path, 0xC0000000, 1).unwrap();
+        platform.nt_close(handle).unwrap();
+
+        // CREATE_NEW again - should fail with ERROR_FILE_EXISTS (80)
+        let result = platform.nt_create_file(test_path, 0xC0000000, 1);
+        assert!(result.is_err());
+        assert_eq!(platform.get_last_error(), 80);
+
+        // Clean up
+        let _ = std::fs::remove_file(test_path);
+    }
+
+    #[test]
+    fn test_file_truncate_existing_disposition() {
+        let mut platform = LinuxPlatformForWindows::new();
+        let test_path = "/tmp/test_truncate.txt";
+
+        // Clean up any existing file
+        let _ = std::fs::remove_file(test_path);
+
+        // Create a file with some content using standard file I/O
+        {
+            let mut file = std::fs::File::create(test_path).unwrap();
+            file.write_all(b"Initial content that should be truncated")
+                .unwrap();
+        }
+
+        // TRUNCATE_EXISTING (5) - should truncate the file
+        let handle = platform.nt_create_file(test_path, 0xC0000000, 5).unwrap();
+
+        // Write new content
+        let data = b"New";
+        platform.nt_write_file(handle, data).unwrap();
+        platform.nt_close(handle).unwrap();
+
+        // Verify the file only contains "New"
+        let content = std::fs::read_to_string(test_path).unwrap();
+        assert_eq!(content, "New");
+
+        // Clean up
+        let _ = std::fs::remove_file(test_path);
+    }
+
+    #[test]
+    fn test_file_invalid_handle_error() {
+        let mut platform = LinuxPlatformForWindows::new();
+
+        // Try to read from an invalid handle
+        let mut buffer = [0u8; 10];
+        let result = platform.nt_read_file(FileHandle(0xDEADBEEF), &mut buffer);
+        assert!(result.is_err());
+        // Should set ERROR_INVALID_HANDLE (6)
+        assert_eq!(platform.get_last_error(), 6);
+
+        // Try to write to an invalid handle
+        let result = platform.nt_write_file(FileHandle(0xDEADBEEF), b"test");
+        assert!(result.is_err());
+        assert_eq!(platform.get_last_error(), 6);
+
+        // Try to close an invalid handle
+        let result = platform.nt_close(FileHandle(0xDEADBEEF));
+        assert!(result.is_err());
+        assert_eq!(platform.get_last_error(), 6);
     }
 }
