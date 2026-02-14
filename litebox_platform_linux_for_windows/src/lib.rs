@@ -861,10 +861,7 @@ impl LinuxPlatformForWindows {
     }
 
     /// Internal implementation for find_next_file_w
-    fn find_next_file_w_impl(
-        &mut self,
-        handle: SearchHandle,
-    ) -> Result<Option<Win32FindDataW>> {
+    fn find_next_file_w_impl(&mut self, handle: SearchHandle) -> Result<Option<Win32FindDataW>> {
         let mut state = self.state.lock().unwrap();
         let Some(search_state) = state.searches.get_mut(&handle.0) else {
             drop(state);
@@ -1347,9 +1344,8 @@ impl NtdllApi for LinuxPlatformForWindows {
                     if chars.peek() == Some(&'"') {
                         // 2n backslashes + quote = n backslashes + end quote
                         // 2n+1 backslashes + quote = n backslashes + literal quote
-                        for _ in 0..(backslash_count / 2) {
-                            current_arg.push('\\');
-                        }
+                        let num_backslashes = backslash_count / 2;
+                        current_arg.extend(std::iter::repeat_n('\\', num_backslashes));
                         if backslash_count % 2 == 1 {
                             // Odd number: literal quote
                             chars.next();
@@ -1358,9 +1354,7 @@ impl NtdllApi for LinuxPlatformForWindows {
                         // Even number: the quote will be processed in next iteration
                     } else {
                         // Not followed by quote: backslashes are literal
-                        for _ in 0..backslash_count {
-                            current_arg.push('\\');
-                        }
+                        current_arg.extend(std::iter::repeat_n('\\', backslash_count));
                     }
                 }
                 _ => {
@@ -1406,7 +1400,6 @@ impl NtdllApi for LinuxPlatformForWindows {
             .map_err(|e| litebox_shim_windows::WindowsShimError::IoError(e.to_string()))
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -1921,42 +1914,152 @@ mod tests {
     #[test]
     fn test_command_line_to_argv() {
         let platform = LinuxPlatformForWindows::new();
-        
+
         // Test simple command line
         let cmd_line: Vec<u16> = "program.exe arg1 arg2\0".encode_utf16().collect();
         let args = platform.command_line_to_argv_w(&cmd_line);
         assert_eq!(args.len(), 3);
-        assert_eq!(String::from_utf16_lossy(&args[0]).trim_end_matches('\0'), "program.exe");
-        assert_eq!(String::from_utf16_lossy(&args[1]).trim_end_matches('\0'), "arg1");
-        assert_eq!(String::from_utf16_lossy(&args[2]).trim_end_matches('\0'), "arg2");
-        
+        assert_eq!(
+            String::from_utf16_lossy(&args[0]).trim_end_matches('\0'),
+            "program.exe"
+        );
+        assert_eq!(
+            String::from_utf16_lossy(&args[1]).trim_end_matches('\0'),
+            "arg1"
+        );
+        assert_eq!(
+            String::from_utf16_lossy(&args[2]).trim_end_matches('\0'),
+            "arg2"
+        );
+
         // Test command line with quotes
-        let cmd_line: Vec<u16> = "program.exe \"arg with spaces\" arg2\0".encode_utf16().collect();
+        let cmd_line: Vec<u16> = "program.exe \"arg with spaces\" arg2\0"
+            .encode_utf16()
+            .collect();
         let args = platform.command_line_to_argv_w(&cmd_line);
         assert_eq!(args.len(), 3);
-        assert_eq!(String::from_utf16_lossy(&args[0]).trim_end_matches('\0'), "program.exe");
-        assert_eq!(String::from_utf16_lossy(&args[1]).trim_end_matches('\0'), "arg with spaces");
-        assert_eq!(String::from_utf16_lossy(&args[2]).trim_end_matches('\0'), "arg2");
+        assert_eq!(
+            String::from_utf16_lossy(&args[0]).trim_end_matches('\0'),
+            "program.exe"
+        );
+        assert_eq!(
+            String::from_utf16_lossy(&args[1]).trim_end_matches('\0'),
+            "arg with spaces"
+        );
+        assert_eq!(
+            String::from_utf16_lossy(&args[2]).trim_end_matches('\0'),
+            "arg2"
+        );
     }
 
     #[test]
     fn test_set_get_command_line() {
         let mut platform = LinuxPlatformForWindows::new();
-        
+
         let args = vec![
             "test.exe".to_string(),
             "arg1".to_string(),
             "arg with spaces".to_string(),
         ];
         platform.set_command_line(&args);
-        
+
         let cmd_line = platform.get_command_line_w();
-        let cmd_str = String::from_utf16_lossy(&cmd_line).trim_end_matches('\0').to_string();
-        
+        let cmd_str = String::from_utf16_lossy(&cmd_line)
+            .trim_end_matches('\0')
+            .to_string();
+
         // Should contain all args, with quotes around the one with spaces
         assert!(cmd_str.contains("test.exe"));
         assert!(cmd_str.contains("arg1"));
         assert!(cmd_str.contains("\"arg with spaces\""));
+    }
+
+    #[test]
+    fn test_command_line_backslash_handling() {
+        let platform = LinuxPlatformForWindows::new();
+
+        // Test: Backslashes not followed by quotes are literal
+        let cmd_line = r"program.exe C:\path\to\file.txt".to_string() + "\0";
+        let cmd_line_utf16: Vec<u16> = cmd_line.encode_utf16().collect();
+        let args = platform.command_line_to_argv_w(&cmd_line_utf16);
+        assert_eq!(args.len(), 2);
+        assert_eq!(
+            String::from_utf16_lossy(&args[1]).trim_end_matches('\0'),
+            r"C:\path\to\file.txt"
+        );
+
+        // Test: 2 backslashes + quote = 1 backslash (quote ends the string)
+        // Command line: "test\\"  -> output: test\
+        let cmd_line = r#"program.exe "test\\""#.to_string() + "\0";
+        let cmd_line_utf16: Vec<u16> = cmd_line.encode_utf16().collect();
+        let args = platform.command_line_to_argv_w(&cmd_line_utf16);
+        assert_eq!(args.len(), 2);
+        assert_eq!(
+            String::from_utf16_lossy(&args[1]).trim_end_matches('\0'),
+            r"test\"
+        );
+
+        // Test: 3 backslashes + quote = 1 backslash + literal quote (quote doesn't end string)
+        // Command line: "test\\"more"  -> output: test"more
+        let cmd_line = r#"program.exe "test\"more""#.to_string() + " \0";
+        let cmd_line_utf16: Vec<u16> = cmd_line.encode_utf16().collect();
+        let args = platform.command_line_to_argv_w(&cmd_line_utf16);
+        assert_eq!(args.len(), 2);
+        assert_eq!(
+            String::from_utf16_lossy(&args[1]).trim_end_matches('\0'),
+            r#"test"more"#
+        );
+
+        // Test: 4 backslashes + quote = 2 backslashes (quote ends the string)
+        let cmd_line = r#"program.exe "test\\\\""#.to_string() + "\0";
+        let cmd_line_utf16: Vec<u16> = cmd_line.encode_utf16().collect();
+        let args = platform.command_line_to_argv_w(&cmd_line_utf16);
+        assert_eq!(args.len(), 2);
+        assert_eq!(
+            String::from_utf16_lossy(&args[1]).trim_end_matches('\0'),
+            r"test\\"
+        );
+    }
+
+    #[test]
+    fn test_command_line_doubled_quotes() {
+        let platform = LinuxPlatformForWindows::new();
+
+        // Test: Doubled quotes inside quoted strings (Windows convention)
+        let cmd_line: Vec<u16> = "program.exe \"He said \"\"Hello\"\"\"\0"
+            .encode_utf16()
+            .collect();
+        let args = platform.command_line_to_argv_w(&cmd_line);
+        assert_eq!(args.len(), 2);
+        assert_eq!(
+            String::from_utf16_lossy(&args[1]).trim_end_matches('\0'),
+            "He said \"Hello\""
+        );
+    }
+
+    #[test]
+    fn test_set_command_line_with_quotes() {
+        let mut platform = LinuxPlatformForWindows::new();
+
+        // Test that quotes in arguments are doubled
+        let args = vec!["test.exe".to_string(), "He said \"Hello\"".to_string()];
+        platform.set_command_line(&args);
+
+        let cmd_line = platform.get_command_line_w();
+        let cmd_str = String::from_utf16_lossy(&cmd_line)
+            .trim_end_matches('\0')
+            .to_string();
+
+        // Should have doubled quotes
+        assert!(cmd_str.contains("\"\""));
+
+        // Parse it back and verify
+        let parsed_args = platform.command_line_to_argv_w(&cmd_line);
+        assert_eq!(parsed_args.len(), 2);
+        assert_eq!(
+            String::from_utf16_lossy(&parsed_args[1]).trim_end_matches('\0'),
+            "He said \"Hello\""
+        );
     }
 
     // Phase 7: File pattern matching tests
@@ -1970,7 +2073,7 @@ mod tests {
         assert!(!matches_pattern("test.txt", "*.doc"));
         assert!(matches_pattern("test.txt", "????.txt"));
         assert!(!matches_pattern("test.txt", "?.txt"));
-        
+
         // Test case insensitivity
         assert!(matches_pattern("Test.TXT", "test.txt"));
         assert!(matches_pattern("test.txt", "TEST.TXT"));
