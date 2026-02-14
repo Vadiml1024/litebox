@@ -184,9 +184,10 @@ impl LinuxPlatformForWindows {
         } else {
             args.iter()
                 .map(|arg| {
-                    // Quote arguments with spaces
-                    if arg.contains(' ') {
-                        format!("\"{}\"", arg.replace('"', "\\\""))
+                    // Quote arguments with spaces or quotes
+                    // In Windows, quotes inside quoted strings are escaped by doubling them
+                    if arg.contains(' ') || arg.contains('"') {
+                        format!("\"{}\"", arg.replace('"', "\"\""))
                     } else {
                         arg.clone()
                     }
@@ -1044,7 +1045,8 @@ fn matches_pattern(name: &str, pattern: &str) -> bool {
                 let Some(n) = name_chars.next() else {
                     return false;
                 };
-                if n.to_lowercase().next() != p.to_lowercase().next() {
+                // Use eq_ignore_ascii_case for proper case-insensitive comparison
+                if !n.eq_ignore_ascii_case(&p) {
                     return false;
                 }
             }
@@ -1312,7 +1314,13 @@ impl NtdllApi for LinuxPlatformForWindows {
         while let Some(ch) = chars.next() {
             match ch {
                 '"' => {
-                    in_quotes = !in_quotes;
+                    // Handle doubled quotes inside quoted strings (Windows convention)
+                    if in_quotes && chars.peek() == Some(&'"') {
+                        chars.next();
+                        current_arg.push('"');
+                    } else {
+                        in_quotes = !in_quotes;
+                    }
                 }
                 ' ' | '\t' if !in_quotes => {
                     if !current_arg.is_empty() {
@@ -1328,16 +1336,31 @@ impl NtdllApi for LinuxPlatformForWindows {
                     }
                 }
                 '\\' => {
-                    // Handle backslash escaping
-                    if let Some(&next_ch) = chars.peek() {
-                        if next_ch == '"' {
+                    // Count consecutive backslashes
+                    let mut backslash_count = 1;
+                    while chars.peek() == Some(&'\\') {
+                        backslash_count += 1;
+                        chars.next();
+                    }
+
+                    // Check if followed by a quote
+                    if chars.peek() == Some(&'"') {
+                        // 2n backslashes + quote = n backslashes + end quote
+                        // 2n+1 backslashes + quote = n backslashes + literal quote
+                        for _ in 0..(backslash_count / 2) {
+                            current_arg.push('\\');
+                        }
+                        if backslash_count % 2 == 1 {
+                            // Odd number: literal quote
                             chars.next();
                             current_arg.push('"');
-                        } else {
-                            current_arg.push(ch);
                         }
+                        // Even number: the quote will be processed in next iteration
                     } else {
-                        current_arg.push(ch);
+                        // Not followed by quote: backslashes are literal
+                        for _ in 0..backslash_count {
+                            current_arg.push('\\');
+                        }
                     }
                 }
                 _ => {
