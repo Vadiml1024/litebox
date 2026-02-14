@@ -261,6 +261,10 @@ pub unsafe extern "C" fn msvcrt_vfprintf(
 /// # Safety
 /// This function returns a static array that should not be freed.
 /// Uses Mutex for thread-safe access to the static buffer.
+///
+/// # Panics
+/// Panics if the mutex is poisoned (which would only occur if another thread
+/// panicked while holding the lock).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn msvcrt___iob_func() -> *mut u8 {
     use std::sync::Mutex;
@@ -298,7 +302,7 @@ pub unsafe extern "C" fn msvcrt___getmainargs(
 /// Uses AtomicPtr for thread-safe access.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn msvcrt___initenv() -> *mut *mut i8 {
-    use std::sync::atomic::{AtomicPtr, Ordering};
+    use std::sync::atomic::AtomicPtr;
 
     // Use AtomicPtr for thread-safe access to the environment pointer
     static ENV: AtomicPtr<i8> = AtomicPtr::new(std::ptr::null_mut());
@@ -307,7 +311,7 @@ pub unsafe extern "C" fn msvcrt___initenv() -> *mut *mut i8 {
     // For C ABI compatibility, we return a stable address to the atomic.
     // Note: This is a simplified stub; a full implementation would need to
     // store the pointer in a way that allows C code to modify it.
-    &ENV as *const AtomicPtr<i8> as *mut *mut i8
+    (&raw const ENV).cast::<*mut i8>().cast_mut()
 }
 
 /// Set application type (__set_app_type)
@@ -440,7 +444,7 @@ thread_local! {
 pub unsafe extern "C" fn msvcrt___errno_location() -> *mut i32 {
     // SAFETY: Returns a pointer to thread-local storage.
     // The pointer is valid as long as the thread exists.
-    ERRNO.with(|errno| errno.as_ptr() as *mut i32)
+    ERRNO.with(std::cell::RefCell::as_ptr)
 }
 
 #[cfg(test)]

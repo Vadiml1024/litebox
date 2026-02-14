@@ -231,9 +231,7 @@ impl LinuxPlatformForWindows {
     /// NtReadFile - Read from a file (internal implementation)
     fn nt_read_file_impl(&mut self, handle: u64, buffer: &mut [u8]) -> Result<usize> {
         let mut state = self.state.lock().unwrap();
-        let file = if let Some(f) = state.handles.get_mut(&handle) {
-            f
-        } else {
+        let Some(file) = state.handles.get_mut(&handle) else {
             drop(state);
             self.set_last_error_impl(windows_errors::ERROR_INVALID_HANDLE);
             return Err(PlatformError::InvalidHandle(handle));
@@ -257,9 +255,7 @@ impl LinuxPlatformForWindows {
     /// NtWriteFile - Write to a file (internal implementation)
     fn nt_write_file_impl(&mut self, handle: u64, buffer: &[u8]) -> Result<usize> {
         let mut state = self.state.lock().unwrap();
-        let file = if let Some(f) = state.handles.get_mut(&handle) {
-            f
-        } else {
+        let Some(file) = state.handles.get_mut(&handle) else {
             drop(state);
             self.set_last_error_impl(windows_errors::ERROR_INVALID_HANDLE);
             return Err(PlatformError::InvalidHandle(handle));
