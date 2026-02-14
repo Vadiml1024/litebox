@@ -1892,4 +1892,64 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(platform.get_last_error(), 6);
     }
+
+    // Phase 7: Command-line argument parsing tests
+
+    #[test]
+    fn test_command_line_to_argv() {
+        let platform = LinuxPlatformForWindows::new();
+        
+        // Test simple command line
+        let cmd_line: Vec<u16> = "program.exe arg1 arg2\0".encode_utf16().collect();
+        let args = platform.command_line_to_argv_w(&cmd_line);
+        assert_eq!(args.len(), 3);
+        assert_eq!(String::from_utf16_lossy(&args[0]).trim_end_matches('\0'), "program.exe");
+        assert_eq!(String::from_utf16_lossy(&args[1]).trim_end_matches('\0'), "arg1");
+        assert_eq!(String::from_utf16_lossy(&args[2]).trim_end_matches('\0'), "arg2");
+        
+        // Test command line with quotes
+        let cmd_line: Vec<u16> = "program.exe \"arg with spaces\" arg2\0".encode_utf16().collect();
+        let args = platform.command_line_to_argv_w(&cmd_line);
+        assert_eq!(args.len(), 3);
+        assert_eq!(String::from_utf16_lossy(&args[0]).trim_end_matches('\0'), "program.exe");
+        assert_eq!(String::from_utf16_lossy(&args[1]).trim_end_matches('\0'), "arg with spaces");
+        assert_eq!(String::from_utf16_lossy(&args[2]).trim_end_matches('\0'), "arg2");
+    }
+
+    #[test]
+    fn test_set_get_command_line() {
+        let mut platform = LinuxPlatformForWindows::new();
+        
+        let args = vec![
+            "test.exe".to_string(),
+            "arg1".to_string(),
+            "arg with spaces".to_string(),
+        ];
+        platform.set_command_line(&args);
+        
+        let cmd_line = platform.get_command_line_w();
+        let cmd_str = String::from_utf16_lossy(&cmd_line).trim_end_matches('\0').to_string();
+        
+        // Should contain all args, with quotes around the one with spaces
+        assert!(cmd_str.contains("test.exe"));
+        assert!(cmd_str.contains("arg1"));
+        assert!(cmd_str.contains("\"arg with spaces\""));
+    }
+
+    // Phase 7: File pattern matching tests
+
+    #[test]
+    fn test_pattern_matching() {
+        assert!(matches_pattern("test.txt", "*"));
+        assert!(matches_pattern("test.txt", "*.txt"));
+        assert!(matches_pattern("test.txt", "test.*"));
+        assert!(matches_pattern("test.txt", "test.txt"));
+        assert!(!matches_pattern("test.txt", "*.doc"));
+        assert!(matches_pattern("test.txt", "????.txt"));
+        assert!(!matches_pattern("test.txt", "?.txt"));
+        
+        // Test case insensitivity
+        assert!(matches_pattern("Test.TXT", "test.txt"));
+        assert!(matches_pattern("test.txt", "TEST.TXT"));
+    }
 }
