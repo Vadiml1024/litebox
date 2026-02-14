@@ -310,7 +310,7 @@ impl DllManager {
 /// the actual DLL implementations. This allows Microsoft to refactor their
 /// implementation without breaking compatibility.
 ///
-/// Reference: https://learn.microsoft.com/en-us/windows/win32/apiindex/windows-apisets
+/// Reference: <https://learn.microsoft.com/en-us/windows/win32/apiindex/windows-apisets>
 fn map_api_set_to_implementation(api_set_name: &str) -> &'static str {
     let name_upper = api_set_name.to_uppercase();
 
