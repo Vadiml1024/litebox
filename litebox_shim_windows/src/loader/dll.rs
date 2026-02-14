@@ -17,6 +17,12 @@ use alloc::vec::Vec;
 /// Type for a DLL function pointer
 pub type DllFunction = usize;
 
+/// Type for a function implementation callback
+///
+/// This is called when a Windows API function needs to be executed.
+/// The callback receives the function name and can dispatch to the appropriate implementation.
+pub type FunctionCallback = fn(dll_name: &str, function_name: &str) -> Option<DllFunction>;
+
 /// Handle to a loaded DLL
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct DllHandle(u64);

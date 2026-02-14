@@ -6,6 +6,7 @@
 //! This module provides a minimal PE loader for loading Windows executables
 //! into memory. This is Phase 1 of the Windows on Linux implementation.
 
+pub mod dispatch;
 pub mod dll;
 pub mod execution;
 pub mod pe;
