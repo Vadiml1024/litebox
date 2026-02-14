@@ -1574,6 +1574,43 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn test_arch_prctl_gs() {
+        use crate::{MutPtr, syscalls::tests::init_platform};
+        use core::mem::MaybeUninit;
+        use litebox::platform::RawConstPointer;
+        use litebox_common_linux::ArchPrctlArg;
+
+        let task = init_platform(None);
+
+        // Save old GS base
+        let mut old_gs_base = MaybeUninit::<usize>::uninit();
+        let ptr = MutPtr::from_ptr(old_gs_base.as_mut_ptr());
+        task.sys_arch_prctl(ArchPrctlArg::GetGs(ptr))
+            .expect("Failed to get GS base");
+        let old_gs_base = unsafe { old_gs_base.assume_init() };
+
+        // Set new GS base
+        let mut new_gs_base: [u8; 16] = [0; 16];
+        let ptr = MutPtr::from_ptr(new_gs_base.as_mut_ptr());
+        task.sys_arch_prctl(ArchPrctlArg::SetGs(ptr.as_usize()))
+            .expect("Failed to set GS base");
+
+        // Verify new GS base
+        let mut current_gs_base = MaybeUninit::<usize>::uninit();
+        let ptr = MutPtr::from_ptr(current_gs_base.as_mut_ptr());
+        task.sys_arch_prctl(ArchPrctlArg::GetGs(ptr))
+            .expect("Failed to get GS base");
+        let current_gs_base = unsafe { current_gs_base.assume_init() };
+        assert_eq!(current_gs_base, new_gs_base.as_ptr() as usize);
+
+        // Restore old GS base
+        let ptr: crate::MutPtr<u8> = crate::MutPtr::from_usize(old_gs_base);
+        task.sys_arch_prctl(ArchPrctlArg::SetGs(ptr.as_usize()))
+            .expect("Failed to restore GS base");
+    }
+
+    #[test]
     fn test_sched_getaffinity() {
         let task = crate::syscalls::tests::init_platform(None);
 
