@@ -100,21 +100,21 @@ impl DllManager {
 
         // Handle API Set DLLs - these are forwarder DLLs that redirect to real implementations
         // API sets were introduced in Windows 7 and use the naming pattern "api-ms-win-*"
-        if normalized_name.starts_with("API-MS-WIN-") || normalized_name.starts_with("EXT-MS-WIN-") {
+        if normalized_name.starts_with("API-MS-WIN-") || normalized_name.starts_with("EXT-MS-WIN-")
+        {
             // Map API set DLLs to their real implementation DLL
             let impl_dll = map_api_set_to_implementation(&normalized_name);
-            
+
             // Check if we have the implementation DLL loaded
             if let Some(&handle) = self.dll_by_name.get(&impl_dll.to_uppercase()) {
                 // Alias the API set name to the same handle
                 self.dll_by_name.insert(normalized_name, handle);
                 return Ok(handle);
             }
-            
+
             // If implementation isn't loaded, return error
             return Err(WindowsShimError::UnsupportedFeature(format!(
-                "API Set DLL {} maps to {}, which is not loaded",
-                name, impl_dll
+                "API Set DLL {name} maps to {impl_dll}, which is not loaded"
             )));
         }
 
@@ -284,52 +284,52 @@ impl DllManager {
 /// Reference: https://learn.microsoft.com/en-us/windows/win32/apiindex/windows-apisets
 fn map_api_set_to_implementation(api_set_name: &str) -> &'static str {
     let name_upper = api_set_name.to_uppercase();
-    
+
     // Core Process/Thread APIs -> KERNEL32.dll
     if name_upper.starts_with("API-MS-WIN-CORE-PROCESSTHREADS-") {
         return "KERNEL32.dll";
     }
-    
+
     // Synchronization APIs -> KERNEL32.dll
     if name_upper.starts_with("API-MS-WIN-CORE-SYNCH-") {
         return "KERNEL32.dll";
     }
-    
+
     // Memory APIs -> KERNEL32.dll
     if name_upper.starts_with("API-MS-WIN-CORE-MEMORY-") {
         return "KERNEL32.dll";
     }
-    
+
     // File I/O APIs -> KERNEL32.dll
     if name_upper.starts_with("API-MS-WIN-CORE-FILE-") {
         return "KERNEL32.dll";
     }
-    
+
     // Console APIs -> KERNEL32.dll
     if name_upper.starts_with("API-MS-WIN-CORE-CONSOLE-") {
         return "KERNEL32.dll";
     }
-    
+
     // Handle APIs -> KERNEL32.dll
     if name_upper.starts_with("API-MS-WIN-CORE-HANDLE-") {
         return "KERNEL32.dll";
     }
-    
+
     // Library Loader APIs -> KERNEL32.dll
     if name_upper.starts_with("API-MS-WIN-CORE-LIBRARYLOADER-") {
         return "KERNEL32.dll";
     }
-    
+
     // NT DLL APIs -> NTDLL.dll
     if name_upper.starts_with("API-MS-WIN-CORE-RTLSUPPORT-") {
         return "NTDLL.dll";
     }
-    
+
     // C Runtime APIs -> MSVCRT.dll or UCRTBASE.dll
     if name_upper.starts_with("API-MS-WIN-CRT-") {
         return "UCRTBASE.dll";
     }
-    
+
     // Default to KERNEL32.dll for unknown API sets
     // Most API sets forward to KERNEL32
     "KERNEL32.dll"
