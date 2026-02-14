@@ -82,6 +82,8 @@ impl DllManager {
         manager.load_stub_kernel32();
         manager.load_stub_ntdll();
         manager.load_stub_msvcrt();
+        manager.load_stub_bcryptprimitives();
+        manager.load_stub_userenv();
 
         manager
     }
@@ -94,6 +96,26 @@ impl DllManager {
         // Check if already loaded
         if let Some(&handle) = self.dll_by_name.get(&normalized_name) {
             return Ok(handle);
+        }
+
+        // Handle API Set DLLs - these are forwarder DLLs that redirect to real implementations
+        // API sets were introduced in Windows 7 and use the naming pattern "api-ms-win-*"
+        if normalized_name.starts_with("API-MS-WIN-") || normalized_name.starts_with("EXT-MS-WIN-") {
+            // Map API set DLLs to their real implementation DLL
+            let impl_dll = map_api_set_to_implementation(&normalized_name);
+            
+            // Check if we have the implementation DLL loaded
+            if let Some(&handle) = self.dll_by_name.get(&impl_dll.to_uppercase()) {
+                // Alias the API set name to the same handle
+                self.dll_by_name.insert(normalized_name, handle);
+                return Ok(handle);
+            }
+            
+            // If implementation isn't loaded, return error
+            return Err(WindowsShimError::UnsupportedFeature(format!(
+                "API Set DLL {} maps to {}, which is not loaded",
+                name, impl_dll
+            )));
         }
 
         // For now, we only support stub DLLs
@@ -167,6 +189,10 @@ impl DllManager {
             ("ReadFile", 0x1007 as DllFunction),
             ("WriteFile", 0x1008 as DllFunction),
             ("CloseHandle", 0x1009 as DllFunction),
+            // Synchronization functions (from API set api-ms-win-core-synch-l1-2-0.dll)
+            ("WaitOnAddress", 0x100A as DllFunction),
+            ("WakeByAddressAll", 0x100B as DllFunction),
+            ("WakeByAddressSingle", 0x100C as DllFunction),
         ];
 
         self.register_stub_dll("KERNEL32.dll", exports);
@@ -181,6 +207,10 @@ impl DllManager {
             ("NtClose", 0x2003 as DllFunction),
             ("NtAllocateVirtualMemory", 0x2004 as DllFunction),
             ("NtFreeVirtualMemory", 0x2005 as DllFunction),
+            // Additional NTDLL functions
+            ("NtOpenFile", 0x2006 as DllFunction),
+            ("NtCreateNamedPipeFile", 0x2007 as DllFunction),
+            ("RtlNtStatusToDosError", 0x2008 as DllFunction),
         ];
 
         self.register_stub_dll("NTDLL.dll", exports);
@@ -193,10 +223,116 @@ impl DllManager {
             ("malloc", 0x3001 as DllFunction),
             ("free", 0x3002 as DllFunction),
             ("exit", 0x3003 as DllFunction),
+            // Additional CRT functions needed by Rust binaries
+            ("calloc", 0x3004 as DllFunction),
+            ("memcmp", 0x3005 as DllFunction),
+            ("memcpy", 0x3006 as DllFunction),
+            ("memmove", 0x3007 as DllFunction),
+            ("memset", 0x3008 as DllFunction),
+            ("strlen", 0x3009 as DllFunction),
+            ("strncmp", 0x300A as DllFunction),
+            ("fprintf", 0x300B as DllFunction),
+            ("vfprintf", 0x300C as DllFunction),
+            ("fwrite", 0x300D as DllFunction),
+            ("signal", 0x300E as DllFunction),
+            ("abort", 0x300F as DllFunction),
+            // MinGW-specific CRT initialization functions
+            ("__getmainargs", 0x3010 as DllFunction),
+            ("__initenv", 0x3011 as DllFunction),
+            ("__iob_func", 0x3012 as DllFunction),
+            ("__set_app_type", 0x3013 as DllFunction),
+            ("__setusermatherr", 0x3014 as DllFunction),
+            ("_amsg_exit", 0x3015 as DllFunction),
+            ("_cexit", 0x3016 as DllFunction),
+            ("_commode", 0x3017 as DllFunction),
+            ("_fmode", 0x3018 as DllFunction),
+            ("_fpreset", 0x3019 as DllFunction),
+            ("_initterm", 0x301A as DllFunction),
+            ("_onexit", 0x301B as DllFunction),
         ];
 
         self.register_stub_dll("MSVCRT.dll", exports);
     }
+
+    /// Load stub bcryptprimitives.dll
+    fn load_stub_bcryptprimitives(&mut self) {
+        let exports = vec![
+            // Cryptographic PRNG function
+            ("ProcessPrng", 0x4000 as DllFunction),
+        ];
+
+        self.register_stub_dll("bcryptprimitives.dll", exports);
+    }
+
+    /// Load stub USERENV.dll
+    fn load_stub_userenv(&mut self) {
+        let exports = vec![
+            // User profile directory function
+            ("GetUserProfileDirectoryW", 0x5000 as DllFunction),
+        ];
+
+        self.register_stub_dll("USERENV.dll", exports);
+    }
+}
+
+/// Map Windows API Set DLL names to their real implementation DLLs
+///
+/// Windows uses API Sets as a layer of indirection between applications and
+/// the actual DLL implementations. This allows Microsoft to refactor their
+/// implementation without breaking compatibility.
+///
+/// Reference: https://learn.microsoft.com/en-us/windows/win32/apiindex/windows-apisets
+fn map_api_set_to_implementation(api_set_name: &str) -> &'static str {
+    let name_upper = api_set_name.to_uppercase();
+    
+    // Core Process/Thread APIs -> KERNEL32.dll
+    if name_upper.starts_with("API-MS-WIN-CORE-PROCESSTHREADS-") {
+        return "KERNEL32.dll";
+    }
+    
+    // Synchronization APIs -> KERNEL32.dll
+    if name_upper.starts_with("API-MS-WIN-CORE-SYNCH-") {
+        return "KERNEL32.dll";
+    }
+    
+    // Memory APIs -> KERNEL32.dll
+    if name_upper.starts_with("API-MS-WIN-CORE-MEMORY-") {
+        return "KERNEL32.dll";
+    }
+    
+    // File I/O APIs -> KERNEL32.dll
+    if name_upper.starts_with("API-MS-WIN-CORE-FILE-") {
+        return "KERNEL32.dll";
+    }
+    
+    // Console APIs -> KERNEL32.dll
+    if name_upper.starts_with("API-MS-WIN-CORE-CONSOLE-") {
+        return "KERNEL32.dll";
+    }
+    
+    // Handle APIs -> KERNEL32.dll
+    if name_upper.starts_with("API-MS-WIN-CORE-HANDLE-") {
+        return "KERNEL32.dll";
+    }
+    
+    // Library Loader APIs -> KERNEL32.dll
+    if name_upper.starts_with("API-MS-WIN-CORE-LIBRARYLOADER-") {
+        return "KERNEL32.dll";
+    }
+    
+    // NT DLL APIs -> NTDLL.dll
+    if name_upper.starts_with("API-MS-WIN-CORE-RTLSUPPORT-") {
+        return "NTDLL.dll";
+    }
+    
+    // C Runtime APIs -> MSVCRT.dll or UCRTBASE.dll
+    if name_upper.starts_with("API-MS-WIN-CRT-") {
+        return "UCRTBASE.dll";
+    }
+    
+    // Default to KERNEL32.dll for unknown API sets
+    // Most API sets forward to KERNEL32
+    "KERNEL32.dll"
 }
 
 impl Default for DllManager {
@@ -212,8 +348,8 @@ mod tests {
     #[test]
     fn test_dll_manager_creation() {
         let manager = DllManager::new();
-        // Should have 3 pre-loaded stub DLLs
-        assert_eq!(manager.dlls.len(), 3);
+        // Should have 5 pre-loaded stub DLLs (KERNEL32, NTDLL, MSVCRT, bcryptprimitives, USERENV)
+        assert_eq!(manager.dlls.len(), 5);
     }
 
     #[test]
