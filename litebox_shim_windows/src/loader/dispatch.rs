@@ -64,7 +64,6 @@ pub type ImplFunction = usize;
 /// # Safety
 /// The returned bytes must be placed in executable memory and executed
 /// with proper stack alignment.
-#[allow(clippy::cast_possible_truncation)]
 pub fn generate_trampoline(num_params: usize, impl_address: u64) -> Vec<u8> {
     let mut code = Vec::new();
 

@@ -14,6 +14,25 @@ use alloc::collections::BTreeMap;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
+/// Base addresses for stub DLL function pointers
+/// Each DLL gets its own address range to avoid collisions
+mod stub_addresses {
+    /// KERNEL32.dll function address range: 0x1000-0x1FFF
+    pub const KERNEL32_BASE: usize = 0x1000;
+    
+    /// NTDLL.dll function address range: 0x2000-0x2FFF
+    pub const NTDLL_BASE: usize = 0x2000;
+    
+    /// MSVCRT.dll function address range: 0x3000-0x3FFF
+    pub const MSVCRT_BASE: usize = 0x3000;
+    
+    /// bcryptprimitives.dll function address range: 0x4000-0x4FFF
+    pub const BCRYPT_BASE: usize = 0x4000;
+    
+    /// USERENV.dll function address range: 0x5000-0x5FFF
+    pub const USERENV_BASE: usize = 0x5000;
+}
+
 /// Type for a DLL function pointer
 pub type DllFunction = usize;
 
@@ -177,22 +196,24 @@ impl DllManager {
 
     /// Load stub KERNEL32.dll
     fn load_stub_kernel32(&mut self) {
+        use stub_addresses::KERNEL32_BASE;
+        
         // For now, use stub addresses (will be replaced with actual implementations)
         let exports = vec![
-            ("LoadLibraryA", 0x1000 as DllFunction),
-            ("LoadLibraryW", 0x1001 as DllFunction),
-            ("GetProcAddress", 0x1002 as DllFunction),
-            ("FreeLibrary", 0x1003 as DllFunction),
-            ("GetStdHandle", 0x1004 as DllFunction),
-            ("WriteConsoleW", 0x1005 as DllFunction),
-            ("CreateFileW", 0x1006 as DllFunction),
-            ("ReadFile", 0x1007 as DllFunction),
-            ("WriteFile", 0x1008 as DllFunction),
-            ("CloseHandle", 0x1009 as DllFunction),
+            ("LoadLibraryA", KERNEL32_BASE),
+            ("LoadLibraryW", KERNEL32_BASE + 1),
+            ("GetProcAddress", KERNEL32_BASE + 2),
+            ("FreeLibrary", KERNEL32_BASE + 3),
+            ("GetStdHandle", KERNEL32_BASE + 4),
+            ("WriteConsoleW", KERNEL32_BASE + 5),
+            ("CreateFileW", KERNEL32_BASE + 6),
+            ("ReadFile", KERNEL32_BASE + 7),
+            ("WriteFile", KERNEL32_BASE + 8),
+            ("CloseHandle", KERNEL32_BASE + 9),
             // Synchronization functions (from API set api-ms-win-core-synch-l1-2-0.dll)
-            ("WaitOnAddress", 0x100A as DllFunction),
-            ("WakeByAddressAll", 0x100B as DllFunction),
-            ("WakeByAddressSingle", 0x100C as DllFunction),
+            ("WaitOnAddress", KERNEL32_BASE + 0xA),
+            ("WakeByAddressAll", KERNEL32_BASE + 0xB),
+            ("WakeByAddressSingle", KERNEL32_BASE + 0xC),
         ];
 
         self.register_stub_dll("KERNEL32.dll", exports);
@@ -200,17 +221,19 @@ impl DllManager {
 
     /// Load stub NTDLL.dll
     fn load_stub_ntdll(&mut self) {
+        use stub_addresses::NTDLL_BASE;
+        
         let exports = vec![
-            ("NtCreateFile", 0x2000 as DllFunction),
-            ("NtReadFile", 0x2001 as DllFunction),
-            ("NtWriteFile", 0x2002 as DllFunction),
-            ("NtClose", 0x2003 as DllFunction),
-            ("NtAllocateVirtualMemory", 0x2004 as DllFunction),
-            ("NtFreeVirtualMemory", 0x2005 as DllFunction),
+            ("NtCreateFile", NTDLL_BASE),
+            ("NtReadFile", NTDLL_BASE + 1),
+            ("NtWriteFile", NTDLL_BASE + 2),
+            ("NtClose", NTDLL_BASE + 3),
+            ("NtAllocateVirtualMemory", NTDLL_BASE + 4),
+            ("NtFreeVirtualMemory", NTDLL_BASE + 5),
             // Additional NTDLL functions
-            ("NtOpenFile", 0x2006 as DllFunction),
-            ("NtCreateNamedPipeFile", 0x2007 as DllFunction),
-            ("RtlNtStatusToDosError", 0x2008 as DllFunction),
+            ("NtOpenFile", NTDLL_BASE + 6),
+            ("NtCreateNamedPipeFile", NTDLL_BASE + 7),
+            ("RtlNtStatusToDosError", NTDLL_BASE + 8),
         ];
 
         self.register_stub_dll("NTDLL.dll", exports);
@@ -218,37 +241,39 @@ impl DllManager {
 
     /// Load stub MSVCRT.dll
     fn load_stub_msvcrt(&mut self) {
+        use stub_addresses::MSVCRT_BASE;
+        
         let exports = vec![
-            ("printf", 0x3000 as DllFunction),
-            ("malloc", 0x3001 as DllFunction),
-            ("free", 0x3002 as DllFunction),
-            ("exit", 0x3003 as DllFunction),
+            ("printf", MSVCRT_BASE),
+            ("malloc", MSVCRT_BASE + 1),
+            ("free", MSVCRT_BASE + 2),
+            ("exit", MSVCRT_BASE + 3),
             // Additional CRT functions needed by Rust binaries
-            ("calloc", 0x3004 as DllFunction),
-            ("memcmp", 0x3005 as DllFunction),
-            ("memcpy", 0x3006 as DllFunction),
-            ("memmove", 0x3007 as DllFunction),
-            ("memset", 0x3008 as DllFunction),
-            ("strlen", 0x3009 as DllFunction),
-            ("strncmp", 0x300A as DllFunction),
-            ("fprintf", 0x300B as DllFunction),
-            ("vfprintf", 0x300C as DllFunction),
-            ("fwrite", 0x300D as DllFunction),
-            ("signal", 0x300E as DllFunction),
-            ("abort", 0x300F as DllFunction),
+            ("calloc", MSVCRT_BASE + 4),
+            ("memcmp", MSVCRT_BASE + 5),
+            ("memcpy", MSVCRT_BASE + 6),
+            ("memmove", MSVCRT_BASE + 7),
+            ("memset", MSVCRT_BASE + 8),
+            ("strlen", MSVCRT_BASE + 9),
+            ("strncmp", MSVCRT_BASE + 0xA),
+            ("fprintf", MSVCRT_BASE + 0xB),
+            ("vfprintf", MSVCRT_BASE + 0xC),
+            ("fwrite", MSVCRT_BASE + 0xD),
+            ("signal", MSVCRT_BASE + 0xE),
+            ("abort", MSVCRT_BASE + 0xF),
             // MinGW-specific CRT initialization functions
-            ("__getmainargs", 0x3010 as DllFunction),
-            ("__initenv", 0x3011 as DllFunction),
-            ("__iob_func", 0x3012 as DllFunction),
-            ("__set_app_type", 0x3013 as DllFunction),
-            ("__setusermatherr", 0x3014 as DllFunction),
-            ("_amsg_exit", 0x3015 as DllFunction),
-            ("_cexit", 0x3016 as DllFunction),
-            ("_commode", 0x3017 as DllFunction),
-            ("_fmode", 0x3018 as DllFunction),
-            ("_fpreset", 0x3019 as DllFunction),
-            ("_initterm", 0x301A as DllFunction),
-            ("_onexit", 0x301B as DllFunction),
+            ("__getmainargs", MSVCRT_BASE + 0x10),
+            ("__initenv", MSVCRT_BASE + 0x11),
+            ("__iob_func", MSVCRT_BASE + 0x12),
+            ("__set_app_type", MSVCRT_BASE + 0x13),
+            ("__setusermatherr", MSVCRT_BASE + 0x14),
+            ("_amsg_exit", MSVCRT_BASE + 0x15),
+            ("_cexit", MSVCRT_BASE + 0x16),
+            ("_commode", MSVCRT_BASE + 0x17),
+            ("_fmode", MSVCRT_BASE + 0x18),
+            ("_fpreset", MSVCRT_BASE + 0x19),
+            ("_initterm", MSVCRT_BASE + 0x1A),
+            ("_onexit", MSVCRT_BASE + 0x1B),
         ];
 
         self.register_stub_dll("MSVCRT.dll", exports);
@@ -256,9 +281,11 @@ impl DllManager {
 
     /// Load stub bcryptprimitives.dll
     fn load_stub_bcryptprimitives(&mut self) {
+        use stub_addresses::BCRYPT_BASE;
+        
         let exports = vec![
             // Cryptographic PRNG function
-            ("ProcessPrng", 0x4000 as DllFunction),
+            ("ProcessPrng", BCRYPT_BASE),
         ];
 
         self.register_stub_dll("bcryptprimitives.dll", exports);
@@ -266,9 +293,11 @@ impl DllManager {
 
     /// Load stub USERENV.dll
     fn load_stub_userenv(&mut self) {
+        use stub_addresses::USERENV_BASE;
+        
         let exports = vec![
             // User profile directory function
-            ("GetUserProfileDirectoryW", 0x5000 as DllFunction),
+            ("GetUserProfileDirectoryW", USERENV_BASE),
         ];
 
         self.register_stub_dll("USERENV.dll", exports);
