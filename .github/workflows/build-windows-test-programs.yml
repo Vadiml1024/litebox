@@ -1,0 +1,72 @@
+name: Build Windows Test Programs
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'windows_test_programs/**'
+      - '.github/workflows/build-windows-test-programs.yml'
+  pull_request:
+    paths:
+      - 'windows_test_programs/**'
+      - '.github/workflows/build-windows-test-programs.yml'
+  workflow_dispatch:
+
+# If a new commit is pushed to the branch before ongoing runs finish, cancel the ongoing runs
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref || github.run_id }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build_windows_programs:
+    name: Build Windows Test Programs
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Set up Rust
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update --target x86_64-pc-windows-gnu
+          rustup default stable
+
+      - name: Install MinGW cross-compiler
+        run: |
+          sudo apt update
+          sudo apt install -y mingw-w64
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: windows_test_programs
+
+      - name: Build CLI hello world
+        run: |
+          cd windows_test_programs
+          cargo build --release --target x86_64-pc-windows-gnu -p hello_cli
+
+      - name: Build GUI hello world
+        run: |
+          cd windows_test_programs
+          cargo build --release --target x86_64-pc-windows-gnu -p hello_gui
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-test-programs
+          path: |
+            windows_test_programs/target/x86_64-pc-windows-gnu/release/hello_cli.exe
+            windows_test_programs/target/x86_64-pc-windows-gnu/release/hello_gui.exe
+          retention-days: 30
+
+      - name: Display build info
+        run: |
+          echo "Built Windows test programs:"
+          ls -lh windows_test_programs/target/x86_64-pc-windows-gnu/release/*.exe
+          file windows_test_programs/target/x86_64-pc-windows-gnu/release/*.exe

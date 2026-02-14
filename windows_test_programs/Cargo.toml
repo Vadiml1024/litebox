@@ -1,0 +1,6 @@
+[workspace]
+members = ["hello_cli", "hello_gui"]
+resolver = "2"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
