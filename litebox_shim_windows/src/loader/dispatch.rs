@@ -107,8 +107,12 @@ pub fn generate_trampoline(num_params: usize, impl_address: u64) -> Vec<u8> {
         }
 
         // Copy stack parameters from Windows shadow space to Linux stack
-        // Windows: params 5+ at [rsp + stack_space + 8 + 32 + (i-4)*8]
-        // Linux: params 5+ at [rsp + (i-4)*8]
+        // Windows convention: params 5+ at [rsp + stack_space + 8 + 32 + (i)*8]
+        //   where: stack_space = our allocated space
+        //          +8 = return address pushed by caller (above our allocation)
+        //          +32 = Windows shadow space (reserved by caller)
+        //          +(i)*8 = offset for parameter i (i=0 is 5th param, i=1 is 6th, etc.)
+        // Linux convention: params 5+ at [rsp + (i)*8] (directly on our stack)
         #[allow(clippy::cast_possible_truncation)]
         for i in 0..stack_params {
             let windows_offset = stack_space + 8 + 32 + (i * 8); // +8 for return addr
@@ -223,7 +227,7 @@ pub unsafe fn allocate_executable_memory(_size: usize) -> Result<u64> {
 ///
 /// # Parameters
 /// * `num_int_params` - Number of integer/pointer parameters
-/// * `_num_fp_params` - Number of floating-point parameters (currently unused)
+/// * `_num_fp_params` - Reserved for future use (currently ignored)
 /// * `impl_address` - Address of the actual implementation function
 ///
 /// # Returns
