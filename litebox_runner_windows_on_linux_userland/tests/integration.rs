@@ -140,7 +140,7 @@ fn test_file_search_apis() {
             assert!(close_result.is_ok(), "FindClose should succeed");
         }
         Err(e) => {
-            panic!("FindFirstFileW failed: {:?}", e);
+            panic!("FindFirstFileW failed: {e:?}");
         }
     }
 }
@@ -168,8 +168,7 @@ fn test_memory_protection_apis() {
     assert!(
         old_protect == memory_protection::PAGE_READONLY
             || old_protect == memory_protection::PAGE_READWRITE,
-        "Old protection should be a valid protection flag, got: {}",
-        old_protect
+        "Old protection should be a valid protection flag, got: {old_protect}"
     );
 
     // Free the memory
@@ -241,7 +240,7 @@ fn test_dll_manager_has_all_required_exports() {
 
     for func_name in required_functions {
         let result = dll_manager.get_proc_address(kernel32, func_name);
-        assert!(result.is_ok(), "KERNEL32.dll should export {}", func_name);
+        assert!(result.is_ok(), "KERNEL32.dll should export {func_name}");
     }
 
     // Check WS2_32.dll exports
@@ -257,6 +256,6 @@ fn test_dll_manager_has_all_required_exports() {
 
     for func_name in winsock_functions {
         let result = dll_manager.get_proc_address(ws2_32, func_name);
-        assert!(result.is_ok(), "WS2_32.dll should export {}", func_name);
+        assert!(result.is_ok(), "WS2_32.dll should export {func_name}");
     }
 }
