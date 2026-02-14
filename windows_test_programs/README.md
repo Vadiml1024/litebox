@@ -46,7 +46,6 @@ These programs can be used to test the Windows-on-Linux runner once the DLL load
 
 ```bash
 # Build the runner
-cd /home/runner/work/litebox/litebox
 cargo build -p litebox_runner_windows_on_linux_userland
 
 # Run the CLI program (requires Windows API implementation to be complete)
