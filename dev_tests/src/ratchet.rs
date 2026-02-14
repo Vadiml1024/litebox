@@ -14,6 +14,7 @@ fn ratchet_transmutes() -> Result<()> {
             ("dev_tests/", 2),
             ("litebox/", 8),
             ("litebox_platform_linux_userland/", 2),
+            ("litebox_shim_windows/", 1),
         ],
         |file| {
             Ok(file
