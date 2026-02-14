@@ -28,7 +28,7 @@ The recommended sequence during development is:
    - Prefer `default-features = false` in `Cargo.toml`.
 7. Favor `no_std` compatibility wherever feasible.
    - Some crates in the workspace may use `std`, but this should be deliberate and justified.
-8. **Use manual let-else pattern** instead of the modern `let...else` syntax:
-   - Prefer: `let x = if let Some(v) = opt { v } else { return Err(...); };`
-   - Avoid: `let Some(x) = opt else { return Err(...); };`
-   - This maintains consistency with the existing codebase style.
+8. **Prefer modern `let...else` syntax** over manual if-let-else patterns:
+   - Prefer: `let Some(x) = opt else { return Err(...); };`
+   - Avoid: `let x = if let Some(v) = opt { v } else { return Err(...); };`
+   - The modern syntax is more concise and idiomatic in Rust.
