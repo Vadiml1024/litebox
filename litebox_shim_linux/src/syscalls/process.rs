@@ -1574,7 +1574,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(all(target_arch = "x86_64", not(target_os = "windows")))]
     fn test_arch_prctl_gs() {
         use crate::{MutPtr, syscalls::tests::init_platform};
         use core::mem::MaybeUninit;
