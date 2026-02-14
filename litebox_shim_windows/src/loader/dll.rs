@@ -19,16 +19,16 @@ use alloc::vec::Vec;
 mod stub_addresses {
     /// KERNEL32.dll function address range: 0x1000-0x1FFF
     pub const KERNEL32_BASE: usize = 0x1000;
-    
+
     /// NTDLL.dll function address range: 0x2000-0x2FFF
     pub const NTDLL_BASE: usize = 0x2000;
-    
+
     /// MSVCRT.dll function address range: 0x3000-0x3FFF
     pub const MSVCRT_BASE: usize = 0x3000;
-    
+
     /// bcryptprimitives.dll function address range: 0x4000-0x4FFF
     pub const BCRYPT_BASE: usize = 0x4000;
-    
+
     /// USERENV.dll function address range: 0x5000-0x5FFF
     pub const USERENV_BASE: usize = 0x5000;
 }
@@ -197,7 +197,7 @@ impl DllManager {
     /// Load stub KERNEL32.dll
     fn load_stub_kernel32(&mut self) {
         use stub_addresses::KERNEL32_BASE;
-        
+
         // For now, use stub addresses (will be replaced with actual implementations)
         let exports = vec![
             ("LoadLibraryA", KERNEL32_BASE),
@@ -222,7 +222,7 @@ impl DllManager {
     /// Load stub NTDLL.dll
     fn load_stub_ntdll(&mut self) {
         use stub_addresses::NTDLL_BASE;
-        
+
         let exports = vec![
             ("NtCreateFile", NTDLL_BASE),
             ("NtReadFile", NTDLL_BASE + 1),
@@ -242,7 +242,7 @@ impl DllManager {
     /// Load stub MSVCRT.dll
     fn load_stub_msvcrt(&mut self) {
         use stub_addresses::MSVCRT_BASE;
-        
+
         let exports = vec![
             ("printf", MSVCRT_BASE),
             ("malloc", MSVCRT_BASE + 1),
@@ -282,7 +282,7 @@ impl DllManager {
     /// Load stub bcryptprimitives.dll
     fn load_stub_bcryptprimitives(&mut self) {
         use stub_addresses::BCRYPT_BASE;
-        
+
         let exports = vec![
             // Cryptographic PRNG function
             ("ProcessPrng", BCRYPT_BASE),
@@ -294,7 +294,7 @@ impl DllManager {
     /// Load stub USERENV.dll
     fn load_stub_userenv(&mut self) {
         use stub_addresses::USERENV_BASE;
-        
+
         let exports = vec![
             // User profile directory function
             ("GetUserProfileDirectoryW", USERENV_BASE),
