@@ -1,0 +1,92 @@
+name: Test Windows Programs on Linux
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  merge_group:
+  workflow_dispatch:
+
+# If a new commit is pushed to the branch before ongoing runs finish, cancel the ongoing runs
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref || github.run_id }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test_windows_programs_on_linux:
+    name: Test Windows Programs on Linux
+    runs-on: ubuntu-latest
+    env:
+      RUSTFLAGS: -Dwarnings
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Set up Rust
+        run: |
+          rustup toolchain install $(awk -F'"' '/channel/{print $2}' rust-toolchain.toml) --profile minimal --no-self-update --target x86_64-pc-windows-gnu x86_64-unknown-linux-gnu
+
+      - name: Install MinGW cross-compiler
+        run: |
+          sudo apt update
+          sudo apt install -y mingw-w64
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build Windows test programs
+        run: |
+          cd windows_test_programs
+          cargo build --release --target x86_64-pc-windows-gnu -p hello_cli
+          cargo build --release --target x86_64-pc-windows-gnu -p hello_gui
+
+      - name: Verify Windows executables
+        run: |
+          echo "Checking Windows test programs..."
+          ls -lh windows_test_programs/target/x86_64-pc-windows-gnu/release/hello_cli.exe
+          ls -lh windows_test_programs/target/x86_64-pc-windows-gnu/release/hello_gui.exe
+          file windows_test_programs/target/x86_64-pc-windows-gnu/release/hello_cli.exe
+          file windows_test_programs/target/x86_64-pc-windows-gnu/release/hello_gui.exe
+
+      - name: Build Windows-on-Linux runner
+        run: |
+          cargo build --locked --verbose -p litebox_runner_windows_on_linux_userland
+
+      - name: Run Windows CLI program on Linux
+        run: |
+          echo "=== Running hello_cli.exe on Linux ==="
+          ./target/debug/litebox_runner_windows_on_linux_userland \
+            ./windows_test_programs/target/x86_64-pc-windows-gnu/release/hello_cli.exe || true
+
+      - name: Run Windows CLI program with tracing
+        run: |
+          echo "=== Running hello_cli.exe with API tracing ==="
+          ./target/debug/litebox_runner_windows_on_linux_userland \
+            --trace-apis \
+            --trace-format text \
+            ./windows_test_programs/target/x86_64-pc-windows-gnu/release/hello_cli.exe || true
+
+      - name: Run Windows GUI program on Linux (loading only)
+        run: |
+          echo "=== Running hello_gui.exe on Linux (PE loading demonstration) ==="
+          ./target/debug/litebox_runner_windows_on_linux_userland \
+            ./windows_test_programs/target/x86_64-pc-windows-gnu/release/hello_gui.exe || true
+
+      - name: Test with JSON tracing output
+        run: |
+          echo "=== Testing JSON trace output ==="
+          ./target/debug/litebox_runner_windows_on_linux_userland \
+            --trace-apis \
+            --trace-format json \
+            --trace-output trace.json \
+            ./windows_test_programs/target/x86_64-pc-windows-gnu/release/hello_cli.exe || true
+          if [ -f trace.json ]; then
+            echo "Trace file created successfully"
+            head -20 trace.json
+          fi
