@@ -185,6 +185,11 @@ pub fn run(cli_args: CliArgs) -> Result<()> {
             println!("  DLL: {}", import_dll.name);
             println!("    Functions: {}", import_dll.functions.len());
 
+            // Print all function names first
+            for func_name in &import_dll.functions {
+                println!("      {func_name}");
+            }
+
             // Load the DLL and resolve function addresses
             let dll_handle = platform
                 .load_library(&import_dll.name)
