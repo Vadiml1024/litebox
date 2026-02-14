@@ -7,8 +7,6 @@
 //! This is the "South" platform layer that translates Windows API calls
 //! to Linux syscalls.
 
-extern crate std;
-
 pub mod msvcrt;
 
 use std::collections::HashMap;

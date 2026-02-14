@@ -10,8 +10,6 @@
 // Allow unsafe operations inside unsafe functions since the entire function is unsafe
 #![allow(unsafe_op_in_unsafe_fn)]
 
-extern crate std;
-
 use std::alloc::{Layout, alloc, dealloc};
 use std::ffi::CStr;
 use std::io::{self, Write};
