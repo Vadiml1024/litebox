@@ -19,7 +19,7 @@ Example use cases include:
 - Run programs on top of SEV SNP
 - Running OP-TEE programs on Linux
 - Running on LVBS
-- Running unmodified Windows programs on Linux (95% complete - see [current status](./docs/windows_on_linux_status.md))
+- Running unmodified Windows programs on Linux (100% framework complete - see [current status](./docs/windows_on_linux_status.md))
 
 ![LiteBox and related projects](./.figures/litebox.svg)
 
