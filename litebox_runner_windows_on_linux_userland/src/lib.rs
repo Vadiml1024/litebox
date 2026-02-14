@@ -266,8 +266,8 @@ pub fn run(cli_args: CliArgs) -> Result<()> {
     println!("WARNING: Entry point execution is experimental and may crash!");
     println!("         Most Windows programs will fail due to missing DLL implementations.");
 
-    // Try to call the entry point
-    match unsafe { call_entry_point(entry_point_address, &execution_context) } {
+    // Try to call the entry point (convert u64 to usize for pointer-sized addressing)
+    match unsafe { call_entry_point(entry_point_address as usize, &execution_context) } {
         Ok(exit_code) => {
             println!("\n✓ Entry point executed successfully!");
             println!("  Exit code: {exit_code}");
