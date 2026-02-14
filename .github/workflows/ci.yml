@@ -302,6 +302,7 @@ jobs:
             -not -path './litebox_rtld_audit/Cargo.toml' \
             -not -path './dev_tests/Cargo.toml' \
             -not -path './dev_bench/Cargo.toml' \
+            -not -path './windows_test_programs/Cargo.toml' \
             -not -path './windows_test_programs/*/Cargo.toml' \
             -print0 | \
               xargs -0 -I '{}' sh -c 'cd "$(dirname "{}")"; pwd; cargo build --locked --target x86_64-unknown-none || exit 1; echo; echo'

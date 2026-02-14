@@ -62,7 +62,7 @@ pub trait UserSpaceManagement {
 /// (pointed by `rsp`) and restored by the system call or interrupt handler.
 /// TODO: Since the user stack might have no space to store all registers, we can extend this structure in
 /// the future to store these registers.
-#[expect(dead_code)]
+#[allow(dead_code)]
 pub struct UserContext {
     pub page_table: crate::mm::PageTable<PAGE_SIZE>,
     pub rip: VirtAddr,
@@ -84,7 +84,7 @@ impl UserContext {
 }
 
 /// Data structure to hold a map of user contexts indexed by their ID.
-#[expect(dead_code)]
+#[allow(dead_code)]
 pub struct UserContextMap {
     inner: spin::mutex::SpinMutex<HashMap<usize, UserContext>>,
 }

@@ -25,7 +25,8 @@ pub fn get_core_id() -> usize {
     use core::arch::x86_64::__cpuid_count as cpuid_count;
     const CPU_VERSION_INFO: u32 = 1;
 
-    let result = unsafe { cpuid_count(CPU_VERSION_INFO, 0x0) };
+    // SAFETY: cpuid is safe to call on x86_64
+    let result = cpuid_count(CPU_VERSION_INFO, 0x0);
     let apic_id = (result.ebx >> 24) & 0xff;
 
     apic_id as usize
