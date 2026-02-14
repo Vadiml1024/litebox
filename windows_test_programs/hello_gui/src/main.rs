@@ -6,7 +6,9 @@
 #![windows_subsystem = "windows"]
 
 use windows::{
-    core::*, Win32::System::LibraryLoader::GetModuleHandleW, Win32::UI::WindowsAndMessaging::*,
+    core::{w, Result},
+    Win32::System::LibraryLoader::GetModuleHandleW,
+    Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONINFORMATION, MB_OK},
 };
 
 fn main() -> Result<()> {
