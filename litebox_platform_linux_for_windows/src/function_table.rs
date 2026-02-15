@@ -168,6 +168,7 @@ impl LinuxPlatformForWindows {
             let trampoline_code = generate_trampoline(func.num_params, func.impl_address as u64);
 
             // Allocate and write the trampoline
+            #[cfg_attr(not(debug_assertions), allow(unused_variables))]
             let trampoline_addr = unsafe {
                 state.trampoline_manager.allocate_trampoline(
                     format!("{}::{}", func.dll_name, func.name),
