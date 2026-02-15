@@ -899,6 +899,133 @@ pub unsafe extern "C" fn kernel32_CompareStringOrdinal(
     }
 }
 
+//
+// Phase 8.4: Performance Counters
+//
+// Windows programs often use high-resolution performance counters for timing.
+// On Linux, we implement these using clock_gettime(CLOCK_MONOTONIC).
+//
+
+/// Windows FILETIME structure (64-bit value representing 100-nanosecond intervals since 1601-01-01)
+#[repr(C)]
+pub struct FileTime {
+    low_date_time: u32,
+    high_date_time: u32,
+}
+
+/// Query the performance counter
+///
+/// This implements QueryPerformanceCounter which returns a high-resolution timestamp.
+/// On Linux, we use clock_gettime(CLOCK_MONOTONIC) which provides nanosecond precision.
+///
+/// # Safety
+/// The caller must ensure `counter` points to a valid u64
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_QueryPerformanceCounter(counter: *mut i64) -> i32 {
+    if counter.is_null() {
+        return 0; // FALSE - error
+    }
+
+    // SAFETY: Use libc to get monotonic time
+    let mut ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+
+    // SAFETY: clock_gettime is safe to call
+    let result = unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, core::ptr::addr_of_mut!(ts)) };
+
+    if result != 0 {
+        return 0; // FALSE - error
+    }
+
+    // Convert to a counter value (nanoseconds)
+    let nanoseconds = i64::from(ts.tv_sec)
+        .saturating_mul(1_000_000_000)
+        .saturating_add(i64::from(ts.tv_nsec));
+
+    // SAFETY: Caller guarantees counter is valid
+    unsafe {
+        *counter = nanoseconds;
+    }
+
+    1 // TRUE - success
+}
+
+/// Query the performance counter frequency
+///
+/// This implements QueryPerformanceFrequency which returns the frequency of the
+/// performance counter in counts per second. Since we use nanoseconds, the frequency
+/// is 1,000,000,000 (1 billion counts per second).
+///
+/// # Safety
+/// The caller must ensure `frequency` points to a valid i64
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_QueryPerformanceFrequency(frequency: *mut i64) -> i32 {
+    if frequency.is_null() {
+        return 0; // FALSE - error
+    }
+
+    // Our counter is in nanoseconds, so frequency is 1 billion counts/second
+    // SAFETY: Caller guarantees frequency is valid
+    unsafe {
+        *frequency = 1_000_000_000;
+    }
+
+    1 // TRUE - success
+}
+
+/// Get system time as FILETIME with high precision
+///
+/// This implements GetSystemTimePreciseAsFileTime which returns the current system time
+/// in FILETIME format (100-nanosecond intervals since January 1, 1601 UTC).
+///
+/// # Safety
+/// The caller must ensure `filetime` points to a valid FILETIME structure
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_GetSystemTimePreciseAsFileTime(filetime: *mut FileTime) {
+    if filetime.is_null() {
+        return;
+    }
+
+    // SAFETY: Use libc to get real time
+    let mut ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+
+    // SAFETY: clock_gettime is safe to call
+    let result = unsafe { libc::clock_gettime(libc::CLOCK_REALTIME, core::ptr::addr_of_mut!(ts)) };
+
+    if result != 0 {
+        // On error, return epoch
+        unsafe {
+            (*filetime).low_date_time = 0;
+            (*filetime).high_date_time = 0;
+        }
+        return;
+    }
+
+    // Convert Unix timestamp (seconds since 1970-01-01) to Windows FILETIME
+    // (100-nanosecond intervals since 1601-01-01)
+    //
+    // The difference between 1601-01-01 and 1970-01-01 is 11644473600 seconds
+    const EPOCH_DIFF: i64 = 11_644_473_600;
+
+    // Convert to 100-nanosecond intervals
+    let seconds_since_1601 = i64::from(ts.tv_sec) + EPOCH_DIFF;
+    let intervals = seconds_since_1601
+        .saturating_mul(10_000_000) // seconds to 100-nanosecond intervals
+        .saturating_add(i64::from(ts.tv_nsec) / 100); // add nanoseconds converted to 100-ns intervals
+
+    // Split into low and high parts
+    // SAFETY: Caller guarantees filetime is valid
+    unsafe {
+        (*filetime).low_date_time = (intervals & 0xFFFF_FFFF) as u32;
+        (*filetime).high_date_time = ((intervals >> 32) & 0xFFFF_FFFF) as u32;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1458,8 +1585,20 @@ mod tests {
     #[test]
     fn test_compare_string_ordinal_equal() {
         // Test equal strings
-        let str1 = [u16::from(b'T'), u16::from(b'e'), u16::from(b's'), u16::from(b't'), 0];
-        let str2 = [u16::from(b'T'), u16::from(b'e'), u16::from(b's'), u16::from(b't'), 0];
+        let str1 = [
+            u16::from(b'T'),
+            u16::from(b'e'),
+            u16::from(b's'),
+            u16::from(b't'),
+            0,
+        ];
+        let str2 = [
+            u16::from(b'T'),
+            u16::from(b'e'),
+            u16::from(b's'),
+            u16::from(b't'),
+            0,
+        ];
 
         let result = unsafe {
             kernel32_CompareStringOrdinal(
@@ -1562,5 +1701,109 @@ mod tests {
         };
 
         assert_eq!(result, 2); // CSTR_EQUAL
+    }
+
+    //
+    // Phase 8.4: Performance Counters Tests
+    //
+
+    #[test]
+    fn test_query_performance_counter() {
+        let mut counter: i64 = 0;
+
+        let result = unsafe { kernel32_QueryPerformanceCounter(core::ptr::addr_of_mut!(counter)) };
+
+        assert_eq!(result, 1); // TRUE - success
+        assert!(counter > 0); // Should be positive
+    }
+
+    #[test]
+    fn test_query_performance_counter_monotonic() {
+        let mut counter1: i64 = 0;
+        let mut counter2: i64 = 0;
+
+        unsafe { kernel32_QueryPerformanceCounter(core::ptr::addr_of_mut!(counter1)) };
+
+        // Do some work
+        for _ in 0..1000 {
+            core::hint::black_box(42);
+        }
+
+        unsafe { kernel32_QueryPerformanceCounter(core::ptr::addr_of_mut!(counter2)) };
+
+        // counter2 should be >= counter1 (monotonic)
+        assert!(counter2 >= counter1);
+    }
+
+    #[test]
+    fn test_query_performance_counter_null() {
+        let result = unsafe { kernel32_QueryPerformanceCounter(core::ptr::null_mut()) };
+
+        assert_eq!(result, 0); // FALSE - error
+    }
+
+    #[test]
+    fn test_query_performance_frequency() {
+        let mut frequency: i64 = 0;
+
+        let result =
+            unsafe { kernel32_QueryPerformanceFrequency(core::ptr::addr_of_mut!(frequency)) };
+
+        assert_eq!(result, 1); // TRUE - success
+        assert_eq!(frequency, 1_000_000_000); // 1 billion (nanoseconds)
+    }
+
+    #[test]
+    fn test_query_performance_frequency_null() {
+        let result = unsafe { kernel32_QueryPerformanceFrequency(core::ptr::null_mut()) };
+
+        assert_eq!(result, 0); // FALSE - error
+    }
+
+    #[test]
+    fn test_get_system_time_precise_as_filetime() {
+        let mut filetime = FileTime {
+            low_date_time: 0,
+            high_date_time: 0,
+        };
+
+        unsafe { kernel32_GetSystemTimePreciseAsFileTime(core::ptr::addr_of_mut!(filetime)) };
+
+        // Should have non-zero values (representing time since 1601)
+        assert!(filetime.high_date_time > 0);
+    }
+
+    #[test]
+    fn test_get_system_time_precise_as_filetime_increases() {
+        let mut filetime1 = FileTime {
+            low_date_time: 0,
+            high_date_time: 0,
+        };
+        let mut filetime2 = FileTime {
+            low_date_time: 0,
+            high_date_time: 0,
+        };
+
+        unsafe { kernel32_GetSystemTimePreciseAsFileTime(core::ptr::addr_of_mut!(filetime1)) };
+
+        // Sleep a tiny bit
+        thread::sleep(Duration::from_millis(1));
+
+        unsafe { kernel32_GetSystemTimePreciseAsFileTime(core::ptr::addr_of_mut!(filetime2)) };
+
+        // Reconstruct the 64-bit values
+        let time1 =
+            u64::from(filetime1.low_date_time) | (u64::from(filetime1.high_date_time) << 32);
+        let time2 =
+            u64::from(filetime2.low_date_time) | (u64::from(filetime2.high_date_time) << 32);
+
+        // time2 should be > time1
+        assert!(time2 > time1);
+    }
+
+    #[test]
+    fn test_get_system_time_precise_as_filetime_null() {
+        // Should not crash with NULL
+        unsafe { kernel32_GetSystemTimePreciseAsFileTime(core::ptr::null_mut()) };
     }
 }

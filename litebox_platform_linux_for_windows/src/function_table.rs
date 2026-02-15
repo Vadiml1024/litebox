@@ -293,6 +293,26 @@ pub fn get_function_table() -> Vec<FunctionImpl> {
             num_params: 5,
             impl_address: crate::kernel32::kernel32_CompareStringOrdinal as *const () as usize,
         },
+        // Phase 8.4: Performance Counters
+        FunctionImpl {
+            name: "QueryPerformanceCounter",
+            dll_name: "KERNEL32.dll",
+            num_params: 1,
+            impl_address: crate::kernel32::kernel32_QueryPerformanceCounter as *const () as usize,
+        },
+        FunctionImpl {
+            name: "QueryPerformanceFrequency",
+            dll_name: "KERNEL32.dll",
+            num_params: 1,
+            impl_address: crate::kernel32::kernel32_QueryPerformanceFrequency as *const () as usize,
+        },
+        FunctionImpl {
+            name: "GetSystemTimePreciseAsFileTime",
+            dll_name: "KERNEL32.dll",
+            num_params: 1,
+            impl_address: crate::kernel32::kernel32_GetSystemTimePreciseAsFileTime as *const ()
+                as usize,
+        },
     ]
 }
 
