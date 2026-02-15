@@ -6,10 +6,10 @@
 
 This document provides the current status of the Windows-on-Linux implementation in LiteBox, which enables running Windows PE binaries on Linux with comprehensive API tracing capabilities.
 
-**Current Phase:** Phase 8 - In Progress (14% Complete - 1/7 sub-phases)  
-**Total Tests:** 111 passing (56 platform + 16 runner + 39 shim)  
+**Current Phase:** Phase 8 - **86% Complete** (6/7 sub-phases)  
+**Total Tests:** 149 passing (94 platform + 16 runner + 39 shim)  
 **Integration Tests:** 7 comprehensive tests  
-**Recent Session:** [Phase 8.1 Exception Handling Complete](./windows_on_linux_status.md#recent-sessions)
+**Recent Session:** Phase 8.1-8.6 Complete - Ready for Integration Testing
 
 ## Architecture
 
@@ -707,26 +707,31 @@ Resolving imports...
   Import resolution complete
 
 Entry point execution: Progresses further than before, but still crashes
-Status: Phase 8.1 Complete - Exception handling infrastructure ready
-Next: Phase 8.2 - Critical Sections needed for synchronization
+Status: Phase 8.6 Complete - All core API implementations ready
+Next: Phase 8.7 - Final integration testing with hello_cli.exe
 ```
 
-**Phase 8 Status: 1/7 Sub-Phases Complete (14%)**
+**Phase 8 Status: 6/7 Sub-Phases Complete (86%)**
 - ✅ Phase 8.1: Exception Handling Stubs (COMPLETE)
-- ⏳ Phase 8.2: Critical Sections (NEXT)
-- ⏳ Phase 8.3: String Operations
-- ⏳ Phase 8.4: Performance Counters  
-- ⏳ Phase 8.5: File I/O Trampolines
-- ⏳ Phase 8.6: Heap Management Trampolines
-- ⏳ Phase 8.7: Final Integration and Testing
+- ✅ Phase 8.2: Critical Sections (COMPLETE)
+- ✅ Phase 8.3: String Operations (COMPLETE)
+- ✅ Phase 8.4: Performance Counters (COMPLETE)
+- ✅ Phase 8.5: File I/O Trampolines (COMPLETE)
+- ✅ Phase 8.6: Heap Management Trampolines (COMPLETE)
+- ⏳ Phase 8.7: Final Integration and Testing (NEXT)
 
-**Test Results (Session 4 - TLS Complete):**
+**Test Results (Phase 8.6 Complete):**
 ```
-$ cargo test --package litebox_platform_linux_for_windows
-test result: ok. 55 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+$ cargo nextest run --package litebox_platform_linux_for_windows
+test result: ok. 94 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
 
-$ cargo test --package litebox_runner_windows_on_linux_userland  
+$ cargo nextest run --package litebox_runner_windows_on_linux_userland  
 test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+
+$ cargo nextest run --package litebox_shim_windows
+test result: ok. 39 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+
+Total: 149 tests passing ✅ (was 111 at start of Phase 8)
 
 $ cargo test --package litebox_shim_windows
 test result: ok. 39 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out

@@ -268,6 +268,101 @@ pub fn get_function_table() -> Vec<FunctionImpl> {
             num_params: 1,
             impl_address: crate::kernel32::kernel32_DeleteCriticalSection as *const () as usize,
         },
+        // Phase 8.3: String Operations
+        FunctionImpl {
+            name: "MultiByteToWideChar",
+            dll_name: "KERNEL32.dll",
+            num_params: 6,
+            impl_address: crate::kernel32::kernel32_MultiByteToWideChar as *const () as usize,
+        },
+        FunctionImpl {
+            name: "WideCharToMultiByte",
+            dll_name: "KERNEL32.dll",
+            num_params: 8,
+            impl_address: crate::kernel32::kernel32_WideCharToMultiByte as *const () as usize,
+        },
+        FunctionImpl {
+            name: "lstrlenW",
+            dll_name: "KERNEL32.dll",
+            num_params: 1,
+            impl_address: crate::kernel32::kernel32_lstrlenW as *const () as usize,
+        },
+        FunctionImpl {
+            name: "CompareStringOrdinal",
+            dll_name: "KERNEL32.dll",
+            num_params: 5,
+            impl_address: crate::kernel32::kernel32_CompareStringOrdinal as *const () as usize,
+        },
+        // Phase 8.4: Performance Counters
+        FunctionImpl {
+            name: "QueryPerformanceCounter",
+            dll_name: "KERNEL32.dll",
+            num_params: 1,
+            impl_address: crate::kernel32::kernel32_QueryPerformanceCounter as *const () as usize,
+        },
+        FunctionImpl {
+            name: "QueryPerformanceFrequency",
+            dll_name: "KERNEL32.dll",
+            num_params: 1,
+            impl_address: crate::kernel32::kernel32_QueryPerformanceFrequency as *const () as usize,
+        },
+        FunctionImpl {
+            name: "GetSystemTimePreciseAsFileTime",
+            dll_name: "KERNEL32.dll",
+            num_params: 1,
+            impl_address: crate::kernel32::kernel32_GetSystemTimePreciseAsFileTime as *const ()
+                as usize,
+        },
+        // Phase 8.5: File I/O Trampolines
+        FunctionImpl {
+            name: "CreateFileW",
+            dll_name: "KERNEL32.dll",
+            num_params: 7,
+            impl_address: crate::kernel32::kernel32_CreateFileW as *const () as usize,
+        },
+        FunctionImpl {
+            name: "ReadFile",
+            dll_name: "KERNEL32.dll",
+            num_params: 5,
+            impl_address: crate::kernel32::kernel32_ReadFile as *const () as usize,
+        },
+        FunctionImpl {
+            name: "WriteFile",
+            dll_name: "KERNEL32.dll",
+            num_params: 5,
+            impl_address: crate::kernel32::kernel32_WriteFile as *const () as usize,
+        },
+        FunctionImpl {
+            name: "CloseHandle",
+            dll_name: "KERNEL32.dll",
+            num_params: 1,
+            impl_address: crate::kernel32::kernel32_CloseHandle as *const () as usize,
+        },
+        // Phase 8.6: Heap Management Trampolines
+        FunctionImpl {
+            name: "GetProcessHeap",
+            dll_name: "KERNEL32.dll",
+            num_params: 0,
+            impl_address: crate::kernel32::kernel32_GetProcessHeap as *const () as usize,
+        },
+        FunctionImpl {
+            name: "HeapAlloc",
+            dll_name: "KERNEL32.dll",
+            num_params: 3,
+            impl_address: crate::kernel32::kernel32_HeapAlloc as *const () as usize,
+        },
+        FunctionImpl {
+            name: "HeapFree",
+            dll_name: "KERNEL32.dll",
+            num_params: 3,
+            impl_address: crate::kernel32::kernel32_HeapFree as *const () as usize,
+        },
+        FunctionImpl {
+            name: "HeapReAlloc",
+            dll_name: "KERNEL32.dll",
+            num_params: 4,
+            impl_address: crate::kernel32::kernel32_HeapReAlloc as *const () as usize,
+        },
     ]
 }
 

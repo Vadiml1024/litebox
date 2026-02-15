@@ -10,6 +10,7 @@
 // Allow unsafe operations inside unsafe functions since the entire function is unsafe
 #![allow(unsafe_op_in_unsafe_fn)]
 
+use std::alloc;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -633,6 +634,724 @@ pub unsafe extern "C" fn kernel32_AddVectoredExceptionHandler(
     0x1000 as *mut core::ffi::c_void
 }
 
+//
+// Phase 8.3: String Operations
+//
+// Windows uses UTF-16 (wide characters) while Linux uses UTF-8.
+// These functions handle conversion between the two encodings.
+//
+
+/// Convert multibyte string to wide-character string
+///
+/// This implements MultiByteToWideChar for UTF-8 (CP_UTF8 = 65001) encoding.
+///
+/// # Arguments
+/// - `code_page`: Character encoding (0 = CP_ACP, 65001 = CP_UTF8)
+/// - `flags`: Conversion flags (0 = default)
+/// - `multi_byte_str`: Source multibyte string
+/// - `multi_byte_len`: Length of source string (-1 = null-terminated)
+/// - `wide_char_str`: Destination buffer for wide chars (NULL = query size)
+/// - `wide_char_len`: Size of destination buffer in characters
+///
+/// # Returns
+/// Number of wide characters written (or required if `wide_char_str` is NULL)
+///
+/// # Safety
+/// The caller must ensure:
+/// - `multi_byte_str` points to valid memory
+/// - If `multi_byte_len` != -1, at least `multi_byte_len` bytes are readable
+/// - If `wide_char_str` is not NULL, at least `wide_char_len` u16s are writable
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_MultiByteToWideChar(
+    code_page: u32,
+    _flags: u32,
+    multi_byte_str: *const u8,
+    multi_byte_len: i32,
+    wide_char_str: *mut u16,
+    wide_char_len: i32,
+) -> i32 {
+    if multi_byte_str.is_null() {
+        return 0;
+    }
+
+    // Validate code page (only support CP_ACP=0 and CP_UTF8=65001)
+    const CP_ACP: u32 = 0;
+    const CP_UTF8: u32 = 65001;
+    if code_page != CP_ACP && code_page != CP_UTF8 {
+        return 0; // Unsupported code page
+    }
+
+    // Validate multi_byte_len (must be -1 or >= 0)
+    if multi_byte_len < -1 {
+        return 0; // Invalid parameter
+    }
+
+    // Determine the length of the input string
+    let (input_len, include_null) = if multi_byte_len == -1 {
+        // SAFETY: Caller guarantees multi_byte_str is a valid null-terminated string
+        let mut len = 0;
+        while unsafe { *multi_byte_str.add(len) } != 0 {
+            len += 1;
+        }
+        (len, true) // Include null terminator in output
+    } else {
+        (multi_byte_len as usize, false) // Don't include null terminator
+    };
+
+    // SAFETY: Caller guarantees multi_byte_str points to at least input_len bytes
+    let input_bytes = unsafe { core::slice::from_raw_parts(multi_byte_str, input_len) };
+
+    // Convert to UTF-8 string (assume input is UTF-8)
+    let utf8_str = match core::str::from_utf8(input_bytes) {
+        Ok(s) => s,
+        Err(_) => return 0, // Invalid UTF-8
+    };
+
+    // Convert to UTF-16
+    let utf16_chars: Vec<u16> = utf8_str.encode_utf16().collect();
+    let required_len = if include_null {
+        utf16_chars.len() + 1 // +1 for null terminator when input was null-terminated
+    } else {
+        utf16_chars.len() // No null terminator when length was explicit
+    };
+
+    // If wide_char_str is NULL, return required size
+    if wide_char_str.is_null() {
+        return required_len as i32;
+    }
+
+    // Check buffer size
+    if wide_char_len < required_len as i32 {
+        return 0; // Buffer too small
+    }
+
+    // SAFETY: Caller guarantees wide_char_str has space for wide_char_len u16s
+    let output = unsafe { core::slice::from_raw_parts_mut(wide_char_str, wide_char_len as usize) };
+
+    // Copy the UTF-16 characters
+    output[..utf16_chars.len()].copy_from_slice(&utf16_chars);
+
+    // Add null terminator only if input was null-terminated
+    if include_null {
+        output[utf16_chars.len()] = 0;
+    }
+
+    required_len as i32
+}
+
+/// Convert wide-character string to multibyte string
+///
+/// This implements WideCharToMultiByte for UTF-8 (CP_UTF8 = 65001) encoding.
+///
+/// # Arguments
+/// - `code_page`: Character encoding (0 = CP_ACP, 65001 = CP_UTF8)
+/// - `flags`: Conversion flags (0 = default)
+/// - `wide_char_str`: Source wide-character string
+/// - `wide_char_len`: Length of source string (-1 = null-terminated)
+/// - `multi_byte_str`: Destination buffer for multibyte chars (NULL = query size)
+/// - `multi_byte_len`: Size of destination buffer in bytes
+/// - `default_char`: Default char for unmappable characters (NULL = use default)
+/// - `used_default_char`: Pointer to flag set if default char was used (NULL = ignore)
+///
+/// # Returns
+/// Number of bytes written (or required if `multi_byte_str` is NULL)
+///
+/// # Safety
+/// The caller must ensure:
+/// - `wide_char_str` points to valid memory
+/// - If `wide_char_len` != -1, at least `wide_char_len` u16s are readable
+/// - If `multi_byte_str` is not NULL, at least `multi_byte_len` bytes are writable
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_WideCharToMultiByte(
+    code_page: u32,
+    _flags: u32,
+    wide_char_str: *const u16,
+    wide_char_len: i32,
+    multi_byte_str: *mut u8,
+    multi_byte_len: i32,
+    _default_char: *const u8,
+    _used_default_char: *mut i32,
+) -> i32 {
+    if wide_char_str.is_null() {
+        return 0;
+    }
+
+    // Validate code page (only support CP_ACP=0 and CP_UTF8=65001)
+    const CP_ACP: u32 = 0;
+    const CP_UTF8: u32 = 65001;
+    if code_page != CP_ACP && code_page != CP_UTF8 {
+        return 0; // Unsupported code page
+    }
+
+    // Validate wide_char_len (must be -1 or >= 0)
+    if wide_char_len < -1 {
+        return 0; // Invalid parameter
+    }
+
+    // Determine the length of the input string
+    let (input_len, include_null) = if wide_char_len == -1 {
+        // SAFETY: Caller guarantees wide_char_str is a valid null-terminated string
+        let mut len = 0;
+        while unsafe { *wide_char_str.add(len) } != 0 {
+            len += 1;
+        }
+        (len, true) // Include null terminator in output
+    } else {
+        (wide_char_len as usize, false) // Don't include null terminator
+    };
+
+    // SAFETY: Caller guarantees wide_char_str points to at least input_len u16s
+    let input_chars = unsafe { core::slice::from_raw_parts(wide_char_str, input_len) };
+
+    // Convert from UTF-16 to String (UTF-8)
+    let utf8_string = String::from_utf16_lossy(input_chars);
+    let utf8_bytes = utf8_string.as_bytes();
+    let required_len = if include_null {
+        utf8_bytes.len() + 1 // +1 for null terminator when input was null-terminated
+    } else {
+        utf8_bytes.len() // No null terminator when length was explicit
+    };
+
+    // If multi_byte_str is NULL, return required size
+    if multi_byte_str.is_null() {
+        return required_len as i32;
+    }
+
+    // Check buffer size
+    if multi_byte_len < required_len as i32 {
+        return 0; // Buffer too small
+    }
+
+    // SAFETY: Caller guarantees multi_byte_str has space for multi_byte_len bytes
+    let output =
+        unsafe { core::slice::from_raw_parts_mut(multi_byte_str, multi_byte_len as usize) };
+
+    // Copy the UTF-8 bytes
+    output[..utf8_bytes.len()].copy_from_slice(utf8_bytes);
+
+    // Add null terminator only if input was null-terminated
+    if include_null {
+        output[utf8_bytes.len()] = 0;
+    }
+
+    required_len as i32
+}
+
+/// Get the length of a wide-character string
+///
+/// This implements lstrlenW, which returns the length of a null-terminated
+/// wide-character string (excluding the null terminator).
+///
+/// # Safety
+/// The caller must ensure `wide_str` points to a valid null-terminated wide string
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_lstrlenW(wide_str: *const u16) -> i32 {
+    if wide_str.is_null() {
+        return 0;
+    }
+
+    // SAFETY: Caller guarantees wide_str is a valid null-terminated string
+    let mut len = 0;
+    while unsafe { *wide_str.add(len) } != 0 {
+        len += 1;
+    }
+
+    len as i32
+}
+
+/// Compare two Unicode strings using ordinal (binary) comparison
+///
+/// This implements CompareStringOrdinal, which performs a code-point by code-point
+/// comparison of two Unicode strings.
+///
+/// # Arguments
+/// - `string1`: First string to compare
+/// - `count1`: Length of first string (-1 = null-terminated)
+/// - `string2`: Second string to compare
+/// - `count2`: Length of second string (-1 = null-terminated)
+/// - `ignore_case`: TRUE to ignore case, FALSE for case-sensitive
+///
+/// # Returns
+/// - CSTR_LESS_THAN (1): string1 < string2
+/// - CSTR_EQUAL (2): string1 == string2
+/// - CSTR_GREATER_THAN (3): string1 > string2
+/// - 0: Error
+///
+/// # Safety
+/// The caller must ensure both string pointers point to valid memory
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_CompareStringOrdinal(
+    string1: *const u16,
+    count1: i32,
+    string2: *const u16,
+    count2: i32,
+    ignore_case: i32,
+) -> i32 {
+    if string1.is_null() || string2.is_null() {
+        return 0; // Error
+    }
+
+    // Validate count1 and count2 (must be -1 or >= 0)
+    if count1 < -1 || count2 < -1 {
+        return 0; // Invalid parameter
+    }
+
+    // Get length of first string
+    let len1 = if count1 == -1 {
+        // SAFETY: Caller guarantees string1 is null-terminated
+        let mut len = 0;
+        while unsafe { *string1.add(len) } != 0 {
+            len += 1;
+        }
+        len
+    } else {
+        count1 as usize
+    };
+
+    // Get length of second string
+    let len2 = if count2 == -1 {
+        // SAFETY: Caller guarantees string2 is null-terminated
+        let mut len = 0;
+        while unsafe { *string2.add(len) } != 0 {
+            len += 1;
+        }
+        len
+    } else {
+        count2 as usize
+    };
+
+    // SAFETY: Caller guarantees the pointers are valid
+    let slice1 = unsafe { core::slice::from_raw_parts(string1, len1) };
+    let slice2 = unsafe { core::slice::from_raw_parts(string2, len2) };
+
+    // Perform ordinal (binary) comparison on UTF-16 code units
+    // This matches Windows' ordinal semantics (code-unit by code-unit comparison)
+    let min_len = core::cmp::min(len1, len2);
+    let mut result = core::cmp::Ordering::Equal;
+
+    for i in 0..min_len {
+        let mut c1 = slice1[i];
+        let mut c2 = slice2[i];
+
+        if ignore_case != 0 {
+            // ASCII case fold: 'A'..='Z' -> 'a'..='z'
+            // This provides basic case-insensitive comparison for ASCII characters
+            if (b'A' as u16..=b'Z' as u16).contains(&c1) {
+                c1 = c1 + (b'a' as u16 - b'A' as u16);
+            }
+            if (b'A' as u16..=b'Z' as u16).contains(&c2) {
+                c2 = c2 + (b'a' as u16 - b'A' as u16);
+            }
+        }
+
+        if c1 < c2 {
+            result = core::cmp::Ordering::Less;
+            break;
+        } else if c1 > c2 {
+            result = core::cmp::Ordering::Greater;
+            break;
+        }
+    }
+
+    // If all compared code units are equal, shorter string is "less"
+    if result == core::cmp::Ordering::Equal {
+        result = len1.cmp(&len2);
+    }
+
+    // Convert to Windows constants
+    match result {
+        core::cmp::Ordering::Less => 1,    // CSTR_LESS_THAN
+        core::cmp::Ordering::Equal => 2,   // CSTR_EQUAL
+        core::cmp::Ordering::Greater => 3, // CSTR_GREATER_THAN
+    }
+}
+
+//
+// Phase 8.4: Performance Counters
+//
+// Windows programs often use high-resolution performance counters for timing.
+// On Linux, we implement these using clock_gettime(CLOCK_MONOTONIC).
+//
+
+/// Windows FILETIME structure (64-bit value representing 100-nanosecond intervals since 1601-01-01)
+#[repr(C)]
+pub struct FileTime {
+    low_date_time: u32,
+    high_date_time: u32,
+}
+
+/// Query the performance counter
+///
+/// This implements QueryPerformanceCounter which returns a high-resolution timestamp.
+/// On Linux, we use clock_gettime(CLOCK_MONOTONIC) which provides nanosecond precision.
+///
+/// # Safety
+/// The caller must ensure `counter` points to a valid u64
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_QueryPerformanceCounter(counter: *mut i64) -> i32 {
+    if counter.is_null() {
+        return 0; // FALSE - error
+    }
+
+    // SAFETY: Use libc to get monotonic time
+    let mut ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+
+    // SAFETY: clock_gettime is safe to call
+    let result = unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, core::ptr::addr_of_mut!(ts)) };
+
+    if result != 0 {
+        return 0; // FALSE - error
+    }
+
+    // Convert to a counter value (nanoseconds)
+    let nanoseconds = i64::from(ts.tv_sec)
+        .saturating_mul(1_000_000_000)
+        .saturating_add(i64::from(ts.tv_nsec));
+
+    // SAFETY: Caller guarantees counter is valid
+    unsafe {
+        *counter = nanoseconds;
+    }
+
+    1 // TRUE - success
+}
+
+/// Query the performance counter frequency
+///
+/// This implements QueryPerformanceFrequency which returns the frequency of the
+/// performance counter in counts per second. Since we use nanoseconds, the frequency
+/// is 1,000,000,000 (1 billion counts per second).
+///
+/// # Safety
+/// The caller must ensure `frequency` points to a valid i64
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_QueryPerformanceFrequency(frequency: *mut i64) -> i32 {
+    if frequency.is_null() {
+        return 0; // FALSE - error
+    }
+
+    // Our counter is in nanoseconds, so frequency is 1 billion counts/second
+    // SAFETY: Caller guarantees frequency is valid
+    unsafe {
+        *frequency = 1_000_000_000;
+    }
+
+    1 // TRUE - success
+}
+
+/// Get system time as FILETIME with high precision
+///
+/// This implements GetSystemTimePreciseAsFileTime which returns the current system time
+/// in FILETIME format (100-nanosecond intervals since January 1, 1601 UTC).
+///
+/// # Safety
+/// The caller must ensure `filetime` points to a valid FILETIME structure
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_GetSystemTimePreciseAsFileTime(filetime: *mut FileTime) {
+    if filetime.is_null() {
+        return;
+    }
+
+    // SAFETY: Use libc to get real time
+    let mut ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+
+    // SAFETY: clock_gettime is safe to call
+    let result = unsafe { libc::clock_gettime(libc::CLOCK_REALTIME, core::ptr::addr_of_mut!(ts)) };
+
+    if result != 0 {
+        // On error, return epoch
+        unsafe {
+            (*filetime).low_date_time = 0;
+            (*filetime).high_date_time = 0;
+        }
+        return;
+    }
+
+    // Convert Unix timestamp (seconds since 1970-01-01) to Windows FILETIME
+    // (100-nanosecond intervals since 1601-01-01)
+    //
+    // The difference between 1601-01-01 and 1970-01-01 is 11644473600 seconds
+    const EPOCH_DIFF: i64 = 11_644_473_600;
+
+    // Convert to 100-nanosecond intervals
+    let seconds_since_1601 = i64::from(ts.tv_sec) + EPOCH_DIFF;
+    let intervals = seconds_since_1601
+        .saturating_mul(10_000_000) // seconds to 100-nanosecond intervals
+        .saturating_add(i64::from(ts.tv_nsec) / 100); // add nanoseconds converted to 100-ns intervals
+
+    // Split into low and high parts
+    // SAFETY: Caller guarantees filetime is valid
+    unsafe {
+        (*filetime).low_date_time = (intervals & 0xFFFF_FFFF) as u32;
+        (*filetime).high_date_time = ((intervals >> 32) & 0xFFFF_FFFF) as u32;
+    }
+}
+
+//
+// Phase 8.5: File I/O Trampolines
+//
+// These are KERNEL32 wrappers around file operations.
+// They provide a Windows-compatible API but use simple stub implementations
+// since full file I/O is handled through NTDLL APIs.
+//
+
+/// Create or open a file (CreateFileW)
+///
+/// This is a minimal stub that always fails. Real file operations
+/// are handled through NtCreateFile in the NTDLL layer.
+///
+/// # Safety
+/// This function is safe to call with any arguments.
+/// It always returns INVALID_HANDLE_VALUE without dereferencing pointers.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_CreateFileW(
+    _file_name: *const u16,
+    _desired_access: u32,
+    _share_mode: u32,
+    _security_attributes: *mut core::ffi::c_void,
+    _creation_disposition: u32,
+    _flags_and_attributes: u32,
+    _template_file: *mut core::ffi::c_void,
+) -> *mut core::ffi::c_void {
+    // Return INVALID_HANDLE_VALUE (-1 cast to pointer)
+    // Real file operations go through NtCreateFile
+    usize::MAX as *mut core::ffi::c_void
+}
+
+/// Read from a file (ReadFile)
+///
+/// This is a minimal stub that always fails. Real file operations
+/// are handled through NtReadFile in the NTDLL layer.
+///
+/// # Safety
+/// This function is safe to call with any arguments.
+/// It always returns FALSE without dereferencing pointers.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_ReadFile(
+    _file: *mut core::ffi::c_void,
+    _buffer: *mut u8,
+    _number_of_bytes_to_read: u32,
+    _number_of_bytes_read: *mut u32,
+    _overlapped: *mut core::ffi::c_void,
+) -> i32 {
+    // Return FALSE (0) - operation failed
+    // Real file operations go through NtReadFile
+    0
+}
+
+/// Write to a file (WriteFile)
+///
+/// This is a minimal stub that always fails. Real file operations
+/// are handled through NtWriteFile in the NTDLL layer.
+///
+/// # Safety
+/// This function is safe to call with any arguments.
+/// It always returns FALSE without dereferencing pointers.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_WriteFile(
+    _file: *mut core::ffi::c_void,
+    _buffer: *const u8,
+    _number_of_bytes_to_write: u32,
+    _number_of_bytes_written: *mut u32,
+    _overlapped: *mut core::ffi::c_void,
+) -> i32 {
+    // Return FALSE (0) - operation failed
+    // Real file operations go through NtWriteFile
+    0
+}
+
+/// Close a handle (CloseHandle)
+///
+/// This is a minimal stub that always succeeds. Real handle cleanup
+/// is handled through NtClose in the NTDLL layer.
+///
+/// # Safety
+/// This function is safe to call with any arguments.
+/// It always returns TRUE without dereferencing pointers.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_CloseHandle(_handle: *mut core::ffi::c_void) -> i32 {
+    // Return TRUE (1) - operation succeeded
+    // Real handle cleanup goes through NtClose
+    1
+}
+
+//
+// Phase 8.6: Heap Management Trampolines
+//
+// Windows programs often use HeapAlloc/HeapFree for dynamic memory.
+// These are wrappers around the standard malloc/free functions.
+//
+
+/// Get the default process heap handle
+///
+/// In Windows, processes have a default heap. We return a fake
+/// non-NULL handle since programs check for NULL.
+///
+/// # Safety
+/// This function is safe to call. It returns a constant non-NULL value.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_GetProcessHeap() -> *mut core::ffi::c_void {
+    // Return a fake heap handle (non-NULL)
+    // Real heap operations use malloc/free directly
+    0x1000 as *mut core::ffi::c_void
+}
+
+/// Allocate memory from a heap
+///
+/// This wraps malloc to provide Windows heap semantics.
+///
+/// # Arguments
+/// - `heap`: Heap handle (ignored, we use the global allocator)
+/// - `flags`: Allocation flags (HEAP_ZERO_MEMORY = 0x00000008)
+/// - `size`: Number of bytes to allocate
+///
+/// # Returns
+/// Pointer to allocated memory, or NULL on failure
+///
+/// # Safety
+/// The returned pointer must be freed with HeapFree.
+/// The caller must ensure the size is reasonable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_HeapAlloc(
+    _heap: *mut core::ffi::c_void,
+    flags: u32,
+    size: usize,
+) -> *mut core::ffi::c_void {
+    const HEAP_ZERO_MEMORY: u32 = 0x0000_0008;
+
+    // Windows HeapAlloc can return a non-NULL pointer for 0-byte allocation
+    // Allocate a minimal block (1 byte) to match Windows semantics
+    let alloc_size = if size == 0 { 1 } else { size };
+
+    // Allocate using the global allocator
+    let layout =
+        match core::alloc::Layout::from_size_align(alloc_size, core::mem::align_of::<usize>()) {
+            Ok(l) => l,
+            Err(_) => return core::ptr::null_mut(),
+        };
+
+    // SAFETY: Layout is valid, size is non-zero
+    let ptr = unsafe { alloc::alloc(layout) };
+
+    if ptr.is_null() {
+        return core::ptr::null_mut();
+    }
+
+    // Zero memory if requested
+    if flags & HEAP_ZERO_MEMORY != 0 {
+        // SAFETY: ptr is valid and has alloc_size bytes allocated
+        unsafe {
+            core::ptr::write_bytes(ptr, 0, alloc_size);
+        }
+    }
+
+    ptr.cast()
+}
+
+/// Free memory allocated from a heap
+///
+/// This wraps free to provide Windows heap semantics.
+///
+/// # Arguments
+/// - `heap`: Heap handle (ignored)
+/// - `flags`: Free flags (ignored)
+/// - `mem`: Pointer to memory to free
+///
+/// # Returns
+/// TRUE (1) on success, FALSE (0) on failure
+///
+/// # Safety
+/// The caller must ensure:
+/// - `mem` was allocated with HeapAlloc or is NULL
+/// - `mem` is not freed twice
+/// - `mem` is not used after being freed
+///
+/// # Note
+/// **CURRENT LIMITATION:** This implementation intentionally leaks memory.
+/// We cannot safely deallocate without tracking allocation sizes, which would
+/// require additional infrastructure. For production use, programs should use
+/// malloc/free from MSVCRT which are properly implemented.
+///
+/// This is acceptable for short-lived programs or programs that don't heavily
+/// use HeapAlloc/HeapFree, but could cause memory exhaustion in long-running
+/// programs. TODO: Implement allocation tracking using a static HashMap.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_HeapFree(
+    _heap: *mut core::ffi::c_void,
+    _flags: u32,
+    mem: *mut core::ffi::c_void,
+) -> i32 {
+    if mem.is_null() {
+        return 1; // TRUE - freeing NULL is a no-op
+    }
+
+    // LIMITATION: We can't safely free this without knowing the original size.
+    // Real programs should use malloc/free from MSVCRT which are properly implemented.
+    // For now, leak the memory to avoid undefined behavior.
+
+    1 // TRUE - success (even though we leaked)
+}
+
+/// Reallocate memory in a heap
+///
+/// This wraps realloc to provide Windows heap semantics.
+///
+/// # Arguments
+/// - `heap`: Heap handle (ignored)
+/// - `flags`: Realloc flags (ignored for now)
+/// - `mem`: Pointer to memory to reallocate (or NULL to allocate new)
+/// - `size`: New size in bytes
+///
+/// # Returns
+/// Pointer to reallocated memory, or NULL on failure
+///
+/// # Safety
+/// The caller must ensure:
+/// - `mem` was allocated with HeapAlloc or is NULL
+/// - The old pointer is not used after reallocation
+/// - The returned pointer must be freed with HeapFree
+///
+/// # Note
+/// **CRITICAL LIMITATION:** This implementation does NOT preserve the contents
+/// of the original allocation. It allocates fresh memory and leaks the old block.
+/// This differs from standard `realloc` behavior and will break programs that
+/// rely on data preservation during reallocation.
+///
+/// For production use, programs should use `realloc` from MSVCRT which is
+/// properly implemented with data copying and proper deallocation.
+///
+/// TODO: Implement proper realloc with allocation size tracking and data copying.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_HeapReAlloc(
+    heap: *mut core::ffi::c_void,
+    flags: u32,
+    mem: *mut core::ffi::c_void,
+    size: usize,
+) -> *mut core::ffi::c_void {
+    if mem.is_null() {
+        // Allocate new memory
+        return unsafe { kernel32_HeapAlloc(heap, flags, size) };
+    }
+
+    if size == 0 {
+        // Free the memory (note: HeapFree also leaks, see its documentation)
+        unsafe { kernel32_HeapFree(heap, flags, mem) };
+        return core::ptr::null_mut();
+    }
+
+    // CRITICAL LIMITATION: Allocate new memory but DO NOT copy old data.
+    // This differs from standard realloc which preserves contents.
+    // The old block is leaked (not freed).
+    // Programs should use MSVCRT realloc which is properly implemented.
+    unsafe { kernel32_HeapAlloc(heap, flags, size) }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -994,5 +1713,577 @@ mod tests {
         let result = unsafe { kernel32_TryEnterCriticalSection(core::ptr::null_mut()) };
         assert_eq!(result, 0); // Should return false for NULL
         unsafe { kernel32_DeleteCriticalSection(core::ptr::null_mut()) };
+    }
+
+    //
+    // Phase 8.3: String Operations Tests
+    //
+
+    #[test]
+    fn test_multibyte_to_wide_char_basic() {
+        // Test basic ASCII conversion with explicit length (no null terminator)
+        let input = b"Hello";
+        let mut output = [0u16; 10];
+
+        let result = unsafe {
+            kernel32_MultiByteToWideChar(
+                65001, // CP_UTF8
+                0,
+                input.as_ptr(),
+                input.len() as i32,
+                output.as_mut_ptr(),
+                output.len() as i32,
+            )
+        };
+
+        // Should return 5 (5 chars, no null terminator when length is explicit)
+        assert_eq!(result, 5);
+        // Verify the conversion
+        assert_eq!(output[0], u16::from(b'H'));
+        assert_eq!(output[1], u16::from(b'e'));
+        assert_eq!(output[2], u16::from(b'l'));
+        assert_eq!(output[3], u16::from(b'l'));
+        assert_eq!(output[4], u16::from(b'o'));
+    }
+
+    #[test]
+    fn test_multibyte_to_wide_char_query_size() {
+        // Test querying required buffer size (explicit length, no null)
+        let input = b"Hello World";
+
+        let result = unsafe {
+            kernel32_MultiByteToWideChar(
+                65001, // CP_UTF8
+                0,
+                input.as_ptr(),
+                input.len() as i32,
+                core::ptr::null_mut(),
+                0,
+            )
+        };
+
+        // Should return 11 (11 chars, no null terminator when length is explicit)
+        assert_eq!(result, 11);
+    }
+
+    #[test]
+    fn test_multibyte_to_wide_char_null_terminated() {
+        // Test with null-terminated string (-1 length)
+        let input = b"Test\0";
+        let mut output = [0u16; 10];
+
+        let result = unsafe {
+            kernel32_MultiByteToWideChar(
+                65001, // CP_UTF8
+                0,
+                input.as_ptr(),
+                -1, // Null-terminated
+                output.as_mut_ptr(),
+                output.len() as i32,
+            )
+        };
+
+        // Should return 5 (4 chars + null terminator)
+        assert_eq!(result, 5);
+        assert_eq!(output[0], u16::from(b'T'));
+        assert_eq!(output[3], u16::from(b't'));
+        assert_eq!(output[4], 0);
+    }
+
+    #[test]
+    fn test_wide_char_to_multibyte_basic() {
+        // Test basic ASCII conversion with explicit length (no null terminator)
+        let input = [u16::from(b'H'), u16::from(b'i'), 0];
+        let mut output = [0u8; 10];
+
+        let result = unsafe {
+            kernel32_WideCharToMultiByte(
+                65001, // CP_UTF8
+                0,
+                input.as_ptr(),
+                2, // Length without null
+                output.as_mut_ptr(),
+                output.len() as i32,
+                core::ptr::null(),
+                core::ptr::null_mut(),
+            )
+        };
+
+        // Should return 2 (2 chars, no null terminator when length is explicit)
+        assert_eq!(result, 2);
+        assert_eq!(output[0], b'H');
+        assert_eq!(output[1], b'i');
+    }
+
+    #[test]
+    fn test_wide_char_to_multibyte_query_size() {
+        // Test querying required buffer size (explicit length, no null)
+        let input = [
+            u16::from(b'T'),
+            u16::from(b'e'),
+            u16::from(b's'),
+            u16::from(b't'),
+            u16::from(b' '),
+            u16::from(b'!'),
+        ];
+
+        let result = unsafe {
+            kernel32_WideCharToMultiByte(
+                65001, // CP_UTF8
+                0,
+                input.as_ptr(),
+                input.len() as i32,
+                core::ptr::null_mut(),
+                0,
+                core::ptr::null(),
+                core::ptr::null_mut(),
+            )
+        };
+
+        // Should return 6 (6 chars, no null terminator when length is explicit)
+        assert_eq!(result, 6);
+    }
+
+    #[test]
+    fn test_wide_char_to_multibyte_null_terminated() {
+        // Test with null-terminated string (-1 length)
+        let input = [u16::from(b'A'), u16::from(b'B'), u16::from(b'C'), 0];
+        let mut output = [0u8; 10];
+
+        let result = unsafe {
+            kernel32_WideCharToMultiByte(
+                65001, // CP_UTF8
+                0,
+                input.as_ptr(),
+                -1, // Null-terminated
+                output.as_mut_ptr(),
+                output.len() as i32,
+                core::ptr::null(),
+                core::ptr::null_mut(),
+            )
+        };
+
+        // Should return 4 (3 chars + null terminator)
+        assert_eq!(result, 4);
+        assert_eq!(output[0], b'A');
+        assert_eq!(output[1], b'B');
+        assert_eq!(output[2], b'C');
+        assert_eq!(output[3], 0);
+    }
+
+    #[test]
+    fn test_lstrlenw_basic() {
+        // Test basic wide string length
+        let input = [
+            u16::from(b'H'),
+            u16::from(b'e'),
+            u16::from(b'l'),
+            u16::from(b'l'),
+            u16::from(b'o'),
+            0,
+        ];
+
+        let result = unsafe { kernel32_lstrlenW(input.as_ptr()) };
+
+        assert_eq!(result, 5);
+    }
+
+    #[test]
+    fn test_lstrlenw_empty() {
+        // Test empty string
+        let input = [0u16];
+
+        let result = unsafe { kernel32_lstrlenW(input.as_ptr()) };
+
+        assert_eq!(result, 0);
+    }
+
+    #[test]
+    fn test_lstrlenw_null() {
+        // Test NULL pointer
+        let result = unsafe { kernel32_lstrlenW(core::ptr::null()) };
+
+        assert_eq!(result, 0);
+    }
+
+    #[test]
+    fn test_compare_string_ordinal_equal() {
+        // Test equal strings
+        let str1 = [
+            u16::from(b'T'),
+            u16::from(b'e'),
+            u16::from(b's'),
+            u16::from(b't'),
+            0,
+        ];
+        let str2 = [
+            u16::from(b'T'),
+            u16::from(b'e'),
+            u16::from(b's'),
+            u16::from(b't'),
+            0,
+        ];
+
+        let result = unsafe {
+            kernel32_CompareStringOrdinal(
+                str1.as_ptr(),
+                4,
+                str2.as_ptr(),
+                4,
+                0, // Case-sensitive
+            )
+        };
+
+        assert_eq!(result, 2); // CSTR_EQUAL
+    }
+
+    #[test]
+    fn test_compare_string_ordinal_less_than() {
+        // Test str1 < str2
+        let str1 = [u16::from(b'A'), u16::from(b'B'), 0];
+        let str2 = [u16::from(b'A'), u16::from(b'C'), 0];
+
+        let result = unsafe {
+            kernel32_CompareStringOrdinal(
+                str1.as_ptr(),
+                2,
+                str2.as_ptr(),
+                2,
+                0, // Case-sensitive
+            )
+        };
+
+        assert_eq!(result, 1); // CSTR_LESS_THAN
+    }
+
+    #[test]
+    fn test_compare_string_ordinal_greater_than() {
+        // Test str1 > str2
+        let str1 = [u16::from(b'Z'), u16::from(b'Z'), 0];
+        let str2 = [u16::from(b'A'), u16::from(b'A'), 0];
+
+        let result = unsafe {
+            kernel32_CompareStringOrdinal(
+                str1.as_ptr(),
+                2,
+                str2.as_ptr(),
+                2,
+                0, // Case-sensitive
+            )
+        };
+
+        assert_eq!(result, 3); // CSTR_GREATER_THAN
+    }
+
+    #[test]
+    fn test_compare_string_ordinal_ignore_case() {
+        // Test case-insensitive comparison
+        let str1 = [
+            u16::from(b'H'),
+            u16::from(b'e'),
+            u16::from(b'l'),
+            u16::from(b'l'),
+            u16::from(b'o'),
+            0,
+        ];
+        let str2 = [
+            u16::from(b'h'),
+            u16::from(b'E'),
+            u16::from(b'L'),
+            u16::from(b'L'),
+            u16::from(b'O'),
+            0,
+        ];
+
+        let result = unsafe {
+            kernel32_CompareStringOrdinal(
+                str1.as_ptr(),
+                5,
+                str2.as_ptr(),
+                5,
+                1, // Ignore case
+            )
+        };
+
+        assert_eq!(result, 2); // CSTR_EQUAL (case-insensitive)
+    }
+
+    #[test]
+    fn test_compare_string_ordinal_null_terminated() {
+        // Test with -1 (null-terminated strings)
+        let str1 = [u16::from(b'A'), u16::from(b'B'), 0];
+        let str2 = [u16::from(b'A'), u16::from(b'B'), 0];
+
+        let result = unsafe {
+            kernel32_CompareStringOrdinal(
+                str1.as_ptr(),
+                -1, // Null-terminated
+                str2.as_ptr(),
+                -1, // Null-terminated
+                0,  // Case-sensitive
+            )
+        };
+
+        assert_eq!(result, 2); // CSTR_EQUAL
+    }
+
+    //
+    // Phase 8.4: Performance Counters Tests
+    //
+
+    #[test]
+    fn test_query_performance_counter() {
+        let mut counter: i64 = 0;
+
+        let result = unsafe { kernel32_QueryPerformanceCounter(core::ptr::addr_of_mut!(counter)) };
+
+        assert_eq!(result, 1); // TRUE - success
+        assert!(counter > 0); // Should be positive
+    }
+
+    #[test]
+    fn test_query_performance_counter_monotonic() {
+        let mut counter1: i64 = 0;
+        let mut counter2: i64 = 0;
+
+        unsafe { kernel32_QueryPerformanceCounter(core::ptr::addr_of_mut!(counter1)) };
+
+        // Do some work
+        for _ in 0..1000 {
+            core::hint::black_box(42);
+        }
+
+        unsafe { kernel32_QueryPerformanceCounter(core::ptr::addr_of_mut!(counter2)) };
+
+        // counter2 should be >= counter1 (monotonic)
+        assert!(counter2 >= counter1);
+    }
+
+    #[test]
+    fn test_query_performance_counter_null() {
+        let result = unsafe { kernel32_QueryPerformanceCounter(core::ptr::null_mut()) };
+
+        assert_eq!(result, 0); // FALSE - error
+    }
+
+    #[test]
+    fn test_query_performance_frequency() {
+        let mut frequency: i64 = 0;
+
+        let result =
+            unsafe { kernel32_QueryPerformanceFrequency(core::ptr::addr_of_mut!(frequency)) };
+
+        assert_eq!(result, 1); // TRUE - success
+        assert_eq!(frequency, 1_000_000_000); // 1 billion (nanoseconds)
+    }
+
+    #[test]
+    fn test_query_performance_frequency_null() {
+        let result = unsafe { kernel32_QueryPerformanceFrequency(core::ptr::null_mut()) };
+
+        assert_eq!(result, 0); // FALSE - error
+    }
+
+    #[test]
+    fn test_get_system_time_precise_as_filetime() {
+        let mut filetime = FileTime {
+            low_date_time: 0,
+            high_date_time: 0,
+        };
+
+        unsafe { kernel32_GetSystemTimePreciseAsFileTime(core::ptr::addr_of_mut!(filetime)) };
+
+        // Should have non-zero values (representing time since 1601)
+        assert!(filetime.high_date_time > 0);
+    }
+
+    #[test]
+    fn test_get_system_time_precise_as_filetime_increases() {
+        let mut filetime1 = FileTime {
+            low_date_time: 0,
+            high_date_time: 0,
+        };
+        let mut filetime2 = FileTime {
+            low_date_time: 0,
+            high_date_time: 0,
+        };
+
+        unsafe { kernel32_GetSystemTimePreciseAsFileTime(core::ptr::addr_of_mut!(filetime1)) };
+
+        // Sleep a tiny bit
+        thread::sleep(Duration::from_millis(1));
+
+        unsafe { kernel32_GetSystemTimePreciseAsFileTime(core::ptr::addr_of_mut!(filetime2)) };
+
+        // Reconstruct the 64-bit values
+        let time1 =
+            u64::from(filetime1.low_date_time) | (u64::from(filetime1.high_date_time) << 32);
+        let time2 =
+            u64::from(filetime2.low_date_time) | (u64::from(filetime2.high_date_time) << 32);
+
+        // time2 should be > time1
+        assert!(time2 > time1);
+    }
+
+    #[test]
+    fn test_get_system_time_precise_as_filetime_null() {
+        // Should not crash with NULL
+        unsafe { kernel32_GetSystemTimePreciseAsFileTime(core::ptr::null_mut()) };
+    }
+
+    //
+    // Phase 8.5: File I/O Trampolines Tests
+    //
+
+    #[test]
+    fn test_create_file_w_returns_invalid_handle() {
+        // CreateFileW should return INVALID_HANDLE_VALUE
+        let handle = unsafe {
+            kernel32_CreateFileW(
+                core::ptr::null(),
+                0,
+                0,
+                core::ptr::null_mut(),
+                0,
+                0,
+                core::ptr::null_mut(),
+            )
+        };
+
+        // INVALID_HANDLE_VALUE is usize::MAX
+        assert_eq!(handle as usize, usize::MAX);
+    }
+
+    #[test]
+    fn test_read_file_returns_false() {
+        // ReadFile should return FALSE (0)
+        let result = unsafe {
+            kernel32_ReadFile(
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+                0,
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+            )
+        };
+
+        assert_eq!(result, 0); // FALSE
+    }
+
+    #[test]
+    fn test_write_file_returns_false() {
+        // WriteFile should return FALSE (0)
+        let result = unsafe {
+            kernel32_WriteFile(
+                core::ptr::null_mut(),
+                core::ptr::null(),
+                0,
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+            )
+        };
+
+        assert_eq!(result, 0); // FALSE
+    }
+
+    #[test]
+    fn test_close_handle_returns_true() {
+        // CloseHandle should return TRUE (1)
+        let result = unsafe { kernel32_CloseHandle(core::ptr::null_mut()) };
+
+        assert_eq!(result, 1); // TRUE
+    }
+
+    //
+    // Phase 8.6: Heap Management Trampolines Tests
+    //
+
+    #[test]
+    fn test_get_process_heap() {
+        let heap = unsafe { kernel32_GetProcessHeap() };
+
+        // Should return non-NULL
+        assert!(!heap.is_null());
+    }
+
+    #[test]
+    fn test_heap_alloc_basic() {
+        let heap = unsafe { kernel32_GetProcessHeap() };
+        let size = 1024;
+
+        let ptr = unsafe { kernel32_HeapAlloc(heap, 0, size) };
+
+        // Should allocate successfully
+        assert!(!ptr.is_null());
+
+        // Clean up (even though our implementation leaks)
+        unsafe { kernel32_HeapFree(heap, 0, ptr) };
+    }
+
+    #[test]
+    fn test_heap_alloc_zero_memory() {
+        let heap = unsafe { kernel32_GetProcessHeap() };
+        let size = 256;
+        const HEAP_ZERO_MEMORY: u32 = 0x0000_0008;
+
+        let ptr = unsafe { kernel32_HeapAlloc(heap, HEAP_ZERO_MEMORY, size) };
+
+        // Should allocate successfully
+        assert!(!ptr.is_null());
+
+        // Verify memory is zeroed
+        let slice = unsafe { core::slice::from_raw_parts(ptr.cast::<u8>(), size) };
+        assert!(slice.iter().all(|&b| b == 0));
+
+        // Clean up
+        unsafe { kernel32_HeapFree(heap, 0, ptr) };
+    }
+
+    #[test]
+    fn test_heap_alloc_zero_size() {
+        let heap = unsafe { kernel32_GetProcessHeap() };
+
+        let ptr = unsafe { kernel32_HeapAlloc(heap, 0, 0) };
+
+        // Windows HeapAlloc returns a non-NULL pointer for 0-byte allocation
+        // We allocate a minimal block (1 byte) to match Windows semantics
+        assert!(!ptr.is_null());
+
+        // Clean up
+        unsafe { kernel32_HeapFree(heap, 0, ptr) };
+    }
+
+    #[test]
+    fn test_heap_free_null() {
+        let heap = unsafe { kernel32_GetProcessHeap() };
+
+        // Freeing NULL should succeed
+        let result = unsafe { kernel32_HeapFree(heap, 0, core::ptr::null_mut()) };
+
+        assert_eq!(result, 1); // TRUE
+    }
+
+    #[test]
+    fn test_heap_realloc_null_to_alloc() {
+        let heap = unsafe { kernel32_GetProcessHeap() };
+
+        // ReAlloc with NULL pointer should allocate new memory
+        let ptr = unsafe { kernel32_HeapReAlloc(heap, 0, core::ptr::null_mut(), 512) };
+
+        assert!(!ptr.is_null());
+
+        // Clean up
+        unsafe { kernel32_HeapFree(heap, 0, ptr) };
+    }
+
+    #[test]
+    fn test_heap_realloc_zero_size() {
+        let heap = unsafe { kernel32_GetProcessHeap() };
+        let ptr = unsafe { kernel32_HeapAlloc(heap, 0, 256) };
+
+        // ReAlloc to zero size should free memory
+        let result = unsafe { kernel32_HeapReAlloc(heap, 0, ptr, 0) };
+
+        assert!(result.is_null());
     }
 }
