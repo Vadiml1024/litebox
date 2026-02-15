@@ -322,7 +322,7 @@ impl DllManager {
             ("QueryPerformanceCounter", KERNEL32_BASE + 0x3F),
             ("QueryPerformanceFrequency", KERNEL32_BASE + 0x40),
             ("GetSystemTimePreciseAsFileTime", KERNEL32_BASE + 0x41),
-            // Phase 8.5 and 8.6: Note - CreateFileW, ReadFile, WriteFile, CloseHandle, 
+            // Phase 8.5 and 8.6: Note - CreateFileW, ReadFile, WriteFile, CloseHandle,
             // GetProcessHeap, HeapAlloc, HeapFree, HeapReAlloc are already in the list above
         ];
 
