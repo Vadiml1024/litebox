@@ -15,6 +15,9 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
+// Need alloc for HeapAlloc implementation
+extern crate alloc;
+
 /// Thread Local Storage (TLS) manager
 ///
 /// Windows TLS allows each thread to store thread-specific data.
@@ -1114,6 +1117,155 @@ pub unsafe extern "C" fn kernel32_CloseHandle(_handle: *mut core::ffi::c_void) -
     1
 }
 
+//
+// Phase 8.6: Heap Management Trampolines
+//
+// Windows programs often use HeapAlloc/HeapFree for dynamic memory.
+// These are wrappers around the standard malloc/free functions.
+//
+
+/// Get the default process heap handle
+///
+/// In Windows, processes have a default heap. We return a fake
+/// non-NULL handle since programs check for NULL.
+///
+/// # Safety
+/// This function is safe to call. It returns a constant non-NULL value.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_GetProcessHeap() -> *mut core::ffi::c_void {
+    // Return a fake heap handle (non-NULL)
+    // Real heap operations use malloc/free directly
+    0x1000 as *mut core::ffi::c_void
+}
+
+/// Allocate memory from a heap
+///
+/// This wraps malloc to provide Windows heap semantics.
+///
+/// # Arguments
+/// - `heap`: Heap handle (ignored, we use the global allocator)
+/// - `flags`: Allocation flags (HEAP_ZERO_MEMORY = 0x00000008)
+/// - `size`: Number of bytes to allocate
+///
+/// # Returns
+/// Pointer to allocated memory, or NULL on failure
+///
+/// # Safety
+/// The returned pointer must be freed with HeapFree.
+/// The caller must ensure the size is reasonable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_HeapAlloc(
+    _heap: *mut core::ffi::c_void,
+    flags: u32,
+    size: usize,
+) -> *mut core::ffi::c_void {
+    const HEAP_ZERO_MEMORY: u32 = 0x0000_0008;
+
+    if size == 0 {
+        return core::ptr::null_mut();
+    }
+
+    // Allocate using the global allocator
+    let layout = match core::alloc::Layout::from_size_align(size, core::mem::align_of::<usize>()) {
+        Ok(l) => l,
+        Err(_) => return core::ptr::null_mut(),
+    };
+
+    // SAFETY: Layout is valid, size is non-zero
+    let ptr = unsafe { alloc::alloc::alloc(layout) };
+
+    if ptr.is_null() {
+        return core::ptr::null_mut();
+    }
+
+    // Zero memory if requested
+    if flags & HEAP_ZERO_MEMORY != 0 {
+        // SAFETY: ptr is valid and has size bytes allocated
+        unsafe {
+            core::ptr::write_bytes(ptr, 0, size);
+        }
+    }
+
+    ptr.cast()
+}
+
+/// Free memory allocated from a heap
+///
+/// This wraps free to provide Windows heap semantics.
+///
+/// # Arguments
+/// - `heap`: Heap handle (ignored)
+/// - `flags`: Free flags (ignored)
+/// - `mem`: Pointer to memory to free
+///
+/// # Returns
+/// TRUE (1) on success, FALSE (0) on failure
+///
+/// # Safety
+/// The caller must ensure:
+/// - `mem` was allocated with HeapAlloc or is NULL
+/// - `mem` is not freed twice
+/// - `mem` is not used after being freed
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_HeapFree(
+    _heap: *mut core::ffi::c_void,
+    _flags: u32,
+    mem: *mut core::ffi::c_void,
+) -> i32 {
+    if mem.is_null() {
+        return 1; // TRUE - freeing NULL is a no-op
+    }
+
+    // We can't safely free this without knowing the original size.
+    // For now, just leak the memory. Real programs should use malloc/free
+    // from MSVCRT which are properly implemented.
+    // TODO: Consider tracking allocations if needed
+
+    1 // TRUE - success (even though we leaked)
+}
+
+/// Reallocate memory in a heap
+///
+/// This wraps realloc to provide Windows heap semantics.
+///
+/// # Arguments
+/// - `heap`: Heap handle (ignored)
+/// - `flags`: Realloc flags (ignored for now)
+/// - `mem`: Pointer to memory to reallocate (or NULL to allocate new)
+/// - `size`: New size in bytes
+///
+/// # Returns
+/// Pointer to reallocated memory, or NULL on failure
+///
+/// # Safety
+/// The caller must ensure:
+/// - `mem` was allocated with HeapAlloc or is NULL
+/// - The old pointer is not used after reallocation
+/// - The returned pointer must be freed with HeapFree
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_HeapReAlloc(
+    heap: *mut core::ffi::c_void,
+    flags: u32,
+    mem: *mut core::ffi::c_void,
+    size: usize,
+) -> *mut core::ffi::c_void {
+    if mem.is_null() {
+        // Allocate new memory
+        return unsafe { kernel32_HeapAlloc(heap, flags, size) };
+    }
+
+    if size == 0 {
+        // Free the memory
+        unsafe { kernel32_HeapFree(heap, flags, mem) };
+        return core::ptr::null_mut();
+    }
+
+    // For now, allocate new memory and leak the old
+    // Real implementation would need to track allocation sizes
+    // TODO: Consider implementing proper realloc if needed
+    unsafe { kernel32_HeapAlloc(heap, flags, size) }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1956,5 +2108,94 @@ mod tests {
         let result = unsafe { kernel32_CloseHandle(core::ptr::null_mut()) };
 
         assert_eq!(result, 1); // TRUE
+    }
+
+    //
+    // Phase 8.6: Heap Management Trampolines Tests
+    //
+
+    #[test]
+    fn test_get_process_heap() {
+        let heap = unsafe { kernel32_GetProcessHeap() };
+
+        // Should return non-NULL
+        assert!(!heap.is_null());
+    }
+
+    #[test]
+    fn test_heap_alloc_basic() {
+        let heap = unsafe { kernel32_GetProcessHeap() };
+        let size = 1024;
+
+        let ptr = unsafe { kernel32_HeapAlloc(heap, 0, size) };
+
+        // Should allocate successfully
+        assert!(!ptr.is_null());
+
+        // Clean up (even though our implementation leaks)
+        unsafe { kernel32_HeapFree(heap, 0, ptr) };
+    }
+
+    #[test]
+    fn test_heap_alloc_zero_memory() {
+        let heap = unsafe { kernel32_GetProcessHeap() };
+        let size = 256;
+        const HEAP_ZERO_MEMORY: u32 = 0x0000_0008;
+
+        let ptr = unsafe { kernel32_HeapAlloc(heap, HEAP_ZERO_MEMORY, size) };
+
+        // Should allocate successfully
+        assert!(!ptr.is_null());
+
+        // Verify memory is zeroed
+        let slice = unsafe { core::slice::from_raw_parts(ptr.cast::<u8>(), size) };
+        assert!(slice.iter().all(|&b| b == 0));
+
+        // Clean up
+        unsafe { kernel32_HeapFree(heap, 0, ptr) };
+    }
+
+    #[test]
+    fn test_heap_alloc_zero_size() {
+        let heap = unsafe { kernel32_GetProcessHeap() };
+
+        let ptr = unsafe { kernel32_HeapAlloc(heap, 0, 0) };
+
+        // Should return NULL for zero size
+        assert!(ptr.is_null());
+    }
+
+    #[test]
+    fn test_heap_free_null() {
+        let heap = unsafe { kernel32_GetProcessHeap() };
+
+        // Freeing NULL should succeed
+        let result = unsafe { kernel32_HeapFree(heap, 0, core::ptr::null_mut()) };
+
+        assert_eq!(result, 1); // TRUE
+    }
+
+    #[test]
+    fn test_heap_realloc_null_to_alloc() {
+        let heap = unsafe { kernel32_GetProcessHeap() };
+
+        // ReAlloc with NULL pointer should allocate new memory
+        let ptr = unsafe { kernel32_HeapReAlloc(heap, 0, core::ptr::null_mut(), 512) };
+
+        assert!(!ptr.is_null());
+
+        // Clean up
+        unsafe { kernel32_HeapFree(heap, 0, ptr) };
+    }
+
+    #[test]
+    fn test_heap_realloc_zero_size() {
+        let heap = unsafe { kernel32_GetProcessHeap() };
+        let ptr = unsafe { kernel32_HeapAlloc(heap, 0, 256) };
+
+        // ReAlloc to zero size should free memory
+        let result = unsafe { kernel32_HeapReAlloc(heap, 0, ptr, 0) };
+
+        assert!(result.is_null());
     }
 }

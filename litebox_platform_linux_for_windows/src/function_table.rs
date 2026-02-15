@@ -338,6 +338,31 @@ pub fn get_function_table() -> Vec<FunctionImpl> {
             num_params: 1,
             impl_address: crate::kernel32::kernel32_CloseHandle as *const () as usize,
         },
+        // Phase 8.6: Heap Management Trampolines
+        FunctionImpl {
+            name: "GetProcessHeap",
+            dll_name: "KERNEL32.dll",
+            num_params: 0,
+            impl_address: crate::kernel32::kernel32_GetProcessHeap as *const () as usize,
+        },
+        FunctionImpl {
+            name: "HeapAlloc",
+            dll_name: "KERNEL32.dll",
+            num_params: 3,
+            impl_address: crate::kernel32::kernel32_HeapAlloc as *const () as usize,
+        },
+        FunctionImpl {
+            name: "HeapFree",
+            dll_name: "KERNEL32.dll",
+            num_params: 3,
+            impl_address: crate::kernel32::kernel32_HeapFree as *const () as usize,
+        },
+        FunctionImpl {
+            name: "HeapReAlloc",
+            dll_name: "KERNEL32.dll",
+            num_params: 4,
+            impl_address: crate::kernel32::kernel32_HeapReAlloc as *const () as usize,
+        },
     ]
 }
 
