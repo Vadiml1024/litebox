@@ -162,6 +162,30 @@ pub fn get_function_table() -> Vec<FunctionImpl> {
             num_params: 0,
             impl_address: crate::kernel32::kernel32_GetCurrentProcessId as *const () as usize,
         },
+        FunctionImpl {
+            name: "TlsAlloc",
+            dll_name: "KERNEL32.dll",
+            num_params: 0,
+            impl_address: crate::kernel32::kernel32_TlsAlloc as *const () as usize,
+        },
+        FunctionImpl {
+            name: "TlsFree",
+            dll_name: "KERNEL32.dll",
+            num_params: 1,
+            impl_address: crate::kernel32::kernel32_TlsFree as *const () as usize,
+        },
+        FunctionImpl {
+            name: "TlsGetValue",
+            dll_name: "KERNEL32.dll",
+            num_params: 1,
+            impl_address: crate::kernel32::kernel32_TlsGetValue as *const () as usize,
+        },
+        FunctionImpl {
+            name: "TlsSetValue",
+            dll_name: "KERNEL32.dll",
+            num_params: 2,
+            impl_address: crate::kernel32::kernel32_TlsSetValue as *const () as usize,
+        },
     ]
 }
 
