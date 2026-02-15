@@ -134,7 +134,10 @@ pub unsafe extern "C" fn kernel32_GetCurrentProcessId() -> u32 {
 pub unsafe extern "C" fn kernel32_TlsAlloc() -> u32 {
     ensure_tls_manager_initialized();
     let mut manager = TLS_MANAGER.lock().unwrap();
-    manager.as_mut().and_then(TlsManager::alloc_slot).unwrap_or(0xFFFF_FFFF) // TLS_OUT_OF_INDEXES
+    manager
+        .as_mut()
+        .and_then(TlsManager::alloc_slot)
+        .unwrap_or(0xFFFF_FFFF) // TLS_OUT_OF_INDEXES
 }
 
 /// Free a thread local storage (TLS) slot (TlsFree)
