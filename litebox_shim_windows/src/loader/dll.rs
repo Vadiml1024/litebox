@@ -289,8 +289,10 @@ impl DllManager {
             ("GetConsoleMode", KERNEL32_BASE + 0x25),
             ("ReadConsoleW", KERNEL32_BASE + 0x26),
             ("GetConsoleOutputCP", KERNEL32_BASE + 0x27),
+            // Phase 7: Threading and timing
+            ("Sleep", KERNEL32_BASE + 0x28),
             // Phase 7: Exit
-            ("ExitProcess", KERNEL32_BASE + 0x28),
+            ("ExitProcess", KERNEL32_BASE + 0x29),
         ];
 
         self.register_stub_dll("KERNEL32.dll", exports);

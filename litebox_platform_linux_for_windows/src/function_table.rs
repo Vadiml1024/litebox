@@ -143,6 +143,25 @@ pub fn get_function_table() -> Vec<FunctionImpl> {
             num_params: 1,
             impl_address: crate::msvcrt::msvcrt_exit as *const () as usize,
         },
+        // KERNEL32.dll functions - these are defined in kernel32.rs
+        FunctionImpl {
+            name: "Sleep",
+            dll_name: "KERNEL32.dll",
+            num_params: 1,
+            impl_address: crate::kernel32::kernel32_Sleep as *const () as usize,
+        },
+        FunctionImpl {
+            name: "GetCurrentThreadId",
+            dll_name: "KERNEL32.dll",
+            num_params: 0,
+            impl_address: crate::kernel32::kernel32_GetCurrentThreadId as *const () as usize,
+        },
+        FunctionImpl {
+            name: "GetCurrentProcessId",
+            dll_name: "KERNEL32.dll",
+            num_params: 0,
+            impl_address: crate::kernel32::kernel32_GetCurrentProcessId as *const () as usize,
+        },
     ]
 }
 
