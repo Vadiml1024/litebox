@@ -10,13 +10,11 @@
 // Allow unsafe operations inside unsafe functions since the entire function is unsafe
 #![allow(unsafe_op_in_unsafe_fn)]
 
+use std::alloc;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
-
-// Need alloc for HeapAlloc implementation
-extern crate alloc;
 
 /// Thread Local Storage (TLS) manager
 ///
@@ -1172,7 +1170,7 @@ pub unsafe extern "C" fn kernel32_HeapAlloc(
     };
 
     // SAFETY: Layout is valid, size is non-zero
-    let ptr = unsafe { alloc::alloc::alloc(layout) };
+    let ptr = unsafe { alloc::alloc(layout) };
 
     if ptr.is_null() {
         return core::ptr::null_mut();
@@ -1206,6 +1204,16 @@ pub unsafe extern "C" fn kernel32_HeapAlloc(
 /// - `mem` was allocated with HeapAlloc or is NULL
 /// - `mem` is not freed twice
 /// - `mem` is not used after being freed
+///
+/// # Note
+/// **CURRENT LIMITATION:** This implementation intentionally leaks memory.
+/// We cannot safely deallocate without tracking allocation sizes, which would
+/// require additional infrastructure. For production use, programs should use
+/// malloc/free from MSVCRT which are properly implemented.
+///
+/// This is acceptable for short-lived programs or programs that don't heavily
+/// use HeapAlloc/HeapFree, but could cause memory exhaustion in long-running
+/// programs. TODO: Implement allocation tracking using a static HashMap.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_HeapFree(
     _heap: *mut core::ffi::c_void,
@@ -1216,10 +1224,9 @@ pub unsafe extern "C" fn kernel32_HeapFree(
         return 1; // TRUE - freeing NULL is a no-op
     }
 
-    // We can't safely free this without knowing the original size.
-    // For now, just leak the memory. Real programs should use malloc/free
-    // from MSVCRT which are properly implemented.
-    // TODO: Consider tracking allocations if needed
+    // LIMITATION: We can't safely free this without knowing the original size.
+    // Real programs should use malloc/free from MSVCRT which are properly implemented.
+    // For now, leak the memory to avoid undefined behavior.
 
     1 // TRUE - success (even though we leaked)
 }
@@ -1242,6 +1249,16 @@ pub unsafe extern "C" fn kernel32_HeapFree(
 /// - `mem` was allocated with HeapAlloc or is NULL
 /// - The old pointer is not used after reallocation
 /// - The returned pointer must be freed with HeapFree
+///
+/// # Note
+/// **CURRENT LIMITATION:** This implementation leaks the old memory block when
+/// reallocating. It allocates new memory but cannot safely free the old block
+/// without tracking allocation sizes. For production use, programs should use
+/// realloc from MSVCRT which is properly implemented.
+///
+/// This is acceptable for programs with limited reallocation, but could cause
+/// memory issues in programs that frequently resize allocations.
+/// TODO: Implement proper realloc with allocation size tracking.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_HeapReAlloc(
     heap: *mut core::ffi::c_void,
@@ -1255,14 +1272,14 @@ pub unsafe extern "C" fn kernel32_HeapReAlloc(
     }
 
     if size == 0 {
-        // Free the memory
+        // Free the memory (note: HeapFree also leaks, see its documentation)
         unsafe { kernel32_HeapFree(heap, flags, mem) };
         return core::ptr::null_mut();
     }
 
-    // For now, allocate new memory and leak the old
-    // Real implementation would need to track allocation sizes
-    // TODO: Consider implementing proper realloc if needed
+    // LIMITATION: Allocate new memory but leak the old block.
+    // Real implementation would copy old data and free old block.
+    // For now, programs should use MSVCRT realloc which is properly implemented.
     unsafe { kernel32_HeapAlloc(heap, flags, size) }
 }
 
