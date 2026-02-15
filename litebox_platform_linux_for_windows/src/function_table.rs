@@ -186,6 +186,57 @@ pub fn get_function_table() -> Vec<FunctionImpl> {
             num_params: 2,
             impl_address: crate::kernel32::kernel32_TlsSetValue as *const () as usize,
         },
+        // Phase 8: Exception Handling (stubs for CRT compatibility)
+        FunctionImpl {
+            name: "__C_specific_handler",
+            dll_name: "KERNEL32.dll",
+            num_params: 4,
+            impl_address: crate::kernel32::kernel32___C_specific_handler as *const () as usize,
+        },
+        FunctionImpl {
+            name: "SetUnhandledExceptionFilter",
+            dll_name: "KERNEL32.dll",
+            num_params: 1,
+            impl_address: crate::kernel32::kernel32_SetUnhandledExceptionFilter as *const ()
+                as usize,
+        },
+        FunctionImpl {
+            name: "RaiseException",
+            dll_name: "KERNEL32.dll",
+            num_params: 4,
+            impl_address: crate::kernel32::kernel32_RaiseException as *const () as usize,
+        },
+        FunctionImpl {
+            name: "RtlCaptureContext",
+            dll_name: "KERNEL32.dll",
+            num_params: 1,
+            impl_address: crate::kernel32::kernel32_RtlCaptureContext as *const () as usize,
+        },
+        FunctionImpl {
+            name: "RtlLookupFunctionEntry",
+            dll_name: "KERNEL32.dll",
+            num_params: 3,
+            impl_address: crate::kernel32::kernel32_RtlLookupFunctionEntry as *const () as usize,
+        },
+        FunctionImpl {
+            name: "RtlUnwindEx",
+            dll_name: "KERNEL32.dll",
+            num_params: 6,
+            impl_address: crate::kernel32::kernel32_RtlUnwindEx as *const () as usize,
+        },
+        FunctionImpl {
+            name: "RtlVirtualUnwind",
+            dll_name: "KERNEL32.dll",
+            num_params: 8,
+            impl_address: crate::kernel32::kernel32_RtlVirtualUnwind as *const () as usize,
+        },
+        FunctionImpl {
+            name: "AddVectoredExceptionHandler",
+            dll_name: "KERNEL32.dll",
+            num_params: 2,
+            impl_address: crate::kernel32::kernel32_AddVectoredExceptionHandler as *const ()
+                as usize,
+        },
     ]
 }
 

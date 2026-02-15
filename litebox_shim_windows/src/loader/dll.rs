@@ -298,6 +298,15 @@ impl DllManager {
             ("TlsFree", KERNEL32_BASE + 0x2B),
             ("TlsGetValue", KERNEL32_BASE + 0x2C),
             ("TlsSetValue", KERNEL32_BASE + 0x2D),
+            // Phase 8: Exception Handling (stubs for CRT compatibility)
+            ("__C_specific_handler", KERNEL32_BASE + 0x2E),
+            ("SetUnhandledExceptionFilter", KERNEL32_BASE + 0x2F),
+            ("RaiseException", KERNEL32_BASE + 0x30),
+            ("RtlCaptureContext", KERNEL32_BASE + 0x31),
+            ("RtlLookupFunctionEntry", KERNEL32_BASE + 0x32),
+            ("RtlUnwindEx", KERNEL32_BASE + 0x33),
+            ("RtlVirtualUnwind", KERNEL32_BASE + 0x34),
+            ("AddVectoredExceptionHandler", KERNEL32_BASE + 0x35),
         ];
 
         self.register_stub_dll("KERNEL32.dll", exports);
