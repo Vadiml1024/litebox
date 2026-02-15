@@ -268,6 +268,31 @@ pub fn get_function_table() -> Vec<FunctionImpl> {
             num_params: 1,
             impl_address: crate::kernel32::kernel32_DeleteCriticalSection as *const () as usize,
         },
+        // Phase 8.3: String Operations
+        FunctionImpl {
+            name: "MultiByteToWideChar",
+            dll_name: "KERNEL32.dll",
+            num_params: 6,
+            impl_address: crate::kernel32::kernel32_MultiByteToWideChar as *const () as usize,
+        },
+        FunctionImpl {
+            name: "WideCharToMultiByte",
+            dll_name: "KERNEL32.dll",
+            num_params: 8,
+            impl_address: crate::kernel32::kernel32_WideCharToMultiByte as *const () as usize,
+        },
+        FunctionImpl {
+            name: "lstrlenW",
+            dll_name: "KERNEL32.dll",
+            num_params: 1,
+            impl_address: crate::kernel32::kernel32_lstrlenW as *const () as usize,
+        },
+        FunctionImpl {
+            name: "CompareStringOrdinal",
+            dll_name: "KERNEL32.dll",
+            num_params: 5,
+            impl_address: crate::kernel32::kernel32_CompareStringOrdinal as *const () as usize,
+        },
     ]
 }
 

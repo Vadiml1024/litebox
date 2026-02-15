@@ -633,6 +633,272 @@ pub unsafe extern "C" fn kernel32_AddVectoredExceptionHandler(
     0x1000 as *mut core::ffi::c_void
 }
 
+//
+// Phase 8.3: String Operations
+//
+// Windows uses UTF-16 (wide characters) while Linux uses UTF-8.
+// These functions handle conversion between the two encodings.
+//
+
+/// Convert multibyte string to wide-character string
+///
+/// This implements MultiByteToWideChar for UTF-8 (CP_UTF8 = 65001) encoding.
+///
+/// # Arguments
+/// - `code_page`: Character encoding (0 = CP_ACP, 65001 = CP_UTF8)
+/// - `flags`: Conversion flags (0 = default)
+/// - `multi_byte_str`: Source multibyte string
+/// - `multi_byte_len`: Length of source string (-1 = null-terminated)
+/// - `wide_char_str`: Destination buffer for wide chars (NULL = query size)
+/// - `wide_char_len`: Size of destination buffer in characters
+///
+/// # Returns
+/// Number of wide characters written (or required if `wide_char_str` is NULL)
+///
+/// # Safety
+/// The caller must ensure:
+/// - `multi_byte_str` points to valid memory
+/// - If `multi_byte_len` != -1, at least `multi_byte_len` bytes are readable
+/// - If `wide_char_str` is not NULL, at least `wide_char_len` u16s are writable
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_MultiByteToWideChar(
+    _code_page: u32,
+    _flags: u32,
+    multi_byte_str: *const u8,
+    multi_byte_len: i32,
+    wide_char_str: *mut u16,
+    wide_char_len: i32,
+) -> i32 {
+    if multi_byte_str.is_null() {
+        return 0;
+    }
+
+    // Determine the length of the input string
+    let input_len = if multi_byte_len == -1 {
+        // SAFETY: Caller guarantees multi_byte_str is a valid null-terminated string
+        let mut len = 0;
+        while unsafe { *multi_byte_str.add(len) } != 0 {
+            len += 1;
+        }
+        len
+    } else {
+        multi_byte_len as usize
+    };
+
+    // SAFETY: Caller guarantees multi_byte_str points to at least input_len bytes
+    let input_bytes = unsafe { core::slice::from_raw_parts(multi_byte_str, input_len) };
+
+    // Convert to UTF-8 string (assume input is UTF-8)
+    let utf8_str = match core::str::from_utf8(input_bytes) {
+        Ok(s) => s,
+        Err(_) => return 0, // Invalid UTF-8
+    };
+
+    // Convert to UTF-16
+    let utf16_chars: Vec<u16> = utf8_str.encode_utf16().collect();
+    let required_len = utf16_chars.len() + 1; // +1 for null terminator
+
+    // If wide_char_str is NULL, return required size
+    if wide_char_str.is_null() {
+        return required_len as i32;
+    }
+
+    // Check buffer size
+    if wide_char_len < required_len as i32 {
+        return 0; // Buffer too small
+    }
+
+    // SAFETY: Caller guarantees wide_char_str has space for wide_char_len u16s
+    let output = unsafe { core::slice::from_raw_parts_mut(wide_char_str, wide_char_len as usize) };
+
+    // Copy the UTF-16 characters
+    output[..utf16_chars.len()].copy_from_slice(&utf16_chars);
+    output[utf16_chars.len()] = 0; // Null terminator
+
+    required_len as i32
+}
+
+/// Convert wide-character string to multibyte string
+///
+/// This implements WideCharToMultiByte for UTF-8 (CP_UTF8 = 65001) encoding.
+///
+/// # Arguments
+/// - `code_page`: Character encoding (0 = CP_ACP, 65001 = CP_UTF8)
+/// - `flags`: Conversion flags (0 = default)
+/// - `wide_char_str`: Source wide-character string
+/// - `wide_char_len`: Length of source string (-1 = null-terminated)
+/// - `multi_byte_str`: Destination buffer for multibyte chars (NULL = query size)
+/// - `multi_byte_len`: Size of destination buffer in bytes
+/// - `default_char`: Default char for unmappable characters (NULL = use default)
+/// - `used_default_char`: Pointer to flag set if default char was used (NULL = ignore)
+///
+/// # Returns
+/// Number of bytes written (or required if `multi_byte_str` is NULL)
+///
+/// # Safety
+/// The caller must ensure:
+/// - `wide_char_str` points to valid memory
+/// - If `wide_char_len` != -1, at least `wide_char_len` u16s are readable
+/// - If `multi_byte_str` is not NULL, at least `multi_byte_len` bytes are writable
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_WideCharToMultiByte(
+    _code_page: u32,
+    _flags: u32,
+    wide_char_str: *const u16,
+    wide_char_len: i32,
+    multi_byte_str: *mut u8,
+    multi_byte_len: i32,
+    _default_char: *const u8,
+    _used_default_char: *mut i32,
+) -> i32 {
+    if wide_char_str.is_null() {
+        return 0;
+    }
+
+    // Determine the length of the input string
+    let input_len = if wide_char_len == -1 {
+        // SAFETY: Caller guarantees wide_char_str is a valid null-terminated string
+        let mut len = 0;
+        while unsafe { *wide_char_str.add(len) } != 0 {
+            len += 1;
+        }
+        len
+    } else {
+        wide_char_len as usize
+    };
+
+    // SAFETY: Caller guarantees wide_char_str points to at least input_len u16s
+    let input_chars = unsafe { core::slice::from_raw_parts(wide_char_str, input_len) };
+
+    // Convert from UTF-16 to String (UTF-8)
+    let utf8_string = String::from_utf16_lossy(input_chars);
+    let utf8_bytes = utf8_string.as_bytes();
+    let required_len = utf8_bytes.len() + 1; // +1 for null terminator
+
+    // If multi_byte_str is NULL, return required size
+    if multi_byte_str.is_null() {
+        return required_len as i32;
+    }
+
+    // Check buffer size
+    if multi_byte_len < required_len as i32 {
+        return 0; // Buffer too small
+    }
+
+    // SAFETY: Caller guarantees multi_byte_str has space for multi_byte_len bytes
+    let output =
+        unsafe { core::slice::from_raw_parts_mut(multi_byte_str, multi_byte_len as usize) };
+
+    // Copy the UTF-8 bytes
+    output[..utf8_bytes.len()].copy_from_slice(utf8_bytes);
+    output[utf8_bytes.len()] = 0; // Null terminator
+
+    required_len as i32
+}
+
+/// Get the length of a wide-character string
+///
+/// This implements lstrlenW, which returns the length of a null-terminated
+/// wide-character string (excluding the null terminator).
+///
+/// # Safety
+/// The caller must ensure `wide_str` points to a valid null-terminated wide string
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_lstrlenW(wide_str: *const u16) -> i32 {
+    if wide_str.is_null() {
+        return 0;
+    }
+
+    // SAFETY: Caller guarantees wide_str is a valid null-terminated string
+    let mut len = 0;
+    while unsafe { *wide_str.add(len) } != 0 {
+        len += 1;
+    }
+
+    len as i32
+}
+
+/// Compare two Unicode strings using ordinal (binary) comparison
+///
+/// This implements CompareStringOrdinal, which performs a code-point by code-point
+/// comparison of two Unicode strings.
+///
+/// # Arguments
+/// - `string1`: First string to compare
+/// - `count1`: Length of first string (-1 = null-terminated)
+/// - `string2`: Second string to compare
+/// - `count2`: Length of second string (-1 = null-terminated)
+/// - `ignore_case`: TRUE to ignore case, FALSE for case-sensitive
+///
+/// # Returns
+/// - CSTR_LESS_THAN (1): string1 < string2
+/// - CSTR_EQUAL (2): string1 == string2
+/// - CSTR_GREATER_THAN (3): string1 > string2
+/// - 0: Error
+///
+/// # Safety
+/// The caller must ensure both string pointers point to valid memory
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_CompareStringOrdinal(
+    string1: *const u16,
+    count1: i32,
+    string2: *const u16,
+    count2: i32,
+    ignore_case: i32,
+) -> i32 {
+    if string1.is_null() || string2.is_null() {
+        return 0; // Error
+    }
+
+    // Get length of first string
+    let len1 = if count1 == -1 {
+        // SAFETY: Caller guarantees string1 is null-terminated
+        let mut len = 0;
+        while unsafe { *string1.add(len) } != 0 {
+            len += 1;
+        }
+        len
+    } else {
+        count1 as usize
+    };
+
+    // Get length of second string
+    let len2 = if count2 == -1 {
+        // SAFETY: Caller guarantees string2 is null-terminated
+        let mut len = 0;
+        while unsafe { *string2.add(len) } != 0 {
+            len += 1;
+        }
+        len
+    } else {
+        count2 as usize
+    };
+
+    // SAFETY: Caller guarantees the pointers are valid
+    let slice1 = unsafe { core::slice::from_raw_parts(string1, len1) };
+    let slice2 = unsafe { core::slice::from_raw_parts(string2, len2) };
+
+    // Convert to Rust strings for comparison
+    let str1 = String::from_utf16_lossy(slice1);
+    let str2 = String::from_utf16_lossy(slice2);
+
+    // Compare
+    let result = if ignore_case != 0 {
+        // Case-insensitive comparison
+        str1.to_lowercase().cmp(&str2.to_lowercase())
+    } else {
+        // Case-sensitive comparison
+        str1.cmp(&str2)
+    };
+
+    // Convert to Windows constants
+    match result {
+        core::cmp::Ordering::Less => 1,    // CSTR_LESS_THAN
+        core::cmp::Ordering::Equal => 2,   // CSTR_EQUAL
+        core::cmp::Ordering::Greater => 3, // CSTR_GREATER_THAN
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -994,5 +1260,307 @@ mod tests {
         let result = unsafe { kernel32_TryEnterCriticalSection(core::ptr::null_mut()) };
         assert_eq!(result, 0); // Should return false for NULL
         unsafe { kernel32_DeleteCriticalSection(core::ptr::null_mut()) };
+    }
+
+    //
+    // Phase 8.3: String Operations Tests
+    //
+
+    #[test]
+    fn test_multibyte_to_wide_char_basic() {
+        // Test basic ASCII conversion
+        let input = b"Hello";
+        let mut output = [0u16; 10];
+
+        let result = unsafe {
+            kernel32_MultiByteToWideChar(
+                65001, // CP_UTF8
+                0,
+                input.as_ptr(),
+                input.len() as i32,
+                output.as_mut_ptr(),
+                output.len() as i32,
+            )
+        };
+
+        // Should return 6 (5 chars + null terminator)
+        assert_eq!(result, 6);
+        // Verify the conversion
+        assert_eq!(output[0], u16::from(b'H'));
+        assert_eq!(output[1], u16::from(b'e'));
+        assert_eq!(output[2], u16::from(b'l'));
+        assert_eq!(output[3], u16::from(b'l'));
+        assert_eq!(output[4], u16::from(b'o'));
+        assert_eq!(output[5], 0); // Null terminator
+    }
+
+    #[test]
+    fn test_multibyte_to_wide_char_query_size() {
+        // Test querying required buffer size
+        let input = b"Hello World";
+
+        let result = unsafe {
+            kernel32_MultiByteToWideChar(
+                65001, // CP_UTF8
+                0,
+                input.as_ptr(),
+                input.len() as i32,
+                core::ptr::null_mut(),
+                0,
+            )
+        };
+
+        // Should return 12 (11 chars + null terminator)
+        assert_eq!(result, 12);
+    }
+
+    #[test]
+    fn test_multibyte_to_wide_char_null_terminated() {
+        // Test with null-terminated string (-1 length)
+        let input = b"Test\0";
+        let mut output = [0u16; 10];
+
+        let result = unsafe {
+            kernel32_MultiByteToWideChar(
+                65001, // CP_UTF8
+                0,
+                input.as_ptr(),
+                -1, // Null-terminated
+                output.as_mut_ptr(),
+                output.len() as i32,
+            )
+        };
+
+        // Should return 5 (4 chars + null terminator)
+        assert_eq!(result, 5);
+        assert_eq!(output[0], u16::from(b'T'));
+        assert_eq!(output[3], u16::from(b't'));
+        assert_eq!(output[4], 0);
+    }
+
+    #[test]
+    fn test_wide_char_to_multibyte_basic() {
+        // Test basic ASCII conversion
+        let input = [u16::from(b'H'), u16::from(b'i'), 0];
+        let mut output = [0u8; 10];
+
+        let result = unsafe {
+            kernel32_WideCharToMultiByte(
+                65001, // CP_UTF8
+                0,
+                input.as_ptr(),
+                2, // Length without null
+                output.as_mut_ptr(),
+                output.len() as i32,
+                core::ptr::null(),
+                core::ptr::null_mut(),
+            )
+        };
+
+        // Should return 3 (2 chars + null terminator)
+        assert_eq!(result, 3);
+        assert_eq!(output[0], b'H');
+        assert_eq!(output[1], b'i');
+        assert_eq!(output[2], 0); // Null terminator
+    }
+
+    #[test]
+    fn test_wide_char_to_multibyte_query_size() {
+        // Test querying required buffer size
+        let input = [
+            u16::from(b'T'),
+            u16::from(b'e'),
+            u16::from(b's'),
+            u16::from(b't'),
+            u16::from(b' '),
+            u16::from(b'!'),
+        ];
+
+        let result = unsafe {
+            kernel32_WideCharToMultiByte(
+                65001, // CP_UTF8
+                0,
+                input.as_ptr(),
+                input.len() as i32,
+                core::ptr::null_mut(),
+                0,
+                core::ptr::null(),
+                core::ptr::null_mut(),
+            )
+        };
+
+        // Should return 7 (6 chars + null terminator)
+        assert_eq!(result, 7);
+    }
+
+    #[test]
+    fn test_wide_char_to_multibyte_null_terminated() {
+        // Test with null-terminated string (-1 length)
+        let input = [u16::from(b'A'), u16::from(b'B'), u16::from(b'C'), 0];
+        let mut output = [0u8; 10];
+
+        let result = unsafe {
+            kernel32_WideCharToMultiByte(
+                65001, // CP_UTF8
+                0,
+                input.as_ptr(),
+                -1, // Null-terminated
+                output.as_mut_ptr(),
+                output.len() as i32,
+                core::ptr::null(),
+                core::ptr::null_mut(),
+            )
+        };
+
+        // Should return 4 (3 chars + null terminator)
+        assert_eq!(result, 4);
+        assert_eq!(output[0], b'A');
+        assert_eq!(output[1], b'B');
+        assert_eq!(output[2], b'C');
+        assert_eq!(output[3], 0);
+    }
+
+    #[test]
+    fn test_lstrlenw_basic() {
+        // Test basic wide string length
+        let input = [
+            u16::from(b'H'),
+            u16::from(b'e'),
+            u16::from(b'l'),
+            u16::from(b'l'),
+            u16::from(b'o'),
+            0,
+        ];
+
+        let result = unsafe { kernel32_lstrlenW(input.as_ptr()) };
+
+        assert_eq!(result, 5);
+    }
+
+    #[test]
+    fn test_lstrlenw_empty() {
+        // Test empty string
+        let input = [0u16];
+
+        let result = unsafe { kernel32_lstrlenW(input.as_ptr()) };
+
+        assert_eq!(result, 0);
+    }
+
+    #[test]
+    fn test_lstrlenw_null() {
+        // Test NULL pointer
+        let result = unsafe { kernel32_lstrlenW(core::ptr::null()) };
+
+        assert_eq!(result, 0);
+    }
+
+    #[test]
+    fn test_compare_string_ordinal_equal() {
+        // Test equal strings
+        let str1 = [u16::from(b'T'), u16::from(b'e'), u16::from(b's'), u16::from(b't'), 0];
+        let str2 = [u16::from(b'T'), u16::from(b'e'), u16::from(b's'), u16::from(b't'), 0];
+
+        let result = unsafe {
+            kernel32_CompareStringOrdinal(
+                str1.as_ptr(),
+                4,
+                str2.as_ptr(),
+                4,
+                0, // Case-sensitive
+            )
+        };
+
+        assert_eq!(result, 2); // CSTR_EQUAL
+    }
+
+    #[test]
+    fn test_compare_string_ordinal_less_than() {
+        // Test str1 < str2
+        let str1 = [u16::from(b'A'), u16::from(b'B'), 0];
+        let str2 = [u16::from(b'A'), u16::from(b'C'), 0];
+
+        let result = unsafe {
+            kernel32_CompareStringOrdinal(
+                str1.as_ptr(),
+                2,
+                str2.as_ptr(),
+                2,
+                0, // Case-sensitive
+            )
+        };
+
+        assert_eq!(result, 1); // CSTR_LESS_THAN
+    }
+
+    #[test]
+    fn test_compare_string_ordinal_greater_than() {
+        // Test str1 > str2
+        let str1 = [u16::from(b'Z'), u16::from(b'Z'), 0];
+        let str2 = [u16::from(b'A'), u16::from(b'A'), 0];
+
+        let result = unsafe {
+            kernel32_CompareStringOrdinal(
+                str1.as_ptr(),
+                2,
+                str2.as_ptr(),
+                2,
+                0, // Case-sensitive
+            )
+        };
+
+        assert_eq!(result, 3); // CSTR_GREATER_THAN
+    }
+
+    #[test]
+    fn test_compare_string_ordinal_ignore_case() {
+        // Test case-insensitive comparison
+        let str1 = [
+            u16::from(b'H'),
+            u16::from(b'e'),
+            u16::from(b'l'),
+            u16::from(b'l'),
+            u16::from(b'o'),
+            0,
+        ];
+        let str2 = [
+            u16::from(b'h'),
+            u16::from(b'E'),
+            u16::from(b'L'),
+            u16::from(b'L'),
+            u16::from(b'O'),
+            0,
+        ];
+
+        let result = unsafe {
+            kernel32_CompareStringOrdinal(
+                str1.as_ptr(),
+                5,
+                str2.as_ptr(),
+                5,
+                1, // Ignore case
+            )
+        };
+
+        assert_eq!(result, 2); // CSTR_EQUAL (case-insensitive)
+    }
+
+    #[test]
+    fn test_compare_string_ordinal_null_terminated() {
+        // Test with -1 (null-terminated strings)
+        let str1 = [u16::from(b'A'), u16::from(b'B'), 0];
+        let str2 = [u16::from(b'A'), u16::from(b'B'), 0];
+
+        let result = unsafe {
+            kernel32_CompareStringOrdinal(
+                str1.as_ptr(),
+                -1, // Null-terminated
+                str2.as_ptr(),
+                -1, // Null-terminated
+                0,  // Case-sensitive
+            )
+        };
+
+        assert_eq!(result, 2); // CSTR_EQUAL
     }
 }
