@@ -11,7 +11,7 @@
 #![allow(unsafe_op_in_unsafe_fn)]
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -205,6 +205,267 @@ pub unsafe extern "C" fn kernel32_TlsSetValue(slot: u32, value: usize) -> u32 {
             .as_mut()
             .is_some_and(|m| m.set_value(slot, thread_id, value)),
     )
+}
+
+//
+// Phase 8.2: Critical Sections
+//
+// Critical sections provide thread synchronization primitives for Windows programs.
+// We implement them using pthread mutexes on Linux.
+//
+
+/// Windows CRITICAL_SECTION structure (opaque to us, but Windows expects ~40 bytes)
+///
+/// In real Windows, CRITICAL_SECTION is 40 bytes on x64 and contains:
+/// - DebugInfo pointer
+/// - LockCount
+/// - RecursionCount
+/// - OwningThread
+/// - LockSemaphore
+/// - SpinCount
+///
+/// We treat it as an opaque structure that just needs to hold a pointer to our internal data.
+#[repr(C)]
+pub struct CriticalSection {
+    /// Internal data pointer (points to Arc<Mutex<CriticalSectionData>>)
+    internal: usize,
+    /// Padding to match Windows CRITICAL_SECTION size (40 bytes total)
+    _padding: [u8; 32],
+}
+
+/// Internal data for a critical section
+struct CriticalSectionData {
+    /// Mutex for synchronization
+    mutex: std::sync::Mutex<CriticalSectionInner>,
+}
+
+/// Inner state protected by the mutex
+struct CriticalSectionInner {
+    /// Current owner thread ID (0 if not owned)
+    owner: u32,
+    /// Recursion count (how many times the owner has entered)
+    recursion: u32,
+}
+
+/// Initialize a critical section (InitializeCriticalSection)
+///
+/// This creates a new critical section object. The caller must provide
+/// a pointer to a CRITICAL_SECTION structure (at least 40 bytes).
+///
+/// # Safety
+/// The caller must ensure:
+/// - `critical_section` points to valid memory of at least 40 bytes
+/// - The memory remains valid until `DeleteCriticalSection` is called
+/// - The structure is not used concurrently during initialization
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_InitializeCriticalSection(
+    critical_section: *mut CriticalSection,
+) {
+    if critical_section.is_null() {
+        return;
+    }
+
+    // SAFETY: Caller guarantees the pointer is valid
+    let cs = unsafe { &mut *critical_section };
+
+    // Create the internal data structure
+    let data = Arc::new(CriticalSectionData {
+        mutex: std::sync::Mutex::new(CriticalSectionInner {
+            owner: 0,
+            recursion: 0,
+        }),
+    });
+
+    // Store the Arc as a raw pointer in the structure
+    cs.internal = Arc::into_raw(data) as usize;
+}
+
+/// Enter a critical section (EnterCriticalSection)
+///
+/// This acquires the critical section lock. If another thread owns it,
+/// this function blocks until the lock becomes available.
+/// Supports recursion - the same thread can enter multiple times.
+///
+/// # Safety
+/// The caller must ensure:
+/// - `critical_section` was previously initialized with `InitializeCriticalSection`
+/// - The structure has not been deleted with `DeleteCriticalSection`
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_EnterCriticalSection(critical_section: *mut CriticalSection) {
+    if critical_section.is_null() {
+        return;
+    }
+
+    // SAFETY: Caller guarantees the pointer is valid and initialized
+    let cs = unsafe { &*critical_section };
+    if cs.internal == 0 {
+        return; // Not initialized
+    }
+
+    // Get the current thread ID
+    let current_thread = unsafe { kernel32_GetCurrentThreadId() };
+
+    // Reconstruct the Arc (without consuming it)
+    // SAFETY: We created this as an Arc in InitializeCriticalSection
+    let data = unsafe { Arc::from_raw(cs.internal as *const CriticalSectionData) };
+
+    // Lock the mutex and check ownership
+    {
+        let mut inner = data.mutex.lock().unwrap();
+
+        if inner.owner == current_thread {
+            // Recursive lock - just increment the count
+            inner.recursion += 1;
+        } else if inner.owner == 0 {
+            // Take ownership
+            inner.owner = current_thread;
+            inner.recursion = 1;
+        } else {
+            // Another thread owns it - this shouldn't happen with a mutex lock
+            // But if it does, just wait and try again
+            drop(inner);
+            let mut inner2 = data.mutex.lock().unwrap();
+            inner2.owner = current_thread;
+            inner2.recursion = 1;
+        }
+        // Lock is released when inner goes out of scope
+    }
+
+    // Don't drop the Arc
+    core::mem::forget(data);
+}
+
+/// Leave a critical section (LeaveCriticalSection)
+///
+/// This releases the critical section lock. If this thread has entered
+/// multiple times (recursion), only the outermost leave will actually
+/// release the lock.
+///
+/// # Safety
+/// The caller must ensure:
+/// - `critical_section` was previously initialized
+/// - This thread currently owns the critical section
+/// - Each `Leave` matches an `Enter`
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_LeaveCriticalSection(critical_section: *mut CriticalSection) {
+    if critical_section.is_null() {
+        return;
+    }
+
+    // SAFETY: Caller guarantees the pointer is valid and initialized
+    let cs = unsafe { &*critical_section };
+    if cs.internal == 0 {
+        return; // Not initialized
+    }
+
+    // Reconstruct the Arc (without consuming it)
+    // SAFETY: We created this as an Arc in InitializeCriticalSection
+    let data = unsafe { Arc::from_raw(cs.internal as *const CriticalSectionData) };
+
+    // Lock the mutex
+    {
+        let mut inner = data.mutex.lock().unwrap();
+
+        // Decrement recursion count
+        if inner.recursion > 0 {
+            inner.recursion -= 1;
+            if inner.recursion == 0 {
+                // Release ownership
+                inner.owner = 0;
+            }
+        }
+        // Lock is released when inner goes out of scope
+    }
+
+    // Don't drop the Arc
+    core::mem::forget(data);
+}
+
+/// Try to enter a critical section without blocking (TryEnterCriticalSection)
+///
+/// This attempts to acquire the critical section lock. If it's already held
+/// by another thread, returns FALSE (0) immediately without blocking.
+/// Returns TRUE (1) on success.
+///
+/// # Safety
+/// The caller must ensure:
+/// - `critical_section` was previously initialized
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_TryEnterCriticalSection(
+    critical_section: *mut CriticalSection,
+) -> u32 {
+    if critical_section.is_null() {
+        return 0;
+    }
+
+    // SAFETY: Caller guarantees the pointer is valid and initialized
+    let cs = unsafe { &*critical_section };
+    if cs.internal == 0 {
+        return 0; // Not initialized
+    }
+
+    // Get the current thread ID
+    let current_thread = unsafe { kernel32_GetCurrentThreadId() };
+
+    // Reconstruct the Arc (without consuming it)
+    // SAFETY: We created this as an Arc in InitializeCriticalSection
+    let data = unsafe { Arc::from_raw(cs.internal as *const CriticalSectionData) };
+
+    // Try to lock the mutex
+    let result = if let Ok(mut inner) = data.mutex.try_lock() {
+        if inner.owner == current_thread {
+            // Recursive lock
+            inner.recursion += 1;
+            1
+        } else if inner.owner == 0 {
+            // Take ownership
+            inner.owner = current_thread;
+            inner.recursion = 1;
+            1
+        } else {
+            // Another thread owns it
+            0
+        }
+    } else {
+        // Failed to acquire mutex
+        0
+    };
+
+    // Don't drop the Arc
+    core::mem::forget(data);
+
+    result
+}
+
+/// Delete a critical section (DeleteCriticalSection)
+///
+/// This releases all resources associated with a critical section.
+/// The caller must ensure no threads are waiting on or holding the lock.
+///
+/// # Safety
+/// The caller must ensure:
+/// - `critical_section` was previously initialized
+/// - No threads are currently using the critical section
+/// - The critical section will not be used after this call
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_DeleteCriticalSection(critical_section: *mut CriticalSection) {
+    if critical_section.is_null() {
+        return;
+    }
+
+    // SAFETY: Caller guarantees the pointer is valid and initialized
+    let cs = unsafe { &mut *critical_section };
+    if cs.internal == 0 {
+        return; // Not initialized or already deleted
+    }
+
+    // Reconstruct the Arc and let it drop to deallocate
+    // SAFETY: We created this as an Arc in InitializeCriticalSection
+    let _data = unsafe { Arc::from_raw(cs.internal as *const CriticalSectionData) };
+    // The Arc will drop here, deallocating the data if this was the last reference
+
+    // Clear the internal pointer
+    cs.internal = 0;
 }
 
 //
@@ -598,5 +859,140 @@ mod tests {
         // Test AddVectoredExceptionHandler returns non-NULL
         let handler = unsafe { kernel32_AddVectoredExceptionHandler(1, core::ptr::null_mut()) };
         assert!(!handler.is_null());
+    }
+
+    #[test]
+    fn test_critical_section_basic() {
+        // Allocate a critical section
+        let mut cs = CriticalSection {
+            internal: 0,
+            _padding: [0; 32],
+        };
+
+        // Initialize it
+        unsafe { kernel32_InitializeCriticalSection(&raw mut cs) };
+        assert_ne!(cs.internal, 0); // Should be initialized
+
+        // Enter the critical section
+        unsafe { kernel32_EnterCriticalSection(&raw mut cs) };
+
+        // Leave the critical section
+        unsafe { kernel32_LeaveCriticalSection(&raw mut cs) };
+
+        // Delete the critical section
+        unsafe { kernel32_DeleteCriticalSection(&raw mut cs) };
+        assert_eq!(cs.internal, 0); // Should be cleared
+    }
+
+    #[test]
+    fn test_critical_section_recursion() {
+        let mut cs = CriticalSection {
+            internal: 0,
+            _padding: [0; 32],
+        };
+
+        unsafe { kernel32_InitializeCriticalSection(&raw mut cs) };
+
+        // Enter multiple times (recursion)
+        unsafe { kernel32_EnterCriticalSection(&raw mut cs) };
+        unsafe { kernel32_EnterCriticalSection(&raw mut cs) };
+        unsafe { kernel32_EnterCriticalSection(&raw mut cs) };
+
+        // Leave the same number of times
+        unsafe { kernel32_LeaveCriticalSection(&raw mut cs) };
+        unsafe { kernel32_LeaveCriticalSection(&raw mut cs) };
+        unsafe { kernel32_LeaveCriticalSection(&raw mut cs) };
+
+        // Should be able to enter again after leaving all
+        unsafe { kernel32_EnterCriticalSection(&raw mut cs) };
+        unsafe { kernel32_LeaveCriticalSection(&raw mut cs) };
+
+        unsafe { kernel32_DeleteCriticalSection(&raw mut cs) };
+    }
+
+    #[test]
+    fn test_critical_section_try_enter() {
+        let mut cs = CriticalSection {
+            internal: 0,
+            _padding: [0; 32],
+        };
+
+        unsafe { kernel32_InitializeCriticalSection(&raw mut cs) };
+
+        // Try to enter - should succeed when not held
+        let result = unsafe { kernel32_TryEnterCriticalSection(&raw mut cs) };
+        assert_eq!(result, 1); // Success
+
+        // Try to enter again (same thread) - should succeed (recursion)
+        let result = unsafe { kernel32_TryEnterCriticalSection(&raw mut cs) };
+        assert_eq!(result, 1); // Success
+
+        // Leave both times
+        unsafe { kernel32_LeaveCriticalSection(&raw mut cs) };
+        unsafe { kernel32_LeaveCriticalSection(&raw mut cs) };
+
+        unsafe { kernel32_DeleteCriticalSection(&raw mut cs) };
+    }
+
+    #[test]
+    fn test_critical_section_multi_thread() {
+        use std::sync::Arc;
+        use std::thread;
+
+        // Allocate a critical section in shared memory
+        let cs = Arc::new(std::sync::Mutex::new(CriticalSection {
+            internal: 0,
+            _padding: [0; 32],
+        }));
+
+        // Initialize it
+        unsafe { kernel32_InitializeCriticalSection(&raw mut *cs.lock().unwrap()) };
+
+        // Shared counter
+        let counter = Arc::new(std::sync::Mutex::new(0));
+
+        // Spawn multiple threads
+        let handles: Vec<_> = (0..5)
+            .map(|_| {
+                let cs = Arc::clone(&cs);
+                let counter = Arc::clone(&counter);
+                thread::spawn(move || {
+                    for _ in 0..100 {
+                        // Enter critical section
+                        unsafe { kernel32_EnterCriticalSection(&raw mut *cs.lock().unwrap()) };
+
+                        // Increment counter (protected by critical section)
+                        let mut c = counter.lock().unwrap();
+                        *c += 1;
+                        drop(c);
+
+                        // Leave critical section
+                        unsafe { kernel32_LeaveCriticalSection(&raw mut *cs.lock().unwrap()) };
+                    }
+                })
+            })
+            .collect();
+
+        // Wait for all threads
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        // Check that all increments happened
+        assert_eq!(*counter.lock().unwrap(), 500);
+
+        // Clean up
+        unsafe { kernel32_DeleteCriticalSection(&raw mut *cs.lock().unwrap()) };
+    }
+
+    #[test]
+    fn test_critical_section_null_safe() {
+        // All functions should handle NULL gracefully
+        unsafe { kernel32_InitializeCriticalSection(core::ptr::null_mut()) };
+        unsafe { kernel32_EnterCriticalSection(core::ptr::null_mut()) };
+        unsafe { kernel32_LeaveCriticalSection(core::ptr::null_mut()) };
+        let result = unsafe { kernel32_TryEnterCriticalSection(core::ptr::null_mut()) };
+        assert_eq!(result, 0); // Should return false for NULL
+        unsafe { kernel32_DeleteCriticalSection(core::ptr::null_mut()) };
     }
 }
