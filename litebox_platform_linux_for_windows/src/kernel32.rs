@@ -1026,6 +1026,94 @@ pub unsafe extern "C" fn kernel32_GetSystemTimePreciseAsFileTime(filetime: *mut 
     }
 }
 
+//
+// Phase 8.5: File I/O Trampolines
+//
+// These are KERNEL32 wrappers around file operations.
+// They provide a Windows-compatible API but use simple stub implementations
+// since full file I/O is handled through NTDLL APIs.
+//
+
+/// Create or open a file (CreateFileW)
+///
+/// This is a minimal stub that always fails. Real file operations
+/// are handled through NtCreateFile in the NTDLL layer.
+///
+/// # Safety
+/// This function is safe to call with any arguments.
+/// It always returns INVALID_HANDLE_VALUE without dereferencing pointers.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_CreateFileW(
+    _file_name: *const u16,
+    _desired_access: u32,
+    _share_mode: u32,
+    _security_attributes: *mut core::ffi::c_void,
+    _creation_disposition: u32,
+    _flags_and_attributes: u32,
+    _template_file: *mut core::ffi::c_void,
+) -> *mut core::ffi::c_void {
+    // Return INVALID_HANDLE_VALUE (-1 cast to pointer)
+    // Real file operations go through NtCreateFile
+    usize::MAX as *mut core::ffi::c_void
+}
+
+/// Read from a file (ReadFile)
+///
+/// This is a minimal stub that always fails. Real file operations
+/// are handled through NtReadFile in the NTDLL layer.
+///
+/// # Safety
+/// This function is safe to call with any arguments.
+/// It always returns FALSE without dereferencing pointers.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_ReadFile(
+    _file: *mut core::ffi::c_void,
+    _buffer: *mut u8,
+    _number_of_bytes_to_read: u32,
+    _number_of_bytes_read: *mut u32,
+    _overlapped: *mut core::ffi::c_void,
+) -> i32 {
+    // Return FALSE (0) - operation failed
+    // Real file operations go through NtReadFile
+    0
+}
+
+/// Write to a file (WriteFile)
+///
+/// This is a minimal stub that always fails. Real file operations
+/// are handled through NtWriteFile in the NTDLL layer.
+///
+/// # Safety
+/// This function is safe to call with any arguments.
+/// It always returns FALSE without dereferencing pointers.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_WriteFile(
+    _file: *mut core::ffi::c_void,
+    _buffer: *const u8,
+    _number_of_bytes_to_write: u32,
+    _number_of_bytes_written: *mut u32,
+    _overlapped: *mut core::ffi::c_void,
+) -> i32 {
+    // Return FALSE (0) - operation failed
+    // Real file operations go through NtWriteFile
+    0
+}
+
+/// Close a handle (CloseHandle)
+///
+/// This is a minimal stub that always succeeds. Real handle cleanup
+/// is handled through NtClose in the NTDLL layer.
+///
+/// # Safety
+/// This function is safe to call with any arguments.
+/// It always returns TRUE without dereferencing pointers.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_CloseHandle(_handle: *mut core::ffi::c_void) -> i32 {
+    // Return TRUE (1) - operation succeeded
+    // Real handle cleanup goes through NtClose
+    1
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1805,5 +1893,68 @@ mod tests {
     fn test_get_system_time_precise_as_filetime_null() {
         // Should not crash with NULL
         unsafe { kernel32_GetSystemTimePreciseAsFileTime(core::ptr::null_mut()) };
+    }
+
+    //
+    // Phase 8.5: File I/O Trampolines Tests
+    //
+
+    #[test]
+    fn test_create_file_w_returns_invalid_handle() {
+        // CreateFileW should return INVALID_HANDLE_VALUE
+        let handle = unsafe {
+            kernel32_CreateFileW(
+                core::ptr::null(),
+                0,
+                0,
+                core::ptr::null_mut(),
+                0,
+                0,
+                core::ptr::null_mut(),
+            )
+        };
+
+        // INVALID_HANDLE_VALUE is usize::MAX
+        assert_eq!(handle as usize, usize::MAX);
+    }
+
+    #[test]
+    fn test_read_file_returns_false() {
+        // ReadFile should return FALSE (0)
+        let result = unsafe {
+            kernel32_ReadFile(
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+                0,
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+            )
+        };
+
+        assert_eq!(result, 0); // FALSE
+    }
+
+    #[test]
+    fn test_write_file_returns_false() {
+        // WriteFile should return FALSE (0)
+        let result = unsafe {
+            kernel32_WriteFile(
+                core::ptr::null_mut(),
+                core::ptr::null(),
+                0,
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+            )
+        };
+
+        assert_eq!(result, 0); // FALSE
+    }
+
+    #[test]
+    fn test_close_handle_returns_true() {
+        // CloseHandle should return TRUE (1)
+        let result = unsafe { kernel32_CloseHandle(core::ptr::null_mut()) };
+
+        assert_eq!(result, 1); // TRUE
     }
 }

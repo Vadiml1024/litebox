@@ -313,6 +313,31 @@ pub fn get_function_table() -> Vec<FunctionImpl> {
             impl_address: crate::kernel32::kernel32_GetSystemTimePreciseAsFileTime as *const ()
                 as usize,
         },
+        // Phase 8.5: File I/O Trampolines
+        FunctionImpl {
+            name: "CreateFileW",
+            dll_name: "KERNEL32.dll",
+            num_params: 7,
+            impl_address: crate::kernel32::kernel32_CreateFileW as *const () as usize,
+        },
+        FunctionImpl {
+            name: "ReadFile",
+            dll_name: "KERNEL32.dll",
+            num_params: 5,
+            impl_address: crate::kernel32::kernel32_ReadFile as *const () as usize,
+        },
+        FunctionImpl {
+            name: "WriteFile",
+            dll_name: "KERNEL32.dll",
+            num_params: 5,
+            impl_address: crate::kernel32::kernel32_WriteFile as *const () as usize,
+        },
+        FunctionImpl {
+            name: "CloseHandle",
+            dll_name: "KERNEL32.dll",
+            num_params: 1,
+            impl_address: crate::kernel32::kernel32_CloseHandle as *const () as usize,
+        },
     ]
 }
 
