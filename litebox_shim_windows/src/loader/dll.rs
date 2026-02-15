@@ -31,6 +31,12 @@ mod stub_addresses {
 
     /// USERENV.dll function address range: 0x5000-0x5FFF
     pub const USERENV_BASE: usize = 0x5000;
+
+    /// WS2_32.dll function address range: 0x6000-0x6FFF
+    pub const WS2_32_BASE: usize = 0x6000;
+
+    /// api-ms-win-core-synch-l1-2-0.dll function address range: 0x7000-0x7FFF
+    pub const APIMS_SYNCH_BASE: usize = 0x7000;
 }
 
 /// Type for a DLL function pointer
@@ -103,6 +109,8 @@ impl DllManager {
         manager.load_stub_msvcrt();
         manager.load_stub_bcryptprimitives();
         manager.load_stub_userenv();
+        manager.load_stub_ws2_32();
+        manager.load_stub_apims_synch();
 
         manager
     }
@@ -214,6 +222,42 @@ impl DllManager {
             ("WaitOnAddress", KERNEL32_BASE + 0xA),
             ("WakeByAddressAll", KERNEL32_BASE + 0xB),
             ("WakeByAddressSingle", KERNEL32_BASE + 0xC),
+            // Phase 7: Command-line and file operations
+            ("GetCommandLineW", KERNEL32_BASE + 0xD),
+            ("FindFirstFileExW", KERNEL32_BASE + 0xE),
+            ("FindNextFileW", KERNEL32_BASE + 0xF),
+            ("FindClose", KERNEL32_BASE + 0x10),
+            // Phase 7: Process and thread information
+            ("GetCurrentProcessId", KERNEL32_BASE + 0x11),
+            ("GetCurrentThreadId", KERNEL32_BASE + 0x12),
+            ("GetCurrentProcess", KERNEL32_BASE + 0x13),
+            ("GetCurrentThread", KERNEL32_BASE + 0x14),
+            // Phase 7: Error handling
+            ("GetLastError", KERNEL32_BASE + 0x15),
+            ("SetLastError", KERNEL32_BASE + 0x16),
+            // Phase 7: Memory operations
+            ("VirtualProtect", KERNEL32_BASE + 0x17),
+            ("VirtualQuery", KERNEL32_BASE + 0x18),
+            ("HeapAlloc", KERNEL32_BASE + 0x19),
+            ("HeapFree", KERNEL32_BASE + 0x1A),
+            ("HeapReAlloc", KERNEL32_BASE + 0x1B),
+            ("GetProcessHeap", KERNEL32_BASE + 0x1C),
+            // Phase 7: Environment and system info
+            ("GetEnvironmentVariableW", KERNEL32_BASE + 0x1D),
+            ("SetEnvironmentVariableW", KERNEL32_BASE + 0x1E),
+            ("GetEnvironmentStringsW", KERNEL32_BASE + 0x1F),
+            ("FreeEnvironmentStringsW", KERNEL32_BASE + 0x20),
+            ("GetSystemInfo", KERNEL32_BASE + 0x21),
+            // Phase 7: Module handling
+            ("GetModuleHandleW", KERNEL32_BASE + 0x22),
+            ("GetModuleHandleA", KERNEL32_BASE + 0x23),
+            ("GetModuleFileNameW", KERNEL32_BASE + 0x24),
+            // Phase 7: Console
+            ("GetConsoleMode", KERNEL32_BASE + 0x25),
+            ("ReadConsoleW", KERNEL32_BASE + 0x26),
+            ("GetConsoleOutputCP", KERNEL32_BASE + 0x27),
+            // Phase 7: Exit
+            ("ExitProcess", KERNEL32_BASE + 0x28),
         ];
 
         self.register_stub_dll("KERNEL32.dll", exports);
@@ -302,6 +346,64 @@ impl DllManager {
 
         self.register_stub_dll("USERENV.dll", exports);
     }
+
+    /// Load stub WS2_32.dll (Windows Sockets 2)
+    fn load_stub_ws2_32(&mut self) {
+        use stub_addresses::WS2_32_BASE;
+
+        let exports = vec![
+            // Winsock initialization and cleanup
+            ("WSAStartup", WS2_32_BASE),
+            ("WSACleanup", WS2_32_BASE + 1),
+            ("WSAGetLastError", WS2_32_BASE + 2),
+            // Socket operations
+            ("WSASocketW", WS2_32_BASE + 3),
+            ("socket", WS2_32_BASE + 4),
+            ("closesocket", WS2_32_BASE + 5),
+            // Connection operations
+            ("bind", WS2_32_BASE + 6),
+            ("listen", WS2_32_BASE + 7),
+            ("accept", WS2_32_BASE + 8),
+            ("connect", WS2_32_BASE + 9),
+            // Data transfer
+            ("send", WS2_32_BASE + 0xA),
+            ("recv", WS2_32_BASE + 0xB),
+            ("sendto", WS2_32_BASE + 0xC),
+            ("recvfrom", WS2_32_BASE + 0xD),
+            ("WSASend", WS2_32_BASE + 0xE),
+            ("WSARecv", WS2_32_BASE + 0xF),
+            // Socket information and control
+            ("getsockname", WS2_32_BASE + 0x10),
+            ("getpeername", WS2_32_BASE + 0x11),
+            ("getsockopt", WS2_32_BASE + 0x12),
+            ("setsockopt", WS2_32_BASE + 0x13),
+            ("ioctlsocket", WS2_32_BASE + 0x14),
+            // Name resolution
+            ("getaddrinfo", WS2_32_BASE + 0x15),
+            ("freeaddrinfo", WS2_32_BASE + 0x16),
+            ("GetHostNameW", WS2_32_BASE + 0x17),
+            // Misc
+            ("select", WS2_32_BASE + 0x18),
+            ("shutdown", WS2_32_BASE + 0x19),
+            ("WSADuplicateSocketW", WS2_32_BASE + 0x1A),
+        ];
+
+        self.register_stub_dll("WS2_32.dll", exports);
+    }
+
+    /// Load stub api-ms-win-core-synch-l1-2-0.dll
+    fn load_stub_apims_synch(&mut self) {
+        use stub_addresses::APIMS_SYNCH_BASE;
+
+        let exports = vec![
+            // Modern synchronization primitives
+            ("WaitOnAddress", APIMS_SYNCH_BASE),
+            ("WakeByAddressAll", APIMS_SYNCH_BASE + 1),
+            ("WakeByAddressSingle", APIMS_SYNCH_BASE + 2),
+        ];
+
+        self.register_stub_dll("api-ms-win-core-synch-l1-2-0.dll", exports);
+    }
 }
 
 /// Map Windows API Set DLL names to their real implementation DLLs
@@ -377,8 +479,8 @@ mod tests {
     #[test]
     fn test_dll_manager_creation() {
         let manager = DllManager::new();
-        // Should have 5 pre-loaded stub DLLs (KERNEL32, NTDLL, MSVCRT, bcryptprimitives, USERENV)
-        assert_eq!(manager.dlls.len(), 5);
+        // Should have 7 pre-loaded stub DLLs (KERNEL32, NTDLL, MSVCRT, bcryptprimitives, USERENV, WS2_32, api-ms-win-core-synch-l1-2-0)
+        assert_eq!(manager.dlls.len(), 7);
     }
 
     #[test]
