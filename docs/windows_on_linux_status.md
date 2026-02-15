@@ -1,15 +1,15 @@
 # Windows on Linux: Current Implementation Status
 
-**Last Updated:** 2026-02-15 (Session 4)
+**Last Updated:** 2026-02-15 (Session 5)
 
 ## Overview
 
 This document provides the current status of the Windows-on-Linux implementation in LiteBox, which enables running Windows PE binaries on Linux with comprehensive API tracing capabilities.
 
-**Current Phase:** Phase 7 - 100% Complete! 🎉  
-**Total Tests:** 110 passing (55 platform + 16 runner + 39 shim)  
+**Current Phase:** Phase 8 - In Progress (14% Complete - 1/7 sub-phases)  
+**Total Tests:** 111 passing (56 platform + 16 runner + 39 shim)  
 **Integration Tests:** 7 comprehensive tests  
-**Recent Session:** [Phase 7 TLS Implementation Complete](./PHASE7_IMPLEMENTATION.md)
+**Recent Session:** [Phase 8.1 Exception Handling Complete](./windows_on_linux_status.md#recent-sessions)
 
 ## Architecture
 
@@ -222,8 +222,8 @@ The implementation consists of three main components:
 
 ### Test Coverage
 
-**Total Tests:** 110 passing (updated 2026-02-15 Session 4) ✅
-- litebox_platform_linux_for_windows: 55 tests (includes 7 KERNEL32 tests)
+**Total Tests:** 111 passing (updated 2026-02-15 Session 5) ✅
+- litebox_platform_linux_for_windows: 56 tests (includes 7 KERNEL32 tests + 1 exception handling test)
 - litebox_shim_windows: 39 tests (includes 11 ABI translation tests)
 - litebox_runner_windows_on_linux_userland: 16 tests (9 tracing + 7 integration tests)
 
@@ -594,9 +594,10 @@ The Windows-on-Linux implementation has **completed all 7 phases** successfully!
 - **Trampoline linking system complete** - Windows x64 → System V AMD64 translation working ✅
 - **Executable memory management** - mmap-based allocation ✅
 - **KERNEL32 module** - Sleep, GetCurrentThreadId, GetCurrentProcessId, TlsAlloc, TlsFree, TlsGetValue, TlsSetValue 🆕
+  - **Exception Handling (Phase 8.1)** - 8 stub functions for SEH compatibility 🆕
 - **TLS (Thread Local Storage)** - Complete implementation with thread isolation ✅
 - **DLL manager integration** - Real addresses replace stubs ✅
-- All 110 tests passing (55 + 16 + 39) 🆕
+- All 111 tests passing (56 + 16 + 39) 🆕
 
 All code passes strict quality checks (clippy, rustfmt) and has comprehensive test coverage.
 
@@ -647,6 +648,77 @@ Memory protection ✅, error handling ✅, MSVCRT (18 functions) ✅, KERNEL32 (
   - ✅ Zero clippy warnings, all code formatted
   - ✅ All 110 tests passing (+4 new tests)
   - 🎯 **Milestone:** Phase 7 100% complete - Ready for CRT initialization testing!
+
+- **2026-02-15 Session 5:** Phase 8 Planning and Exception Handling 🆕
+  - ✅ Built and tested hello_cli.exe (1.2MB MinGW executable)
+  - ✅ Analyzed import requirements (180 imports across 6 DLLs)
+  - ✅ Documented 86 missing KERNEL32 functions
+  - ✅ Created detailed Phase 8 implementation plan (7 sub-phases, 3-4 weeks)
+  - ✅ **Phase 8.1 Complete:** Exception Handling Stubs
+    - ✅ Implemented 8 exception handling functions
+    - ✅ __C_specific_handler, SetUnhandledExceptionFilter, RaiseException
+    - ✅ RtlCaptureContext, RtlLookupFunctionEntry, RtlUnwindEx, RtlVirtualUnwind
+    - ✅ AddVectoredExceptionHandler
+    - ✅ All functions integrated into trampoline system
+    - ✅ Added comprehensive unit test
+    - ✅ All 111 tests passing (+1 new test)
+  - 🔍 **Progress:** hello_cli.exe progresses further with exception stubs
+  - 🔍 **Next:** Need Critical Sections and more synchronization primitives
+
+**Test Results (Session 5 - Phase 8.1 Complete):**
+```
+$ cargo test --package litebox_platform_linux_for_windows
+test result: ok. 56 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+
+$ cargo test --package litebox_runner_windows_on_linux_userland  
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+
+$ cargo test --package litebox_shim_windows
+test result: ok. 39 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+
+Total: 111 tests passing ✅ (was 110)
+
+New Test:
+✅ test_exception_handling_stubs - All 8 exception handling functions validated
+
+KERNEL32 Functions with Trampolines (33 total):
+✅ Sleep → 0x7F8E86A3515A
+✅ GetCurrentThreadId, GetCurrentProcessId
+✅ TlsAlloc, TlsFree, TlsGetValue, TlsSetValue
+✅ __C_specific_handler, SetUnhandledExceptionFilter, RaiseException 🆕
+✅ RtlCaptureContext, RtlLookupFunctionEntry, RtlUnwindEx 🆕
+✅ RtlVirtualUnwind, AddVectoredExceptionHandler 🆕
+```
+
+**PE Binary Loading (hello_cli.exe) - Updated:**
+```
+$ ./litebox_runner_windows_on_linux_userland hello_cli.exe
+Loaded PE binary: hello_cli.exe
+  Entry point: 0x1410
+  Image base: 0x140000000
+  Sections: 10
+
+Resolving imports...
+  DLL: KERNEL32.dll - Functions: 117 
+    Exception Handling: 8 functions now resolved with trampolines ✅
+    Previously: 86 NOT FOUND → Now: 78 NOT FOUND (8 resolved)
+  DLL: MSVCRT.dll - Functions: 27 [18 with trampolines, 9 stubs]
+  DLL: WS2_32.dll - Functions: 26 [all stubs]
+  Import resolution complete
+
+Entry point execution: Progresses further than before, but still crashes
+Status: Phase 8.1 Complete - Exception handling infrastructure ready
+Next: Phase 8.2 - Critical Sections needed for synchronization
+```
+
+**Phase 8 Status: 1/7 Sub-Phases Complete (14%)**
+- ✅ Phase 8.1: Exception Handling Stubs (COMPLETE)
+- ⏳ Phase 8.2: Critical Sections (NEXT)
+- ⏳ Phase 8.3: String Operations
+- ⏳ Phase 8.4: Performance Counters  
+- ⏳ Phase 8.5: File I/O Trampolines
+- ⏳ Phase 8.6: Heap Management Trampolines
+- ⏳ Phase 8.7: Final Integration and Testing
 
 **Test Results (Session 4 - TLS Complete):**
 ```
