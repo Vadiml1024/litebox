@@ -143,6 +143,25 @@ pub fn get_function_table() -> Vec<FunctionImpl> {
             num_params: 1,
             impl_address: crate::msvcrt::msvcrt_exit as *const () as usize,
         },
+        // KERNEL32.dll functions - these are defined in kernel32.rs
+        FunctionImpl {
+            name: "Sleep",
+            dll_name: "KERNEL32.dll",
+            num_params: 1,
+            impl_address: crate::kernel32::kernel32_Sleep as *const () as usize,
+        },
+        FunctionImpl {
+            name: "GetCurrentThreadId",
+            dll_name: "KERNEL32.dll",
+            num_params: 0,
+            impl_address: crate::kernel32::kernel32_GetCurrentThreadId as *const () as usize,
+        },
+        FunctionImpl {
+            name: "GetCurrentProcessId",
+            dll_name: "KERNEL32.dll",
+            num_params: 0,
+            impl_address: crate::kernel32::kernel32_GetCurrentProcessId as *const () as usize,
+        },
     ]
 }
 
@@ -168,6 +187,7 @@ impl LinuxPlatformForWindows {
             let trampoline_code = generate_trampoline(func.num_params, func.impl_address as u64);
 
             // Allocate and write the trampoline
+            #[cfg_attr(not(debug_assertions), allow(unused_variables))]
             let trampoline_addr = unsafe {
                 state.trampoline_manager.allocate_trampoline(
                     format!("{}::{}", func.dll_name, func.name),
