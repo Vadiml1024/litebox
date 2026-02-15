@@ -702,8 +702,142 @@ Setting up execution context...
 Status: Phase 7 Complete - All core infrastructure ready for Windows binary execution! 🎉
 ```
 
-**Next Steps:**
-- Test with real Windows binaries to verify CRT initialization works
-- Continue to Phase 8: Additional Windows API implementations as needed
-- Implement exception handling (SEH)
-- Add more comprehensive Windows API support
+**Next Steps: Phase 8 - Additional Windows API Support**
+
+### Testing Results (Session 5 - 2026-02-15)
+
+Successfully built and tested hello_cli.exe with the Windows-on-Linux runner:
+- ✅ PE binary loads correctly (1.2MB MinGW-compiled executable)
+- ✅ All 10 sections loaded (text, data, rdata, pdata, xdata, bss, idata, CRT, tls, reloc)
+- ✅ Relocations applied successfully (rebased from 0x140000000 to 0x7F4E9B12A000)
+- ✅ Import resolution working for 180 total imports across 6 DLLs
+- ✅ TEB/PEB created and GS register configured
+- ⚠️ **Entry point execution crashes** - MinGW CRT needs additional APIs
+
+**Import Analysis (hello_cli.exe):**
+- KERNEL32.dll: 117 functions (31 resolved, 86 NOT FOUND)
+- msvcrt.dll: 27 functions (18 trampolines, 9 stubs)
+- ntdll.dll: 6 functions (all resolved)
+- WS2_32.dll: 26 functions (all stubs)
+- bcryptprimitives.dll: 1 function (stub)
+- api-ms-win-core-synch-l1-2-0.dll: 3 functions (stubs)
+
+**Critical Missing APIs for MinGW CRT:**
+
+**Priority 1 - Exception Handling (Blocking CRT startup):**
+- `__C_specific_handler` - Required for SEH (Structured Exception Handling)
+- `RtlCaptureContext` - Capture CPU context for exception handling
+- `RtlLookupFunctionEntry` - Lookup unwind info for function
+- `RtlUnwindEx` - Perform stack unwinding
+- `RtlVirtualUnwind` - Virtual unwind for exception handling
+- `SetUnhandledExceptionFilter` - Register unhandled exception handler
+- `RaiseException` - Raise a software exception
+
+**Priority 2 - Synchronization (Used by CRT):**
+- `InitializeCriticalSection` - Create critical section
+- `EnterCriticalSection` - Acquire lock
+- `LeaveCriticalSection` - Release lock
+- `DeleteCriticalSection` - Destroy critical section
+
+**Priority 3 - File Operations:**
+- `ReadFile` / `WriteFile` - File I/O (already have stubs, need trampolines)
+- `CreateFileW` - File creation (already have stub, need trampoline)
+- `CloseHandle` - Handle cleanup (already have stub, need trampoline)
+
+**Priority 4 - String Operations:**
+- `MultiByteToWideChar` - Convert multibyte to Unicode
+- `WideCharToMultiByte` - Convert Unicode to multibyte
+- `lstrlenW` - Wide string length
+- `CompareStringOrdinal` - String comparison
+
+**Priority 5 - Additional APIs:**
+- `QueryPerformanceCounter` / `QueryPerformanceFrequency` - High-resolution timing
+- `GetSystemTimePreciseAsFileTime` - System time
+- `GetModuleHandleA` / `GetModuleHandleW` - Already have stubs, need implementation
+- `GetModuleFileNameW` - Get module path
+- `GetProcessHeap` - Get process heap handle (already have stub, need trampoline)
+- `HeapAlloc` / `HeapFree` / `HeapReAlloc` - Already have stubs, need trampolines
+
+### Phase 8 Implementation Plan
+
+**Goal:** Enable hello_cli.exe to execute successfully and print "Hello World from LiteBox!"
+
+**Approach:** Implement missing APIs incrementally, testing after each batch
+
+#### Phase 8.1: Exception Handling Stubs (Week 1)
+1. Implement `__C_specific_handler` as a minimal stub that returns to caller
+2. Implement `SetUnhandledExceptionFilter` as a no-op
+3. Implement `RaiseException` as abort() for now
+4. Add basic `RtlCaptureContext`, `RtlLookupFunctionEntry`, `RtlUnwindEx` stubs
+5. **Test:** Verify CRT initialization progresses further
+
+#### Phase 8.2: Critical Sections (Week 1)
+1. Implement `InitializeCriticalSection` using pthread_mutex
+2. Implement `EnterCriticalSection` / `LeaveCriticalSection`
+3. Implement `DeleteCriticalSection`
+4. Add unit tests for synchronization
+5. **Test:** Verify multi-threaded CRT features work
+
+#### Phase 8.3: String Operations (Week 2)
+1. Implement `MultiByteToWideChar` using UTF-8 conversion
+2. Implement `WideCharToMultiByte` 
+3. Implement `lstrlenW` as wrapper around wcslen
+4. Implement `CompareStringOrdinal`
+5. Add unit tests for string operations
+6. **Test:** Verify string handling in CRT works
+
+#### Phase 8.4: Performance Counters (Week 2)
+1. Implement `QueryPerformanceCounter` using clock_gettime
+2. Implement `QueryPerformanceFrequency`
+3. Implement `GetSystemTimePreciseAsFileTime`
+4. Add unit tests
+5. **Test:** Verify timing operations work
+
+#### Phase 8.5: File I/O Trampolines (Week 2)
+1. Create trampolines for ReadFile, WriteFile, CreateFileW, CloseHandle
+2. Link to existing platform implementations
+3. Update DLL manager with new exports
+4. **Test:** Verify file operations work end-to-end
+
+#### Phase 8.6: Heap Management Trampolines (Week 2)
+1. Create trampolines for HeapAlloc, HeapFree, HeapReAlloc, GetProcessHeap
+2. Link to existing platform implementations
+3. Update DLL manager with new exports
+4. **Test:** Verify heap operations work end-to-end
+
+#### Phase 8.7: Final Integration (Week 3)
+1. Run hello_cli.exe end-to-end
+2. Debug any remaining issues
+3. Validate output: "Hello World from LiteBox!"
+4. Run full test suite (should be 140+ tests)
+5. Document successful execution
+6. Update status to "Phase 8 Complete"
+
+### Success Criteria for Phase 8
+
+- ✅ hello_cli.exe executes without crashing
+- ✅ Output: "Hello World from LiteBox!" printed to console
+- ✅ All 140+ tests passing
+- ✅ Zero clippy warnings
+- ✅ Code formatted with cargo fmt
+- ✅ Documentation updated with successful execution example
+
+### Estimated Timeline
+
+- **Phase 8.1-8.2:** 1 week (exception handling + critical sections)
+- **Phase 8.3-8.4:** 1 week (string ops + performance counters)
+- **Phase 8.5-8.6:** 1 week (file + heap trampolines)
+- **Phase 8.7:** 3-5 days (integration and testing)
+- **Total:** 3-4 weeks to Phase 8 completion
+
+### Known Limitations (After Phase 8)
+
+Even after Phase 8 completion, the following will still not work:
+- ❌ GUI applications (no USER32/GDI32 support)
+- ❌ Networking (WS2_32 stubs only)
+- ❌ Advanced file operations (memory mapping, overlapped I/O)
+- ❌ Full exception handling (only basic stubs)
+- ❌ Process creation (CreateProcessW not implemented)
+- ❌ Advanced threading (some synchronization primitives missing)
+
+These would be addressed in future phases (Phase 9+) as needed.
