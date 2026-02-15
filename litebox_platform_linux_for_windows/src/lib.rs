@@ -7,7 +7,9 @@
 //! This is the "South" platform layer that translates Windows API calls
 //! to Linux syscalls.
 
+pub mod function_table;
 pub mod msvcrt;
+pub mod trampoline;
 
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
@@ -23,6 +25,8 @@ use litebox_shim_windows::syscalls::ntdll::{
     ConsoleHandle, EventHandle, FileHandle, NtdllApi, RegKeyHandle, SearchHandle, ThreadEntryPoint,
     ThreadHandle, Win32FindDataW,
 };
+
+use trampoline::TrampolineManager;
 
 /// Windows error codes
 mod windows_errors {
@@ -124,6 +128,8 @@ struct PlatformState {
     last_errors: HashMap<u32, u32>,
     /// Command line arguments (stored as UTF-16)
     command_line: Vec<u16>,
+    /// Trampoline manager for executable code generation
+    trampoline_manager: TrampolineManager,
 }
 
 /// Linux platform for Windows API implementation
@@ -157,6 +163,7 @@ impl LinuxPlatformForWindows {
                 dll_manager: DllManager::new(),
                 last_errors: HashMap::new(),
                 command_line,
+                trampoline_manager: TrampolineManager::new(),
             }),
             next_handle: AtomicU64::new(0x1000), // Start at a high value to avoid conflicts
         }

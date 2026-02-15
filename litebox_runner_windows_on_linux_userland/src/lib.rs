@@ -124,6 +124,20 @@ pub fn run(cli_args: CliArgs) -> Result<()> {
 
     // Initialize the platform (wrapped with tracing if enabled)
     let platform = LinuxPlatformForWindows::new();
+
+    // Initialize trampolines for MSVCRT and other functions
+    // SAFETY: This allocates executable memory for calling convention translation
+    unsafe {
+        platform
+            .initialize_trampolines()
+            .map_err(|e| anyhow!("Failed to initialize trampolines: {e}"))?;
+    }
+    platform
+        .link_trampolines_to_dll_manager()
+        .map_err(|e| anyhow!("Failed to link trampolines to DLL manager: {e}"))?;
+
+    println!("Initialized function trampolines for MSVCRT");
+
     let mut platform = TracedNtdllApi::new(platform, tracer);
 
     // Calculate total image size (find max virtual address + size)
