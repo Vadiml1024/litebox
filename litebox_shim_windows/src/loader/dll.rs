@@ -166,6 +166,39 @@ impl DllManager {
         })
     }
 
+    /// Update the address of an exported function
+    ///
+    /// This is used to replace stub addresses with actual trampoline addresses
+    /// after initialization.
+    ///
+    /// # Panics
+    /// Panics if attempting to update a function in a DLL that doesn't exist or
+    /// if the function doesn't exist in that DLL's export table.
+    pub fn update_export_address(
+        &mut self,
+        dll_name: &str,
+        function_name: &str,
+        new_address: DllFunction,
+    ) -> Result<()> {
+        let normalized_name = dll_name.to_uppercase();
+        let handle = self.dll_by_name.get(&normalized_name).ok_or_else(|| {
+            WindowsShimError::UnsupportedFeature(format!("DLL not found: {dll_name}"))
+        })?;
+
+        let dll = self.dlls.get_mut(handle).ok_or_else(|| {
+            WindowsShimError::InvalidParameter(format!("Invalid DLL handle: {handle:?}"))
+        })?;
+
+        if !dll.exports.contains_key(function_name) {
+            return Err(WindowsShimError::UnsupportedFeature(format!(
+                "Function {function_name} not found in {dll_name}"
+            )));
+        }
+
+        dll.exports.insert(function_name.to_string(), new_address);
+        Ok(())
+    }
+
     /// Free a loaded DLL
     pub fn free_library(&mut self, handle: DllHandle) -> Result<()> {
         let dll = self.dlls.remove(&handle).ok_or_else(|| {

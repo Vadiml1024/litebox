@@ -186,6 +186,41 @@ impl LinuxPlatformForWindows {
         Ok(())
     }
 
+    /// Link trampolines to DLL manager
+    ///
+    /// This updates the DLL export addresses to use actual trampoline addresses
+    /// instead of stub addresses. Must be called after `initialize_trampolines()`.
+    ///
+    /// # Panics
+    /// Panics if the internal mutex is poisoned.
+    pub fn link_trampolines_to_dll_manager(&self) -> Result<()> {
+        let function_table = get_function_table();
+        let mut state = self.state.lock().unwrap();
+
+        for func in function_table {
+            // Get the trampoline address
+            if let Some(trampoline_addr) = state
+                .trampoline_manager
+                .get_trampoline(&format!("{}::{}", func.dll_name, func.name))
+            {
+                // Update the DLL manager with the real address
+                state
+                    .dll_manager
+                    .update_export_address(func.dll_name, func.name, trampoline_addr)
+                    .ok(); // Ignore errors - function may not be in DLL exports yet
+
+                // Log successful linking (in debug builds)
+                #[cfg(debug_assertions)]
+                eprintln!(
+                    "Linked trampoline for {}::{} at 0x{:X}",
+                    func.dll_name, func.name, trampoline_addr
+                );
+            }
+        }
+
+        Ok(())
+    }
+
     /// Get the trampoline address for a specific function
     ///
     /// Returns the address of the trampoline that can be called from Windows
@@ -248,5 +283,37 @@ mod tests {
 
         let addr = platform.get_trampoline_address("KERNEL32.dll", "NonExistentFunction");
         assert!(addr.is_none());
+    }
+
+    #[test]
+    fn test_link_trampolines_to_dll_manager() {
+        let platform = LinuxPlatformForWindows::new();
+
+        // SAFETY: We're testing trampoline initialization and linking
+        unsafe {
+            platform.initialize_trampolines().unwrap();
+        }
+        platform.link_trampolines_to_dll_manager().unwrap();
+
+        // Verify that MSVCRT exports now have trampoline addresses
+        let mut state = platform.state.lock().unwrap();
+
+        // Load MSVCRT.dll handle
+        let msvcrt_handle = state.dll_manager.load_library("MSVCRT.dll").unwrap();
+
+        // Check that malloc has a trampoline address
+        let malloc_addr = state
+            .dll_manager
+            .get_proc_address(msvcrt_handle, "malloc")
+            .unwrap();
+
+        // The address should not be a stub address (< 0x1000 is too low for real code)
+        assert!(malloc_addr > 0x1000);
+
+        // Verify it matches the trampoline manager's address
+        let trampoline_addr = state
+            .trampoline_manager
+            .get_trampoline("MSVCRT.dll::malloc");
+        assert_eq!(Some(malloc_addr), trampoline_addr);
     }
 }
