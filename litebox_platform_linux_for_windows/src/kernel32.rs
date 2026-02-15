@@ -663,7 +663,7 @@ pub unsafe extern "C" fn kernel32_AddVectoredExceptionHandler(
 /// - If `wide_char_str` is not NULL, at least `wide_char_len` u16s are writable
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_MultiByteToWideChar(
-    _code_page: u32,
+    code_page: u32,
     _flags: u32,
     multi_byte_str: *const u8,
     multi_byte_len: i32,
@@ -674,16 +674,28 @@ pub unsafe extern "C" fn kernel32_MultiByteToWideChar(
         return 0;
     }
 
+    // Validate code page (only support CP_ACP=0 and CP_UTF8=65001)
+    const CP_ACP: u32 = 0;
+    const CP_UTF8: u32 = 65001;
+    if code_page != CP_ACP && code_page != CP_UTF8 {
+        return 0; // Unsupported code page
+    }
+
+    // Validate multi_byte_len (must be -1 or >= 0)
+    if multi_byte_len < -1 {
+        return 0; // Invalid parameter
+    }
+
     // Determine the length of the input string
-    let input_len = if multi_byte_len == -1 {
+    let (input_len, include_null) = if multi_byte_len == -1 {
         // SAFETY: Caller guarantees multi_byte_str is a valid null-terminated string
         let mut len = 0;
         while unsafe { *multi_byte_str.add(len) } != 0 {
             len += 1;
         }
-        len
+        (len, true) // Include null terminator in output
     } else {
-        multi_byte_len as usize
+        (multi_byte_len as usize, false) // Don't include null terminator
     };
 
     // SAFETY: Caller guarantees multi_byte_str points to at least input_len bytes
@@ -697,7 +709,11 @@ pub unsafe extern "C" fn kernel32_MultiByteToWideChar(
 
     // Convert to UTF-16
     let utf16_chars: Vec<u16> = utf8_str.encode_utf16().collect();
-    let required_len = utf16_chars.len() + 1; // +1 for null terminator
+    let required_len = if include_null {
+        utf16_chars.len() + 1 // +1 for null terminator when input was null-terminated
+    } else {
+        utf16_chars.len() // No null terminator when length was explicit
+    };
 
     // If wide_char_str is NULL, return required size
     if wide_char_str.is_null() {
@@ -714,7 +730,11 @@ pub unsafe extern "C" fn kernel32_MultiByteToWideChar(
 
     // Copy the UTF-16 characters
     output[..utf16_chars.len()].copy_from_slice(&utf16_chars);
-    output[utf16_chars.len()] = 0; // Null terminator
+
+    // Add null terminator only if input was null-terminated
+    if include_null {
+        output[utf16_chars.len()] = 0;
+    }
 
     required_len as i32
 }
@@ -743,7 +763,7 @@ pub unsafe extern "C" fn kernel32_MultiByteToWideChar(
 /// - If `multi_byte_str` is not NULL, at least `multi_byte_len` bytes are writable
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_WideCharToMultiByte(
-    _code_page: u32,
+    code_page: u32,
     _flags: u32,
     wide_char_str: *const u16,
     wide_char_len: i32,
@@ -756,16 +776,28 @@ pub unsafe extern "C" fn kernel32_WideCharToMultiByte(
         return 0;
     }
 
+    // Validate code page (only support CP_ACP=0 and CP_UTF8=65001)
+    const CP_ACP: u32 = 0;
+    const CP_UTF8: u32 = 65001;
+    if code_page != CP_ACP && code_page != CP_UTF8 {
+        return 0; // Unsupported code page
+    }
+
+    // Validate wide_char_len (must be -1 or >= 0)
+    if wide_char_len < -1 {
+        return 0; // Invalid parameter
+    }
+
     // Determine the length of the input string
-    let input_len = if wide_char_len == -1 {
+    let (input_len, include_null) = if wide_char_len == -1 {
         // SAFETY: Caller guarantees wide_char_str is a valid null-terminated string
         let mut len = 0;
         while unsafe { *wide_char_str.add(len) } != 0 {
             len += 1;
         }
-        len
+        (len, true) // Include null terminator in output
     } else {
-        wide_char_len as usize
+        (wide_char_len as usize, false) // Don't include null terminator
     };
 
     // SAFETY: Caller guarantees wide_char_str points to at least input_len u16s
@@ -774,7 +806,11 @@ pub unsafe extern "C" fn kernel32_WideCharToMultiByte(
     // Convert from UTF-16 to String (UTF-8)
     let utf8_string = String::from_utf16_lossy(input_chars);
     let utf8_bytes = utf8_string.as_bytes();
-    let required_len = utf8_bytes.len() + 1; // +1 for null terminator
+    let required_len = if include_null {
+        utf8_bytes.len() + 1 // +1 for null terminator when input was null-terminated
+    } else {
+        utf8_bytes.len() // No null terminator when length was explicit
+    };
 
     // If multi_byte_str is NULL, return required size
     if multi_byte_str.is_null() {
@@ -792,7 +828,11 @@ pub unsafe extern "C" fn kernel32_WideCharToMultiByte(
 
     // Copy the UTF-8 bytes
     output[..utf8_bytes.len()].copy_from_slice(utf8_bytes);
-    output[utf8_bytes.len()] = 0; // Null terminator
+
+    // Add null terminator only if input was null-terminated
+    if include_null {
+        output[utf8_bytes.len()] = 0;
+    }
 
     required_len as i32
 }
@@ -851,6 +891,11 @@ pub unsafe extern "C" fn kernel32_CompareStringOrdinal(
         return 0; // Error
     }
 
+    // Validate count1 and count2 (must be -1 or >= 0)
+    if count1 < -1 || count2 < -1 {
+        return 0; // Invalid parameter
+    }
+
     // Get length of first string
     let len1 = if count1 == -1 {
         // SAFETY: Caller guarantees string1 is null-terminated
@@ -879,18 +924,39 @@ pub unsafe extern "C" fn kernel32_CompareStringOrdinal(
     let slice1 = unsafe { core::slice::from_raw_parts(string1, len1) };
     let slice2 = unsafe { core::slice::from_raw_parts(string2, len2) };
 
-    // Convert to Rust strings for comparison
-    let str1 = String::from_utf16_lossy(slice1);
-    let str2 = String::from_utf16_lossy(slice2);
+    // Perform ordinal (binary) comparison on UTF-16 code units
+    // This matches Windows' ordinal semantics (code-unit by code-unit comparison)
+    let min_len = core::cmp::min(len1, len2);
+    let mut result = core::cmp::Ordering::Equal;
 
-    // Compare
-    let result = if ignore_case != 0 {
-        // Case-insensitive comparison
-        str1.to_lowercase().cmp(&str2.to_lowercase())
-    } else {
-        // Case-sensitive comparison
-        str1.cmp(&str2)
-    };
+    for i in 0..min_len {
+        let mut c1 = slice1[i];
+        let mut c2 = slice2[i];
+
+        if ignore_case != 0 {
+            // ASCII case fold: 'A'..='Z' -> 'a'..='z'
+            // This provides basic case-insensitive comparison for ASCII characters
+            if (b'A' as u16..=b'Z' as u16).contains(&c1) {
+                c1 = c1 + (b'a' as u16 - b'A' as u16);
+            }
+            if (b'A' as u16..=b'Z' as u16).contains(&c2) {
+                c2 = c2 + (b'a' as u16 - b'A' as u16);
+            }
+        }
+
+        if c1 < c2 {
+            result = core::cmp::Ordering::Less;
+            break;
+        } else if c1 > c2 {
+            result = core::cmp::Ordering::Greater;
+            break;
+        }
+    }
+
+    // If all compared code units are equal, shorter string is "less"
+    if result == core::cmp::Ordering::Equal {
+        result = len1.cmp(&len2);
+    }
 
     // Convert to Windows constants
     match result {
@@ -1159,15 +1225,16 @@ pub unsafe extern "C" fn kernel32_HeapAlloc(
 ) -> *mut core::ffi::c_void {
     const HEAP_ZERO_MEMORY: u32 = 0x0000_0008;
 
-    if size == 0 {
-        return core::ptr::null_mut();
-    }
+    // Windows HeapAlloc can return a non-NULL pointer for 0-byte allocation
+    // Allocate a minimal block (1 byte) to match Windows semantics
+    let alloc_size = if size == 0 { 1 } else { size };
 
     // Allocate using the global allocator
-    let layout = match core::alloc::Layout::from_size_align(size, core::mem::align_of::<usize>()) {
-        Ok(l) => l,
-        Err(_) => return core::ptr::null_mut(),
-    };
+    let layout =
+        match core::alloc::Layout::from_size_align(alloc_size, core::mem::align_of::<usize>()) {
+            Ok(l) => l,
+            Err(_) => return core::ptr::null_mut(),
+        };
 
     // SAFETY: Layout is valid, size is non-zero
     let ptr = unsafe { alloc::alloc(layout) };
@@ -1178,9 +1245,9 @@ pub unsafe extern "C" fn kernel32_HeapAlloc(
 
     // Zero memory if requested
     if flags & HEAP_ZERO_MEMORY != 0 {
-        // SAFETY: ptr is valid and has size bytes allocated
+        // SAFETY: ptr is valid and has alloc_size bytes allocated
         unsafe {
-            core::ptr::write_bytes(ptr, 0, size);
+            core::ptr::write_bytes(ptr, 0, alloc_size);
         }
     }
 
@@ -1251,14 +1318,15 @@ pub unsafe extern "C" fn kernel32_HeapFree(
 /// - The returned pointer must be freed with HeapFree
 ///
 /// # Note
-/// **CURRENT LIMITATION:** This implementation leaks the old memory block when
-/// reallocating. It allocates new memory but cannot safely free the old block
-/// without tracking allocation sizes. For production use, programs should use
-/// realloc from MSVCRT which is properly implemented.
+/// **CRITICAL LIMITATION:** This implementation does NOT preserve the contents
+/// of the original allocation. It allocates fresh memory and leaks the old block.
+/// This differs from standard `realloc` behavior and will break programs that
+/// rely on data preservation during reallocation.
 ///
-/// This is acceptable for programs with limited reallocation, but could cause
-/// memory issues in programs that frequently resize allocations.
-/// TODO: Implement proper realloc with allocation size tracking.
+/// For production use, programs should use `realloc` from MSVCRT which is
+/// properly implemented with data copying and proper deallocation.
+///
+/// TODO: Implement proper realloc with allocation size tracking and data copying.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_HeapReAlloc(
     heap: *mut core::ffi::c_void,
@@ -1277,9 +1345,10 @@ pub unsafe extern "C" fn kernel32_HeapReAlloc(
         return core::ptr::null_mut();
     }
 
-    // LIMITATION: Allocate new memory but leak the old block.
-    // Real implementation would copy old data and free old block.
-    // For now, programs should use MSVCRT realloc which is properly implemented.
+    // CRITICAL LIMITATION: Allocate new memory but DO NOT copy old data.
+    // This differs from standard realloc which preserves contents.
+    // The old block is leaked (not freed).
+    // Programs should use MSVCRT realloc which is properly implemented.
     unsafe { kernel32_HeapAlloc(heap, flags, size) }
 }
 
@@ -1652,7 +1721,7 @@ mod tests {
 
     #[test]
     fn test_multibyte_to_wide_char_basic() {
-        // Test basic ASCII conversion
+        // Test basic ASCII conversion with explicit length (no null terminator)
         let input = b"Hello";
         let mut output = [0u16; 10];
 
@@ -1667,20 +1736,19 @@ mod tests {
             )
         };
 
-        // Should return 6 (5 chars + null terminator)
-        assert_eq!(result, 6);
+        // Should return 5 (5 chars, no null terminator when length is explicit)
+        assert_eq!(result, 5);
         // Verify the conversion
         assert_eq!(output[0], u16::from(b'H'));
         assert_eq!(output[1], u16::from(b'e'));
         assert_eq!(output[2], u16::from(b'l'));
         assert_eq!(output[3], u16::from(b'l'));
         assert_eq!(output[4], u16::from(b'o'));
-        assert_eq!(output[5], 0); // Null terminator
     }
 
     #[test]
     fn test_multibyte_to_wide_char_query_size() {
-        // Test querying required buffer size
+        // Test querying required buffer size (explicit length, no null)
         let input = b"Hello World";
 
         let result = unsafe {
@@ -1694,8 +1762,8 @@ mod tests {
             )
         };
 
-        // Should return 12 (11 chars + null terminator)
-        assert_eq!(result, 12);
+        // Should return 11 (11 chars, no null terminator when length is explicit)
+        assert_eq!(result, 11);
     }
 
     #[test]
@@ -1724,7 +1792,7 @@ mod tests {
 
     #[test]
     fn test_wide_char_to_multibyte_basic() {
-        // Test basic ASCII conversion
+        // Test basic ASCII conversion with explicit length (no null terminator)
         let input = [u16::from(b'H'), u16::from(b'i'), 0];
         let mut output = [0u8; 10];
 
@@ -1741,16 +1809,15 @@ mod tests {
             )
         };
 
-        // Should return 3 (2 chars + null terminator)
-        assert_eq!(result, 3);
+        // Should return 2 (2 chars, no null terminator when length is explicit)
+        assert_eq!(result, 2);
         assert_eq!(output[0], b'H');
         assert_eq!(output[1], b'i');
-        assert_eq!(output[2], 0); // Null terminator
     }
 
     #[test]
     fn test_wide_char_to_multibyte_query_size() {
-        // Test querying required buffer size
+        // Test querying required buffer size (explicit length, no null)
         let input = [
             u16::from(b'T'),
             u16::from(b'e'),
@@ -1773,8 +1840,8 @@ mod tests {
             )
         };
 
-        // Should return 7 (6 chars + null terminator)
-        assert_eq!(result, 7);
+        // Should return 6 (6 chars, no null terminator when length is explicit)
+        assert_eq!(result, 6);
     }
 
     #[test]
@@ -2178,8 +2245,12 @@ mod tests {
 
         let ptr = unsafe { kernel32_HeapAlloc(heap, 0, 0) };
 
-        // Should return NULL for zero size
-        assert!(ptr.is_null());
+        // Windows HeapAlloc returns a non-NULL pointer for 0-byte allocation
+        // We allocate a minimal block (1 byte) to match Windows semantics
+        assert!(!ptr.is_null());
+
+        // Clean up
+        unsafe { kernel32_HeapFree(heap, 0, ptr) };
     }
 
     #[test]
