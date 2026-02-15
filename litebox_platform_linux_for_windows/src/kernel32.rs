@@ -18,7 +18,8 @@ use std::time::Duration;
 /// This is the Windows Sleep function that suspends execution for the specified duration.
 ///
 /// # Safety
-/// This function is safe to call but marked unsafe for C ABI compatibility.
+/// The function body is safe, but marked `unsafe` because it's part of an FFI boundary
+/// with `extern "C"` calling convention. Callers must ensure proper calling convention.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_Sleep(milliseconds: u32) {
     thread::sleep(Duration::from_millis(u64::from(milliseconds)));
@@ -29,7 +30,8 @@ pub unsafe extern "C" fn kernel32_Sleep(milliseconds: u32) {
 /// Returns the unique identifier for the current thread.
 ///
 /// # Safety
-/// This function is safe to call but marked unsafe for C ABI compatibility.
+/// The function body is safe, but marked `unsafe` because it's part of an FFI boundary
+/// with `extern "C"` calling convention. Callers must ensure proper calling convention.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_GetCurrentThreadId() -> u32 {
     // SAFETY: gettid is a safe syscall
@@ -45,7 +47,8 @@ pub unsafe extern "C" fn kernel32_GetCurrentThreadId() -> u32 {
 /// Returns the unique identifier for the current process.
 ///
 /// # Safety
-/// This function is safe to call but marked unsafe for C ABI compatibility.
+/// The function body is safe, but marked `unsafe` because it's part of an FFI boundary
+/// with `extern "C"` calling convention. Callers must ensure proper calling convention.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_GetCurrentProcessId() -> u32 {
     // SAFETY: getpid is a safe syscall

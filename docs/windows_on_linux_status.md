@@ -420,7 +420,7 @@ litebox_runner_windows_on_linux_userland \
 15. ✅ **Runner Integration** - Automatic trampoline initialization
 16. ✅ **Entry Point Execution Testing** - Validated with real Windows binaries (hello_cli.exe)
 17. ✅ **TEB/PEB Validation** - Confirmed GS register setup allows TEB access via %gs:0x30
-18. ✅ **Import Resolution Verification** - All 117 KERNEL32 + 27 MSVCRT + 26 WS2_32 functions resolved
+18. ✅ **Import Resolution Verification** - All 117 KERNEL32 + 27 MSVCRT + 26 WS2_32 function imports resolved (note: 27 MSVCRT functions imported by test binary, 18 implemented with trampolines, 9 remain as stubs)
 
 **Remaining:**
 19. ⏳ CRT Initialization Support - Need additional KERNEL32 functions for MinGW CRT startup
@@ -632,7 +632,7 @@ Resolving imports...
     Sleep -> 0x7F8E86A3515A [TRAMPOLINE]
     GetCurrentThreadId -> 0x7FEF3021B169 [TRAMPOLINE]
     GetCurrentProcessId -> 0x7FEF3021B175 [TRAMPOLINE]
-  DLL: MSVCRT.dll - Functions: 27 [trampolines active]
+  DLL: MSVCRT.dll - Functions: 27 imported [18 with trampolines, 9 stubs]
   DLL: WS2_32.dll - Functions: 26 [all resolved]
   Import resolution complete
 
