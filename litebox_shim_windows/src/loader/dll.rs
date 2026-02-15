@@ -293,6 +293,11 @@ impl DllManager {
             ("Sleep", KERNEL32_BASE + 0x28),
             // Phase 7: Exit
             ("ExitProcess", KERNEL32_BASE + 0x29),
+            // Phase 7: Thread Local Storage (TLS)
+            ("TlsAlloc", KERNEL32_BASE + 0x2A),
+            ("TlsFree", KERNEL32_BASE + 0x2B),
+            ("TlsGetValue", KERNEL32_BASE + 0x2C),
+            ("TlsSetValue", KERNEL32_BASE + 0x2D),
         ];
 
         self.register_stub_dll("KERNEL32.dll", exports);
