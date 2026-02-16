@@ -1437,10 +1437,16 @@ pub unsafe extern "C" fn kernel32_HeapReAlloc(
         return core::ptr::null_mut();
     };
 
+    // Remove the old allocation entry BEFORE realloc, since realloc may move the memory
+    t.remove_allocation(mem);
+
     // SAFETY: mem was allocated with the old_layout
     let new_ptr = unsafe { alloc::realloc(mem.cast(), old_layout, new_size) };
 
     if new_ptr.is_null() {
+        // Realloc failed - the original allocation is still valid
+        // Re-insert the original allocation back into the tracker
+        t.track_allocation(mem.cast(), old_size, old_align);
         return core::ptr::null_mut();
     }
 
@@ -1453,10 +1459,7 @@ pub unsafe extern "C" fn kernel32_HeapReAlloc(
         }
     }
 
-    // Update the tracker with new allocation info
-    // First remove the old entry
-    t.remove_allocation(mem);
-    // Then add the new entry
+    // Track the new allocation (whether it moved or stayed in place)
     t.track_allocation(new_ptr, new_size, new_layout.align());
 
     new_ptr.cast()
