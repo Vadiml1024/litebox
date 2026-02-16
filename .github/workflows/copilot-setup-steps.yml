@@ -42,6 +42,9 @@ jobs:
       - name: Install iperf3
         run: sudo apt-get install -y iperf3
 
+      - name: Install gdb
+        run: sudo apt-get install -y gdb
+
       - name: Pre-build workspace
         run: cargo build --locked 2>/dev/null || true
 

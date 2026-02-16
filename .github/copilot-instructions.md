@@ -12,8 +12,22 @@ The recommended sequence during development is:
 2. **Build**: `cargo build`
 3. **Lint**: `cargo clippy --all-targets --all-features`
 4. **Test**: `cargo nextest run`
+5. **Ratchet Tests**: `cargo test -p dev_tests` - Verify ratchet constraints are met
 
 - Full CI checks are defined in `.github/workflows/ci.yml`.
+
+### Ratchet Tests
+The repository uses "ratchet tests" in `dev_tests/src/ratchet.rs` to track and reduce usage of certain features:
+- **Globals** (`static` declarations) - We aim to minimize global state
+- **Transmutes** - We aim to minimize unsafe transmutes  
+- **MaybeUninit** - We aim to minimize uninitialized memory usage
+
+**Important**: If your changes add new instances of these features:
+1. First, try to avoid using the feature if possible
+2. If unavoidable, update the count in `dev_tests/src/ratchet.rs` for the affected module
+3. Justify why the feature is necessary in your PR description
+
+**Note**: The ratchet heuristic for globals detects lines that start with `static ` or `pub static ` (after trimming whitespace). Struct field type annotations like `pub name: &'static str` do NOT count as globals.
 
 ## Key Guidelines
 

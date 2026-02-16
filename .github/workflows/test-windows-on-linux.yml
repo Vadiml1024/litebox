@@ -39,6 +39,9 @@ jobs:
           sudo apt update
           sudo apt install -y mingw-w64
 
+      - name: Install gdb for debugging
+        run: sudo apt install -y gdb
+
       - uses: Swatinem/rust-cache@v2
 
       - name: Build Windows test programs

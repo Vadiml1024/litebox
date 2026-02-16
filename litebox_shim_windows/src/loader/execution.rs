@@ -12,34 +12,34 @@ use crate::{Result, WindowsShimError};
 /// Thread Environment Block (TEB) - Minimal stub version
 ///
 /// The TEB is a Windows-internal structure that contains thread-specific information.
-/// Windows programs access it via the GS segment register (offset 0x30 for PEB pointer).
-/// This is a minimal stub that provides only the essential fields.
+/// Windows programs access it via the GS segment register.
+/// The PEB pointer MUST be at offset 0x60 for x64 Windows compatibility.
 ///
 /// Reference: Windows Internals, Part 1, 7th Edition
 #[repr(C)]
 #[derive(Debug, Clone)]
 pub struct ThreadEnvironmentBlock {
-    /// Pointer to the exception list (not implemented)
+    /// Pointer to the exception list (offset 0x00)
     pub exception_list: u64,
-    /// Stack base address
+    /// Stack base address (offset 0x08)
     pub stack_base: u64,
-    /// Stack limit address
+    /// Stack limit address (offset 0x10)
     pub stack_limit: u64,
-    /// SubSystem TIB (not used in our stub)
+    /// SubSystem TIB (offset 0x18)
     pub sub_system_tib: u64,
-    /// Fiber data or version (not used)
+    /// Fiber data or version (offset 0x20)
     pub fiber_data: u64,
-    /// Arbitrary data slot (not used)
+    /// Arbitrary data slot (offset 0x28)
     pub arbitrary_user_pointer: u64,
-    /// Pointer to self (this TEB)
+    /// Pointer to self - this TEB (offset 0x30)
     pub self_pointer: u64,
-    /// Environment pointer (not used)
+    /// Environment pointer (offset 0x38)
     pub environment_pointer: u64,
-    /// Client ID (process ID and thread ID)
+    /// Client ID - [process ID, thread ID] (offset 0x40)
     pub client_id: [u64; 2],
-    /// Reserved fields
-    _reserved: [u64; 10],
-    /// Pointer to PEB at offset 0x60
+    /// Reserved fields to reach offset 0x60 (offset 0x50-0x58)
+    _reserved: [u64; 2],
+    /// Pointer to PEB - MUST be at offset 0x60 for x64 Windows
     pub peb_pointer: u64,
     /// Additional reserved fields
     _reserved2: [u64; 100],
@@ -58,7 +58,7 @@ impl ThreadEnvironmentBlock {
             self_pointer: 0, // Will be set after allocation
             environment_pointer: 0,
             client_id: [0; 2], // [process_id, thread_id]
-            _reserved: [0; 10],
+            _reserved: [0; 2], // Fixed to 2 u64s to reach offset 0x60
             peb_pointer,
             _reserved2: [0; 100],
         }
@@ -79,31 +79,163 @@ impl ThreadEnvironmentBlock {
 #[repr(C)]
 #[derive(Debug, Clone)]
 pub struct ProcessEnvironmentBlock {
-    /// Inherited address space (not used)
+    /// Inherited address space (offset 0x00)
     pub inherited_address_space: u8,
-    /// Read image file exec options (not used)
+    /// Read image file exec options (offset 0x01)
     pub read_image_file_exec_options: u8,
-    /// Being debugged flag
+    /// Being debugged flag (offset 0x02)
     pub being_debugged: u8,
-    /// Bit field flags
+    /// Bit field flags (offset 0x03)
     pub bit_field: u8,
-    /// Reserved padding
+    /// Reserved padding (offset 0x04-0x07)
     _padding: [u8; 4],
-    /// Mutant (not used)
+    /// Mutant (offset 0x08)
     pub mutant: u64,
-    /// Image base address
+    /// Image base address (offset 0x10)
     pub image_base_address: u64,
-    /// Loader data pointer (not implemented)
+    /// Loader data pointer (offset 0x18) - initialized to non-null to prevent crashes
     pub ldr: u64,
-    /// Process parameters pointer (not implemented)
+    /// Process parameters pointer (offset 0x20) - initialized to non-null
     pub process_parameters: u64,
     /// Additional reserved fields
     _reserved: [u64; 50],
 }
 
+/// PEB_LDR_DATA - Minimal stub for module loader information
+///
+/// This structure contains information about loaded modules.
+/// We provide a minimal stub to prevent crashes when CRT accesses it.
+#[repr(C)]
+#[derive(Debug, Clone)]
+pub struct PebLdrData {
+    /// Length of this structure
+    pub length: u32,
+    /// Initialized flag
+    pub initialized: u32,
+    /// SS handle (not used)
+    pub ss_handle: u64,
+    /// In load order module list (LIST_ENTRY)
+    pub in_load_order_module_list: [u64; 2],
+    /// In memory order module list (LIST_ENTRY)
+    pub in_memory_order_module_list: [u64; 2],
+    /// In initialization order module list (LIST_ENTRY)
+    pub in_initialization_order_module_list: [u64; 2],
+    /// Entry in progress (not used)
+    pub entry_in_progress: u64,
+}
+
+impl PebLdrData {
+    /// Create a new minimal PEB_LDR_DATA structure
+    ///
+    /// # Arguments
+    /// * `self_address` - Address where this structure will be stored (for LIST_ENTRY)
+    pub fn new_with_address(self_address: u64) -> Self {
+        // Calculate offsets for the list heads
+        // in_load_order_module_list starts at offset 0x10 (16)
+        let load_order_offset = 0x10u64;
+        let memory_order_offset = 0x20u64;
+        let init_order_offset = 0x30u64;
+
+        Self {
+            #[allow(clippy::cast_possible_truncation)]
+            length: std::mem::size_of::<Self>() as u32,
+            initialized: 1, // Mark as initialized
+            ss_handle: 0,
+            // Initialize list heads to point to themselves (empty circular list)
+            // Format: [Flink, Blink] where both point to the list head itself
+            in_load_order_module_list: [
+                self_address + load_order_offset,
+                self_address + load_order_offset,
+            ],
+            in_memory_order_module_list: [
+                self_address + memory_order_offset,
+                self_address + memory_order_offset,
+            ],
+            in_initialization_order_module_list: [
+                self_address + init_order_offset,
+                self_address + init_order_offset,
+            ],
+            entry_in_progress: 0,
+        }
+    }
+}
+
+impl Default for PebLdrData {
+    /// Create a new minimal PEB_LDR_DATA structure with null lists
+    ///
+    /// Use this when the address is not yet known
+    fn default() -> Self {
+        Self {
+            #[allow(clippy::cast_possible_truncation)]
+            length: std::mem::size_of::<Self>() as u32,
+            initialized: 1, // Mark as initialized
+            ss_handle: 0,
+            // Initialize list heads to zero (will be updated later if needed)
+            in_load_order_module_list: [0, 0],
+            in_memory_order_module_list: [0, 0],
+            in_initialization_order_module_list: [0, 0],
+            entry_in_progress: 0,
+        }
+    }
+}
+
+/// RTL_USER_PROCESS_PARAMETERS - Minimal stub for process parameters
+///
+/// Contains command line, environment, and other process startup information.
+#[repr(C)]
+#[derive(Debug, Clone)]
+pub struct RtlUserProcessParameters {
+    /// Maximum length
+    pub maximum_length: u32,
+    /// Length
+    pub length: u32,
+    /// Flags
+    pub flags: u32,
+    /// Debug flags
+    pub debug_flags: u32,
+    /// Console handle
+    pub console_handle: u64,
+    /// Console flags
+    pub console_flags: u32,
+    /// Padding
+    _padding: u32,
+    /// Standard input handle
+    pub standard_input: u64,
+    /// Standard output handle
+    pub standard_output: u64,
+    /// Standard error handle  
+    pub standard_error: u64,
+    /// Additional fields (simplified)
+    _reserved: [u64; 20],
+}
+
+impl Default for RtlUserProcessParameters {
+    /// Create a new minimal RTL_USER_PROCESS_PARAMETERS structure
+    fn default() -> Self {
+        Self {
+            #[allow(clippy::cast_possible_truncation)]
+            maximum_length: std::mem::size_of::<Self>() as u32,
+            #[allow(clippy::cast_possible_truncation)]
+            length: std::mem::size_of::<Self>() as u32,
+            flags: 0,
+            debug_flags: 0,
+            console_handle: 0,
+            console_flags: 0,
+            _padding: 0,
+            standard_input: 0,
+            standard_output: 0,
+            standard_error: 0,
+            _reserved: [0; 20],
+        }
+    }
+}
+
 impl ProcessEnvironmentBlock {
     /// Create a new PEB with the given image base address
-    pub fn new(image_base_address: u64) -> Self {
+    ///
+    /// Initializes PEB with minimal stubs for Ldr and ProcessParameters
+    /// to prevent crashes when CRT code accesses these fields.
+    pub fn new(image_base_address: u64, ldr: u64, process_parameters: u64) -> Self {
         Self {
             inherited_address_space: 0,
             read_image_file_exec_options: 0,
@@ -112,8 +244,8 @@ impl ProcessEnvironmentBlock {
             _padding: [0; 4],
             mutant: 0,
             image_base_address,
-            ldr: 0,
-            process_parameters: 0,
+            ldr,
+            process_parameters,
             _reserved: [0; 50],
         }
     }
@@ -152,6 +284,10 @@ pub struct ExecutionContext {
     pub teb: Box<ThreadEnvironmentBlock>,
     /// Process Environment Block
     pub peb: Box<ProcessEnvironmentBlock>,
+    /// PEB Loader Data
+    pub ldr: Box<PebLdrData>,
+    /// Process Parameters
+    pub process_parameters: Box<RtlUserProcessParameters>,
     /// TEB address in memory (for self-pointer)
     pub teb_address: u64,
     /// Stack base address
@@ -209,8 +345,23 @@ impl ExecutionContext {
         #[allow(clippy::cast_possible_truncation)]
         let stack_base = unsafe { stack_ptr.add(stack_size as usize) }.addr() as u64;
 
-        // Create PEB first
-        let peb = Box::new(ProcessEnvironmentBlock::new(image_base));
+        // Create PEB Loader Data - first without address
+        let mut ldr = Box::<PebLdrData>::default();
+        let ldr_address = &raw const *ldr as u64;
+
+        // Now update with proper circular list pointers
+        *ldr = PebLdrData::new_with_address(ldr_address);
+
+        // Create Process Parameters
+        let process_parameters = Box::<RtlUserProcessParameters>::default();
+        let process_parameters_address = &raw const *process_parameters as u64;
+
+        // Create PEB with pointers to Ldr and ProcessParameters
+        let peb = Box::new(ProcessEnvironmentBlock::new(
+            image_base,
+            ldr_address,
+            process_parameters_address,
+        ));
         let peb_address = &raw const *peb as u64;
 
         // Create TEB with pointer to PEB
@@ -227,6 +378,8 @@ impl ExecutionContext {
         Ok(Self {
             teb,
             peb,
+            ldr,
+            process_parameters,
             teb_address,
             stack_base,
             stack_size,
@@ -301,20 +454,22 @@ pub unsafe fn call_entry_point(
         ));
     }
 
-    // Windows x64 calling convention requires the stack to be 16-byte aligned
-    // before the call instruction. Since call pushes an 8-byte return address,
-    // we need to ensure RSP is 16-byte aligned + 8 before we make the call.
+    // Windows x64 calling convention requires RSP to be 16-byte aligned
+    // BEFORE the call instruction executes. The call instruction then pushes
+    // an 8-byte return address, resulting in RSP being misaligned by 8 bytes
+    // at function entry (this is correct per the ABI).
     //
     // The stack grows downward, so stack_base is the highest address.
-    // We need to leave some space at the top for the "shadow space" (32 bytes)
-    // required by the Windows x64 calling convention for the first 4 parameters.
+    // We need to reserve "shadow space" (32 bytes minimum) required by the
+    // Windows x64 calling convention for the first 4 register parameters.
 
     let stack_top = context.stack_base;
 
-    // Align to 16 bytes and subtract 8 (so after call pushes return address, it's aligned)
-    let aligned_stack = (stack_top & !0xF) - 8;
+    // Align to 16 bytes (BEFORE call instruction)
+    let aligned_stack = stack_top & !0xF;
 
     // Reserve shadow space (32 bytes) - required by Windows x64 ABI
+    // After subtracting 32, RSP is still 16-byte aligned (32 is multiple of 16)
     let stack_with_shadow = aligned_stack - 32;
 
     // Call the entry point with proper stack setup
@@ -386,9 +541,13 @@ mod tests {
     #[test]
     fn test_peb_creation() {
         let image_base = 0x0000_0001_4000_0000u64;
-        let peb = ProcessEnvironmentBlock::new(image_base);
+        let ldr_address = 0x7FFF_0000_0000u64;
+        let process_params_address = 0x7FFF_0001_0000u64;
+        let peb = ProcessEnvironmentBlock::new(image_base, ldr_address, process_params_address);
 
         assert_eq!(peb.image_base_address, image_base);
+        assert_eq!(peb.ldr, ldr_address);
+        assert_eq!(peb.process_parameters, process_params_address);
         assert_eq!(peb.being_debugged, 0);
     }
 
