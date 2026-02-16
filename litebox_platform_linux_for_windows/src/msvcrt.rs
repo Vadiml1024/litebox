@@ -309,14 +309,40 @@ pub unsafe extern "C" fn msvcrt___iob_func() -> *mut u8 {
 /// This function is unsafe as it deals with raw pointers.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn msvcrt___getmainargs(
-    _argc: *mut i32,
-    _argv: *mut *mut *mut i8,
-    _env: *mut *mut *mut i8,
+    argc: *mut i32,
+    argv: *mut *mut *mut i8,
+    env: *mut *mut *mut i8,
     _do_wildcard: i32,
     _start_info: *mut u8,
 ) -> i32 {
-    // Stub implementation - should populate argc/argv
-    0
+    use std::sync::Mutex;
+
+    // Static storage for argc value
+    static ARGC_VAL: Mutex<i32> = Mutex::new(0);
+
+    // Allocate static null-terminated arrays
+    static mut ARGV_STORAGE: [*mut i8; 1] = [core::ptr::null_mut()];
+    static mut ENV_STORAGE: [*mut i8; 1] = [core::ptr::null_mut()];
+
+    // Set argc to 0 (no arguments)
+    if !argc.is_null() {
+        if let Ok(mut argc_val) = ARGC_VAL.lock() {
+            *argc_val = 0;
+            *argc = *argc_val;
+        }
+    }
+
+    // Set argv to empty array with null terminator
+    if !argv.is_null() {
+        *argv = core::ptr::addr_of_mut!(ARGV_STORAGE).cast();
+    }
+
+    // Set env to empty array with null terminator
+    if !env.is_null() {
+        *env = core::ptr::addr_of_mut!(ENV_STORAGE).cast();
+    }
+
+    0 // Success
 }
 
 /// Set application type (__set_app_type)
