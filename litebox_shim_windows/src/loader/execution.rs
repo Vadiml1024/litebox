@@ -12,34 +12,34 @@ use crate::{Result, WindowsShimError};
 /// Thread Environment Block (TEB) - Minimal stub version
 ///
 /// The TEB is a Windows-internal structure that contains thread-specific information.
-/// Windows programs access it via the GS segment register (offset 0x30 for PEB pointer).
-/// This is a minimal stub that provides only the essential fields.
+/// Windows programs access it via the GS segment register.
+/// The PEB pointer MUST be at offset 0x60 for x64 Windows compatibility.
 ///
 /// Reference: Windows Internals, Part 1, 7th Edition
 #[repr(C)]
 #[derive(Debug, Clone)]
 pub struct ThreadEnvironmentBlock {
-    /// Pointer to the exception list (not implemented)
+    /// Pointer to the exception list (offset 0x00)
     pub exception_list: u64,
-    /// Stack base address
+    /// Stack base address (offset 0x08)
     pub stack_base: u64,
-    /// Stack limit address
+    /// Stack limit address (offset 0x10)
     pub stack_limit: u64,
-    /// SubSystem TIB (not used in our stub)
+    /// SubSystem TIB (offset 0x18)
     pub sub_system_tib: u64,
-    /// Fiber data or version (not used)
+    /// Fiber data or version (offset 0x20)
     pub fiber_data: u64,
-    /// Arbitrary data slot (not used)
+    /// Arbitrary data slot (offset 0x28)
     pub arbitrary_user_pointer: u64,
-    /// Pointer to self (this TEB)
+    /// Pointer to self - this TEB (offset 0x30)
     pub self_pointer: u64,
-    /// Environment pointer (not used)
+    /// Environment pointer (offset 0x38)
     pub environment_pointer: u64,
-    /// Client ID (process ID and thread ID)
+    /// Client ID - [process ID, thread ID] (offset 0x40)
     pub client_id: [u64; 2],
-    /// Reserved fields
-    _reserved: [u64; 10],
-    /// Pointer to PEB at offset 0x60
+    /// Reserved fields to reach offset 0x60 (offset 0x50-0x58)
+    _reserved: [u64; 2],
+    /// Pointer to PEB - MUST be at offset 0x60 for x64 Windows
     pub peb_pointer: u64,
     /// Additional reserved fields
     _reserved2: [u64; 100],
@@ -58,7 +58,7 @@ impl ThreadEnvironmentBlock {
             self_pointer: 0, // Will be set after allocation
             environment_pointer: 0,
             client_id: [0; 2], // [process_id, thread_id]
-            _reserved: [0; 10],
+            _reserved: [0; 2], // Fixed to 2 u64s to reach offset 0x60
             peb_pointer,
             _reserved2: [0; 100],
         }
@@ -301,20 +301,22 @@ pub unsafe fn call_entry_point(
         ));
     }
 
-    // Windows x64 calling convention requires the stack to be 16-byte aligned
-    // before the call instruction. Since call pushes an 8-byte return address,
-    // we need to ensure RSP is 16-byte aligned + 8 before we make the call.
+    // Windows x64 calling convention requires RSP to be 16-byte aligned
+    // BEFORE the call instruction executes. The call instruction then pushes
+    // an 8-byte return address, resulting in RSP being misaligned by 8 bytes
+    // at function entry (this is correct per the ABI).
     //
     // The stack grows downward, so stack_base is the highest address.
-    // We need to leave some space at the top for the "shadow space" (32 bytes)
-    // required by the Windows x64 calling convention for the first 4 parameters.
+    // We need to reserve "shadow space" (32 bytes minimum) required by the
+    // Windows x64 calling convention for the first 4 register parameters.
 
     let stack_top = context.stack_base;
 
-    // Align to 16 bytes and subtract 8 (so after call pushes return address, it's aligned)
-    let aligned_stack = (stack_top & !0xF) - 8;
+    // Align to 16 bytes (BEFORE call instruction)
+    let aligned_stack = stack_top & !0xF;
 
     // Reserve shadow space (32 bytes) - required by Windows x64 ABI
+    // After subtracting 32, RSP is still 16-byte aligned (32 is multiple of 16)
     let stack_with_shadow = aligned_stack - 32;
 
     // Call the entry point with proper stack setup
