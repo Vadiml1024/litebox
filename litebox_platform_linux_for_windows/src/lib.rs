@@ -125,8 +125,6 @@ struct PlatformState {
     environment: HashMap<String, String>,
     /// DLL manager for LoadLibrary/GetProcAddress
     dll_manager: DllManager,
-    /// Last error code per thread (using thread ID as key)
-    last_errors: HashMap<u32, u32>,
     /// Command line arguments (stored as UTF-16)
     command_line: Vec<u16>,
     /// Trampoline manager for executable code generation
@@ -162,7 +160,6 @@ impl LinuxPlatformForWindows {
                 searches: HashMap::new(),
                 environment,
                 dll_manager: DllManager::new(),
-                last_errors: HashMap::new(),
                 command_line,
                 trampoline_manager: TrampolineManager::new(),
             }),
@@ -770,18 +767,18 @@ impl LinuxPlatformForWindows {
 
     // Phase 7: Error Handling
 
-    /// Get last error (internal implementation)
+    /// Get last error (delegates to kernel32 thread-local storage)
+    #[allow(clippy::unused_self)]
     fn get_last_error_impl(&self) -> u32 {
-        let thread_id = self.get_current_thread_id_impl();
-        let state = self.state.lock().unwrap();
-        state.last_errors.get(&thread_id).copied().unwrap_or(0)
+        // SAFETY: This is safe to call from Rust code
+        unsafe { crate::kernel32::kernel32_GetLastError() }
     }
 
-    /// Set last error (internal implementation)
+    /// Set last error (delegates to kernel32 thread-local storage)
+    #[allow(clippy::unused_self)]
     fn set_last_error_impl(&mut self, error_code: u32) {
-        let thread_id = self.get_current_thread_id_impl();
-        let mut state = self.state.lock().unwrap();
-        state.last_errors.insert(thread_id, error_code);
+        // SAFETY: This is safe to call from Rust code
+        unsafe { crate::kernel32::kernel32_SetLastError(error_code) }
     }
 
     /// Internal implementation for find_first_file_w

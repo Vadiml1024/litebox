@@ -15,6 +15,7 @@
 #![allow(clippy::cast_possible_wrap)]
 
 use std::alloc;
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -1957,63 +1958,26 @@ pub unsafe extern "C" fn kernel32_GetFullPathNameW(
     0 // 0 - error
 }
 
-/// Last error manager for thread-local error codes
-///
-/// NOTE: This implementation stores error codes indefinitely for all threads
-/// that have ever set an error. In long-running applications that create and
-/// destroy many threads, this could lead to unbounded memory growth. This is
-/// acceptable for most use cases, but applications creating millions of threads
-/// should be aware of this limitation.
-struct LastErrorManager {
-    /// Map of thread_id -> last error code
-    errors: HashMap<u32, u32>,
-}
-
-impl LastErrorManager {
-    fn new() -> Self {
-        Self {
-            errors: HashMap::new(),
-        }
-    }
-
-    fn get_error(&self, thread_id: u32) -> u32 {
-        self.errors.get(&thread_id).copied().unwrap_or(0)
-    }
-
-    fn set_error(&mut self, thread_id: u32, error_code: u32) {
-        self.errors.insert(thread_id, error_code);
-    }
-}
-
-/// Global last error manager protected by a mutex
-static LAST_ERROR_MANAGER: Mutex<Option<LastErrorManager>> = Mutex::new(None);
-
-/// Initialize the last error manager (called once)
-fn ensure_last_error_manager_initialized() {
-    let mut manager = LAST_ERROR_MANAGER.lock().unwrap();
-    if manager.is_none() {
-        *manager = Some(LastErrorManager::new());
-    }
+// Thread-local storage for last error codes
+//
+// Each thread maintains its own error code without global synchronization.
+// This eliminates the unbounded memory growth issue from the previous
+// implementation and improves performance by removing mutex contention.
+thread_local! {
+    static LAST_ERROR: Cell<u32> = const { Cell::new(0) };
 }
 
 /// GetLastError - gets the last error code for the current thread
 ///
 /// In Windows, this is thread-local and set by many APIs.
-/// This implementation maintains per-thread error codes using a global map.
+/// This implementation uses true thread-local storage for optimal performance.
 ///
 /// # Safety
 /// The function body is safe, but marked `unsafe` because it's part of an FFI boundary
 /// with `extern "C"` calling convention. Callers must ensure proper calling convention.
-///
-/// # Panics
-/// Panics if the LAST_ERROR_MANAGER mutex is poisoned.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_GetLastError() -> u32 {
-    ensure_last_error_manager_initialized();
-    let thread_id = kernel32_GetCurrentThreadId();
-    let manager = LAST_ERROR_MANAGER.lock().unwrap();
-    // SAFETY: ensure_last_error_manager_initialized guarantees manager is Some
-    manager.as_ref().unwrap().get_error(thread_id)
+    LAST_ERROR.with(Cell::get)
 }
 
 /// GetModuleHandleW stub - gets a module handle
@@ -2114,22 +2078,14 @@ pub unsafe extern "C" fn kernel32_SetFilePointerEx(
 /// SetLastError - sets the last error code for the current thread
 ///
 /// In Windows, this is thread-local storage used by many APIs to report errors.
-/// This implementation maintains per-thread error codes using a global map.
+/// This implementation uses true thread-local storage for optimal performance.
 ///
 /// # Safety
 /// The function body is safe, but marked `unsafe` because it's part of an FFI boundary
 /// with `extern "C"` calling convention. Callers must ensure proper calling convention.
-///
-/// # Panics
-/// Panics if the LAST_ERROR_MANAGER mutex is poisoned.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_SetLastError(error_code: u32) {
-    ensure_last_error_manager_initialized();
-    let thread_id = kernel32_GetCurrentThreadId();
-    let mut manager = LAST_ERROR_MANAGER.lock().unwrap();
-    if let Some(m) = manager.as_mut() {
-        m.set_error(thread_id, error_code);
-    }
+    LAST_ERROR.with(|error| error.set(error_code));
 }
 
 /// WaitForSingleObject stub - waits for an object
