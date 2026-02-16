@@ -4,8 +4,11 @@
 
 ### 1. __CTOR_LIST__ Sentinel Patching Implementation
 
+**Problem Context:**
+Rust programs compiled with the `x86_64-pc-windows-gnu` target (MinGW) use LLVM's `@llvm.global_ctors` mechanism for global constructor initialization. The MinGW C runtime (CRT, specifically crtbegin.o) implements `__do_global_ctors_aux` which processes the `__CTOR_LIST__` array at startup before `main()`.
+
 **Problem Solved:**
-The MinGW runtime's `__do_global_ctors` function was attempting to call the `-1` sentinel value (0xffffffffffffffff) as a function pointer, causing immediate SIGSEGV crashes.
+The MinGW CRT's `__do_global_ctors_aux` function was attempting to call the `-1` sentinel value (0xffffffffffffffff) as a function pointer, causing immediate SIGSEGV crashes. This occurs because the MinGW implementation doesn't properly skip the sentinel when iterating the constructor list.
 
 **Solution Implemented:**
 - Added `patch_ctor_list()` function in `litebox_shim_windows/src/loader/pe.rs`
@@ -100,7 +103,15 @@ This is a NULL pointer dereference, likely accessing a structure member at offse
 
 ## Lessons Learned 🎓
 
-### 1. __CTOR_LIST__ Structure (MinGW/Windows)
+### 1. __CTOR_LIST__ Structure and Rustc/LLVM/MinGW Interaction
+
+**How it works:**
+- **Rustc**: Uses LLVM's `@llvm.global_ctors` mechanism for global constructors (not Rust-specific code)
+- **LLVM**: Emits constructor entries into `.init_array` or `@llvm.global_ctors` during codegen
+- **MinGW CRT**: The platform C runtime (crtbegin.o) implements `__do_global_ctors_aux` which reads and processes `__CTOR_LIST__`
+- **Invocation**: CRT calls constructors from this array before `main()` executes
+
+**__CTOR_LIST__ format:**
 ```
 __CTOR_LIST__ format:
   [0]: -1 (0xffffffffffffffff) - sentinel, should be ignored
@@ -109,6 +120,9 @@ __CTOR_LIST__ format:
   ...
   [N]: 0                        - terminator
 ```
+
+**The Bug:**
+MinGW's `__do_global_ctors_aux` has a bug where it doesn't properly filter the -1 sentinel, attempting to call it as a function pointer.
 
 ### 2. Relocation Order Matters
 The __CTOR_LIST__ patching MUST occur AFTER relocations because:

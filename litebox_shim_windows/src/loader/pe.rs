@@ -472,12 +472,16 @@ impl PeLoader {
 
     /// Patch __CTOR_LIST__ to fix sentinel values that cause crashes
     ///
-    /// MinGW uses __CTOR_LIST__ for C++ global constructors. The list format is:
+    /// MinGW CRT uses __CTOR_LIST__ for C++ global constructors. The list format is:
     /// [-1 sentinel] [func_ptr_1] [func_ptr_2] ... [0 terminator]
     ///
-    /// However, __do_global_ctors in MinGW doesn't properly handle the -1 sentinel
-    /// and may try to call it as a function. This function scans for __CTOR_LIST__
-    /// patterns and replaces -1 values (0xffffffffffffffff) with 0 to prevent crashes.
+    /// Background: Rustc uses LLVM's @llvm.global_ctors mechanism for global constructors.
+    /// The MinGW CRT (crtbegin.o) implements __do_global_ctors_aux which processes
+    /// __CTOR_LIST__ at startup. However, this implementation doesn't properly handle
+    /// the -1 sentinel and may try to call it as a function pointer.
+    ///
+    /// This function scans for __CTOR_LIST__ patterns and replaces -1 sentinels with 0
+    /// to prevent crashes when the MinGW CRT processes the constructor list.
     ///
     /// # Safety
     /// This must be called after sections are loaded and relocations are applied.
