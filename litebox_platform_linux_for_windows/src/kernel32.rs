@@ -1977,7 +1977,7 @@ thread_local! {
 /// with `extern "C"` calling convention. Callers must ensure proper calling convention.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_GetLastError() -> u32 {
-    LAST_ERROR.with(|error| error.get())
+    LAST_ERROR.with(Cell::get)
 }
 
 /// GetModuleHandleW stub - gets a module handle
