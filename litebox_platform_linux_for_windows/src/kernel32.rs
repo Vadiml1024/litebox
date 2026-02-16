@@ -1203,23 +1203,84 @@ pub unsafe extern "C" fn kernel32_ReadFile(
 
 /// Write to a file (WriteFile)
 ///
-/// This is a minimal stub that always fails. Real file operations
-/// are handled through NtWriteFile in the NTDLL layer.
+/// This implements basic file write functionality, with special handling
+/// for stdout and stderr handles.
 ///
 /// # Safety
-/// This function is safe to call with any arguments.
-/// It always returns FALSE without dereferencing pointers.
+/// This function is unsafe as it dereferences raw pointers.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_WriteFile(
-    _file: *mut core::ffi::c_void,
-    _buffer: *const u8,
-    _number_of_bytes_to_write: u32,
-    _number_of_bytes_written: *mut u32,
+    file: *mut core::ffi::c_void,
+    buffer: *const u8,
+    number_of_bytes_to_write: u32,
+    number_of_bytes_written: *mut u32,
     _overlapped: *mut core::ffi::c_void,
 ) -> i32 {
-    // Return FALSE (0) - operation failed
-    // Real file operations go through NtWriteFile
-    0
+    eprintln!(
+        "[KERNEL32] WriteFile called: handle={:p}, bytes={}",
+        file, number_of_bytes_to_write
+    );
+
+    // STD_OUTPUT_HANDLE = -11, STD_ERROR_HANDLE = -12
+    let stdout_handle = kernel32_GetStdHandle((-11i32) as u32);
+    let stderr_handle = kernel32_GetStdHandle((-12i32) as u32);
+
+    // Check if this is stdout or stderr
+    let is_stdout = file == stdout_handle;
+    let is_stderr = file == stderr_handle;
+
+    eprintln!(
+        "[KERNEL32] WriteFile: is_stdout={}, is_stderr={}",
+        is_stdout, is_stderr
+    );
+
+    if !is_stdout && !is_stderr {
+        eprintln!("[KERNEL32] WriteFile: not stdout/stderr, returning FALSE");
+        return 0; // Not stdout/stderr, fail
+    }
+
+    if buffer.is_null() || number_of_bytes_to_write == 0 {
+        eprintln!("[KERNEL32] WriteFile: null buffer or zero bytes, returning FALSE");
+        return 0;
+    }
+
+    // SAFETY: Caller guarantees buffer is valid for number_of_bytes_to_write bytes
+    let data = unsafe { std::slice::from_raw_parts(buffer, number_of_bytes_to_write as usize) };
+
+    if number_of_bytes_to_write <= 100 {
+        eprintln!(
+            "[KERNEL32] WriteFile: data = {:?}",
+            String::from_utf8_lossy(data)
+        );
+    }
+
+    // Write to stdout or stderr
+    let result = if is_stdout {
+        std::io::Write::write(&mut std::io::stdout(), data)
+    } else {
+        std::io::Write::write(&mut std::io::stderr(), data)
+    };
+
+    match result {
+        Ok(written) => {
+            eprintln!("[KERNEL32] WriteFile: wrote {} bytes", written);
+            if !number_of_bytes_written.is_null() {
+                // SAFETY: Caller guarantees number_of_bytes_written is valid
+                unsafe { *number_of_bytes_written = written as u32 };
+            }
+            // Flush to ensure output appears
+            if is_stdout {
+                let _ = std::io::Write::flush(&mut std::io::stdout());
+            } else {
+                let _ = std::io::Write::flush(&mut std::io::stderr());
+            }
+            1 // TRUE - success
+        }
+        Err(e) => {
+            eprintln!("[KERNEL32] WriteFile: error: {}", e);
+            0 // FALSE - failure
+        }
+    }
 }
 
 /// Close a handle (CloseHandle)
