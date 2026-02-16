@@ -16,6 +16,32 @@ use std::io::{self, Write};
 use std::ptr;
 use std::sync::Mutex;
 
+// ============================================================================
+// Data Exports
+// ============================================================================
+// These are global variables that Windows programs import directly.
+// Unlike function exports, these need to be actual memory locations.
+
+/// File mode (_fmode) - default file open mode
+/// 0x4000 = _O_BINARY (binary mode), 0x8000 = _O_TEXT (text mode)
+/// Default is text mode (0x8000)
+#[unsafe(no_mangle)]
+pub static mut msvcrt__fmode: i32 = 0x4000; // Binary mode by default
+
+/// Commit mode (_commode) - file commit behavior
+/// 0 = no commit, non-zero = commit
+#[unsafe(no_mangle)]
+pub static mut msvcrt__commode: i32 = 0;
+
+/// Environment pointer (__initenv) - pointer to environment variables
+/// This is a triple pointer: pointer to array of pointers to strings
+#[unsafe(no_mangle)]
+pub static mut msvcrt___initenv: *mut *mut i8 = ptr::null_mut();
+
+// ============================================================================
+// Memory Management Functions
+// ============================================================================
+
 /// Allocate memory (malloc)
 ///
 /// # Safety
@@ -291,25 +317,6 @@ pub unsafe extern "C" fn msvcrt___getmainargs(
 ) -> i32 {
     // Stub implementation - should populate argc/argv
     0
-}
-
-/// Initialize environment (__initenv)
-///
-/// # Safety
-/// Returns a static pointer that should not be freed.
-/// Uses AtomicPtr for thread-safe access.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn msvcrt___initenv() -> *mut *mut i8 {
-    use std::sync::atomic::AtomicPtr;
-
-    // Use AtomicPtr for thread-safe access to the environment pointer
-    static ENV: AtomicPtr<i8> = AtomicPtr::new(std::ptr::null_mut());
-
-    // SAFETY: Returns a pointer to the atomic static.
-    // For C ABI compatibility, we return a stable address to the atomic.
-    // Note: This is a simplified stub; a full implementation would need to
-    // store the pointer in a way that allows C code to modify it.
-    (&raw const ENV).cast::<*mut i8>().cast_mut()
 }
 
 /// Set application type (__set_app_type)

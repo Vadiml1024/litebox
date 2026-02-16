@@ -856,7 +856,7 @@ impl PeLoader {
         let relocations = self.relocations()?;
 
         let mut crt_relocs = 0;
-        for (idx, reloc) in relocations.iter().enumerate() {
+        for reloc in &relocations {
             let target_address = actual_base + u64::from(reloc.rva);
 
             // Count .CRT section relocations (RVA 0xD2000-0xD2068)

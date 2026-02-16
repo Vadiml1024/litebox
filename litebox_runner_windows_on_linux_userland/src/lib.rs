@@ -149,6 +149,14 @@ pub fn run(cli_args: CliArgs) -> Result<()> {
         .link_trampolines_to_dll_manager()
         .map_err(|e| anyhow!("Failed to link trampolines to DLL manager: {e}"))?;
 
+    // Link data exports to actual memory addresses
+    // SAFETY: This only takes addresses of static variables
+    unsafe {
+        platform
+            .link_data_exports_to_dll_manager()
+            .map_err(|e| anyhow!("Failed to link data exports: {e}"))?;
+    }
+
     println!("Initialized function trampolines for MSVCRT");
 
     let mut platform = TracedNtdllApi::new(platform, tracer);
@@ -190,11 +198,11 @@ pub fn run(cli_args: CliArgs) -> Result<()> {
         println!("  No relocations needed (loaded at preferred base)");
     } else {
         println!("  Rebasing from 0x{image_base:X} to 0x{base_address:X}");
-        
+
         // Get relocation count for debugging
         let reloc_count = pe_loader.relocations().map(|r| r.len()).unwrap_or(0);
         println!("  Found {reloc_count} relocation entries");
-        
+
         // SAFETY: We allocated the memory and just loaded the sections
         unsafe {
             pe_loader
@@ -202,7 +210,7 @@ pub fn run(cli_args: CliArgs) -> Result<()> {
                 .map_err(|e| anyhow!("Failed to apply relocations: {e}"))?;
         }
         println!("  Relocations applied successfully");
-        
+
         // Debug: Check if .CRT section was relocated properly
         // .CRT is at RVA 0xd2000, contains function pointers
         unsafe {

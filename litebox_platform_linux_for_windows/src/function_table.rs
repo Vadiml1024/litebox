@@ -887,6 +887,51 @@ impl LinuxPlatformForWindows {
         Ok(())
     }
 
+    /// Link data exports to their actual memory addresses
+    ///
+    /// This updates the DLL manager to point data imports to real memory locations
+    /// instead of stub addresses. Must be called after `link_trampolines_to_dll_manager()`.
+    ///
+    /// # Panics
+    /// Panics if the internal mutex is poisoned.
+    ///
+    /// # Safety
+    /// This function accesses mutable static variables to get their addresses.
+    /// It's safe because we only take addresses, not modify the values.
+    pub unsafe fn link_data_exports_to_dll_manager(&self) -> Result<()> {
+        let mut state = self.state.lock().unwrap();
+
+        // MSVCRT.dll data exports
+        // SAFETY: We're only taking the address of the static, not modifying it.
+        // These are global variables that C code expects to access directly.
+        let data_exports = vec![
+            (
+                "MSVCRT.dll",
+                "_fmode",
+                core::ptr::addr_of_mut!(crate::msvcrt::msvcrt__fmode) as usize,
+            ),
+            (
+                "MSVCRT.dll",
+                "_commode",
+                core::ptr::addr_of_mut!(crate::msvcrt::msvcrt__commode) as usize,
+            ),
+            (
+                "MSVCRT.dll",
+                "__initenv",
+                core::ptr::addr_of_mut!(crate::msvcrt::msvcrt___initenv) as usize,
+            ),
+        ];
+
+        for (dll_name, export_name, address) in data_exports {
+            state
+                .dll_manager
+                .update_export_address(dll_name, export_name, address)
+                .ok(); // Ignore errors - export may not be in DLL yet
+        }
+
+        Ok(())
+    }
+
     /// Get the trampoline address for a specific function
     ///
     /// Returns the address of the trampoline that can be called from Windows
