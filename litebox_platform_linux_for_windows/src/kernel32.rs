@@ -1857,16 +1857,48 @@ pub unsafe extern "C" fn kernel32_FormatMessageW(
     0 // 0 - error/not implemented
 }
 
-/// GetCurrentDirectoryW stub - gets the current directory
+/// GetCurrentDirectoryW - gets the current working directory
+///
+/// Returns the length of the path copied to the buffer (not including null terminator).
+/// If the buffer is too small, returns the required buffer size (including null terminator).
 ///
 /// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
+/// Caller must ensure buffer is valid and buffer_length is accurate if buffer is non-null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_GetCurrentDirectoryW(
-    _buffer_length: u32,
-    _buffer: *mut u16,
+    buffer_length: u32,
+    buffer: *mut u16,
 ) -> u32 {
-    0 // 0 - error/not implemented
+    // Get current directory from std::env
+    let Ok(current_dir) = std::env::current_dir() else {
+        // Set last error to ERROR_ACCESS_DENIED (5)
+        kernel32_SetLastError(5);
+        return 0;
+    };
+
+    // Convert to string
+    let dir_str = current_dir.to_string_lossy();
+
+    // Convert Windows-style if needed (for consistency with Windows behavior)
+    // But since we're on Linux, keep it as-is
+
+    // Convert to UTF-16
+    let mut utf16: Vec<u16> = dir_str.encode_utf16().collect();
+    utf16.push(0); // Null terminator
+
+    // Check if buffer is large enough
+    if buffer.is_null() || buffer_length < utf16.len() as u32 {
+        // Return required buffer size (including null terminator)
+        return utf16.len() as u32;
+    }
+
+    // Copy to buffer
+    for (i, &ch) in utf16.iter().enumerate() {
+        *buffer.add(i) = ch;
+    }
+
+    // Return length without null terminator
+    (utf16.len() - 1) as u32
 }
 
 /// GetExitCodeProcess stub - gets the exit code of a process
@@ -1925,16 +1957,63 @@ pub unsafe extern "C" fn kernel32_GetFullPathNameW(
     0 // 0 - error
 }
 
-/// GetLastError stub - gets the last error code
+/// Last error manager for thread-local error codes
 ///
-/// In real Windows, this is thread-local and set by many APIs.
-/// For now, we return 0 (no error).
+/// NOTE: This implementation stores error codes indefinitely for all threads
+/// that have ever set an error. In long-running applications that create and
+/// destroy many threads, this could lead to unbounded memory growth. This is
+/// acceptable for most use cases, but applications creating millions of threads
+/// should be aware of this limitation.
+struct LastErrorManager {
+    /// Map of thread_id -> last error code
+    errors: HashMap<u32, u32>,
+}
+
+impl LastErrorManager {
+    fn new() -> Self {
+        Self {
+            errors: HashMap::new(),
+        }
+    }
+
+    fn get_error(&self, thread_id: u32) -> u32 {
+        self.errors.get(&thread_id).copied().unwrap_or(0)
+    }
+
+    fn set_error(&mut self, thread_id: u32, error_code: u32) {
+        self.errors.insert(thread_id, error_code);
+    }
+}
+
+/// Global last error manager protected by a mutex
+static LAST_ERROR_MANAGER: Mutex<Option<LastErrorManager>> = Mutex::new(None);
+
+/// Initialize the last error manager (called once)
+fn ensure_last_error_manager_initialized() {
+    let mut manager = LAST_ERROR_MANAGER.lock().unwrap();
+    if manager.is_none() {
+        *manager = Some(LastErrorManager::new());
+    }
+}
+
+/// GetLastError - gets the last error code for the current thread
+///
+/// In Windows, this is thread-local and set by many APIs.
+/// This implementation maintains per-thread error codes using a global map.
 ///
 /// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
+/// The function body is safe, but marked `unsafe` because it's part of an FFI boundary
+/// with `extern "C"` calling convention. Callers must ensure proper calling convention.
+///
+/// # Panics
+/// Panics if the LAST_ERROR_MANAGER mutex is poisoned.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_GetLastError() -> u32 {
-    0 // ERROR_SUCCESS
+    ensure_last_error_manager_initialized();
+    let thread_id = kernel32_GetCurrentThreadId();
+    let manager = LAST_ERROR_MANAGER.lock().unwrap();
+    // SAFETY: ensure_last_error_manager_initialized guarantees manager is Some
+    manager.as_ref().unwrap().get_error(thread_id)
 }
 
 /// GetModuleHandleW stub - gets a module handle
@@ -2032,13 +2111,25 @@ pub unsafe extern "C" fn kernel32_SetFilePointerEx(
     0 // FALSE - not implemented
 }
 
-/// SetLastError stub - sets the last error code
+/// SetLastError - sets the last error code for the current thread
+///
+/// In Windows, this is thread-local storage used by many APIs to report errors.
+/// This implementation maintains per-thread error codes using a global map.
 ///
 /// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
+/// The function body is safe, but marked `unsafe` because it's part of an FFI boundary
+/// with `extern "C"` calling convention. Callers must ensure proper calling convention.
+///
+/// # Panics
+/// Panics if the LAST_ERROR_MANAGER mutex is poisoned.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn kernel32_SetLastError(_error_code: u32) {
-    // No-op stub - in real Windows this is thread-local
+pub unsafe extern "C" fn kernel32_SetLastError(error_code: u32) {
+    ensure_last_error_manager_initialized();
+    let thread_id = kernel32_GetCurrentThreadId();
+    let mut manager = LAST_ERROR_MANAGER.lock().unwrap();
+    if let Some(m) = manager.as_mut() {
+        m.set_error(thread_id, error_code);
+    }
 }
 
 /// WaitForSingleObject stub - waits for an object
@@ -2331,13 +2422,43 @@ pub unsafe extern "C" fn kernel32_RemoveDirectoryW(_path_name: *const u16) -> i3
     0 // FALSE
 }
 
-/// SetCurrentDirectoryW stub
+/// SetCurrentDirectoryW - sets the current working directory
+///
+/// Returns 1 (TRUE) on success, 0 (FALSE) on failure.
 ///
 /// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
+/// Caller must ensure path_name points to a valid null-terminated UTF-16 string.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn kernel32_SetCurrentDirectoryW(_path_name: *const u16) -> i32 {
-    0 // FALSE
+pub unsafe extern "C" fn kernel32_SetCurrentDirectoryW(path_name: *const u16) -> i32 {
+    if path_name.is_null() {
+        kernel32_SetLastError(87); // ERROR_INVALID_PARAMETER
+        return 0;
+    }
+
+    // Read UTF-16 string until null terminator
+    let mut len = 0;
+    while *path_name.add(len) != 0 {
+        len += 1;
+        // Safety check: prevent infinite loop
+        if len > 32768 {
+            // MAX_PATH is 260, but we allow more
+            kernel32_SetLastError(206); // ERROR_FILENAME_EXCEED_RANGE
+            return 0;
+        }
+    }
+
+    // Convert to Rust string
+    let slice = core::slice::from_raw_parts(path_name, len);
+    let path_str = String::from_utf16_lossy(slice);
+
+    // Try to set the current directory
+    if std::env::set_current_dir(std::path::Path::new(path_str.as_str())).is_ok() {
+        1 // TRUE - success
+    } else {
+        // Set last error to ERROR_FILE_NOT_FOUND (2)
+        kernel32_SetLastError(2);
+        0 // FALSE - failure
+    }
 }
 
 /// SetFileAttributesW stub
@@ -3619,5 +3740,125 @@ mod tests {
 
         let result3 = unsafe { kernel32_HeapFree(heap, 0, ptr3) };
         assert_eq!(result3, 1);
+    }
+
+    #[test]
+    fn test_get_set_last_error() {
+        // Initially, last error should be 0
+        let initial_error = unsafe { kernel32_GetLastError() };
+        assert_eq!(initial_error, 0, "Initial error should be 0");
+
+        // Set an error code
+        unsafe { kernel32_SetLastError(5) }; // ERROR_ACCESS_DENIED
+
+        // Get the error back
+        let error = unsafe { kernel32_GetLastError() };
+        assert_eq!(error, 5, "GetLastError should return the set error code");
+
+        // Set a different error
+        unsafe { kernel32_SetLastError(2) }; // ERROR_FILE_NOT_FOUND
+
+        let error2 = unsafe { kernel32_GetLastError() };
+        assert_eq!(error2, 2, "GetLastError should return the new error code");
+
+        // Reset to 0
+        unsafe { kernel32_SetLastError(0) };
+        let error3 = unsafe { kernel32_GetLastError() };
+        assert_eq!(error3, 0, "Error should be reset to 0");
+    }
+
+    #[test]
+    fn test_last_error_thread_isolation() {
+        use std::sync::{Arc, Barrier};
+
+        // Create a barrier to synchronize threads
+        let barrier = Arc::new(Barrier::new(2));
+        let barrier_clone = barrier.clone();
+
+        // Set error in main thread
+        unsafe { kernel32_SetLastError(100) };
+
+        // Spawn a thread that sets a different error
+        let handle = std::thread::spawn(move || {
+            // Set error in spawned thread
+            unsafe { kernel32_SetLastError(200) };
+
+            // Wait for main thread
+            barrier_clone.wait();
+
+            // Check that spawned thread's error is isolated
+            let error = unsafe { kernel32_GetLastError() };
+            assert_eq!(error, 200, "Spawned thread should have its own error");
+        });
+
+        // Wait for spawned thread
+        barrier.wait();
+
+        // Check that main thread's error is still 100
+        let error = unsafe { kernel32_GetLastError() };
+        assert_eq!(error, 100, "Main thread error should be isolated");
+
+        // Wait for thread to finish
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn test_get_current_directory() {
+        // Get current directory
+        let buffer_size = 1024u32;
+        let mut buffer = vec![0u16; buffer_size as usize];
+
+        let result = unsafe { kernel32_GetCurrentDirectoryW(buffer_size, buffer.as_mut_ptr()) };
+        assert!(result > 0, "GetCurrentDirectoryW should succeed");
+        assert!(result < buffer_size, "Result should fit in buffer");
+
+        // Convert to string and verify it's a valid path
+        let dir_str = String::from_utf16_lossy(&buffer[..result as usize]);
+        assert!(!dir_str.is_empty(), "Directory should not be empty");
+    }
+
+    #[test]
+    fn test_set_current_directory() {
+        // Get original directory to restore later
+        let buffer_size = 1024u32;
+        let mut orig_buffer = vec![0u16; buffer_size as usize];
+        let orig_len =
+            unsafe { kernel32_GetCurrentDirectoryW(buffer_size, orig_buffer.as_mut_ptr()) };
+        assert!(orig_len > 0);
+
+        // Try to set to /tmp (which should exist on Linux)
+        let tmp_path: Vec<u16> = "/tmp\0".encode_utf16().collect();
+        let result = unsafe { kernel32_SetCurrentDirectoryW(tmp_path.as_ptr()) };
+        assert_eq!(result, 1, "SetCurrentDirectoryW to /tmp should succeed");
+
+        // Verify it changed
+        let mut new_buffer = vec![0u16; buffer_size as usize];
+        let new_len =
+            unsafe { kernel32_GetCurrentDirectoryW(buffer_size, new_buffer.as_mut_ptr()) };
+        assert!(new_len > 0);
+        let new_dir = String::from_utf16_lossy(&new_buffer[..new_len as usize]);
+        assert!(
+            new_dir.contains("tmp"),
+            "Current directory should now be /tmp"
+        );
+
+        // Restore original directory
+        let restore_result = unsafe { kernel32_SetCurrentDirectoryW(orig_buffer.as_ptr()) };
+        assert_eq!(restore_result, 1, "Should restore original directory");
+    }
+
+    #[test]
+    fn test_set_current_directory_invalid() {
+        // Try to set to a non-existent directory
+        let invalid_path: Vec<u16> = "/nonexistent_dir_12345\0".encode_utf16().collect();
+        let result = unsafe { kernel32_SetCurrentDirectoryW(invalid_path.as_ptr()) };
+        assert_eq!(
+            result, 0,
+            "SetCurrentDirectoryW should fail for invalid path"
+        );
+
+        // Check that last error was set
+        let error = unsafe { kernel32_GetLastError() };
+        assert_eq!(error, 2, "Last error should be ERROR_FILE_NOT_FOUND");
     }
 }
