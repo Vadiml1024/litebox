@@ -93,7 +93,6 @@ All ratchet tests passing.
 - `litebox_shim_windows/src/loader/execution.rs` (+83 lines, PEB/TEB/LDR improvements + 5 tests)
 - `litebox_shim_windows/src/loader/pe.rs` (+130 lines, 2 __CTOR_LIST__ tests)
 - `litebox_shim_windows/src/loader/mod.rs` (+1 line, export LdrDataTableEntry)
-After relocation, function pointers in __CTOR_LIST__ point to `base_address + RVA`, not the original `image_base + RVA`. The validation logic must check against the relocated base address.
 
 ### 2. Testing Results
 
