@@ -855,8 +855,14 @@ impl PeLoader {
         let delta = actual_base.wrapping_sub(base_address).cast_signed();
         let relocations = self.relocations()?;
 
-        for reloc in relocations {
+        let mut crt_relocs = 0;
+        for (idx, reloc) in relocations.iter().enumerate() {
             let target_address = actual_base + u64::from(reloc.rva);
+
+            // Count .CRT section relocations (RVA 0xD2000-0xD2068)
+            if reloc.rva >= 0xD2000 && reloc.rva < 0xD2100 {
+                crt_relocs += 1;
+            }
 
             match reloc.reloc_type {
                 IMAGE_REL_BASED_DIR64 => {
@@ -882,6 +888,12 @@ impl PeLoader {
                     // Ignore unknown relocation types
                 }
             }
+        }
+
+        // Debug: Report if .CRT section had relocations
+        #[cfg(debug_assertions)]
+        if crt_relocs > 0 {
+            // CRT relocations found - this is good!
         }
 
         Ok(())

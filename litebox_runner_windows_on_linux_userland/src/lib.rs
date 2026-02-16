@@ -202,6 +202,15 @@ pub fn run(cli_args: CliArgs) -> Result<()> {
                 .map_err(|e| anyhow!("Failed to apply relocations: {e}"))?;
         }
         println!("  Relocations applied successfully");
+        
+        // Debug: Check if .CRT section was relocated properly
+        // .CRT is at RVA 0xd2000, contains function pointers
+        unsafe {
+            let crt_addr = base_address + 0xd2008; // First non-null pointer
+            let ptr = crt_addr as *const u64;
+            let value = ptr.read_unaligned();
+            println!("  Debug: .CRT[0] = 0x{value:X} (should be > 0x100000000)");
+        }
     }
 
     // Resolve imports
