@@ -295,6 +295,21 @@ pub fn run(cli_args: CliArgs) -> Result<()> {
     println!("WARNING: Entry point execution is experimental and may crash!");
     println!("         Most Windows programs will fail due to missing DLL implementations.");
 
+    // Debug: Print first 16 bytes at entry point
+    println!("\nDebug: First 16 bytes at entry point:");
+    #[allow(clippy::cast_possible_truncation)]
+    unsafe {
+        let entry_bytes = core::slice::from_raw_parts(entry_point_address as *const u8, 16);
+        print!("  ");
+        for (i, byte) in entry_bytes.iter().enumerate() {
+            print!("{:02X} ", byte);
+            if i == 7 {
+                print!(" ");
+            }
+        }
+        println!();
+    }
+
     // Try to call the entry point
     // Note: On 64-bit systems, u64 addresses fit in usize. On 32-bit systems,
     // addresses > 4GB would be truncated, but Windows PE files on 32-bit systems

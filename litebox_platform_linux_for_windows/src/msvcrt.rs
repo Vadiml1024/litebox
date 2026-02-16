@@ -445,6 +445,75 @@ pub unsafe extern "C" fn msvcrt___errno_location() -> *mut i32 {
     ERRNO.with(std::cell::RefCell::as_ptr)
 }
 
+/// Global command line pointer for _acmdln
+/// In a real implementation, this would point to the actual command line.
+/// For now, we use an empty string as a stub.
+static ACMDLN: &[u8] = b"\0";
+
+/// Get pointer to command line string (_acmdln)
+///
+/// This is a global variable in MSVCRT that points to the command line arguments.
+/// Programs access it via `_acmdln` which is a char** (pointer to pointer).
+///
+/// # Safety
+/// Returns a pointer to static memory that is valid for the lifetime of the program.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt__acmdln() -> *const *const u8 {
+    // Return a pointer to a pointer to the command line string
+    // We store the pointer as usize for thread safety
+    use std::sync::OnceLock;
+    static ACMDLN_PTR: OnceLock<usize> = OnceLock::new();
+    let ptr_val = *ACMDLN_PTR.get_or_init(|| ACMDLN.as_ptr() as usize);
+    ptr_val as *const *const u8
+}
+
+/// Check if a byte is a multibyte lead byte (_ismbblead)
+///
+/// This function checks if a byte is the lead byte of a multibyte character
+/// in the current code page. For simplicity, we assume UTF-8 encoding.
+///
+/// # Safety
+/// Safe to call but marked unsafe for C ABI compatibility.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt__ismbblead(c: u32) -> i32 {
+    // In UTF-8:
+    // - Bytes 0x00-0x7F are single-byte characters (not lead bytes)
+    // - Bytes 0x80-0xBF are continuation bytes (not lead bytes)
+    // - Bytes 0xC0-0xFF are lead bytes
+    //
+    // For ANSI code pages, lead bytes depend on the specific code page.
+    // We'll implement a simple check for UTF-8.
+
+    let byte = (c & 0xFF) as u8;
+
+    // In UTF-8, lead bytes are >= 0xC0
+    if byte >= 0xC0 {
+        1 // TRUE - this is a lead byte
+    } else {
+        0 // FALSE - not a lead byte
+    }
+}
+
+/// C-specific exception handler (__C_specific_handler)
+///
+/// This is a placeholder implementation for structured exception handling (SEH).
+/// Real implementation would require full SEH support with exception tables.
+///
+/// # Safety
+/// This is a stub that should not be called in normal execution.
+/// Marked unsafe for C ABI compatibility.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt___C_specific_handler(
+    _exception_record: usize,
+    _establisher_frame: usize,
+    _context_record: usize,
+    _dispatcher_context: usize,
+) -> i32 {
+    // Return EXCEPTION_CONTINUE_SEARCH (1)
+    // This tells the system to continue searching for an exception handler
+    1
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
