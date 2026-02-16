@@ -555,6 +555,7 @@ impl ExecutionContext {
         size_of_zero_fill: u32,
     ) -> Result<()> {
         // Calculate size of TLS template data
+        #[allow(clippy::cast_possible_truncation)]
         let template_size = tls_end_va.checked_sub(tls_start_va).ok_or_else(|| {
             WindowsShimError::InvalidParameter(format!(
                 "Invalid TLS range: start 0x{tls_start_va:X} >= end 0x{tls_end_va:X}"
@@ -637,17 +638,17 @@ impl ExecutionContext {
 impl Drop for ExecutionContext {
     fn drop(&mut self) {
         // Clean up allocated TLS data memory
-        if let Some(tls_data_ptr) = self.tls_data_ptr {
-            if self.tls_data_size > 0 {
-                // SAFETY: This memory was allocated by mmap in initialize_tls,
-                // so it's safe to unmap it here.
-                #[allow(clippy::cast_possible_truncation)]
-                unsafe {
-                    libc::munmap(
-                        tls_data_ptr.cast::<libc::c_void>(),
-                        self.tls_data_size as libc::size_t,
-                    );
-                }
+        if let Some(tls_data_ptr) = self.tls_data_ptr
+            && self.tls_data_size > 0
+        {
+            // SAFETY: This memory was allocated by mmap in initialize_tls,
+            // so it's safe to unmap it here.
+            #[allow(clippy::cast_possible_truncation)]
+            unsafe {
+                libc::munmap(
+                    tls_data_ptr.cast::<libc::c_void>(),
+                    self.tls_data_size as libc::size_t,
+                );
             }
         }
 
@@ -858,7 +859,7 @@ mod tests {
 
         // Allocate space for TLS index
         let mut tls_index: u32 = 0xFFFFFFFF;
-        let index_ptr = &mut tls_index as *mut u32 as u64;
+        let index_ptr = &raw mut tls_index as u64;
 
         // Initialize TLS with our test data
         unsafe {

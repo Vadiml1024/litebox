@@ -1132,7 +1132,7 @@ mod tests {
         }
 
         // Verify the sentinel was patched to 0
-        let patched_value = unsafe { ((mem_base + va as u64) as *const u64).read_unaligned() };
+        let patched_value = unsafe { ((mem_base + u64::from(va)) as *const u64).read_unaligned() };
         assert_eq!(patched_value, 0, "Sentinel should be patched to 0");
     }
 
@@ -1156,11 +1156,11 @@ mod tests {
         }
 
         // Verify data was not modified
-        let value = unsafe { ((mem_base + va as u64) as *const u64).read_unaligned() };
+        let value = unsafe { ((mem_base + u64::from(va)) as *const u64).read_unaligned() };
         assert_eq!(value, 0x12345678, "Non-sentinel data should be unchanged");
 
         // Verify adjacent data was also not modified
-        let value2 = unsafe { ((mem_base + va as u64 + 8) as *const u64).read_unaligned() };
+        let value2 = unsafe { ((mem_base + u64::from(va) + 8) as *const u64).read_unaligned() };
         assert_eq!(value2, 0xABCD, "Adjacent data should be unchanged");
     }
 }

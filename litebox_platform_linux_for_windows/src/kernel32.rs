@@ -2796,7 +2796,7 @@ pub unsafe extern "C" fn kernel32_GetSystemInfo(system_info: *mut u8) {
     };
     // SAFETY: Caller guarantees system_info points to a valid buffer of sufficient size.
     core::ptr::copy_nonoverlapping(
-        &info as *const SystemInfo as *const u8,
+        (&raw const info).cast::<u8>(),
         system_info,
         core::mem::size_of::<SystemInfo>(),
     );
@@ -4214,7 +4214,7 @@ mod tests {
                 stdout,
                 data.as_ptr(),
                 data.len() as u32,
-                &mut bytes_written,
+                &raw mut bytes_written,
                 core::ptr::null_mut(),
             )
         };
@@ -4234,7 +4234,7 @@ mod tests {
                 invalid_handle,
                 data.as_ptr(),
                 data.len() as u32,
-                &mut bytes_written,
+                &raw mut bytes_written,
                 core::ptr::null_mut(),
             )
         };
@@ -4254,7 +4254,7 @@ mod tests {
                 stdout,
                 core::ptr::null(),
                 10,
-                &mut bytes_written,
+                &raw mut bytes_written,
                 core::ptr::null_mut(),
             )
         };
@@ -4349,8 +4349,7 @@ mod tests {
     #[test]
     fn test_get_console_mode() {
         let mut mode: u32 = 0;
-        let result =
-            unsafe { kernel32_GetConsoleMode(1 as *mut core::ffi::c_void, &mut mode as *mut u32) };
+        let result = unsafe { kernel32_GetConsoleMode(std::ptr::dangling_mut(), &raw mut mode) };
         assert_eq!(result, 1, "GetConsoleMode should return TRUE");
         assert_ne!(mode, 0, "Mode should be non-zero");
     }
@@ -4369,7 +4368,7 @@ mod tests {
                 0x1000 as *mut core::ffi::c_void,
                 4096,
                 0x04, // PAGE_READWRITE
-                &mut old_protect as *mut u32,
+                &raw mut old_protect,
             )
         };
         assert_eq!(result, 1, "VirtualProtect should return TRUE");
@@ -4393,7 +4392,13 @@ mod tests {
 
     #[test]
     fn test_get_environment_variable_w() {
-        let name: [u16; 5] = [b'P' as u16, b'A' as u16, b'T' as u16, b'H' as u16, 0];
+        let name: [u16; 5] = [
+            u16::from(b'P'),
+            u16::from(b'A'),
+            u16::from(b'T'),
+            u16::from(b'H'),
+            0,
+        ];
         let result =
             unsafe { kernel32_GetEnvironmentVariableW(name.as_ptr(), core::ptr::null_mut(), 0) };
         assert_eq!(result, 0, "GetEnvironmentVariableW stub should return 0");
@@ -4401,8 +4406,8 @@ mod tests {
 
     #[test]
     fn test_set_environment_variable_w() {
-        let name: [u16; 2] = [b'X' as u16, 0];
-        let value: [u16; 2] = [b'Y' as u16, 0];
+        let name: [u16; 2] = [u16::from(b'X'), 0];
+        let value: [u16; 2] = [u16::from(b'Y'), 0];
         let result = unsafe { kernel32_SetEnvironmentVariableW(name.as_ptr(), value.as_ptr()) };
         assert_eq!(result, 1, "SetEnvironmentVariableW should return TRUE");
     }
