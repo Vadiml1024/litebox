@@ -9,12 +9,26 @@
 
 // Allow unsafe operations inside unsafe functions since the entire function is unsafe
 #![allow(unsafe_op_in_unsafe_fn)]
+// Allow cast warnings as we're implementing Windows API which requires specific integer types
+#![allow(clippy::cast_sign_loss)]
+#![allow(clippy::cast_possible_truncation)]
+#![allow(clippy::cast_possible_wrap)]
 
 use std::alloc;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
+
+// Code page constants for MultiByteToWideChar and WideCharToMultiByte
+const CP_ACP: u32 = 0;
+const CP_UTF8: u32 = 65001;
+
+// Heap constants for HeapAlloc
+const HEAP_ZERO_MEMORY: u32 = 0x0000_0008;
+
+// Epoch difference between Windows (1601-01-01) and Unix (1970-01-01) in seconds
+const EPOCH_DIFF: i64 = 11_644_473_600;
 
 /// Thread Local Storage (TLS) manager
 ///
@@ -287,10 +301,18 @@ pub unsafe extern "C" fn kernel32_InitializeCriticalSection(
 /// this function blocks until the lock becomes available.
 /// Supports recursion - the same thread can enter multiple times.
 ///
+/// Enter a critical section (acquire the lock).
+///
+/// If the critical section is already owned by this thread, increments the recursion count.
+/// If owned by another thread, waits until it becomes available.
+///
 /// # Safety
 /// The caller must ensure:
 /// - `critical_section` was previously initialized with `InitializeCriticalSection`
 /// - The structure has not been deleted with `DeleteCriticalSection`
+///
+/// # Panics
+/// Panics if the internal mutex is poisoned (a thread panicked while holding the lock).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_EnterCriticalSection(critical_section: *mut CriticalSection) {
     if critical_section.is_null() {
@@ -342,11 +364,18 @@ pub unsafe extern "C" fn kernel32_EnterCriticalSection(critical_section: *mut Cr
 /// multiple times (recursion), only the outermost leave will actually
 /// release the lock.
 ///
+/// Leave a critical section (release the lock).
+///
+/// Decrements the recursion count. If the count reaches zero, releases ownership.
+///
 /// # Safety
 /// The caller must ensure:
 /// - `critical_section` was previously initialized
 /// - This thread currently owns the critical section
 /// - Each `Leave` matches an `Enter`
+///
+/// # Panics
+/// Panics if the internal mutex is poisoned (a thread panicked while holding the lock).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_LeaveCriticalSection(critical_section: *mut CriticalSection) {
     if critical_section.is_null() {
@@ -675,8 +704,6 @@ pub unsafe extern "C" fn kernel32_MultiByteToWideChar(
     }
 
     // Validate code page (only support CP_ACP=0 and CP_UTF8=65001)
-    const CP_ACP: u32 = 0;
-    const CP_UTF8: u32 = 65001;
     if code_page != CP_ACP && code_page != CP_UTF8 {
         return 0; // Unsupported code page
     }
@@ -702,9 +729,8 @@ pub unsafe extern "C" fn kernel32_MultiByteToWideChar(
     let input_bytes = unsafe { core::slice::from_raw_parts(multi_byte_str, input_len) };
 
     // Convert to UTF-8 string (assume input is UTF-8)
-    let utf8_str = match core::str::from_utf8(input_bytes) {
-        Ok(s) => s,
-        Err(_) => return 0, // Invalid UTF-8
+    let Ok(utf8_str) = core::str::from_utf8(input_bytes) else {
+        return 0; // Invalid UTF-8
     };
 
     // Convert to UTF-16
@@ -777,8 +803,6 @@ pub unsafe extern "C" fn kernel32_WideCharToMultiByte(
     }
 
     // Validate code page (only support CP_ACP=0 and CP_UTF8=65001)
-    const CP_ACP: u32 = 0;
-    const CP_UTF8: u32 = 65001;
     if code_page != CP_ACP && code_page != CP_UTF8 {
         return 0; // Unsupported code page
     }
@@ -936,11 +960,11 @@ pub unsafe extern "C" fn kernel32_CompareStringOrdinal(
         if ignore_case != 0 {
             // ASCII case fold: 'A'..='Z' -> 'a'..='z'
             // This provides basic case-insensitive comparison for ASCII characters
-            if (b'A' as u16..=b'Z' as u16).contains(&c1) {
-                c1 = c1 + (b'a' as u16 - b'A' as u16);
+            if (u16::from(b'A')..=u16::from(b'Z')).contains(&c1) {
+                c1 += u16::from(b'a') - u16::from(b'A');
             }
-            if (b'A' as u16..=b'Z' as u16).contains(&c2) {
-                c2 = c2 + (b'a' as u16 - b'A' as u16);
+            if (u16::from(b'A')..=u16::from(b'Z')).contains(&c2) {
+                c2 += u16::from(b'a') - u16::from(b'A');
             }
         }
 
@@ -1007,9 +1031,10 @@ pub unsafe extern "C" fn kernel32_QueryPerformanceCounter(counter: *mut i64) -> 
     }
 
     // Convert to a counter value (nanoseconds)
-    let nanoseconds = i64::from(ts.tv_sec)
+    let nanoseconds = ts
+        .tv_sec
         .saturating_mul(1_000_000_000)
-        .saturating_add(i64::from(ts.tv_nsec));
+        .saturating_add(ts.tv_nsec);
 
     // SAFETY: Caller guarantees counter is valid
     unsafe {
@@ -1077,13 +1102,12 @@ pub unsafe extern "C" fn kernel32_GetSystemTimePreciseAsFileTime(filetime: *mut 
     // (100-nanosecond intervals since 1601-01-01)
     //
     // The difference between 1601-01-01 and 1970-01-01 is 11644473600 seconds
-    const EPOCH_DIFF: i64 = 11_644_473_600;
 
     // Convert to 100-nanosecond intervals
-    let seconds_since_1601 = i64::from(ts.tv_sec) + EPOCH_DIFF;
+    let seconds_since_1601 = ts.tv_sec + EPOCH_DIFF;
     let intervals = seconds_since_1601
         .saturating_mul(10_000_000) // seconds to 100-nanosecond intervals
-        .saturating_add(i64::from(ts.tv_nsec) / 100); // add nanoseconds converted to 100-ns intervals
+        .saturating_add(ts.tv_nsec / 100); // add nanoseconds converted to 100-ns intervals
 
     // Split into low and high parts
     // SAFETY: Caller guarantees filetime is valid
@@ -1223,18 +1247,16 @@ pub unsafe extern "C" fn kernel32_HeapAlloc(
     flags: u32,
     size: usize,
 ) -> *mut core::ffi::c_void {
-    const HEAP_ZERO_MEMORY: u32 = 0x0000_0008;
-
     // Windows HeapAlloc can return a non-NULL pointer for 0-byte allocation
     // Allocate a minimal block (1 byte) to match Windows semantics
     let alloc_size = if size == 0 { 1 } else { size };
 
     // Allocate using the global allocator
-    let layout =
-        match core::alloc::Layout::from_size_align(alloc_size, core::mem::align_of::<usize>()) {
-            Ok(l) => l,
-            Err(_) => return core::ptr::null_mut(),
-        };
+    let Ok(layout) =
+        core::alloc::Layout::from_size_align(alloc_size, core::mem::align_of::<usize>())
+    else {
+        return core::ptr::null_mut();
+    };
 
     // SAFETY: Layout is valid, size is non-zero
     let ptr = unsafe { alloc::alloc(layout) };
@@ -2224,7 +2246,6 @@ mod tests {
     fn test_heap_alloc_zero_memory() {
         let heap = unsafe { kernel32_GetProcessHeap() };
         let size = 256;
-        const HEAP_ZERO_MEMORY: u32 = 0x0000_0008;
 
         let ptr = unsafe { kernel32_HeapAlloc(heap, HEAP_ZERO_MEMORY, size) };
 
