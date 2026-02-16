@@ -487,11 +487,7 @@ pub unsafe extern "C" fn msvcrt__ismbblead(c: u32) -> i32 {
     let byte = (c & 0xFF) as u8;
 
     // In UTF-8, lead bytes are >= 0xC0
-    if byte >= 0xC0 {
-        1 // TRUE - this is a lead byte
-    } else {
-        0 // FALSE - not a lead byte
-    }
+    i32::from(byte >= 0xC0)
 }
 
 /// C-specific exception handler (__C_specific_handler)

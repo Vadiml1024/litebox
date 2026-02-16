@@ -302,7 +302,7 @@ pub fn run(cli_args: CliArgs) -> Result<()> {
         let entry_bytes = core::slice::from_raw_parts(entry_point_address as *const u8, 16);
         print!("  ");
         for (i, byte) in entry_bytes.iter().enumerate() {
-            print!("{:02X} ", byte);
+            print!("{byte:02X} ");
             if i == 7 {
                 print!(" ");
             }
