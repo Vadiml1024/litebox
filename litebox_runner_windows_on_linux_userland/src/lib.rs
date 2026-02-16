@@ -72,9 +72,22 @@ pub fn run(cli_args: CliArgs) -> Result<()> {
 
     println!("\nSections:");
     for section in &sections {
+        let is_bss = section.virtual_size > 0 && section.data.len() == 0;
+        let section_type = if is_bss {
+            " (BSS - uninitialized)"
+        } else if section.data.len() < section.virtual_size as usize {
+            " (partial BSS)"
+        } else {
+            ""
+        };
         println!(
-            "  {} - VA: 0x{:X}, Size: {} bytes, Characteristics: 0x{:X}",
-            section.name, section.virtual_address, section.virtual_size, section.characteristics
+            "  {} - VA: 0x{:X}, VSize: {} bytes, RawSize: {} bytes, Characteristics: 0x{:X}{}",
+            section.name,
+            section.virtual_address,
+            section.virtual_size,
+            section.data.len(),
+            section.characteristics,
+            section_type
         );
     }
 

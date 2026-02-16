@@ -394,19 +394,42 @@ impl PeLoader {
                     ))
                 })?;
 
-            let size = section.data.len();
+            let data_size = section.data.len();
+            let virtual_size = section.virtual_size as usize;
 
-            if size > 0 {
+            // Copy initialized data if present
+            if data_size > 0 {
                 // SAFETY: Caller guarantees base_address is valid and has enough space
                 unsafe {
                     let dest = target_address as *mut u8;
-                    core::ptr::copy_nonoverlapping(section.data.as_ptr(), dest, size);
+                    core::ptr::copy_nonoverlapping(section.data.as_ptr(), dest, data_size);
+                }
+            }
+
+            // Zero-initialize any remaining space in the section
+            // This is crucial for BSS sections (uninitialized data) which have
+            // virtual_size > 0 but data_size == 0
+            if virtual_size > data_size {
+                let zero_start = target_address
+                    .checked_add(data_size as u64)
+                    .ok_or_else(|| {
+                        WindowsShimError::InvalidPeBinary(format!(
+                            "Address overflow in BSS section {} at 0x{:X}",
+                            section.name, target_address
+                        ))
+                    })?;
+                let zero_size = virtual_size - data_size;
+
+                // SAFETY: Caller guarantees base_address region is valid and writable
+                unsafe {
+                    let dest = zero_start as *mut u8;
+                    core::ptr::write_bytes(dest, 0, zero_size);
                 }
             }
 
             // Track the maximum address used (checked to prevent overflow)
             let section_end = (section.virtual_address as usize)
-                .checked_add(section.virtual_size as usize)
+                .checked_add(virtual_size)
                 .ok_or_else(|| {
                     WindowsShimError::InvalidPeBinary(format!(
                         "Section size overflow: VA 0x{:X} + size 0x{:X}",
