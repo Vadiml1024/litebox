@@ -470,6 +470,69 @@ impl PeLoader {
         Ok(max_address)
     }
 
+    /// Patch __CTOR_LIST__ to fix sentinel values that cause crashes
+    ///
+    /// MinGW CRT uses __CTOR_LIST__ for C++ global constructors. The list format is:
+    /// [-1 sentinel] [func_ptr_1] [func_ptr_2] ... [0 terminator]
+    ///
+    /// Background: Rustc uses LLVM's @llvm.global_ctors mechanism for global constructors.
+    /// The MinGW CRT (crtbegin.o) implements __do_global_ctors_aux which processes
+    /// __CTOR_LIST__ at startup. However, this implementation doesn't properly handle
+    /// the -1 sentinel and may try to call it as a function pointer.
+    ///
+    /// This function scans for __CTOR_LIST__ patterns and replaces -1 sentinels with 0
+    /// to prevent crashes when the MinGW CRT processes the constructor list.
+    ///
+    /// # Safety
+    /// This must be called after sections are loaded and relocations are applied.
+    pub unsafe fn patch_ctor_list(&self, base_address: u64) -> Result<()> {
+        // Scan all sections for the __CTOR_LIST__ pattern
+        // Pattern: 0xffffffffffffffff followed by valid VA or 0
+        let sections = self.sections()?;
+
+        for section in sections {
+            let section_va = base_address
+                .checked_add(u64::from(section.virtual_address))
+                .ok_or_else(|| {
+                    WindowsShimError::InvalidPeBinary(format!(
+                        "Address overflow in section {}",
+                        section.name
+                    ))
+                })?;
+
+            // Scan for 0xffffffffffffffff pattern
+            let section_size = section.virtual_size as usize;
+            let mut offset = 0;
+
+            while offset + 16 <= section_size {
+                // SAFETY: Caller guarantees base_address points to loaded sections
+                let ptr = (section_va + offset as u64) as *mut u64;
+                let value = unsafe { ptr.read() };
+
+                if value == 0xffffffffffffffff {
+                    // Check if next value looks like a valid VA or is 0 (terminator)
+                    let next_ptr = unsafe { ptr.add(1) };
+                    let next_value = unsafe { next_ptr.read() };
+
+                    // Valid __CTOR_LIST__ if next is 0 or a VA within the relocated image range
+                    // After relocations, pointers will be base_address + RVA
+                    // So check if it's within [base_address, base_address + 256MB)
+                    let looks_like_ctor_list = next_value == 0
+                        || (next_value >= base_address && next_value < base_address + 0x10000000);
+
+                    if looks_like_ctor_list {
+                        // Patch the -1 sentinel to 0 to prevent crashes
+                        unsafe { ptr.write(0) };
+                    }
+                }
+
+                offset += 8; // Move to next 64-bit value
+            }
+        }
+
+        Ok(())
+    }
+
     /// Get a data directory by index
     fn get_data_directory(&self, index: usize) -> Result<DataDirectory> {
         if index >= self.number_of_rva_and_sizes as usize {

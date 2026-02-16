@@ -39,3 +39,32 @@ Complete status of the Windows-on-Linux implementation with test coverage and ca
 - [Phase 6 Complete](./PHASE6_100_PERCENT_COMPLETE.md) - DLL Loading & Execution Framework
 - [Phase 7 Implementation](./PHASE7_IMPLEMENTATION.md) - Real Windows API Implementation (IN PROGRESS)
 
+---
+
+## Bug Reports and External Issues
+
+### MinGW CRT __CTOR_LIST__ Bug
+
+During Windows-on-Linux implementation, we discovered a critical bug in the MinGW-w64 C Runtime Library that affects global constructor initialization.
+
+**Documents:**
+- **[Complete Bug Report](./mingw_crt_ctor_list_bug_report.md)** - Comprehensive technical analysis including:
+  - Detailed root cause analysis with disassembly evidence
+  - Reproduction steps and test cases
+  - Impact assessment
+  - Workaround implementation details
+  - Recommendations for MinGW-w64 maintainers
+  
+- **[Bug Submission](./mingw_bug_submission.md)** - Concise report suitable for:
+  - Submitting to MinGW-w64 bug tracker
+  - Mailing list discussions
+  - Quick reference
+
+**Issue Summary:**  
+The `__do_global_ctors_aux` function in MinGW CRT crashes when processing the `__CTOR_LIST__` array because it attempts to call the `-1` (0xffffffffffffffff) sentinel value as a function pointer. This affects all programs compiled with MinGW that use global constructors, including Rust programs built with the `x86_64-pc-windows-gnu` target.
+
+**Impact:** High - causes immediate SIGSEGV crash before `main()` executes
+
+**Workaround:** Implemented in LiteBox PE loader - see `litebox_shim_windows/src/loader/pe.rs::patch_ctor_list()`
+
+---

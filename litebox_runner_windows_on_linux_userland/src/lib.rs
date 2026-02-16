@@ -221,6 +221,17 @@ pub fn run(cli_args: CliArgs) -> Result<()> {
         }
     }
 
+    // Patch __CTOR_LIST__ after relocations to fix MinGW constructor sentinel issues
+    // Must be done after relocations so pointer values are correct
+    println!("\nPatching __CTOR_LIST__ for MinGW compatibility...");
+    // SAFETY: Sections are loaded and relocations are applied
+    unsafe {
+        pe_loader
+            .patch_ctor_list(base_address)
+            .map_err(|e| anyhow!("Failed to patch __CTOR_LIST__: {e}"))?;
+    }
+    println!("  __CTOR_LIST__ patching complete");
+
     // Resolve imports
     println!("\nResolving imports...");
     let imports = pe_loader
