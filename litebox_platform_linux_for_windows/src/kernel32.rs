@@ -1216,12 +1216,6 @@ pub unsafe extern "C" fn kernel32_WriteFile(
     number_of_bytes_written: *mut u32,
     _overlapped: *mut core::ffi::c_void,
 ) -> i32 {
-    #[cfg(debug_assertions)]
-    eprintln!(
-        "[KERNEL32] WriteFile called: handle={:p}, bytes={}",
-        file, number_of_bytes_to_write
-    );
-
     // STD_OUTPUT_HANDLE = -11, STD_ERROR_HANDLE = -12
     let stdout_handle = kernel32_GetStdHandle((-11i32) as u32);
     let stderr_handle = kernel32_GetStdHandle((-12i32) as u32);
@@ -1230,23 +1224,13 @@ pub unsafe extern "C" fn kernel32_WriteFile(
     let is_stdout = file == stdout_handle;
     let is_stderr = file == stderr_handle;
 
-    #[cfg(debug_assertions)]
-    eprintln!(
-        "[KERNEL32] WriteFile: is_stdout={}, is_stderr={}",
-        is_stdout, is_stderr
-    );
-
     if !is_stdout && !is_stderr {
-        #[cfg(debug_assertions)]
-        eprintln!("[KERNEL32] WriteFile: not stdout/stderr, returning FALSE");
         // ERROR_INVALID_HANDLE = 6
         kernel32_SetLastError(6);
         return 0; // Not stdout/stderr, fail
     }
 
     if buffer.is_null() || number_of_bytes_to_write == 0 {
-        #[cfg(debug_assertions)]
-        eprintln!("[KERNEL32] WriteFile: null buffer or zero bytes, returning FALSE");
         // SAFETY: number_of_bytes_written is an optional out-parameter from the caller.
         // It may be null; if non-null, it must be valid for writing a single u32 value.
         if !number_of_bytes_written.is_null() {
@@ -1262,14 +1246,6 @@ pub unsafe extern "C" fn kernel32_WriteFile(
     // SAFETY: Caller guarantees buffer is valid for number_of_bytes_to_write bytes
     let data = unsafe { std::slice::from_raw_parts(buffer, number_of_bytes_to_write as usize) };
 
-    #[cfg(debug_assertions)]
-    if number_of_bytes_to_write <= 100 {
-        eprintln!(
-            "[KERNEL32] WriteFile: data = {:?}",
-            String::from_utf8_lossy(data)
-        );
-    }
-
     // Write to stdout or stderr
     let result = if is_stdout {
         std::io::Write::write(&mut std::io::stdout(), data)
@@ -1279,8 +1255,6 @@ pub unsafe extern "C" fn kernel32_WriteFile(
 
     match result {
         Ok(written) => {
-            #[cfg(debug_assertions)]
-            eprintln!("[KERNEL32] WriteFile: wrote {} bytes", written);
             if !number_of_bytes_written.is_null() {
                 // SAFETY: Caller guarantees number_of_bytes_written is valid
                 unsafe { *number_of_bytes_written = written as u32 };
@@ -1294,8 +1268,6 @@ pub unsafe extern "C" fn kernel32_WriteFile(
             1 // TRUE - success
         }
         Err(_e) => {
-            #[cfg(debug_assertions)]
-            eprintln!("[KERNEL32] WriteFile: error: {}", _e);
             // ERROR_WRITE_FAULT = 29
             kernel32_SetLastError(29);
             0 // FALSE - failure
@@ -2115,8 +2087,6 @@ pub unsafe extern "C" fn kernel32_GetStdHandle(std_handle: u32) -> *mut core::ff
 /// This function is safe to call. It returns a pointer to a static buffer.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_GetCommandLineW() -> *const u16 {
-    #[cfg(debug_assertions)]
-    eprintln!("[KERNEL32] GetCommandLineW called");
     // Static empty wide string (just null terminator)
     static COMMAND_LINE: [u16; 1] = [0];
     // SAFETY: We're returning a pointer to a static immutable buffer
@@ -2132,8 +2102,6 @@ pub unsafe extern "C" fn kernel32_GetCommandLineW() -> *const u16 {
 /// This function is safe to call. It returns a pointer to a static buffer.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_GetEnvironmentStringsW() -> *const u16 {
-    #[cfg(debug_assertions)]
-    eprintln!("[KERNEL32] GetEnvironmentStringsW called");
     // Static empty environment block (two null terminators)
     static ENV_STRINGS: [u16; 2] = [0, 0];
     // SAFETY: We're returning a pointer to a static immutable buffer
@@ -2148,8 +2116,6 @@ pub unsafe extern "C" fn kernel32_GetEnvironmentStringsW() -> *const u16 {
 /// This function is safe to call with any argument.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_FreeEnvironmentStringsW(_env_strings: *const u16) -> i32 {
-    #[cfg(debug_assertions)]
-    eprintln!("[KERNEL32] FreeEnvironmentStringsW called");
     1 // TRUE - success
 }
 

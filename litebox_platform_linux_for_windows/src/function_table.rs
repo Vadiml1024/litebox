@@ -436,6 +436,38 @@ pub fn get_function_table() -> Vec<FunctionImpl> {
             num_params: 4,
             impl_address: crate::msvcrt::msvcrt___C_specific_handler as *const () as usize,
         },
+        // Phase 9: CRT helper functions for global data access
+        FunctionImpl {
+            name: "__p__fmode",
+            dll_name: "MSVCRT.dll",
+            num_params: 0,
+            impl_address: crate::msvcrt::msvcrt___p__fmode as *const () as usize,
+        },
+        FunctionImpl {
+            name: "__p__commode",
+            dll_name: "MSVCRT.dll",
+            num_params: 0,
+            impl_address: crate::msvcrt::msvcrt___p__commode as *const () as usize,
+        },
+        FunctionImpl {
+            name: "_setargv",
+            dll_name: "MSVCRT.dll",
+            num_params: 0,
+            impl_address: crate::msvcrt::msvcrt__setargv as *const () as usize,
+        },
+        FunctionImpl {
+            name: "_set_invalid_parameter_handler",
+            dll_name: "MSVCRT.dll",
+            num_params: 1,
+            impl_address: crate::msvcrt::msvcrt__set_invalid_parameter_handler as *const ()
+                as usize,
+        },
+        FunctionImpl {
+            name: "_pei386_runtime_relocator",
+            dll_name: "MSVCRT.dll",
+            num_params: 0,
+            impl_address: crate::msvcrt::msvcrt__pei386_runtime_relocator as *const () as usize,
+        },
         // Additional KERNEL32 stub functions
         FunctionImpl {
             name: "CancelIo",

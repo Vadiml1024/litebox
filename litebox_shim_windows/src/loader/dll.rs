@@ -452,6 +452,12 @@ impl DllManager {
             ("_acmdln", MSVCRT_BASE + 0x1C),
             ("_ismbblead", MSVCRT_BASE + 0x1D),
             ("__C_specific_handler", MSVCRT_BASE + 0x1E),
+            // Phase 9: CRT helper functions for global data access
+            ("__p__fmode", MSVCRT_BASE + 0x1F),
+            ("__p__commode", MSVCRT_BASE + 0x20),
+            ("_setargv", MSVCRT_BASE + 0x21),
+            ("_set_invalid_parameter_handler", MSVCRT_BASE + 0x22),
+            ("_pei386_runtime_relocator", MSVCRT_BASE + 0x23),
         ];
 
         self.register_stub_dll("MSVCRT.dll", exports);

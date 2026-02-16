@@ -39,6 +39,74 @@ pub static mut msvcrt__commode: i32 = 0;
 pub static mut msvcrt___initenv: *mut *mut i8 = ptr::null_mut();
 
 // ============================================================================
+// Data Access Functions
+// ============================================================================
+// These functions return pointers to global data variables
+
+/// Get pointer to file mode (_fmode)
+///
+/// # Safety
+/// Returns a pointer to a static mutable variable. The caller must ensure
+/// proper synchronization if accessing from multiple threads.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt___p__fmode() -> *mut i32 {
+    core::ptr::addr_of_mut!(msvcrt__fmode)
+}
+
+/// Get pointer to commit mode (_commode)
+///
+/// # Safety
+/// Returns a pointer to a static mutable variable. The caller must ensure
+/// proper synchronization if accessing from multiple threads.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt___p__commode() -> *mut i32 {
+    core::ptr::addr_of_mut!(msvcrt__commode)
+}
+
+// ============================================================================
+// CRT Initialization Functions
+// ============================================================================
+
+/// Set command line arguments (_setargv)
+///
+/// This is called during CRT initialization to parse command line arguments.
+/// For now, this is a no-op stub since we handle arguments in __getmainargs.
+///
+/// # Safety
+/// This function is safe to call but marked unsafe for C ABI compatibility.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt__setargv() {
+    // No-op stub - we handle arguments in __getmainargs
+}
+
+/// Set invalid parameter handler
+///
+/// This is called during CRT initialization to set a handler for invalid parameters.
+/// For now, this is a no-op stub.
+///
+/// # Safety
+/// This function is unsafe as it deals with function pointers.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt__set_invalid_parameter_handler(
+    _handler: *mut core::ffi::c_void,
+) -> *mut core::ffi::c_void {
+    // No-op stub - return null to indicate no previous handler
+    ptr::null_mut()
+}
+
+/// PE runtime relocator
+///
+/// This function is called by MinGW runtime to perform additional relocations.
+/// Since relocations are already handled by our PE loader, this is a no-op.
+///
+/// # Safety
+/// This function is safe to call but marked unsafe for C ABI compatibility.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt__pei386_runtime_relocator() {
+    // No-op stub - relocations already handled by PE loader
+}
+
+// ============================================================================
 // Memory Management Functions
 // ============================================================================
 
@@ -204,38 +272,23 @@ pub unsafe extern "C" fn msvcrt_strncmp(s1: *const i8, s2: *const i8, n: usize) 
 #[unsafe(no_mangle)]
 #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
 pub unsafe extern "C" fn msvcrt_printf(format: *const i8) -> i32 {
-    #[cfg(debug_assertions)]
-    eprintln!("[MSVCRT] printf called");
     if format.is_null() {
-        #[cfg(debug_assertions)]
-        eprintln!("[MSVCRT] printf: format is null, returning -1");
         return -1;
     }
 
     // SAFETY: Caller guarantees format points to a valid null-terminated string
     let Some(format_str) = CStr::from_ptr(format).to_str().ok() else {
-        #[cfg(debug_assertions)]
-        eprintln!("[MSVCRT] printf: invalid UTF-8 in format string");
         return -1;
     };
-
-    #[cfg(debug_assertions)]
-    eprintln!("[MSVCRT] printf: format_str = {:?}", format_str);
 
     // Simple implementation: just print the format string as-is
     // A full implementation would parse varargs and handle format specifiers
     match write!(io::stdout(), "{format_str}") {
         Ok(()) => {
             let _ = io::stdout().flush();
-            #[cfg(debug_assertions)]
-            eprintln!("[MSVCRT] printf: printed {} characters", format_str.len());
             format_str.len() as i32
         }
-        Err(_e) => {
-            #[cfg(debug_assertions)]
-            eprintln!("[MSVCRT] printf: error writing to stdout: {}", _e);
-            -1
-        }
+        Err(_e) => -1,
     }
 }
 
@@ -250,15 +303,7 @@ pub unsafe extern "C" fn msvcrt_fwrite(
     nmemb: usize,
     _stream: *mut u8,
 ) -> usize {
-    #[cfg(debug_assertions)]
-    eprintln!(
-        "[MSVCRT] fwrite called: size={}, nmemb={}, stream={:p}",
-        size, nmemb, _stream
-    );
-
     if ptr.is_null() || size == 0 || nmemb == 0 {
-        #[cfg(debug_assertions)]
-        eprintln!("[MSVCRT] fwrite: null ptr or zero size/nmemb, returning 0");
         return 0;
     }
 
@@ -266,29 +311,13 @@ pub unsafe extern "C" fn msvcrt_fwrite(
     // SAFETY: Caller guarantees ptr is valid for total_bytes
     let data = unsafe { std::slice::from_raw_parts(ptr, total_bytes) };
 
-    #[cfg(debug_assertions)]
-    eprintln!("[MSVCRT] fwrite: writing {} bytes", total_bytes);
-    #[cfg(debug_assertions)]
-    if total_bytes <= 100 {
-        eprintln!(
-            "[MSVCRT] fwrite: data = {:?}",
-            String::from_utf8_lossy(data)
-        );
-    }
-
     // Simple implementation: write to stdout
     match io::stdout().write(data) {
         Ok(written) => {
             let _ = io::stdout().flush();
-            #[cfg(debug_assertions)]
-            eprintln!("[MSVCRT] fwrite: wrote {} bytes", written);
             written / size
         }
-        Err(_e) => {
-            #[cfg(debug_assertions)]
-            eprintln!("[MSVCRT] fwrite: error: {}", _e);
-            0
-        }
+        Err(_e) => 0,
     }
 }
 
@@ -354,9 +383,6 @@ pub unsafe extern "C" fn msvcrt___getmainargs(
     _do_wildcard: i32,
     _start_info: *mut u8,
 ) -> i32 {
-    #[cfg(debug_assertions)]
-    eprintln!("[MSVCRT] __getmainargs called");
-
     // Static null-terminated arrays for argv and env
     // These are immutable after initialization, so no synchronization needed
     static mut ARGV_STORAGE: [*mut i8; 1] = [core::ptr::null_mut()];
@@ -365,8 +391,6 @@ pub unsafe extern "C" fn msvcrt___getmainargs(
     // Set argc to 0 (no arguments)
     if !argc.is_null() {
         *argc = 0;
-        #[cfg(debug_assertions)]
-        eprintln!("[MSVCRT] __getmainargs: set argc = 0");
     }
 
     // Set argv to empty array with null terminator
@@ -374,20 +398,14 @@ pub unsafe extern "C" fn msvcrt___getmainargs(
     // and the contents (null pointers) never change
     if !argv.is_null() {
         *argv = core::ptr::addr_of_mut!(ARGV_STORAGE).cast();
-        #[cfg(debug_assertions)]
-        eprintln!("[MSVCRT] __getmainargs: set argv");
     }
 
     // Set env to empty array with null terminator
     // SAFETY: Same as argv - immutable after initialization
     if !env.is_null() {
         *env = core::ptr::addr_of_mut!(ENV_STORAGE).cast();
-        #[cfg(debug_assertions)]
-        eprintln!("[MSVCRT] __getmainargs: set env");
     }
 
-    #[cfg(debug_assertions)]
-    eprintln!("[MSVCRT] __getmainargs returning 0");
     0 // Success
 }
 
@@ -410,30 +428,13 @@ pub unsafe extern "C" fn msvcrt__initterm(start: *mut extern "C" fn(), end: *mut
         return;
     }
 
-    #[cfg(debug_assertions)]
-    eprintln!(
-        "[MSVCRT] _initterm called: start={:p}, end={:p}",
-        start, end
-    );
-
     let mut current = start;
-    let mut index = 0;
     while current < end {
         // SAFETY: Caller guarantees current is within valid range [start, end)
         let func_ptr_raw = unsafe { *(current as *mut usize) };
-        #[cfg(debug_assertions)]
-        eprintln!(
-            "[MSVCRT] _initterm[{}]: func_ptr={:#018x}",
-            index, func_ptr_raw
-        );
 
         // Check if function pointer is not null or -1 (sentinel value) before calling
         if func_ptr_raw != 0 && func_ptr_raw != usize::MAX {
-            #[cfg(debug_assertions)]
-            eprintln!(
-                "[MSVCRT] _initterm[{}]: calling function at {:#018x}",
-                index, func_ptr_raw
-            );
             // SAFETY:
             // - Provenance: `func_ptr_raw` is read from the array in [`start`, `end`), which
             //   the caller (the MSVCRT/CRT runtime) populates with pointers to initialization
@@ -453,23 +454,11 @@ pub unsafe extern "C" fn msvcrt__initterm(start: *mut extern "C" fn(), end: *mut
             //     guarantees for these function pointers.
             let func: extern "C" fn() = unsafe { core::mem::transmute(func_ptr_raw) };
             func();
-            #[cfg(debug_assertions)]
-            eprintln!("[MSVCRT] _initterm[{}]: function returned", index);
-        } else {
-            #[cfg(debug_assertions)]
-            eprintln!(
-                "[MSVCRT] _initterm[{}]: skipping null/sentinel pointer",
-                index
-            );
         }
 
         // SAFETY: Caller guarantees current can be advanced within the range
         current = unsafe { current.add(1) };
-        index += 1;
     }
-
-    #[cfg(debug_assertions)]
-    eprintln!("[MSVCRT] _initterm completed, processed {} entries", index);
 }
 
 /// Register onexit handler (_onexit)
