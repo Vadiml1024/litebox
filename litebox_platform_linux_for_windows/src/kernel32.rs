@@ -1216,6 +1216,7 @@ pub unsafe extern "C" fn kernel32_WriteFile(
     number_of_bytes_written: *mut u32,
     _overlapped: *mut core::ffi::c_void,
 ) -> i32 {
+    #[cfg(debug_assertions)]
     eprintln!(
         "[KERNEL32] WriteFile called: handle={:p}, bytes={}",
         file, number_of_bytes_to_write
@@ -1229,24 +1230,39 @@ pub unsafe extern "C" fn kernel32_WriteFile(
     let is_stdout = file == stdout_handle;
     let is_stderr = file == stderr_handle;
 
+    #[cfg(debug_assertions)]
     eprintln!(
         "[KERNEL32] WriteFile: is_stdout={}, is_stderr={}",
         is_stdout, is_stderr
     );
 
     if !is_stdout && !is_stderr {
+        #[cfg(debug_assertions)]
         eprintln!("[KERNEL32] WriteFile: not stdout/stderr, returning FALSE");
+        // ERROR_INVALID_HANDLE = 6
+        kernel32_SetLastError(6);
         return 0; // Not stdout/stderr, fail
     }
 
     if buffer.is_null() || number_of_bytes_to_write == 0 {
+        #[cfg(debug_assertions)]
         eprintln!("[KERNEL32] WriteFile: null buffer or zero bytes, returning FALSE");
+        // SAFETY: number_of_bytes_written is an optional out-parameter from the caller.
+        // It may be null; if non-null, it must be valid for writing a single u32 value.
+        if !number_of_bytes_written.is_null() {
+            unsafe {
+                *number_of_bytes_written = 0;
+            }
+        }
+        // ERROR_INVALID_PARAMETER = 87
+        kernel32_SetLastError(87);
         return 0;
     }
 
     // SAFETY: Caller guarantees buffer is valid for number_of_bytes_to_write bytes
     let data = unsafe { std::slice::from_raw_parts(buffer, number_of_bytes_to_write as usize) };
 
+    #[cfg(debug_assertions)]
     if number_of_bytes_to_write <= 100 {
         eprintln!(
             "[KERNEL32] WriteFile: data = {:?}",
@@ -1263,6 +1279,7 @@ pub unsafe extern "C" fn kernel32_WriteFile(
 
     match result {
         Ok(written) => {
+            #[cfg(debug_assertions)]
             eprintln!("[KERNEL32] WriteFile: wrote {} bytes", written);
             if !number_of_bytes_written.is_null() {
                 // SAFETY: Caller guarantees number_of_bytes_written is valid
@@ -1276,8 +1293,11 @@ pub unsafe extern "C" fn kernel32_WriteFile(
             }
             1 // TRUE - success
         }
-        Err(e) => {
-            eprintln!("[KERNEL32] WriteFile: error: {}", e);
+        Err(_e) => {
+            #[cfg(debug_assertions)]
+            eprintln!("[KERNEL32] WriteFile: error: {}", _e);
+            // ERROR_WRITE_FAULT = 29
+            kernel32_SetLastError(29);
             0 // FALSE - failure
         }
     }
@@ -2095,11 +2115,12 @@ pub unsafe extern "C" fn kernel32_GetStdHandle(std_handle: u32) -> *mut core::ff
 /// This function is safe to call. It returns a pointer to a static buffer.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_GetCommandLineW() -> *const u16 {
+    #[cfg(debug_assertions)]
     eprintln!("[KERNEL32] GetCommandLineW called");
     // Static empty wide string (just null terminator)
-    static mut COMMAND_LINE: [u16; 1] = [0];
-    // SAFETY: We're returning a pointer to a static buffer
-    core::ptr::addr_of!(COMMAND_LINE[0])
+    static COMMAND_LINE: [u16; 1] = [0];
+    // SAFETY: We're returning a pointer to a static immutable buffer
+    COMMAND_LINE.as_ptr()
 }
 
 /// GetEnvironmentStringsW - returns the environment strings (wide version)
@@ -2111,11 +2132,12 @@ pub unsafe extern "C" fn kernel32_GetCommandLineW() -> *const u16 {
 /// This function is safe to call. It returns a pointer to a static buffer.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_GetEnvironmentStringsW() -> *const u16 {
+    #[cfg(debug_assertions)]
     eprintln!("[KERNEL32] GetEnvironmentStringsW called");
     // Static empty environment block (two null terminators)
-    static mut ENV_STRINGS: [u16; 2] = [0, 0];
-    // SAFETY: We're returning a pointer to a static buffer
-    core::ptr::addr_of!(ENV_STRINGS[0])
+    static ENV_STRINGS: [u16; 2] = [0, 0];
+    // SAFETY: We're returning a pointer to a static immutable buffer
+    ENV_STRINGS.as_ptr()
 }
 
 /// FreeEnvironmentStringsW - frees the environment strings (wide version)
@@ -2126,6 +2148,7 @@ pub unsafe extern "C" fn kernel32_GetEnvironmentStringsW() -> *const u16 {
 /// This function is safe to call with any argument.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_FreeEnvironmentStringsW(_env_strings: *const u16) -> i32 {
+    #[cfg(debug_assertions)]
     eprintln!("[KERNEL32] FreeEnvironmentStringsW called");
     1 // TRUE - success
 }
@@ -3923,5 +3946,108 @@ mod tests {
         // Check that last error was set
         let error = unsafe { kernel32_GetLastError() };
         assert_eq!(error, 2, "Last error should be ERROR_FILE_NOT_FOUND");
+    }
+
+    #[test]
+    fn test_write_file_stdout() {
+        // Get stdout handle
+        let stdout = unsafe { kernel32_GetStdHandle((-11i32) as u32) };
+        assert!(!stdout.is_null());
+
+        // Write some data
+        let data = b"test output";
+        let mut bytes_written = 0u32;
+        let result = unsafe {
+            kernel32_WriteFile(
+                stdout,
+                data.as_ptr(),
+                data.len() as u32,
+                &mut bytes_written,
+                core::ptr::null_mut(),
+            )
+        };
+
+        assert_eq!(result, 1, "WriteFile should succeed for stdout");
+        assert_eq!(bytes_written, data.len() as u32, "Should write all bytes");
+    }
+
+    #[test]
+    fn test_write_file_invalid_handle() {
+        // Try to write to invalid handle
+        let invalid_handle = 0x9999 as *mut core::ffi::c_void;
+        let data = b"test";
+        let mut bytes_written = 0u32;
+        let result = unsafe {
+            kernel32_WriteFile(
+                invalid_handle,
+                data.as_ptr(),
+                data.len() as u32,
+                &mut bytes_written,
+                core::ptr::null_mut(),
+            )
+        };
+
+        assert_eq!(result, 0, "WriteFile should fail for invalid handle");
+        let error = unsafe { kernel32_GetLastError() };
+        assert_eq!(error, 6, "Should set ERROR_INVALID_HANDLE");
+    }
+
+    #[test]
+    fn test_write_file_null_buffer() {
+        let stdout = unsafe { kernel32_GetStdHandle((-11i32) as u32) };
+        let mut bytes_written = 0xFFFF_FFFFu32; // Set to non-zero to verify it gets cleared
+
+        let result = unsafe {
+            kernel32_WriteFile(
+                stdout,
+                core::ptr::null(),
+                10,
+                &mut bytes_written,
+                core::ptr::null_mut(),
+            )
+        };
+
+        assert_eq!(result, 0, "WriteFile should fail for null buffer");
+        assert_eq!(bytes_written, 0, "bytes_written should be set to 0");
+        let error = unsafe { kernel32_GetLastError() };
+        assert_eq!(error, 87, "Should set ERROR_INVALID_PARAMETER");
+    }
+
+    #[test]
+    fn test_get_command_line_w() {
+        let cmd_line = unsafe { kernel32_GetCommandLineW() };
+        assert!(
+            !cmd_line.is_null(),
+            "GetCommandLineW should not return null"
+        );
+
+        // Should be null-terminated
+        let first_char = unsafe { *cmd_line };
+        assert_eq!(
+            first_char, 0,
+            "Empty command line should have null terminator"
+        );
+    }
+
+    #[test]
+    fn test_get_environment_strings_w() {
+        let env = unsafe { kernel32_GetEnvironmentStringsW() };
+        assert!(
+            !env.is_null(),
+            "GetEnvironmentStringsW should not return null"
+        );
+
+        // Should have double null terminator (empty block)
+        let first_char = unsafe { *env };
+        assert_eq!(first_char, 0, "First char should be null");
+        let second_char = unsafe { *env.add(1) };
+        assert_eq!(second_char, 0, "Second char should be null (double-null)");
+    }
+
+    #[test]
+    fn test_free_environment_strings_w() {
+        let env = unsafe { kernel32_GetEnvironmentStringsW() };
+        let result = unsafe { kernel32_FreeEnvironmentStringsW(env) };
+        assert_eq!(result, 1, "FreeEnvironmentStringsW should return TRUE");
     }
 }
