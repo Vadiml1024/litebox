@@ -143,6 +143,48 @@ pub fn get_function_table() -> Vec<FunctionImpl> {
             num_params: 1,
             impl_address: crate::msvcrt::msvcrt_exit as *const () as usize,
         },
+        FunctionImpl {
+            name: "__iob_func",
+            dll_name: "MSVCRT.dll",
+            num_params: 0,
+            impl_address: crate::msvcrt::msvcrt___iob_func as *const () as usize,
+        },
+        FunctionImpl {
+            name: "vfprintf",
+            dll_name: "MSVCRT.dll",
+            num_params: 3, // Variadic, but at least 3
+            impl_address: crate::msvcrt::msvcrt_vfprintf as *const () as usize,
+        },
+        FunctionImpl {
+            name: "_onexit",
+            dll_name: "MSVCRT.dll",
+            num_params: 1,
+            impl_address: crate::msvcrt::msvcrt__onexit as *const () as usize,
+        },
+        FunctionImpl {
+            name: "_amsg_exit",
+            dll_name: "MSVCRT.dll",
+            num_params: 1,
+            impl_address: crate::msvcrt::msvcrt__amsg_exit as *const () as usize,
+        },
+        FunctionImpl {
+            name: "_cexit",
+            dll_name: "MSVCRT.dll",
+            num_params: 0,
+            impl_address: crate::msvcrt::msvcrt__cexit as *const () as usize,
+        },
+        FunctionImpl {
+            name: "_fpreset",
+            dll_name: "MSVCRT.dll",
+            num_params: 0,
+            impl_address: crate::msvcrt::msvcrt__fpreset as *const () as usize,
+        },
+        FunctionImpl {
+            name: "__setusermatherr",
+            dll_name: "MSVCRT.dll",
+            num_params: 1,
+            impl_address: crate::msvcrt::msvcrt___setusermatherr as *const () as usize,
+        },
         // KERNEL32.dll functions - these are defined in kernel32.rs
         FunctionImpl {
             name: "Sleep",
