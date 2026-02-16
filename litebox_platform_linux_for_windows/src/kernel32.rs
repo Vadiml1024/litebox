@@ -2086,6 +2086,50 @@ pub unsafe extern "C" fn kernel32_GetStdHandle(std_handle: u32) -> *mut core::ff
     }
 }
 
+/// GetCommandLineW - returns the command line for the current process (wide version)
+///
+/// Returns a pointer to a static wide string containing the command line.
+/// For simplicity, we return an empty string.
+///
+/// # Safety
+/// This function is safe to call. It returns a pointer to a static buffer.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_GetCommandLineW() -> *const u16 {
+    eprintln!("[KERNEL32] GetCommandLineW called");
+    // Static empty wide string (just null terminator)
+    static mut COMMAND_LINE: [u16; 1] = [0];
+    // SAFETY: We're returning a pointer to a static buffer
+    core::ptr::addr_of!(COMMAND_LINE[0])
+}
+
+/// GetEnvironmentStringsW - returns the environment strings (wide version)
+///
+/// Returns a pointer to a block of null-terminated wide strings, ending with
+/// an additional null terminator. For simplicity, we return an empty block.
+///
+/// # Safety
+/// This function is safe to call. It returns a pointer to a static buffer.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_GetEnvironmentStringsW() -> *const u16 {
+    eprintln!("[KERNEL32] GetEnvironmentStringsW called");
+    // Static empty environment block (two null terminators)
+    static mut ENV_STRINGS: [u16; 2] = [0, 0];
+    // SAFETY: We're returning a pointer to a static buffer
+    core::ptr::addr_of!(ENV_STRINGS[0])
+}
+
+/// FreeEnvironmentStringsW - frees the environment strings (wide version)
+///
+/// This is a no-op since we return a static buffer.
+///
+/// # Safety
+/// This function is safe to call with any argument.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_FreeEnvironmentStringsW(_env_strings: *const u16) -> i32 {
+    eprintln!("[KERNEL32] FreeEnvironmentStringsW called");
+    1 // TRUE - success
+}
+
 /// LoadLibraryA stub - loads a library (ANSI version)
 ///
 /// # Safety
