@@ -363,6 +363,37 @@ pub fn get_function_table() -> Vec<FunctionImpl> {
             num_params: 4,
             impl_address: crate::kernel32::kernel32_HeapReAlloc as *const () as usize,
         },
+        // Phase 8.7: Additional startup and CRT functions
+        FunctionImpl {
+            name: "GetStartupInfoA",
+            dll_name: "KERNEL32.dll",
+            num_params: 1,
+            impl_address: crate::kernel32::kernel32_GetStartupInfoA as *const () as usize,
+        },
+        FunctionImpl {
+            name: "GetStartupInfoW",
+            dll_name: "KERNEL32.dll",
+            num_params: 1,
+            impl_address: crate::kernel32::kernel32_GetStartupInfoW as *const () as usize,
+        },
+        FunctionImpl {
+            name: "_acmdln",
+            dll_name: "MSVCRT.dll",
+            num_params: 0,
+            impl_address: crate::msvcrt::msvcrt__acmdln as *const () as usize,
+        },
+        FunctionImpl {
+            name: "_ismbblead",
+            dll_name: "MSVCRT.dll",
+            num_params: 1,
+            impl_address: crate::msvcrt::msvcrt__ismbblead as *const () as usize,
+        },
+        FunctionImpl {
+            name: "__C_specific_handler",
+            dll_name: "MSVCRT.dll",
+            num_params: 4,
+            impl_address: crate::msvcrt::msvcrt___C_specific_handler as *const () as usize,
+        },
     ]
 }
 

@@ -1465,6 +1465,130 @@ pub unsafe extern "C" fn kernel32_HeapReAlloc(
     new_ptr.cast()
 }
 
+/// STARTUPINFOA structure - contains information about window station, desktop, standard handles, etc.
+/// This is a simplified version that matches the Windows API layout.
+#[repr(C)]
+#[allow(non_snake_case)]
+struct StartupInfoA {
+    cb: u32,
+    lpReserved: *mut u8,
+    lpDesktop: *mut u8,
+    lpTitle: *mut u8,
+    dwX: u32,
+    dwY: u32,
+    dwXSize: u32,
+    dwYSize: u32,
+    dwXCountChars: u32,
+    dwYCountChars: u32,
+    dwFillAttribute: u32,
+    dwFlags: u32,
+    wShowWindow: u16,
+    cbReserved2: u16,
+    lpReserved2: *mut u8,
+    hStdInput: usize,
+    hStdOutput: usize,
+    hStdError: usize,
+}
+
+/// STARTUPINFOW structure - wide-character version
+#[repr(C)]
+#[allow(non_snake_case)]
+struct StartupInfoW {
+    cb: u32,
+    lpReserved: *mut u16,
+    lpDesktop: *mut u16,
+    lpTitle: *mut u16,
+    dwX: u32,
+    dwY: u32,
+    dwXSize: u32,
+    dwYSize: u32,
+    dwXCountChars: u32,
+    dwYCountChars: u32,
+    dwFillAttribute: u32,
+    dwFlags: u32,
+    wShowWindow: u16,
+    cbReserved2: u16,
+    lpReserved2: *mut u8,
+    hStdInput: usize,
+    hStdOutput: usize,
+    hStdError: usize,
+}
+
+/// GetStartupInfoA - retrieves the STARTUPINFO structure for the current process
+///
+/// This is a minimal implementation that sets the structure to default values.
+/// In a real Windows environment, this would contain information passed to CreateProcess.
+///
+/// # Safety
+/// The caller must ensure `startup_info` points to a valid writable STARTUPINFOA structure.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_GetStartupInfoA(startup_info: *mut u8) {
+    if startup_info.is_null() {
+        return;
+    }
+
+    // SAFETY: Caller guarantees startup_info points to valid writable memory
+    // We cast to the structure type for easier field access
+    let info = unsafe { &mut *(startup_info as *mut StartupInfoA) };
+
+    // Initialize the structure with default values
+    // In a real implementation, these would come from the process's startup information
+    info.cb = core::mem::size_of::<StartupInfoA>() as u32;
+    info.lpReserved = core::ptr::null_mut();
+    info.lpDesktop = core::ptr::null_mut();
+    info.lpTitle = core::ptr::null_mut();
+    info.dwX = 0;
+    info.dwY = 0;
+    info.dwXSize = 0;
+    info.dwYSize = 0;
+    info.dwXCountChars = 0;
+    info.dwYCountChars = 0;
+    info.dwFillAttribute = 0;
+    info.dwFlags = 0;
+    info.wShowWindow = 1; // SW_SHOWNORMAL
+    info.cbReserved2 = 0;
+    info.lpReserved2 = core::ptr::null_mut();
+    // Standard handles - use placeholder values
+    info.hStdInput = 0; // Could be mapped to actual stdin fd
+    info.hStdOutput = 1; // Could be mapped to actual stdout fd
+    info.hStdError = 2; // Could be mapped to actual stderr fd
+}
+
+/// GetStartupInfoW - retrieves the STARTUPINFOW structure for the current process (wide-char version)
+///
+/// # Safety
+/// The caller must ensure `startup_info` points to a valid writable STARTUPINFOW structure.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_GetStartupInfoW(startup_info: *mut u8) {
+    if startup_info.is_null() {
+        return;
+    }
+
+    // SAFETY: Caller guarantees startup_info points to valid writable memory
+    let info = unsafe { &mut *(startup_info as *mut StartupInfoW) };
+
+    // Initialize the structure with default values
+    info.cb = core::mem::size_of::<StartupInfoW>() as u32;
+    info.lpReserved = core::ptr::null_mut();
+    info.lpDesktop = core::ptr::null_mut();
+    info.lpTitle = core::ptr::null_mut();
+    info.dwX = 0;
+    info.dwY = 0;
+    info.dwXSize = 0;
+    info.dwYSize = 0;
+    info.dwXCountChars = 0;
+    info.dwYCountChars = 0;
+    info.dwFillAttribute = 0;
+    info.dwFlags = 0;
+    info.wShowWindow = 1; // SW_SHOWNORMAL
+    info.cbReserved2 = 0;
+    info.lpReserved2 = core::ptr::null_mut();
+    // Standard handles - use placeholder values
+    info.hStdInput = 0;
+    info.hStdOutput = 1;
+    info.hStdError = 2;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

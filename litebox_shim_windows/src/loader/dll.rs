@@ -324,6 +324,9 @@ impl DllManager {
             ("GetSystemTimePreciseAsFileTime", KERNEL32_BASE + 0x41),
             // Phase 8.5 and 8.6: Note - CreateFileW, ReadFile, WriteFile, CloseHandle,
             // GetProcessHeap, HeapAlloc, HeapFree, HeapReAlloc are already in the list above
+            // Phase 8.7: Additional startup functions
+            ("GetStartupInfoA", KERNEL32_BASE + 0x42),
+            ("GetStartupInfoW", KERNEL32_BASE + 0x43),
         ];
 
         self.register_stub_dll("KERNEL32.dll", exports);
@@ -384,6 +387,10 @@ impl DllManager {
             ("_fpreset", MSVCRT_BASE + 0x19),
             ("_initterm", MSVCRT_BASE + 0x1A),
             ("_onexit", MSVCRT_BASE + 0x1B),
+            // Phase 8.7: Additional CRT functions
+            ("_acmdln", MSVCRT_BASE + 0x1C),
+            ("_ismbblead", MSVCRT_BASE + 0x1D),
+            ("__C_specific_handler", MSVCRT_BASE + 0x1E),
         ];
 
         self.register_stub_dll("MSVCRT.dll", exports);
