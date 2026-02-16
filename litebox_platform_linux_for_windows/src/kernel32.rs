@@ -89,6 +89,48 @@ fn ensure_tls_manager_initialized() {
     }
 }
 
+/// Heap allocation tracker
+///
+/// Tracks allocation sizes for HeapAlloc so that HeapFree and HeapReAlloc
+/// can properly deallocate memory using the correct Layout.
+struct HeapAllocationTracker {
+    /// Map of pointer address -> (size, alignment)
+    allocations: HashMap<usize, (usize, usize)>,
+}
+
+impl HeapAllocationTracker {
+    fn new() -> Self {
+        Self {
+            allocations: HashMap::new(),
+        }
+    }
+
+    fn track_allocation(&mut self, ptr: *mut u8, size: usize, align: usize) {
+        if !ptr.is_null() {
+            self.allocations.insert(ptr as usize, (size, align));
+        }
+    }
+
+    fn get_allocation(&self, ptr: *mut core::ffi::c_void) -> Option<(usize, usize)> {
+        self.allocations.get(&(ptr as usize)).copied()
+    }
+
+    fn remove_allocation(&mut self, ptr: *mut core::ffi::c_void) -> Option<(usize, usize)> {
+        self.allocations.remove(&(ptr as usize))
+    }
+}
+
+/// Global heap allocation tracker protected by a mutex
+static HEAP_TRACKER: Mutex<Option<HeapAllocationTracker>> = Mutex::new(None);
+
+/// Initialize the heap tracker (called once)
+fn ensure_heap_tracker_initialized() {
+    let mut tracker = HEAP_TRACKER.lock().unwrap();
+    if tracker.is_none() {
+        *tracker = Some(HeapAllocationTracker::new());
+    }
+}
+
 /// Sleep for specified milliseconds (Sleep)
 ///
 /// This is the Windows Sleep function that suspends execution for the specified duration.
@@ -1226,6 +1268,9 @@ pub unsafe extern "C" fn kernel32_GetProcessHeap() -> *mut core::ffi::c_void {
 /// # Returns
 /// Pointer to allocated memory, or NULL on failure
 ///
+/// # Panics
+/// May panic if the heap tracker mutex is poisoned (e.g., another thread panicked while holding the lock).
+///
 /// # Safety
 /// The returned pointer must be freed with HeapFree.
 /// The caller must ensure the size is reasonable.
@@ -1261,12 +1306,19 @@ pub unsafe extern "C" fn kernel32_HeapAlloc(
         }
     }
 
+    // Track this allocation for later deallocation
+    ensure_heap_tracker_initialized();
+    let mut tracker = HEAP_TRACKER.lock().unwrap();
+    if let Some(ref mut t) = *tracker {
+        t.track_allocation(ptr, alloc_size, layout.align());
+    }
+
     ptr.cast()
 }
 
 /// Free memory allocated from a heap
 ///
-/// This wraps free to provide Windows heap semantics.
+/// This wraps dealloc to provide Windows heap semantics.
 ///
 /// # Arguments
 /// - `heap`: Heap handle (ignored)
@@ -1276,21 +1328,14 @@ pub unsafe extern "C" fn kernel32_HeapAlloc(
 /// # Returns
 /// TRUE (1) on success, FALSE (0) on failure
 ///
+/// # Panics
+/// May panic if the heap tracker mutex is poisoned (e.g., another thread panicked while holding the lock).
+///
 /// # Safety
 /// The caller must ensure:
 /// - `mem` was allocated with HeapAlloc or is NULL
 /// - `mem` is not freed twice
 /// - `mem` is not used after being freed
-///
-/// # Note
-/// **CURRENT LIMITATION:** This implementation intentionally leaks memory.
-/// We cannot safely deallocate without tracking allocation sizes, which would
-/// require additional infrastructure. For production use, programs should use
-/// malloc/free from MSVCRT which are properly implemented.
-///
-/// This is acceptable for short-lived programs or programs that don't heavily
-/// use HeapAlloc/HeapFree, but could cause memory exhaustion in long-running
-/// programs. TODO: Implement allocation tracking using a static HashMap.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_HeapFree(
     _heap: *mut core::ffi::c_void,
@@ -1301,11 +1346,32 @@ pub unsafe extern "C" fn kernel32_HeapFree(
         return 1; // TRUE - freeing NULL is a no-op
     }
 
-    // LIMITATION: We can't safely free this without knowing the original size.
-    // Real programs should use malloc/free from MSVCRT which are properly implemented.
-    // For now, leak the memory to avoid undefined behavior.
+    // Retrieve and remove the allocation info
+    ensure_heap_tracker_initialized();
+    let mut tracker = HEAP_TRACKER.lock().unwrap();
+    let Some(ref mut t) = *tracker else {
+        // If tracker doesn't exist, we can't free safely
+        return 0; // FALSE - failure
+    };
 
-    1 // TRUE - success (even though we leaked)
+    let Some((size, align)) = t.remove_allocation(mem) else {
+        // Allocation not found - this is either a double-free or
+        // memory not allocated with HeapAlloc
+        return 0; // FALSE - failure
+    };
+
+    // Create the layout and deallocate
+    // SAFETY: We're recreating the same layout that was used for allocation
+    let Ok(layout) = core::alloc::Layout::from_size_align(size, align) else {
+        return 0; // FALSE - invalid layout (shouldn't happen)
+    };
+
+    // SAFETY: ptr was allocated with alloc::alloc using this layout
+    unsafe {
+        alloc::dealloc(mem.cast(), layout);
+    }
+
+    1 // TRUE - success
 }
 
 /// Reallocate memory in a heap
@@ -1314,29 +1380,21 @@ pub unsafe extern "C" fn kernel32_HeapFree(
 ///
 /// # Arguments
 /// - `heap`: Heap handle (ignored)
-/// - `flags`: Realloc flags (ignored for now)
+/// - `flags`: Realloc flags (HEAP_ZERO_MEMORY supported)
 /// - `mem`: Pointer to memory to reallocate (or NULL to allocate new)
 /// - `size`: New size in bytes
 ///
 /// # Returns
 /// Pointer to reallocated memory, or NULL on failure
 ///
+/// # Panics
+/// May panic if the heap tracker mutex is poisoned (e.g., another thread panicked while holding the lock).
+///
 /// # Safety
 /// The caller must ensure:
 /// - `mem` was allocated with HeapAlloc or is NULL
 /// - The old pointer is not used after reallocation
 /// - The returned pointer must be freed with HeapFree
-///
-/// # Note
-/// **CRITICAL LIMITATION:** This implementation does NOT preserve the contents
-/// of the original allocation. It allocates fresh memory and leaks the old block.
-/// This differs from standard `realloc` behavior and will break programs that
-/// rely on data preservation during reallocation.
-///
-/// For production use, programs should use `realloc` from MSVCRT which is
-/// properly implemented with data copying and proper deallocation.
-///
-/// TODO: Implement proper realloc with allocation size tracking and data copying.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_HeapReAlloc(
     heap: *mut core::ffi::c_void,
@@ -1350,16 +1408,58 @@ pub unsafe extern "C" fn kernel32_HeapReAlloc(
     }
 
     if size == 0 {
-        // Free the memory (note: HeapFree also leaks, see its documentation)
+        // Free the memory
         unsafe { kernel32_HeapFree(heap, flags, mem) };
         return core::ptr::null_mut();
     }
 
-    // CRITICAL LIMITATION: Allocate new memory but DO NOT copy old data.
-    // This differs from standard realloc which preserves contents.
-    // The old block is leaked (not freed).
-    // Programs should use MSVCRT realloc which is properly implemented.
-    unsafe { kernel32_HeapAlloc(heap, flags, size) }
+    // Get the current allocation info
+    ensure_heap_tracker_initialized();
+    let mut tracker = HEAP_TRACKER.lock().unwrap();
+    let Some(ref mut t) = *tracker else {
+        return core::ptr::null_mut(); // Tracker not initialized
+    };
+
+    let Some((old_size, old_align)) = t.get_allocation(mem) else {
+        // Memory not tracked - can't reallocate safely
+        return core::ptr::null_mut();
+    };
+
+    // Prepare new allocation
+    let new_size = if size == 0 { 1 } else { size };
+    let Ok(new_layout) =
+        core::alloc::Layout::from_size_align(new_size, core::mem::align_of::<usize>())
+    else {
+        return core::ptr::null_mut();
+    };
+
+    let Ok(old_layout) = core::alloc::Layout::from_size_align(old_size, old_align) else {
+        return core::ptr::null_mut();
+    };
+
+    // SAFETY: mem was allocated with the old_layout
+    let new_ptr = unsafe { alloc::realloc(mem.cast(), old_layout, new_size) };
+
+    if new_ptr.is_null() {
+        return core::ptr::null_mut();
+    }
+
+    // If growing the allocation and HEAP_ZERO_MEMORY is set, zero the new bytes
+    if new_size > old_size && (flags & HEAP_ZERO_MEMORY != 0) {
+        // SAFETY: new_ptr is valid for new_size bytes, and we're only writing
+        // to the newly allocated portion
+        unsafe {
+            core::ptr::write_bytes(new_ptr.add(old_size), 0, new_size - old_size);
+        }
+    }
+
+    // Update the tracker with new allocation info
+    // First remove the old entry
+    t.remove_allocation(mem);
+    // Then add the new entry
+    t.track_allocation(new_ptr, new_size, new_layout.align());
+
+    new_ptr.cast()
 }
 
 #[cfg(test)]
@@ -2294,5 +2394,170 @@ mod tests {
         let result = unsafe { kernel32_HeapReAlloc(heap, 0, ptr, 0) };
 
         assert!(result.is_null());
+    }
+
+    #[test]
+    fn test_heap_alloc_free_cycle() {
+        let heap = unsafe { kernel32_GetProcessHeap() };
+        let size = 512;
+
+        // Allocate memory
+        let ptr = unsafe { kernel32_HeapAlloc(heap, 0, size) };
+        assert!(!ptr.is_null());
+
+        // Write some data to verify it's writable
+        unsafe {
+            let slice = core::slice::from_raw_parts_mut(ptr.cast::<u8>(), size);
+            slice.fill(0xAB);
+        }
+
+        // Free it
+        let result = unsafe { kernel32_HeapFree(heap, 0, ptr) };
+        assert_eq!(result, 1); // TRUE - success
+    }
+
+    #[test]
+    fn test_heap_realloc_grow() {
+        let heap = unsafe { kernel32_GetProcessHeap() };
+        let initial_size = 256;
+        let new_size = 1024;
+
+        // Allocate initial memory
+        let ptr = unsafe { kernel32_HeapAlloc(heap, 0, initial_size) };
+        assert!(!ptr.is_null());
+
+        // Fill with test data
+        unsafe {
+            let slice = core::slice::from_raw_parts_mut(ptr.cast::<u8>(), initial_size);
+            for (i, byte) in slice.iter_mut().enumerate() {
+                *byte = (i % 256) as u8;
+            }
+        }
+
+        // Reallocate to larger size
+        let new_ptr = unsafe { kernel32_HeapReAlloc(heap, 0, ptr, new_size) };
+        assert!(!new_ptr.is_null());
+
+        // Verify original data is preserved
+        unsafe {
+            let slice = core::slice::from_raw_parts(new_ptr.cast::<u8>(), initial_size);
+            for (i, &byte) in slice.iter().enumerate() {
+                assert_eq!(byte, (i % 256) as u8, "Data corruption at offset {i}");
+            }
+        }
+
+        // Clean up
+        unsafe { kernel32_HeapFree(heap, 0, new_ptr) };
+    }
+
+    #[test]
+    fn test_heap_realloc_shrink() {
+        let heap = unsafe { kernel32_GetProcessHeap() };
+        let initial_size = 1024;
+        let new_size = 256;
+
+        // Allocate initial memory
+        let ptr = unsafe { kernel32_HeapAlloc(heap, 0, initial_size) };
+        assert!(!ptr.is_null());
+
+        // Fill with test data
+        unsafe {
+            let slice = core::slice::from_raw_parts_mut(ptr.cast::<u8>(), new_size);
+            for (i, byte) in slice.iter_mut().enumerate() {
+                *byte = (i % 256) as u8;
+            }
+        }
+
+        // Reallocate to smaller size
+        let new_ptr = unsafe { kernel32_HeapReAlloc(heap, 0, ptr, new_size) };
+        assert!(!new_ptr.is_null());
+
+        // Verify data in the remaining portion is preserved
+        unsafe {
+            let slice = core::slice::from_raw_parts(new_ptr.cast::<u8>(), new_size);
+            for (i, &byte) in slice.iter().enumerate() {
+                assert_eq!(byte, (i % 256) as u8, "Data corruption at offset {i}");
+            }
+        }
+
+        // Clean up
+        unsafe { kernel32_HeapFree(heap, 0, new_ptr) };
+    }
+
+    #[test]
+    fn test_heap_realloc_zero_new_memory() {
+        let heap = unsafe { kernel32_GetProcessHeap() };
+        let initial_size = 256;
+        let new_size = 1024;
+
+        // Allocate and reallocate with HEAP_ZERO_MEMORY flag
+        let ptr = unsafe { kernel32_HeapAlloc(heap, 0, initial_size) };
+        assert!(!ptr.is_null());
+
+        // Fill initial allocation with non-zero data
+        unsafe {
+            let slice = core::slice::from_raw_parts_mut(ptr.cast::<u8>(), initial_size);
+            slice.fill(0xFF);
+        }
+
+        // Reallocate to larger size with zero flag
+        let new_ptr = unsafe { kernel32_HeapReAlloc(heap, HEAP_ZERO_MEMORY, ptr, new_size) };
+        assert!(!new_ptr.is_null());
+
+        // Verify that the new portion (beyond initial_size) is zeroed
+        unsafe {
+            let slice = core::slice::from_raw_parts(
+                new_ptr.cast::<u8>().add(initial_size),
+                new_size - initial_size,
+            );
+            assert!(slice.iter().all(|&b| b == 0), "New memory not zeroed");
+        }
+
+        // Clean up
+        unsafe { kernel32_HeapFree(heap, 0, new_ptr) };
+    }
+
+    #[test]
+    fn test_heap_free_double_free_protection() {
+        let heap = unsafe { kernel32_GetProcessHeap() };
+        let ptr = unsafe { kernel32_HeapAlloc(heap, 0, 256) };
+        assert!(!ptr.is_null());
+
+        // First free should succeed
+        let result1 = unsafe { kernel32_HeapFree(heap, 0, ptr) };
+        assert_eq!(result1, 1); // TRUE
+
+        // Second free should fail (allocation not found)
+        let result2 = unsafe { kernel32_HeapFree(heap, 0, ptr) };
+        assert_eq!(result2, 0); // FALSE
+    }
+
+    #[test]
+    fn test_heap_multiple_allocations() {
+        let heap = unsafe { kernel32_GetProcessHeap() };
+
+        // Allocate multiple blocks
+        let ptr1 = unsafe { kernel32_HeapAlloc(heap, 0, 128) };
+        let ptr2 = unsafe { kernel32_HeapAlloc(heap, 0, 256) };
+        let ptr3 = unsafe { kernel32_HeapAlloc(heap, 0, 512) };
+
+        assert!(!ptr1.is_null());
+        assert!(!ptr2.is_null());
+        assert!(!ptr3.is_null());
+
+        // All pointers should be different
+        assert_ne!(ptr1, ptr2);
+        assert_ne!(ptr2, ptr3);
+        assert_ne!(ptr1, ptr3);
+
+        // Free in different order
+        let result2 = unsafe { kernel32_HeapFree(heap, 0, ptr2) };
+        assert_eq!(result2, 1);
+
+        let result1 = unsafe { kernel32_HeapFree(heap, 0, ptr1) };
+        assert_eq!(result1, 1);
+
+        let result3 = unsafe { kernel32_HeapFree(heap, 0, ptr3) };
+        assert_eq!(result3, 1);
     }
 }
