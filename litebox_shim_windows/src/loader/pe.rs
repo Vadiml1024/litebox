@@ -485,7 +485,6 @@ impl PeLoader {
         // Scan all sections for the __CTOR_LIST__ pattern
         // Pattern: 0xffffffffffffffff followed by valid VA or 0
         let sections = self.sections()?;
-        let mut patches_applied = 0;
 
         for section in sections {
             let section_va = base_address
@@ -520,7 +519,6 @@ impl PeLoader {
                     if looks_like_ctor_list {
                         // Patch the -1 sentinel to 0 to prevent crashes
                         unsafe { ptr.write(0) };
-                        patches_applied += 1;
                     }
                 }
 
