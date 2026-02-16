@@ -2695,6 +2695,292 @@ pub unsafe extern "C" fn kernel32_WaitForMultipleObjects(
     0 // WAIT_OBJECT_0 - pretend first object is signaled
 }
 
+/// ExitProcess - terminates the calling process and all its threads
+///
+/// # Safety
+/// This function terminates the process immediately.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_ExitProcess(exit_code: u32) {
+    std::process::exit(exit_code as i32);
+}
+
+/// GetCurrentProcess - returns a pseudo-handle for the current process
+///
+/// # Safety
+/// This function is safe to call. It returns a constant pseudo-handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_GetCurrentProcess() -> *mut core::ffi::c_void {
+    // Windows returns -1 (0xFFFFFFFFFFFFFFFF) as the pseudo-handle for the current process
+    -1_i64 as usize as *mut core::ffi::c_void
+}
+
+/// GetCurrentThread - returns a pseudo-handle for the current thread
+///
+/// # Safety
+/// This function is safe to call. It returns a constant pseudo-handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_GetCurrentThread() -> *mut core::ffi::c_void {
+    // Windows returns -2 (0xFFFFFFFFFFFFFFFE) as the pseudo-handle for the current thread
+    -2_i64 as usize as *mut core::ffi::c_void
+}
+
+/// GetModuleHandleA - returns the module handle for a named module (ANSI version)
+///
+/// # Safety
+/// This function is a stub that returns a default base address.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_GetModuleHandleA(
+    _module_name: *const u8,
+) -> *mut core::ffi::c_void {
+    // Return default image base address
+    0x400000_usize as *mut core::ffi::c_void
+}
+
+/// GetModuleFileNameW - retrieves the fully qualified path for the file that contains a module
+///
+/// # Safety
+/// Caller must ensure `filename` points to a valid buffer of at least `size` u16 elements
+/// when it is non-null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_GetModuleFileNameW(
+    _module: *mut core::ffi::c_void,
+    _filename: *mut u16,
+    _size: u32,
+) -> u32 {
+    0 // Failure - not implemented
+}
+
+/// Windows SYSTEM_INFO structure (x86_64 layout).
+///
+/// Matches the Windows API `SYSTEM_INFO` struct at
+/// <https://learn.microsoft.com/en-us/windows/win32/api/sysinfoapi/ns-sysinfoapi-system_info>.
+/// Field names follow Windows naming conventions. Pointer-sized fields use `u64`
+/// to match the fixed x86_64 Windows ABI layout (always 8 bytes).
+#[repr(C)]
+struct SystemInfo {
+    w_processor_architecture: u16,
+    w_reserved: u16,
+    dw_page_size: u32,
+    lp_minimum_application_address: u64,
+    lp_maximum_application_address: u64,
+    dw_active_processor_mask: u64,
+    dw_number_of_processors: u32,
+    dw_processor_type: u32,
+    dw_allocation_granularity: u32,
+    w_processor_level: u16,
+    w_processor_revision: u16,
+}
+
+/// GetSystemInfo - retrieves information about the current system
+///
+/// # Safety
+/// Caller must ensure `system_info` points to a valid buffer of at least
+/// `core::mem::size_of::<SystemInfo>()` bytes when it is non-null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_GetSystemInfo(system_info: *mut u8) {
+    if system_info.is_null() {
+        return;
+    }
+    let info = SystemInfo {
+        w_processor_architecture: 9, // PROCESSOR_ARCHITECTURE_AMD64
+        w_reserved: 0,
+        dw_page_size: 4096,
+        lp_minimum_application_address: 0x10000,
+        lp_maximum_application_address: 0x7FFF_FFFE_FFFF,
+        dw_active_processor_mask: 1,
+        dw_number_of_processors: 1,
+        dw_processor_type: 8664, // PROCESSOR_AMD_X8664
+        dw_allocation_granularity: 65536,
+        w_processor_level: 6,
+        w_processor_revision: 0,
+    };
+    // SAFETY: Caller guarantees system_info points to a valid buffer of sufficient size.
+    core::ptr::copy_nonoverlapping(
+        &info as *const SystemInfo as *const u8,
+        system_info,
+        core::mem::size_of::<SystemInfo>(),
+    );
+}
+
+/// GetConsoleMode - retrieves the current input mode of a console's input buffer
+///
+/// # Safety
+/// Caller must ensure `mode` points to a valid u32 when it is non-null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_GetConsoleMode(
+    _console_handle: *mut core::ffi::c_void,
+    mode: *mut u32,
+) -> i32 {
+    if !mode.is_null() {
+        // SAFETY: Caller guarantees mode is valid and non-null (checked above).
+        *mode = 3; // ENABLE_PROCESSED_INPUT | ENABLE_LINE_INPUT
+    }
+    1 // TRUE - success
+}
+
+/// GetConsoleOutputCP - retrieves the output code page used by the console
+///
+/// # Safety
+/// This function is safe to call. It returns a constant value.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_GetConsoleOutputCP() -> u32 {
+    65001 // UTF-8
+}
+
+/// ReadConsoleW - reads character input from the console input buffer (wide version)
+///
+/// # Safety
+/// Caller must ensure `chars_read` points to a valid u32 when it is non-null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_ReadConsoleW(
+    _console_input: *mut core::ffi::c_void,
+    _buffer: *mut u16,
+    _chars_to_read: u32,
+    chars_read: *mut u32,
+    _input_control: *mut core::ffi::c_void,
+) -> i32 {
+    if !chars_read.is_null() {
+        // SAFETY: Caller guarantees chars_read is valid and non-null (checked above).
+        *chars_read = 0;
+    }
+    1 // TRUE - success (no input available)
+}
+
+/// GetEnvironmentVariableW - retrieves the value of an environment variable (wide version)
+///
+/// # Safety
+/// This function is a stub that returns 0 (variable not found).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_GetEnvironmentVariableW(
+    _name: *const u16,
+    _buffer: *mut u16,
+    _size: u32,
+) -> u32 {
+    0 // Not found
+}
+
+/// SetEnvironmentVariableW - sets the value of an environment variable (wide version)
+///
+/// # Safety
+/// This function is a stub that returns success without modifying anything.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_SetEnvironmentVariableW(
+    _name: *const u16,
+    _value: *const u16,
+) -> i32 {
+    1 // TRUE - success
+}
+
+/// VirtualProtect - changes the protection on a region of committed pages
+///
+/// # Safety
+/// Caller must ensure `old_protect` points to a valid u32 when it is non-null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_VirtualProtect(
+    _address: *mut core::ffi::c_void,
+    _size: usize,
+    _new_protect: u32,
+    old_protect: *mut u32,
+) -> i32 {
+    if !old_protect.is_null() {
+        // SAFETY: Caller guarantees old_protect is valid and non-null (checked above).
+        *old_protect = 0x40; // PAGE_EXECUTE_READWRITE
+    }
+    1 // TRUE - success
+}
+
+/// VirtualQuery - retrieves information about a range of pages
+///
+/// # Safety
+/// This function is a stub that returns 0 (failure).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_VirtualQuery(
+    _address: *const core::ffi::c_void,
+    _buffer: *mut u8,
+    _length: usize,
+) -> usize {
+    0 // Failure - not implemented
+}
+
+/// FreeLibrary - frees the loaded dynamic-link library module
+///
+/// # Safety
+/// This function is a stub that returns success without freeing anything.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_FreeLibrary(_module: *mut core::ffi::c_void) -> i32 {
+    1 // TRUE - success
+}
+
+/// FindFirstFileExW - searches a directory for a file or subdirectory (wide version)
+///
+/// # Safety
+/// This function is a stub that returns INVALID_HANDLE_VALUE.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_FindFirstFileExW(
+    _filename: *const u16,
+    _info_level: u32,
+    _find_data: *mut u8,
+    _search_op: u32,
+    _search_filter: *mut core::ffi::c_void,
+    _additional_flags: u32,
+) -> *mut core::ffi::c_void {
+    // INVALID_HANDLE_VALUE
+    -1_i64 as usize as *mut core::ffi::c_void
+}
+
+/// FindNextFileW - continues a file search from a previous call to FindFirstFile
+///
+/// # Safety
+/// This function is a stub that returns 0 (no more files).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_FindNextFileW(
+    _find_file: *mut core::ffi::c_void,
+    _find_data: *mut u8,
+) -> i32 {
+    0 // FALSE - no more files
+}
+
+/// FindClose - closes a file search handle
+///
+/// # Safety
+/// This function is a stub that returns success.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_FindClose(_find_file: *mut core::ffi::c_void) -> i32 {
+    1 // TRUE - success
+}
+
+/// WaitOnAddress - waits for the value at the specified address to change
+///
+/// # Safety
+/// This function is a stub that returns success immediately.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_WaitOnAddress(
+    _address: *mut core::ffi::c_void,
+    _compare_address: *mut core::ffi::c_void,
+    _address_size: usize,
+    _milliseconds: u32,
+) -> i32 {
+    1 // TRUE - success
+}
+
+/// WakeByAddressAll - wakes all threads waiting on an address
+///
+/// # Safety
+/// This function is a no-op stub.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_WakeByAddressAll(_address: *mut core::ffi::c_void) {
+    // No-op stub
+}
+
+/// WakeByAddressSingle - wakes one thread waiting on an address
+///
+/// # Safety
+/// This function is a no-op stub.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_WakeByAddressSingle(_address: *mut core::ffi::c_void) {
+    // No-op stub
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
