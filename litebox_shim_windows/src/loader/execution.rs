@@ -14,6 +14,7 @@ use crate::{Result, WindowsShimError};
 /// The TEB is a Windows-internal structure that contains thread-specific information.
 /// Windows programs access it via the GS segment register.
 /// The PEB pointer MUST be at offset 0x60 for x64 Windows compatibility.
+/// TLS slots MUST be at offset 0x1480 for x64 Windows compatibility.
 ///
 /// Reference: Windows Internals, Part 1, 7th Edition
 #[repr(C)]
@@ -41,8 +42,11 @@ pub struct ThreadEnvironmentBlock {
     _reserved: [u64; 2],
     /// Pointer to PEB - MUST be at offset 0x60 for x64 Windows
     pub peb_pointer: u64,
-    /// Additional reserved fields
-    _reserved2: [u64; 100],
+    /// Reserved fields to reach TLS slots (offset 0x68 to 0x1480)
+    /// Size calculation: (0x1480 - 0x68) / 8 = 0x1418 / 8 = 643 u64s
+    _reserved2: [u64; 643],
+    /// TLS slots - MUST be at offset 0x1480 for x64 Windows (64 slots)
+    pub tls_slots: [u64; 64],
 }
 
 impl ThreadEnvironmentBlock {
@@ -60,7 +64,8 @@ impl ThreadEnvironmentBlock {
             client_id: [0; 2], // [process_id, thread_id]
             _reserved: [0; 2], // Fixed to 2 u64s to reach offset 0x60
             peb_pointer,
-            _reserved2: [0; 100],
+            _reserved2: [0; 643], // Reserved space to reach TLS slots at 0x1480
+            tls_slots: [0; 64],   // TLS slots initialized to null
         }
     }
 
@@ -296,6 +301,10 @@ pub struct ExecutionContext {
     pub stack_size: u64,
     /// Pointer to allocated stack memory (for cleanup)
     stack_ptr: Option<*mut u8>,
+    /// TLS data pointer (for cleanup)
+    tls_data_ptr: Option<*mut u8>,
+    /// TLS data size
+    tls_data_size: usize,
 }
 
 impl ExecutionContext {
@@ -384,6 +393,8 @@ impl ExecutionContext {
             stack_base,
             stack_size,
             stack_ptr: Some(stack_ptr.cast::<u8>()),
+            tls_data_ptr: None,
+            tls_data_size: 0,
         })
     }
 
@@ -396,10 +407,134 @@ impl ExecutionContext {
     pub fn peb_ptr(&self) -> *const ProcessEnvironmentBlock {
         &raw const *self.peb
     }
+
+    /// Initialize TLS (Thread Local Storage) data
+    ///
+    /// This allocates memory for TLS data, copies the template data, and sets up
+    /// the TLS slot in the TEB to point to the allocated data.
+    ///
+    /// # Arguments
+    /// * `image_base` - Base address where the PE image is loaded (unused, for future use)
+    /// * `tls_start_va` - Virtual address of TLS data start (from TLS directory)
+    /// * `tls_end_va` - Virtual address of TLS data end (from TLS directory)
+    /// * `tls_index_va` - Virtual address of TLS index variable (from TLS directory)
+    /// * `size_of_zero_fill` - Size of zero-filled data after the template
+    ///
+    /// # Safety
+    /// This function is unsafe because it:
+    /// - Reads from arbitrary memory addresses (the TLS template)
+    /// - Writes to arbitrary memory addresses (TLS index, TLS slot)
+    /// - Uses mmap to allocate memory
+    ///
+    /// The caller must ensure:
+    /// - The TLS template addresses are valid and readable
+    /// - The TLS index address is valid and writable
+    /// - All addresses are properly relocated if needed
+    pub unsafe fn initialize_tls(
+        &mut self,
+        _image_base: u64,
+        tls_start_va: u64,
+        tls_end_va: u64,
+        tls_index_va: u64,
+        size_of_zero_fill: u32,
+    ) -> Result<()> {
+        // Calculate size of TLS template data
+        let template_size = tls_end_va.checked_sub(tls_start_va).ok_or_else(|| {
+            WindowsShimError::InvalidParameter(format!(
+                "Invalid TLS range: start 0x{tls_start_va:X} >= end 0x{tls_end_va:X}"
+            ))
+        })? as usize;
+
+        // Total TLS data size includes template + zero fill
+        let total_size = template_size
+            .checked_add(size_of_zero_fill as usize)
+            .ok_or_else(|| {
+                WindowsShimError::InvalidParameter("TLS data size overflow".to_string())
+            })?;
+
+        if total_size == 0 {
+            // No TLS data to initialize
+            return Ok(());
+        }
+
+        // Allocate memory for TLS data
+        // SAFETY: We're calling mmap with valid parameters to allocate memory.
+        // The memory will be freed in the Drop implementation.
+        #[allow(clippy::cast_possible_truncation)]
+        let tls_data_ptr = unsafe {
+            libc::mmap(
+                core::ptr::null_mut(),
+                total_size as libc::size_t,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                -1,
+                0,
+            )
+        };
+
+        if tls_data_ptr == libc::MAP_FAILED {
+            return Err(WindowsShimError::MemoryAllocationFailed(
+                "Failed to allocate TLS data memory".to_string(),
+            ));
+        }
+
+        // Copy template data from the image
+        if template_size > 0 {
+            // SAFETY: Caller guarantees tls_start_va is valid and readable.
+            // We just allocated tls_data_ptr and it's valid for total_size bytes.
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    tls_start_va as *const u8,
+                    tls_data_ptr.cast::<u8>(),
+                    template_size,
+                );
+            }
+        }
+
+        // Zero-fill the remaining space
+        if size_of_zero_fill > 0 {
+            // SAFETY: tls_data_ptr is valid for total_size bytes
+            unsafe {
+                let zero_fill_ptr = tls_data_ptr.cast::<u8>().add(template_size);
+                core::ptr::write_bytes(zero_fill_ptr, 0, size_of_zero_fill as usize);
+            }
+        }
+
+        // Set the TLS index to 0 (we only support one TLS index for now)
+        // SAFETY: Caller guarantees tls_index_va is valid and writable
+        unsafe {
+            let index_ptr = tls_index_va as *mut u32;
+            index_ptr.write_unaligned(0);
+        }
+
+        // Set TLS slot[0] in the TEB to point to the allocated TLS data
+        self.teb.tls_slots[0] = tls_data_ptr.addr() as u64;
+
+        // Store for cleanup
+        self.tls_data_ptr = Some(tls_data_ptr.cast::<u8>());
+        self.tls_data_size = total_size;
+
+        Ok(())
+    }
 }
 
 impl Drop for ExecutionContext {
     fn drop(&mut self) {
+        // Clean up allocated TLS data memory
+        if let Some(tls_data_ptr) = self.tls_data_ptr {
+            if self.tls_data_size > 0 {
+                // SAFETY: This memory was allocated by mmap in initialize_tls,
+                // so it's safe to unmap it here.
+                #[allow(clippy::cast_possible_truncation)]
+                unsafe {
+                    libc::munmap(
+                        tls_data_ptr.cast::<libc::c_void>(),
+                        self.tls_data_size as libc::size_t,
+                    );
+                }
+            }
+        }
+
         // Clean up allocated stack memory
         if let Some(stack_ptr) = self.stack_ptr {
             // SAFETY: This memory was allocated by mmap in the constructor,
@@ -570,5 +705,64 @@ mod tests {
         let context = ExecutionContext::new(image_base, 0).unwrap();
 
         assert_eq!(context.stack_size, 1024 * 1024); // Default 1MB
+    }
+
+    #[test]
+    fn test_teb_tls_offset() {
+        // Verify that TLS slots are at the correct offset (0x1480) for x64 Windows
+        use std::mem::{offset_of, size_of};
+
+        // Check PEB pointer is at offset 0x60
+        assert_eq!(offset_of!(ThreadEnvironmentBlock, peb_pointer), 0x60);
+
+        // Check TLS slots are at offset 0x1480
+        assert_eq!(offset_of!(ThreadEnvironmentBlock, tls_slots), 0x1480);
+
+        println!("TEB size: 0x{:X}", size_of::<ThreadEnvironmentBlock>());
+    }
+
+    #[test]
+    fn test_tls_initialization() {
+        let image_base = 0x0000_0001_4000_0000u64;
+        let mut context = ExecutionContext::new(image_base, 0).unwrap();
+
+        // Create a mock TLS data template
+        let tls_template = vec![0x11u8, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88];
+
+        // Allocate memory for TLS template and index
+        let template_ptr = tls_template.as_ptr() as u64;
+        let template_end = template_ptr + tls_template.len() as u64;
+
+        // Allocate space for TLS index
+        let mut tls_index: u32 = 0xFFFFFFFF;
+        let index_ptr = &mut tls_index as *mut u32 as u64;
+
+        // Initialize TLS with our test data
+        unsafe {
+            context
+                .initialize_tls(
+                    image_base,
+                    template_ptr,
+                    template_end,
+                    index_ptr,
+                    0, // No zero fill
+                )
+                .unwrap();
+        }
+
+        // Verify TLS index was set to 0
+        assert_eq!(tls_index, 0);
+
+        // Verify TLS slot[0] is not null
+        assert_ne!(context.teb.tls_slots[0], 0);
+
+        // Verify the data was copied correctly
+        unsafe {
+            let tls_data = core::slice::from_raw_parts(
+                context.teb.tls_slots[0] as *const u8,
+                tls_template.len(),
+            );
+            assert_eq!(tls_data, tls_template.as_slice());
+        }
     }
 }

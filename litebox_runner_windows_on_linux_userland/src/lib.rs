@@ -190,6 +190,11 @@ pub fn run(cli_args: CliArgs) -> Result<()> {
         println!("  No relocations needed (loaded at preferred base)");
     } else {
         println!("  Rebasing from 0x{image_base:X} to 0x{base_address:X}");
+        
+        // Get relocation count for debugging
+        let reloc_count = pe_loader.relocations().map(|r| r.len()).unwrap_or(0);
+        println!("  Found {reloc_count} relocation entries");
+        
         // SAFETY: We allocated the memory and just loaded the sections
         unsafe {
             pe_loader
@@ -197,6 +202,15 @@ pub fn run(cli_args: CliArgs) -> Result<()> {
                 .map_err(|e| anyhow!("Failed to apply relocations: {e}"))?;
         }
         println!("  Relocations applied successfully");
+        
+        // Debug: Check if .CRT section was relocated properly
+        // .CRT is at RVA 0xd2000, contains function pointers
+        unsafe {
+            let crt_addr = base_address + 0xd2008; // First non-null pointer
+            let ptr = crt_addr as *const u64;
+            let value = ptr.read_unaligned();
+            println!("  Debug: .CRT[0] = 0x{value:X} (should be > 0x100000000)");
+        }
     }
 
     // Resolve imports
@@ -253,9 +267,15 @@ pub fn run(cli_args: CliArgs) -> Result<()> {
         println!("  Import resolution complete");
     }
 
+    // Parse and initialize TLS (Thread Local Storage)
+    println!("\nChecking for TLS directory...");
+    let tls_info = pe_loader
+        .tls_info()
+        .map_err(|e| anyhow!("Failed to parse TLS directory: {e}"))?;
+
     // Set up execution context (TEB/PEB)
     println!("\nSetting up execution context...");
-    let execution_context =
+    let mut execution_context =
         ExecutionContext::new(base_address, 0) // Use default stack size
             .map_err(|e| anyhow!("Failed to create execution context: {e}"))?;
     println!("  TEB created at: 0x{:X}", execution_context.teb_address);
@@ -269,6 +289,51 @@ pub fn run(cli_args: CliArgs) -> Result<()> {
         execution_context.stack_base - execution_context.stack_size,
         execution_context.stack_size / 1024
     );
+
+    // Initialize TLS if present
+    if let Some(tls) = tls_info {
+        println!("\nInitializing TLS (Thread Local Storage)...");
+        println!(
+            "  TLS data range (VA): 0x{:X} - 0x{:X}",
+            tls.start_address, tls.end_address
+        );
+        println!("  TLS index address (VA): 0x{:X}", tls.address_of_index);
+        println!("  Size of zero fill: {} bytes", tls.size_of_zero_fill);
+
+        // The TLS directory contains VAs (virtual addresses), which include the image base.
+        // Since the image might be loaded at a different address, we need to calculate
+        // the actual addresses by removing the original image base and adding the actual base.
+        let delta = base_address.wrapping_sub(image_base);
+        let actual_start = tls.start_address.wrapping_add(delta);
+        let actual_end = tls.end_address.wrapping_add(delta);
+        let actual_index = tls.address_of_index.wrapping_add(delta);
+
+        println!(
+            "  TLS data range (relocated): 0x{:X} - 0x{:X}",
+            actual_start, actual_end
+        );
+        println!("  TLS index address (relocated): 0x{:X}", actual_index);
+
+        // SAFETY: We allocated memory for the image and loaded sections.
+        // The TLS addresses are from the TLS directory and point to valid memory.
+        unsafe {
+            execution_context
+                .initialize_tls(
+                    base_address,
+                    actual_start,
+                    actual_end,
+                    actual_index,
+                    tls.size_of_zero_fill,
+                )
+                .map_err(|e| anyhow!("Failed to initialize TLS: {e}"))?;
+        }
+        println!(
+            "  TLS initialized, slot[0] = 0x{:X}",
+            execution_context.teb.tls_slots[0]
+        );
+    } else {
+        println!("\nNo TLS directory found");
+    }
 
     // Set up GS segment register to point to TEB for Windows ABI compatibility
     println!("\nConfiguring GS segment register for TEB access...");
