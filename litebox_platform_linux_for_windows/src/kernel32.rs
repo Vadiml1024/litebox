@@ -138,9 +138,6 @@ fn ensure_heap_tracker_initialized() {
 /// # Safety
 /// The function body is safe, but marked `unsafe` because it's part of an FFI boundary
 /// with `extern "C"` calling convention. Callers must ensure proper calling convention.
-/// 
-/// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_Sleep(milliseconds: u32) {
     thread::sleep(Duration::from_millis(u64::from(milliseconds)));
@@ -153,9 +150,6 @@ pub unsafe extern "C" fn kernel32_Sleep(milliseconds: u32) {
 /// # Safety
 /// The function body is safe, but marked `unsafe` because it's part of an FFI boundary
 /// with `extern "C"` calling convention. Callers must ensure proper calling convention.
-/// 
-/// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_GetCurrentThreadId() -> u32 {
     // SAFETY: gettid is a safe syscall
@@ -173,9 +167,6 @@ pub unsafe extern "C" fn kernel32_GetCurrentThreadId() -> u32 {
 /// # Safety
 /// The function body is safe, but marked `unsafe` because it's part of an FFI boundary
 /// with `extern "C"` calling convention. Callers must ensure proper calling convention.
-/// 
-/// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_GetCurrentProcessId() -> u32 {
     // SAFETY: getpid is a safe syscall
@@ -196,9 +187,6 @@ pub unsafe extern "C" fn kernel32_GetCurrentProcessId() -> u32 {
 ///
 /// # Panics
 /// Panics if the TLS_MANAGER mutex is poisoned.
-/// 
-/// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_TlsAlloc() -> u32 {
     ensure_tls_manager_initialized();
@@ -220,9 +208,6 @@ pub unsafe extern "C" fn kernel32_TlsAlloc() -> u32 {
 ///
 /// # Panics
 /// Panics if the TLS_MANAGER mutex is poisoned.
-/// 
-/// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_TlsFree(slot: u32) -> u32 {
     ensure_tls_manager_initialized();
@@ -247,9 +232,6 @@ pub unsafe extern "C" fn kernel32_TlsFree(slot: u32) -> u32 {
 ///
 /// # Panics
 /// Panics if the TLS_MANAGER mutex is poisoned.
-/// 
-/// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_TlsGetValue(slot: u32) -> usize {
     ensure_tls_manager_initialized();
@@ -270,9 +252,6 @@ pub unsafe extern "C" fn kernel32_TlsGetValue(slot: u32) -> usize {
 ///
 /// # Panics
 /// Panics if the TLS_MANAGER mutex is poisoned.
-/// 
-/// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_TlsSetValue(slot: u32, value: usize) -> u32 {
     ensure_tls_manager_initialized();
@@ -370,9 +349,6 @@ pub unsafe extern "C" fn kernel32_InitializeCriticalSection(
 ///
 /// # Panics
 /// Panics if the internal mutex is poisoned (a thread panicked while holding the lock).
-/// 
-/// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_EnterCriticalSection(critical_section: *mut CriticalSection) {
     if critical_section.is_null() {
@@ -430,9 +406,6 @@ pub unsafe extern "C" fn kernel32_EnterCriticalSection(critical_section: *mut Cr
 ///
 /// # Panics
 /// Panics if the internal mutex is poisoned (a thread panicked while holding the lock).
-/// 
-/// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_LeaveCriticalSection(critical_section: *mut CriticalSection) {
     if critical_section.is_null() {
@@ -573,9 +546,6 @@ pub unsafe extern "C" fn kernel32_DeleteCriticalSection(critical_section: *mut C
 /// # Safety
 /// This function is safe to call with any arguments including NULL pointers,
 /// as it only returns a constant value and doesn't dereference any pointers.
-/// 
-/// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32___C_specific_handler(
     _exception_record: *mut core::ffi::c_void,
@@ -596,9 +566,6 @@ pub unsafe extern "C" fn kernel32___C_specific_handler(
 /// # Safety
 /// This function is safe to call with any argument including NULL pointers.
 /// It only returns a constant NULL value.
-/// 
-/// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_SetUnhandledExceptionFilter(
     _filter: *mut core::ffi::c_void,
@@ -615,9 +582,6 @@ pub unsafe extern "C" fn kernel32_SetUnhandledExceptionFilter(
 /// # Safety
 /// This function always aborts the process, so it never returns.
 /// Safe to call with any arguments.
-/// 
-/// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_RaiseException(
     exception_code: u32,
@@ -639,9 +603,6 @@ pub unsafe extern "C" fn kernel32_RaiseException(
 /// Caller must ensure `context` points to a valid writable memory region
 /// of at least 1232 bytes (size of Windows CONTEXT structure for x64).
 /// Passing NULL is safe (function checks and does nothing).
-/// 
-/// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_RtlCaptureContext(context: *mut core::ffi::c_void) {
     if !context.is_null() {
@@ -661,9 +622,6 @@ pub unsafe extern "C" fn kernel32_RtlCaptureContext(context: *mut core::ffi::c_v
 /// # Safety
 /// This function is safe to call with any arguments including NULL pointers.
 /// It only returns NULL and doesn't dereference any pointers.
-/// 
-/// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_RtlLookupFunctionEntry(
     _control_pc: u64,
@@ -682,9 +640,6 @@ pub unsafe extern "C" fn kernel32_RtlLookupFunctionEntry(
 /// # Safety
 /// This function is safe to call with any arguments including NULL pointers.
 /// It does nothing and doesn't dereference any pointers.
-/// 
-/// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_RtlUnwindEx(
     _target_frame: *mut core::ffi::c_void,
@@ -705,9 +660,6 @@ pub unsafe extern "C" fn kernel32_RtlUnwindEx(
 /// # Safety
 /// This function is safe to call with any arguments including NULL pointers.
 /// It only returns NULL and doesn't dereference any pointers.
-/// 
-/// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_RtlVirtualUnwind(
     _handler_type: u32,
@@ -731,9 +683,6 @@ pub unsafe extern "C" fn kernel32_RtlVirtualUnwind(
 /// # Safety
 /// This function is safe to call with any arguments including NULL pointers.
 /// It returns a fake non-NULL handle without dereferencing any pointers.
-/// 
-/// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_AddVectoredExceptionHandler(
     _first: u32,
@@ -949,9 +898,6 @@ pub unsafe extern "C" fn kernel32_WideCharToMultiByte(
 ///
 /// # Safety
 /// The caller must ensure `wide_str` points to a valid null-terminated wide string
-/// 
-/// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_lstrlenW(wide_str: *const u16) -> i32 {
     if wide_str.is_null() {
@@ -987,9 +933,6 @@ pub unsafe extern "C" fn kernel32_lstrlenW(wide_str: *const u16) -> i32 {
 ///
 /// # Safety
 /// The caller must ensure both string pointers point to valid memory
-/// 
-/// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_CompareStringOrdinal(
     string1: *const u16,
@@ -1098,9 +1041,6 @@ pub struct FileTime {
 ///
 /// # Safety
 /// The caller must ensure `counter` points to a valid u64
-/// 
-/// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_QueryPerformanceCounter(counter: *mut i64) -> i32 {
     if counter.is_null() {
@@ -1142,9 +1082,6 @@ pub unsafe extern "C" fn kernel32_QueryPerformanceCounter(counter: *mut i64) -> 
 ///
 /// # Safety
 /// The caller must ensure `frequency` points to a valid i64
-/// 
-/// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_QueryPerformanceFrequency(frequency: *mut i64) -> i32 {
     if frequency.is_null() {
@@ -1167,9 +1104,6 @@ pub unsafe extern "C" fn kernel32_QueryPerformanceFrequency(frequency: *mut i64)
 ///
 /// # Safety
 /// The caller must ensure `filetime` points to a valid FILETIME structure
-/// 
-/// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_GetSystemTimePreciseAsFileTime(filetime: *mut FileTime) {
     if filetime.is_null() {
@@ -1229,9 +1163,6 @@ pub unsafe extern "C" fn kernel32_GetSystemTimePreciseAsFileTime(filetime: *mut 
 /// # Safety
 /// This function is safe to call with any arguments.
 /// It always returns INVALID_HANDLE_VALUE without dereferencing pointers.
-/// 
-/// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_CreateFileW(
     _file_name: *const u16,
@@ -1255,9 +1186,6 @@ pub unsafe extern "C" fn kernel32_CreateFileW(
 /// # Safety
 /// This function is safe to call with any arguments.
 /// It always returns FALSE without dereferencing pointers.
-/// 
-/// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_ReadFile(
     _file: *mut core::ffi::c_void,
@@ -1279,9 +1207,6 @@ pub unsafe extern "C" fn kernel32_ReadFile(
 /// # Safety
 /// This function is safe to call with any arguments.
 /// It always returns FALSE without dereferencing pointers.
-/// 
-/// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_WriteFile(
     _file: *mut core::ffi::c_void,
@@ -1303,9 +1228,6 @@ pub unsafe extern "C" fn kernel32_WriteFile(
 /// # Safety
 /// This function is safe to call with any arguments.
 /// It always returns TRUE without dereferencing pointers.
-/// 
-/// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_CloseHandle(_handle: *mut core::ffi::c_void) -> i32 {
     // Return TRUE (1) - operation succeeded
@@ -1327,9 +1249,6 @@ pub unsafe extern "C" fn kernel32_CloseHandle(_handle: *mut core::ffi::c_void) -
 ///
 /// # Safety
 /// This function is safe to call. It returns a constant non-NULL value.
-/// 
-/// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_GetProcessHeap() -> *mut core::ffi::c_void {
     // Return a fake heap handle (non-NULL)
@@ -1355,9 +1274,6 @@ pub unsafe extern "C" fn kernel32_GetProcessHeap() -> *mut core::ffi::c_void {
 /// # Safety
 /// The returned pointer must be freed with HeapFree.
 /// The caller must ensure the size is reasonable.
-/// 
-/// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_HeapAlloc(
     _heap: *mut core::ffi::c_void,
@@ -1604,10 +1520,9 @@ struct StartupInfoW {
 /// In a real Windows environment, this would contain information passed to CreateProcess.
 ///
 /// # Safety
-/// The caller must ensure `startup_info` points to a valid writable STARTUPINFOA structure.
-/// 
-/// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
+/// The caller must ensure:
+/// - `startup_info` points to a valid writable STARTUPINFOA structure
+/// - The pointer is properly aligned for a STARTUPINFOA structure (8-byte alignment)
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_GetStartupInfoA(startup_info: *mut u8) {
     if startup_info.is_null() {
@@ -1615,7 +1530,9 @@ pub unsafe extern "C" fn kernel32_GetStartupInfoA(startup_info: *mut u8) {
     }
 
     // SAFETY: Caller guarantees startup_info points to valid writable memory
-    // We cast to the structure type for easier field access
+    // with proper alignment for StartupInfoA structure (8-byte alignment required).
+    // The cast_ptr_alignment lint is allowed because the alignment requirement
+    // is documented in the function's safety contract.
     #[allow(clippy::cast_ptr_alignment)]
     let info = unsafe { &mut *(startup_info.cast::<StartupInfoA>()) };
 
@@ -1645,10 +1562,9 @@ pub unsafe extern "C" fn kernel32_GetStartupInfoA(startup_info: *mut u8) {
 /// GetStartupInfoW - retrieves the STARTUPINFOW structure for the current process (wide-char version)
 ///
 /// # Safety
-/// The caller must ensure `startup_info` points to a valid writable STARTUPINFOW structure.
-/// 
-/// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
+/// The caller must ensure:
+/// - `startup_info` points to a valid writable STARTUPINFOW structure
+/// - The pointer is properly aligned for a STARTUPINFOW structure (8-byte alignment)
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_GetStartupInfoW(startup_info: *mut u8) {
     if startup_info.is_null() {
@@ -1656,6 +1572,9 @@ pub unsafe extern "C" fn kernel32_GetStartupInfoW(startup_info: *mut u8) {
     }
 
     // SAFETY: Caller guarantees startup_info points to valid writable memory
+    // with proper alignment for StartupInfoW structure (8-byte alignment required).
+    // The cast_ptr_alignment lint is allowed because the alignment requirement
+    // is documented in the function's safety contract.
     #[allow(clippy::cast_ptr_alignment)]
     let info = unsafe { &mut *(startup_info.cast::<StartupInfoW>()) };
 
@@ -1689,7 +1608,7 @@ pub unsafe extern "C" fn kernel32_GetStartupInfoW(startup_info: *mut u8) {
 //
 
 /// CancelIo stub - cancels pending I/O operations
-/// 
+///
 /// # Safety
 /// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
@@ -1698,7 +1617,7 @@ pub unsafe extern "C" fn kernel32_CancelIo(_file: *mut core::ffi::c_void) -> i32
 }
 
 /// CopyFileExW stub - copies a file
-/// 
+///
 /// # Safety
 /// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
@@ -1714,7 +1633,7 @@ pub unsafe extern "C" fn kernel32_CopyFileExW(
 }
 
 /// CreateDirectoryW stub - creates a directory
-/// 
+///
 /// # Safety
 /// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
@@ -1726,7 +1645,7 @@ pub unsafe extern "C" fn kernel32_CreateDirectoryW(
 }
 
 /// CreateEventW stub - creates an event object
-/// 
+///
 /// # Safety
 /// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
@@ -1740,7 +1659,7 @@ pub unsafe extern "C" fn kernel32_CreateEventW(
 }
 
 /// CreateFileMappingA stub - creates a file mapping object
-/// 
+///
 /// # Safety
 /// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
@@ -1756,7 +1675,7 @@ pub unsafe extern "C" fn kernel32_CreateFileMappingA(
 }
 
 /// CreateHardLinkW stub - creates a hard link
-/// 
+///
 /// # Safety
 /// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
@@ -1769,7 +1688,7 @@ pub unsafe extern "C" fn kernel32_CreateHardLinkW(
 }
 
 /// CreatePipe stub - creates a pipe
-/// 
+///
 /// # Safety
 /// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
@@ -1783,7 +1702,7 @@ pub unsafe extern "C" fn kernel32_CreatePipe(
 }
 
 /// CreateProcessW stub - creates a new process
-/// 
+///
 /// # Safety
 /// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
@@ -1803,7 +1722,7 @@ pub unsafe extern "C" fn kernel32_CreateProcessW(
 }
 
 /// CreateSymbolicLinkW stub - creates a symbolic link
-/// 
+///
 /// # Safety
 /// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
@@ -1816,7 +1735,7 @@ pub unsafe extern "C" fn kernel32_CreateSymbolicLinkW(
 }
 
 /// CreateThread stub - creates a thread
-/// 
+///
 /// # Safety
 /// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
@@ -1832,7 +1751,7 @@ pub unsafe extern "C" fn kernel32_CreateThread(
 }
 
 /// CreateToolhelp32Snapshot stub - creates a snapshot of processes/threads/etc
-/// 
+///
 /// # Safety
 /// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
@@ -1844,7 +1763,7 @@ pub unsafe extern "C" fn kernel32_CreateToolhelp32Snapshot(
 }
 
 /// CreateWaitableTimerExW stub - creates a waitable timer
-/// 
+///
 /// # Safety
 /// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
@@ -1858,7 +1777,7 @@ pub unsafe extern "C" fn kernel32_CreateWaitableTimerExW(
 }
 
 /// DeleteFileW stub - deletes a file
-/// 
+///
 /// # Safety
 /// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
@@ -1867,7 +1786,7 @@ pub unsafe extern "C" fn kernel32_DeleteFileW(_file_name: *const u16) -> i32 {
 }
 
 /// DeleteProcThreadAttributeList stub - deletes a process thread attribute list
-/// 
+///
 /// # Safety
 /// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
@@ -1878,7 +1797,7 @@ pub unsafe extern "C" fn kernel32_DeleteProcThreadAttributeList(
 }
 
 /// DeviceIoControl stub - sends a control code to a device driver
-/// 
+///
 /// # Safety
 /// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
@@ -1896,7 +1815,7 @@ pub unsafe extern "C" fn kernel32_DeviceIoControl(
 }
 
 /// DuplicateHandle stub - duplicates a handle
-/// 
+///
 /// # Safety
 /// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
@@ -1913,7 +1832,7 @@ pub unsafe extern "C" fn kernel32_DuplicateHandle(
 }
 
 /// FlushFileBuffers stub - flushes file buffers
-/// 
+///
 /// # Safety
 /// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
@@ -1922,7 +1841,7 @@ pub unsafe extern "C" fn kernel32_FlushFileBuffers(_file: *mut core::ffi::c_void
 }
 
 /// FormatMessageW stub - formats a message string
-/// 
+///
 /// # Safety
 /// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
@@ -1939,7 +1858,7 @@ pub unsafe extern "C" fn kernel32_FormatMessageW(
 }
 
 /// GetCurrentDirectoryW stub - gets the current directory
-/// 
+///
 /// # Safety
 /// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
@@ -1951,7 +1870,7 @@ pub unsafe extern "C" fn kernel32_GetCurrentDirectoryW(
 }
 
 /// GetExitCodeProcess stub - gets the exit code of a process
-/// 
+///
 /// # Safety
 /// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
@@ -1963,7 +1882,7 @@ pub unsafe extern "C" fn kernel32_GetExitCodeProcess(
 }
 
 /// GetFileAttributesW stub - gets file attributes
-/// 
+///
 /// # Safety
 /// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
@@ -1972,7 +1891,7 @@ pub unsafe extern "C" fn kernel32_GetFileAttributesW(_file_name: *const u16) -> 
 }
 
 /// GetFileInformationByHandle stub - gets file information by handle
-/// 
+///
 /// # Safety
 /// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
@@ -1984,7 +1903,7 @@ pub unsafe extern "C" fn kernel32_GetFileInformationByHandle(
 }
 
 /// GetFileType stub - gets the type of a file
-/// 
+///
 /// # Safety
 /// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
@@ -1993,7 +1912,7 @@ pub unsafe extern "C" fn kernel32_GetFileType(_file: *mut core::ffi::c_void) -> 
 }
 
 /// GetFullPathNameW stub - gets the full path name of a file
-/// 
+///
 /// # Safety
 /// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
@@ -2010,7 +1929,7 @@ pub unsafe extern "C" fn kernel32_GetFullPathNameW(
 ///
 /// In real Windows, this is thread-local and set by many APIs.
 /// For now, we return 0 (no error).
-/// 
+///
 /// # Safety
 /// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
@@ -2019,7 +1938,7 @@ pub unsafe extern "C" fn kernel32_GetLastError() -> u32 {
 }
 
 /// GetModuleHandleW stub - gets a module handle
-/// 
+///
 /// # Safety
 /// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
@@ -2034,7 +1953,7 @@ pub unsafe extern "C" fn kernel32_GetModuleHandleW(
 ///
 /// Note: This is already handled by the DLL manager, but we provide
 /// a stub in case it's called directly.
-/// 
+///
 /// # Safety
 /// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
@@ -2046,7 +1965,7 @@ pub unsafe extern "C" fn kernel32_GetProcAddress(
 }
 
 /// GetStdHandle stub - gets a standard device handle
-/// 
+///
 /// # Safety
 /// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
@@ -2063,7 +1982,7 @@ pub unsafe extern "C" fn kernel32_GetStdHandle(std_handle: u32) -> *mut core::ff
 }
 
 /// LoadLibraryA stub - loads a library (ANSI version)
-/// 
+///
 /// # Safety
 /// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
@@ -2077,7 +1996,7 @@ pub unsafe extern "C" fn kernel32_LoadLibraryA(
 ///
 /// Note: This is already handled by the DLL manager, but we provide
 /// a stub in case it's called directly.
-/// 
+///
 /// # Safety
 /// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
@@ -2088,7 +2007,7 @@ pub unsafe extern "C" fn kernel32_LoadLibraryW(
 }
 
 /// SetConsoleCtrlHandler stub - sets a console control handler
-/// 
+///
 /// # Safety
 /// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
@@ -2100,7 +2019,7 @@ pub unsafe extern "C" fn kernel32_SetConsoleCtrlHandler(
 }
 
 /// SetFilePointerEx stub - sets the file pointer
-/// 
+///
 /// # Safety
 /// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
@@ -2114,7 +2033,7 @@ pub unsafe extern "C" fn kernel32_SetFilePointerEx(
 }
 
 /// SetLastError stub - sets the last error code
-/// 
+///
 /// # Safety
 /// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
@@ -2123,7 +2042,7 @@ pub unsafe extern "C" fn kernel32_SetLastError(_error_code: u32) {
 }
 
 /// WaitForSingleObject stub - waits for an object
-/// 
+///
 /// # Safety
 /// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
@@ -2135,7 +2054,7 @@ pub unsafe extern "C" fn kernel32_WaitForSingleObject(
 }
 
 /// WriteConsoleW stub - writes to the console (wide version)
-/// 
+///
 /// # Safety
 /// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
@@ -2163,7 +2082,7 @@ pub unsafe extern "C" fn kernel32_WriteConsoleW(
 // Additional stubs for remaining missing APIs
 
 /// GetFileInformationByHandleEx stub
-/// 
+///
 /// # Safety
 /// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
@@ -2177,7 +2096,7 @@ pub unsafe extern "C" fn kernel32_GetFileInformationByHandleEx(
 }
 
 /// GetFileSizeEx stub
-/// 
+///
 /// # Safety
 /// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
@@ -2189,7 +2108,7 @@ pub unsafe extern "C" fn kernel32_GetFileSizeEx(
 }
 
 /// GetFinalPathNameByHandleW stub
-/// 
+///
 /// # Safety
 /// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
@@ -2203,7 +2122,7 @@ pub unsafe extern "C" fn kernel32_GetFinalPathNameByHandleW(
 }
 
 /// GetOverlappedResult stub
-/// 
+///
 /// # Safety
 /// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
@@ -2217,7 +2136,7 @@ pub unsafe extern "C" fn kernel32_GetOverlappedResult(
 }
 
 /// GetProcessId stub
-/// 
+///
 /// # Safety
 /// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
@@ -2226,7 +2145,7 @@ pub unsafe extern "C" fn kernel32_GetProcessId(_process: *mut core::ffi::c_void)
 }
 
 /// GetSystemDirectoryW stub
-/// 
+///
 /// # Safety
 /// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
@@ -2235,7 +2154,7 @@ pub unsafe extern "C" fn kernel32_GetSystemDirectoryW(_buffer: *mut u16, _size: 
 }
 
 /// GetTempPathW stub - gets the temporary directory path
-/// 
+///
 /// # Safety
 /// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
@@ -2267,7 +2186,7 @@ pub unsafe extern "C" fn kernel32_GetTempPathW(buffer_length: u32, buffer: *mut 
 }
 
 /// GetWindowsDirectoryW stub
-/// 
+///
 /// # Safety
 /// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
@@ -2276,7 +2195,7 @@ pub unsafe extern "C" fn kernel32_GetWindowsDirectoryW(_buffer: *mut u16, _size:
 }
 
 /// InitOnceBeginInitialize stub
-/// 
+///
 /// # Safety
 /// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
@@ -2294,7 +2213,7 @@ pub unsafe extern "C" fn kernel32_InitOnceBeginInitialize(
 }
 
 /// InitOnceComplete stub
-/// 
+///
 /// # Safety
 /// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
@@ -2307,7 +2226,7 @@ pub unsafe extern "C" fn kernel32_InitOnceComplete(
 }
 
 /// InitializeProcThreadAttributeList stub
-/// 
+///
 /// # Safety
 /// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
@@ -2321,7 +2240,7 @@ pub unsafe extern "C" fn kernel32_InitializeProcThreadAttributeList(
 }
 
 /// LockFileEx stub
-/// 
+///
 /// # Safety
 /// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
@@ -2337,7 +2256,7 @@ pub unsafe extern "C" fn kernel32_LockFileEx(
 }
 
 /// MapViewOfFile stub
-/// 
+///
 /// # Safety
 /// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
@@ -2352,7 +2271,7 @@ pub unsafe extern "C" fn kernel32_MapViewOfFile(
 }
 
 /// Module32FirstW stub
-/// 
+///
 /// # Safety
 /// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
@@ -2364,7 +2283,7 @@ pub unsafe extern "C" fn kernel32_Module32FirstW(
 }
 
 /// Module32NextW stub
-/// 
+///
 /// # Safety
 /// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
@@ -2376,7 +2295,7 @@ pub unsafe extern "C" fn kernel32_Module32NextW(
 }
 
 /// MoveFileExW stub
-/// 
+///
 /// # Safety
 /// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
@@ -2389,7 +2308,7 @@ pub unsafe extern "C" fn kernel32_MoveFileExW(
 }
 
 /// ReadFileEx stub
-/// 
+///
 /// # Safety
 /// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
@@ -2404,7 +2323,7 @@ pub unsafe extern "C" fn kernel32_ReadFileEx(
 }
 
 /// RemoveDirectoryW stub
-/// 
+///
 /// # Safety
 /// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
@@ -2413,7 +2332,7 @@ pub unsafe extern "C" fn kernel32_RemoveDirectoryW(_path_name: *const u16) -> i3
 }
 
 /// SetCurrentDirectoryW stub
-/// 
+///
 /// # Safety
 /// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
@@ -2422,7 +2341,7 @@ pub unsafe extern "C" fn kernel32_SetCurrentDirectoryW(_path_name: *const u16) -
 }
 
 /// SetFileAttributesW stub
-/// 
+///
 /// # Safety
 /// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
@@ -2434,7 +2353,7 @@ pub unsafe extern "C" fn kernel32_SetFileAttributesW(
 }
 
 /// SetFileInformationByHandle stub
-/// 
+///
 /// # Safety
 /// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
@@ -2448,7 +2367,7 @@ pub unsafe extern "C" fn kernel32_SetFileInformationByHandle(
 }
 
 /// SetFileTime stub
-/// 
+///
 /// # Safety
 /// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
@@ -2462,7 +2381,7 @@ pub unsafe extern "C" fn kernel32_SetFileTime(
 }
 
 /// SetHandleInformation stub
-/// 
+///
 /// # Safety
 /// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
@@ -2475,7 +2394,7 @@ pub unsafe extern "C" fn kernel32_SetHandleInformation(
 }
 
 /// UnlockFile stub
-/// 
+///
 /// # Safety
 /// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
@@ -2490,7 +2409,7 @@ pub unsafe extern "C" fn kernel32_UnlockFile(
 }
 
 /// UnmapViewOfFile stub
-/// 
+///
 /// # Safety
 /// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
@@ -2499,7 +2418,7 @@ pub unsafe extern "C" fn kernel32_UnmapViewOfFile(_base_address: *const core::ff
 }
 
 /// UpdateProcThreadAttribute stub
-/// 
+///
 /// # Safety
 /// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
@@ -2516,7 +2435,7 @@ pub unsafe extern "C" fn kernel32_UpdateProcThreadAttribute(
 }
 
 /// WriteFileEx stub
-/// 
+///
 /// # Safety
 /// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
@@ -2531,7 +2450,7 @@ pub unsafe extern "C" fn kernel32_WriteFileEx(
 }
 
 /// SetThreadStackGuarantee stub
-/// 
+///
 /// # Safety
 /// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
@@ -2540,7 +2459,7 @@ pub unsafe extern "C" fn kernel32_SetThreadStackGuarantee(_stack_size_in_bytes: 
 }
 
 /// SetWaitableTimer stub
-/// 
+///
 /// # Safety
 /// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
@@ -2556,7 +2475,7 @@ pub unsafe extern "C" fn kernel32_SetWaitableTimer(
 }
 
 /// SleepEx stub - sleep with alertable wait
-/// 
+///
 /// # Safety
 /// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
@@ -2568,7 +2487,7 @@ pub unsafe extern "C" fn kernel32_SleepEx(milliseconds: u32, _alertable: i32) ->
 }
 
 /// SwitchToThread stub - yields execution to another thread
-/// 
+///
 /// # Safety
 /// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
@@ -2578,7 +2497,7 @@ pub unsafe extern "C" fn kernel32_SwitchToThread() -> i32 {
 }
 
 /// TerminateProcess stub
-/// 
+///
 /// # Safety
 /// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
@@ -2590,7 +2509,7 @@ pub unsafe extern "C" fn kernel32_TerminateProcess(
 }
 
 /// WaitForMultipleObjects stub
-/// 
+///
 /// # Safety
 /// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
