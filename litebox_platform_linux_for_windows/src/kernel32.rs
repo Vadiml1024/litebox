@@ -1269,7 +1269,7 @@ pub unsafe extern "C" fn kernel32_GetProcessHeap() -> *mut core::ffi::c_void {
 /// Pointer to allocated memory, or NULL on failure
 ///
 /// # Panics
-/// May panic if the heap tracker mutex is poisoned (e.g., another thread panicked while holding the lock).
+/// Panics if the heap tracker mutex is poisoned (another thread panicked while holding the lock).
 ///
 /// # Safety
 /// The returned pointer must be freed with HeapFree.
@@ -1329,7 +1329,7 @@ pub unsafe extern "C" fn kernel32_HeapAlloc(
 /// TRUE (1) on success, FALSE (0) on failure
 ///
 /// # Panics
-/// May panic if the heap tracker mutex is poisoned (e.g., another thread panicked while holding the lock).
+/// Panics if the heap tracker mutex is poisoned (another thread panicked while holding the lock).
 ///
 /// # Safety
 /// The caller must ensure:
@@ -1388,7 +1388,7 @@ pub unsafe extern "C" fn kernel32_HeapFree(
 /// Pointer to reallocated memory, or NULL on failure
 ///
 /// # Panics
-/// May panic if the heap tracker mutex is poisoned (e.g., another thread panicked while holding the lock).
+/// Panics if the heap tracker mutex is poisoned (another thread panicked while holding the lock).
 ///
 /// # Safety
 /// The caller must ensure:
