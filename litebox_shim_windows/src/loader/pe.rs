@@ -96,6 +96,7 @@ const IMAGE_DIRECTORY_ENTRY_EXCEPTION: usize = 3;
 #[allow(dead_code)]
 const IMAGE_DIRECTORY_ENTRY_SECURITY: usize = 4;
 const IMAGE_DIRECTORY_ENTRY_BASERELOC: usize = 5;
+const IMAGE_DIRECTORY_ENTRY_TLS: usize = 9;
 
 /// Import descriptor entry
 #[repr(C)]
@@ -106,6 +107,18 @@ struct ImportDescriptor {
     forwarder_chain: u32,
     name: u32,        // RVA to DLL name string
     first_thunk: u32, // RVA to Import Address Table
+}
+
+/// TLS directory (64-bit)
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+struct TlsDirectory64 {
+    start_address_of_raw_data: u64, // VA
+    end_address_of_raw_data: u64,   // VA
+    address_of_index: u64,          // VA
+    address_of_call_backs: u64,     // VA
+    size_of_zero_fill: u32,
+    characteristics: u32,
 }
 
 /// Base relocation block header
@@ -167,6 +180,19 @@ pub struct Relocation {
     pub reloc_type: u16,
     /// RVA where the relocation should be applied
     pub rva: u32,
+}
+
+/// Information about TLS (Thread Local Storage)
+#[derive(Debug, Clone)]
+pub struct TlsInfo {
+    /// Start address of TLS data template (VA, will be relative to image base)
+    pub start_address: u64,
+    /// End address of TLS data template (VA, will be relative to image base)
+    pub end_address: u64,
+    /// Address of TLS index variable (VA, will be relative to image base)
+    pub address_of_index: u64,
+    /// Size of zero-filled data following the initialized data
+    pub size_of_zero_fill: u32,
 }
 
 /// PE binary loader
@@ -755,6 +781,61 @@ impl PeLoader {
         }
 
         Ok(relocations)
+    }
+
+    /// Parse TLS directory and return TLS information
+    ///
+    /// Returns None if there is no TLS directory, or Some(TlsInfo) if TLS is present.
+    pub fn tls_info(&self) -> Result<Option<TlsInfo>> {
+        let tls_dir = self.get_data_directory(IMAGE_DIRECTORY_ENTRY_TLS)?;
+
+        if tls_dir.virtual_address == 0 || tls_dir.size == 0 {
+            // No TLS
+            return Ok(None);
+        }
+
+        let sections = self.sections()?;
+
+        // Find the section containing the TLS directory
+        let tls_section = sections
+            .iter()
+            .find(|s| {
+                tls_dir.virtual_address >= s.virtual_address
+                    && tls_dir.virtual_address < s.virtual_address + s.virtual_size
+            })
+            .ok_or_else(|| {
+                WindowsShimError::InvalidPeBinary(
+                    "TLS directory not found in any section".to_string(),
+                )
+            })?;
+
+        let tls_offset_in_section =
+            (tls_dir.virtual_address - tls_section.virtual_address) as usize;
+
+        if tls_offset_in_section + core::mem::size_of::<TlsDirectory64>() > tls_section.data.len() {
+            return Err(WindowsShimError::InvalidPeBinary(
+                "TLS directory out of bounds".to_string(),
+            ));
+        }
+
+        // SAFETY: We checked bounds above.
+        // Using read_unaligned to avoid alignment issues.
+        #[allow(clippy::cast_ptr_alignment)]
+        let tls_directory = unsafe {
+            tls_section
+                .data
+                .as_ptr()
+                .add(tls_offset_in_section)
+                .cast::<TlsDirectory64>()
+                .read_unaligned()
+        };
+
+        Ok(Some(TlsInfo {
+            start_address: tls_directory.start_address_of_raw_data,
+            end_address: tls_directory.end_address_of_raw_data,
+            address_of_index: tls_directory.address_of_index,
+            size_of_zero_fill: tls_directory.size_of_zero_fill,
+        }))
     }
 
     /// Apply relocations when loading at a different base address
