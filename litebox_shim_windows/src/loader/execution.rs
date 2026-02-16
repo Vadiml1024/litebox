@@ -334,11 +334,8 @@ pub unsafe fn call_entry_point(
             "push rbp",
             "mov rbp, rsp",
 
-            // Switch to the new stack
+            // Switch to the new stack (already properly aligned)
             "mov rsp, {new_stack}",
-
-            // Ensure 16-byte alignment (stack should already be aligned from our calculation)
-            "and rsp, -16",
 
             // Call the entry point
             // Note: The entry point might be mainCRTStartup or similar, which
@@ -354,8 +351,15 @@ pub unsafe fn call_entry_point(
             new_stack = in(reg) stack_with_shadow,
             lateout("rax") exit_code,
 
-            // Clobber list - these registers may be modified by the callee
-            clobber_abi("C"),
+            // Explicitly list clobbered registers instead of using clobber_abi
+            // The Windows x64 calling convention can clobber: rax, rcx, rdx, r8-r11, xmm0-xmm5
+            // We preserve: rbx, rbp, rdi, rsi, rsp, r12-r15, xmm6-xmm15
+            out("rcx") _,
+            out("rdx") _,
+            out("r8") _,
+            out("r9") _,
+            out("r10") _,
+            out("r11") _,
         );
     }
 
