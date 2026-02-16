@@ -1,135 +1,146 @@
-# Windows-on-Linux Support - Session Summary (2026-02-16 Session 3)
+# Windows-on-Linux Support - Session Summary (2026-02-16 Session 4)
 
-## Major Accomplishments ✅
+## Work Completed ✅
 
-### 1. Fixed Critical Function Pointer Bug
-- **Root Cause**: `_initterm` was calling invalid function pointer 0xffffffffffffffff (-1)
-- **Solution**: Added check for sentinel value -1 (usize::MAX) in `_initterm` and `_onexit`
-- **Impact**: Program no longer crashes during CRT initialization - exits cleanly with code 0
+### 1. Implemented WriteFile for stdout/stderr
+- Modified `kernel32_WriteFile` to handle stdout/stderr writes (was just a stub before)
+- Added proper handle checking for stdout (-11) and stderr (-12)
+- Writes data to Rust stdout/stderr with proper flushing
 
-### 2. Implemented `__getmainargs` Function
-- Created proper implementation to set up argc/argv/env for CRT
-- Uses static storage with proper lifetime management
-- Returns argc=0 with null-terminated argv and env arrays
-- Addresses code review feedback with simplified implementation
+### 2. Added Missing Windows API Functions
+- Implemented `GetCommandLineW` - returns empty command line
+- Implemented `GetEnvironmentStringsW` - returns empty environment block
+- Implemented `FreeEnvironmentStringsW` - no-op since we return static buffer
 
-### 3. Code Quality Improvements
-- Removed unnecessary Mutex wrappers (argc is constant)
-- Added safety comments for mutable static access
-- All changes reviewed and simplified based on feedback
-- Formatted all code with `cargo fmt`
+### 3. Extensive GDB Debugging
+- Used GDB to trace execution and identify crash point
+- Found crash occurs at address 0xffffffffffffffff (invalid function pointer)
+- Crash happens in `__do_global_ctors` function (C++ global constructor initialization)
+- Only ONE call to `_initterm` executes (for __xi array), not the expected TWO calls
 
-## Current Status
+## Current Issue Analysis 🔍
 
-**Works**: 
-- PE loading ✓
-- Section loading (including BSS zero-initialization) ✓
-- Relocations (1421 entries) ✓  
-- Import resolution (all functions and data) ✓
-- TLS initialization ✓
-- TEB/PEB setup ✓
-- Entry point execution ✓
-- CRT initialization (`_initterm`) ✓
-- **NEW**: Invalid function pointer filtering ✓
-- **NEW**: `__getmainargs` implementation ✓
+### The Crash
+**Symptom**: Program crashes attempting to jump to 0xffffffffffffffff
 
-**Known Issues**: 
-- Program runs but doesn't produce console output
-- `println!` from Rust not visible
-- Need to investigate if main() is actually being called
+**Root Cause**: The crash occurs in `__do_global_ctors` at address 0x140098d68:
+```assembly
+140098d68:ff 13                call   *(%rbx)   # Calls 0xffffffffffffffff
+140098d6a:48 83 eb 08          sub    $0x8,%rbx
+```
 
-## Testing Results
+**Call Stack** (from GDB):
+```
+#0  0xffffffffffffffff in ?? ()
+#1  0x00007ffff7b29d6a in ?? ()  # __do_global_ctors + 0x3a
+```
 
-- **All 162 tests passing** (no regressions)
-  - 105 platform tests
-  - 7 runner integration tests
-  - 41 shim tests
-  - 9 miscellaneous tests
-- Successfully loads and runs hello_cli.exe
-- Exit code: 0 (success)
-- No crashes or segfaults
+### Why __do_global_ctors is Called
+- pre_c_init (0x140001010) is called as part of CRT initialization
+- pre_c_init may directly or indirectly invoke __do_global_ctors
+- __do_global_ctors reads __CTOR_LIST__ and calls each constructor function
+- One of the entries in __CTOR_LIST__ is 0xffffffffffffffff (sentinel/invalid)
+
+### The __CTOR_LIST__ Problem
+The __CTOR_LIST__ is expected to have:
+- First entry: COUNT of constructors (or -1 to indicate count in last entry)
+- Middle entries: Function pointers to constructors
+- Last entry: NULL terminator (or count if first is -1)
+
+The code checks if first entry is -1 or 0 and skips if so, but doesn't filter -1 from middle entries.
+
+### Missing Second _initterm Call
+Analysis shows that after the first `_initterm` (for __xi array) returns and jumps to 0x140001206, the code should check if `__native_startup_state` is 1 and call the second `_initterm` (for __xc array). But this isn't happening, suggesting either:
+1. The state was changed by pre_c_init
+2. The crash happens before reaching the state check
+3. Control flow takes a different path
+
+## Debug Logging Side Effects ⚠️
+Added extensive `eprintln!` debug logging (34 statements total) which may be causing issues:
+- eprintln! from within Windows code during CRT initialization could corrupt state
+- Rust's eprintln! macro has its own initialization requirements
+- May be interfering with TLS or stack setup
+
+## Next Steps 📋
+
+### Immediate Actions
+1. **Remove Debug Logging**
+   - Remove all `eprintln!` statements from msvcrt.rs and kernel32.rs
+   - Test if program runs without crashing
+   - Only add back minimal, targeted logging if needed
+
+2. **Implement Missing CRT Functions**
+   These are called by pre_c_init and may be critical:
+   - `__p__fmode` - returns pointer to _fmode global
+   - `__p__commode` - returns pointer to _commode global  
+   - `_setargv` - parse command line into argv
+   - `_set_invalid_parameter_handler` - set handler for invalid parameters
+   - `_pei386_runtime_relocator` - perform runtime relocations
+
+3. **Fix __CTOR_LIST__ Handling**
+   Options:
+   a) Patch the __CTOR_LIST__ data during PE loading to remove -1 sentinels
+   b) Provide a wrapper for __do_global_ctors that filters -1 values
+   c) Ensure __CTOR_LIST__ is properly zero-initialized in .CRT section
+
+### Investigation Tasks
+1. Verify the actual contents of __CTOR_LIST__ in memory after relocations
+2. Trace execution path from pre_c_init to understand what it's calling
+3. Understand why second _initterm isn't being called
+4. Test with a simpler C program (not Rust) to isolate CRT issues
+
+## Files Changed This Session
+
+- `litebox_platform_linux_for_windows/src/msvcrt.rs`:
+  - Added debug logging to _initterm, __getmainargs, printf, fwrite
+  - Fixed function pointer handling (using raw usize instead of typed pointers)
+
+- `litebox_platform_linux_for_windows/src/kernel32.rs`:
+  - Implemented WriteFile for stdout/stderr (was stub before)
+  - Added GetCommandLineW, GetEnvironmentStringsW, FreeEnvironmentStringsW
+
+## Testing Status
+
+- ✅ All 162 tests still passing (no regressions)
+- ⚠️ hello_cli.exe crashes at 0xffffffffffffffff in __do_global_ctors
+- ⚠️ No console output produced yet
 
 ## Technical Details
 
-### Function Pointer Sentinel Values
-Windows initialization tables use -1 (0xffffffffffffffff) as a sentinel:
-```rust
-// Before: Would crash trying to call 0xffffffffffffffff
-if !func_ptr.is_null() {
-    func();
-}
-
-// After: Properly filters sentinel values
-if !func_ptr.is_null() && func_addr != usize::MAX {
-    func();
-}
+### .CRT Section Layout (0x1400d2000-0x1400d2068)
+```
+0x1400d2000: __xc_a (start of C++ static constructors for DLL)
+0x1400d2010: __xc_z (end of __xc array)
+0x1400d2018: __xi_a (start of C init functions)  
+0x1400d2028: __xi_z (end of __xi array)
+0x1400d2030+: Likely __CTOR_LIST__ or TLS callbacks
 ```
 
-### __getmainargs Implementation
-Simplified implementation without unnecessary synchronization:
-```rust
-// Set argc directly (constant value)
-if !argc.is_null() {
-    *argc = 0;
-}
-
-// Return pointers to static storage
-*argv = core::ptr::addr_of_mut!(ARGV_STORAGE).cast();
-*env = core::ptr::addr_of_mut!(ENV_STORAGE).cast();
+### Function Call Trace
+```
+mainCRTStartup (0x140001410)
+  → __tmainCRTStartup (0x140001190)
+    → _initterm(__xi_a, __xi_z)  # Called at 0x1400013c4
+      → pre_c_init (0x140001010)
+        → [calls missing CRT functions]
+        → __do_global_ctors? (0x140098d30)
+          → CRASH: call 0xffffffffffffffff
 ```
 
-## Next Session Action Items
+## Key Insights
 
-1. **Investigate Missing Console Output**
-   - Verify if main() function is being called
-   - Check if Rust println! is using different I/O functions
-   - May need to implement additional MSVCRT functions
-   - Consider adding tracing to track function calls during execution
-
-2. **Debugging Strategy**
-   - Add instrumentation to track execution flow
-   - Verify CRT startup sequence is complete
-   - Check if stdout/stderr are properly initialized
-
-3. **Test Complete Execution**
-   - Goal: "Hello World" output from hello_cli.exe
-   - Verify program exits cleanly
-   - Test with simpler C programs if needed
-
-## Files Changed
-
-- `litebox_platform_linux_for_windows/src/msvcrt.rs`:
-  - Fixed `_initterm` to check for -1 sentinel value
-  - Fixed `_onexit` to validate function pointers
-  - Implemented `__getmainargs` with proper argc/argv/env setup
-  - Simplified based on code review feedback
-
-- `litebox_platform_linux_for_windows/src/kernel32.rs`:
-  - Added `use std::io::Write` for stdout flushing
-
-## Code Quality
-
-✅ Formatted with cargo fmt  
-✅ All 162 tests passing  
-✅ Code review feedback addressed  
-✅ Safety comments for all unsafe code  
-⚠️ CodeQL timed out (acceptable for large codebase)
+1. **CRT Initialization is Complex**: Windows CRT has multiple initialization phases with specific ordering requirements
+2. **Sentinel Values**: Both _initterm and __do_global_ctors use -1 as sentinel, must filter
+3. **State Management**: __native_startup_state controls which init functions run
+4. **Rust Complications**: Rust programs have additional runtime requirements beyond basic CRT
+5. **Debug Interference**: Heavy logging during CRT init may cause problems
 
 ## Summary
 
-Excellent progress fixing critical bugs! The Windows program now successfully loads, initializes the CRT, and completes execution without crashing. Fixed two major issues:
+Made significant progress understanding the Windows CRT initialization flow and identifying the crash point. The main blocker is handling -1 sentinel values in constructor lists. Removing debug logging and implementing missing CRT functions should allow progress toward successful execution.
 
-1. **Sentinel value handling**: Programs with -1 function pointers in initialization tables now work correctly
-2. **CRT initialization**: __getmainargs properly sets up argc/argv/env
-
-The foundation is now solid:
-- PE loader works correctly ✓
-- Relocations work correctly ✓
-- Import resolution works for functions and data ✓
-- TLS works correctly ✓
-- CRT initialization works correctly ✓
-- **NEW**: Invalid pointer filtering works correctly ✓
-- **NEW**: Argument setup works correctly ✓
-
-Next session should focus on understanding why console output isn't visible despite successful execution.
-
+Next session should focus on:
+- Clean build without debug logging
+- Implement missing CRT functions (__p__fmode, _setargv, etc.)
+- Handle __CTOR_LIST__ sentinel values properly
+- Test with simpler non-Rust Windows programs
