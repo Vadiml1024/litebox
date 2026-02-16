@@ -1,33 +1,98 @@
-# Windows-on-Linux Support - Session Summary (2026-02-16 Session 6)
+# Windows-on-Linux Support - Session Summary (2026-02-16 Session 7)
 
 ## Work Completed ✅
 
-### 1. __CTOR_LIST__ Sentinel Patching Implementation
+### 1. Fixed Missing KERNEL32 Trampoline Registrations (Critical Fix)
 
 **Problem Context:**
-Rust programs compiled with the `x86_64-pc-windows-gnu` target (MinGW) use LLVM's `@llvm.global_ctors` mechanism for global constructor initialization. The MinGW C runtime (CRT, specifically crtbegin.o) implements `__do_global_ctors_aux` which processes the `__CTOR_LIST__` array at startup before `main()`.
+23 KERNEL32 DLL exports were listed in the DLL export table but had no corresponding
+trampoline function entries. When the PE binary's IAT was filled, these functions received
+non-executable stub addresses (0x1000-range), causing SIGSEGV crashes when called by CRT
+initialization code.
 
-**Problem Solved:**
-The MinGW CRT's `__do_global_ctors_aux` function was attempting to call the `-1` sentinel value (0xffffffffffffffff) as a function pointer, causing immediate SIGSEGV crashes. This occurs because the MinGW implementation doesn't properly skip the sentinel when iterating the constructor list.
+**Root Cause of 0x18 Crash:**
+The crash at address 0x18 was caused by CRT initialization calling a KERNEL32 function
+(likely GetSystemInfo, VirtualQuery, or similar) that resolved to a non-executable stub
+address, causing a SIGSEGV. The crash address 0x18 was the stub address for VirtualQuery
+(KERNEL32_BASE + 0x18 = 0x1018), or a NULL pointer dereference resulting from a failed
+function call.
 
 **Solution Implemented:**
-- Added `patch_ctor_list()` function in `litebox_shim_windows/src/loader/pe.rs`
-- Scans all loaded sections for __CTOR_LIST__ patterns after relocations
-- Pattern: `0xffffffffffffffff` followed by either:
-  - `0` (terminator sentinel)
-  - A valid function pointer within relocated image range `[base_address, base_address + 256MB)`
-- Replaces `-1` sentinels with `0` to prevent crashes
+- Added 20 new KERNEL32 stub implementations in `kernel32.rs`:
+  - Process: ExitProcess, GetCurrentProcess, GetCurrentThread
+  - Module: GetModuleHandleA, GetModuleFileNameW
+  - System: GetSystemInfo (with proper SYSTEM_INFO struct)
+  - Console: GetConsoleMode, GetConsoleOutputCP, ReadConsoleW
+  - Environment: GetEnvironmentVariableW, SetEnvironmentVariableW
+  - Memory: VirtualProtect, VirtualQuery
+  - Library: FreeLibrary
+  - File search: FindFirstFileExW, FindNextFileW, FindClose
+  - Synchronization: WaitOnAddress, WakeByAddressAll, WakeByAddressSingle
+- Registered 23 missing functions in `function_table.rs` (20 new + 3 existing)
+- All 128 KERNEL32 DLL exports now have working trampolines
 
-**Implementation Details:**
-```rust
-pub unsafe fn patch_ctor_list(&self, base_address: u64) -> Result<()>
+### 2. Improved PEB Structure for CRT Compatibility
+
+**Problem:**
+The PEB structure was missing critical fields that CRT code accesses during initialization.
+Most importantly, `ProcessHeap` at PEB+0x30 was zero, causing NULL pointer dereferences
+when CRT tried to use the process heap.
+
+**Solution:**
+- Added `ProcessHeap` field at PEB+0x30 (set to 0x7FFE_0000, matching GetProcessHeap)
+- Added `SubSystemData` at PEB+0x28 and `FastPebLock` at PEB+0x38
+- Added PEB offset verification test confirming correct x64 layout
+- Set TEB `client_id` with actual process/thread IDs via libc::getpid()
+
+### 3. Added LDR_DATA_TABLE_ENTRY for Main Module
+
+**Problem:**
+The PEB_LDR_DATA had empty circular lists. CRT code that walks the module list would
+find no modules, potentially causing crashes or incorrect behavior.
+
+**Solution:**
+- Created `LdrDataTableEntry` structure with DllBase, EntryPoint, SizeOfImage
+- Linked the main module entry into all three PEB_LDR_DATA circular lists
+- Entry contains the image base address for proper module identification
+
+### 4. Added Unit Tests
+
+- 2 tests for __CTOR_LIST__ patching (with synthetic PE binaries)
+- 3 tests for PEB/TEB improvements (field offsets, ProcessHeap, client_id)
+- 11 tests for new KERNEL32 functions
+
+### 5. Test Results
+
+```bash
+cargo test -p litebox_shim_windows -p litebox_platform_linux_for_windows -p litebox_runner_windows_on_linux_userland
+Result: 185 passed (123 platform + 46 shim + 16 runner)
 ```
-- Iterates through all sections in 8-byte increments
-- Checks each 64-bit value for 0xffffffffffffffff
-- Validates next value to confirm it's a __CTOR_LIST__
-- Patches sentinel in-place by writing 0
 
-**Key Insight:**
+All ratchet tests passing.
+
+## Current Status 📊
+
+### What's Working ✅
+- PE binary loading and parsing
+- Section loading with BSS zero-initialization
+- Relocation processing
+- Import resolution and IAT patching
+- TEB/PEB structure creation and GS register setup
+- TLS initialization
+- Entry point execution starts successfully
+- All MSVCRT functions (memory, string, I/O)
+- All 128 KERNEL32 functions have trampolines
+- __CTOR_LIST__ patching for MinGW compatibility
+- PEB ProcessHeap initialization
+- LDR module list for main executable
+- Process/thread ID in TEB client_id
+
+### Files Modified This Session
+- `litebox_platform_linux_for_windows/src/kernel32.rs` (+250 lines, 20 new functions + 11 tests)
+- `litebox_platform_linux_for_windows/src/function_table.rs` (+115 lines, 23 new entries)
+- `litebox_shim_windows/src/loader/execution.rs` (+83 lines, PEB/TEB/LDR improvements + 5 tests)
+- `litebox_shim_windows/src/loader/pe.rs` (+130 lines, 2 __CTOR_LIST__ tests)
+- `litebox_shim_windows/src/loader/mod.rs` (+1 line, export LdrDataTableEntry)
 After relocation, function pointers in __CTOR_LIST__ point to `base_address + RVA`, not the original `image_base + RVA`. The validation logic must check against the relocated base address.
 
 ### 2. Testing Results

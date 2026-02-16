@@ -490,9 +490,14 @@ impl ExecutionContext {
         teb.self_pointer = teb_address;
 
         // Set thread and process IDs in TEB client_id
-        // SAFETY: getpid and gettid are safe to call
+        // client_id[0] = process ID, client_id[1] = thread ID
+        // SAFETY: getpid is a safe syscall; SYS_gettid returns the thread ID
         let pid = unsafe { libc::getpid() };
-        teb.client_id = [pid as u64, pid as u64];
+        let tid = unsafe { libc::syscall(libc::SYS_gettid) };
+        #[allow(clippy::cast_sign_loss)]
+        {
+            teb.client_id = [pid as u64, tid as u64];
+        }
 
         Ok(Self {
             teb,
