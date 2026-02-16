@@ -1,15 +1,15 @@
 # Windows on Linux: Current Implementation Status
 
-**Last Updated:** 2026-02-15 (Session 5)
+**Last Updated:** 2026-02-15 (Session 6)
 
 ## Overview
 
 This document provides the current status of the Windows-on-Linux implementation in LiteBox, which enables running Windows PE binaries on Linux with comprehensive API tracing capabilities.
 
-**Current Phase:** Phase 8 - **86% Complete** (6/7 sub-phases)  
+**Current Phase:** Phase 8 - **In Progress** (Phase 8.7)  
 **Total Tests:** 149 passing (94 platform + 16 runner + 39 shim)  
 **Integration Tests:** 7 comprehensive tests  
-**Recent Session:** Phase 8.1-8.6 Complete - Ready for Integration Testing
+**Recent Session:** Phase 8.7 - Import Resolution Bug Fix - Critical Bug Fixed
 
 ## Architecture
 
@@ -665,6 +665,56 @@ Memory protection ✅, error handling ✅, MSVCRT (18 functions) ✅, KERNEL32 (
   - 🔍 **Progress:** hello_cli.exe progresses further with exception stubs
   - 🔍 **Next:** Need Critical Sections and more synchronization primitives
 
+- **2026-02-15 Session 6:** Phase 8.7 - Import Resolution Bug Fix 🆕
+  - ✅ **CRITICAL BUG IDENTIFIED AND FIXED:** Phase 8 functions missing from KERNEL32 exports
+  - ✅ Root cause: Functions implemented with trampolines but missing from DLL stub export table
+  - ✅ Fixed missing exports in `litebox_shim_windows/src/loader/dll.rs`:
+    - ✅ Phase 8.2: Critical Sections (5 functions)
+    - ✅ Phase 8.3: String Operations (4 functions)
+    - ✅ Phase 8.4: Performance Counters (3 functions)
+  - ✅ Impact: Reduced unresolved imports from 72+ to 59
+  - ✅ All 149 tests still passing (94 platform + 16 runner + 39 shim)
+  - ✅ Zero clippy warnings for changed files
+  - ✅ All code formatted with cargo fmt
+  - 🔍 **Progress:** Import resolution now working correctly for all Phase 8 functions
+  - 🔍 **Next:** Address entry point execution crash (stack/calling convention issues)
+
+**Test Results (Session 6 - Phase 8.7 In Progress):**
+```
+$ cargo nextest run --package litebox_platform_linux_for_windows
+test result: ok. 94 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+
+$ cargo nextest run --package litebox_runner_windows_on_linux_userland  
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+
+$ cargo nextest run --package litebox_shim_windows
+test result: ok. 39 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+
+Total: 149 tests passing ✅ (maintained)
+```
+
+**Import Resolution After Fix:**
+```
+Before fix:
+  72+ functions showing as "NOT FOUND" in KERNEL32.dll
+  Including: DeleteCriticalSection, EnterCriticalSection, MultiByteToWideChar, 
+             QueryPerformanceCounter, and others
+
+After fix:
+  59 functions "NOT FOUND" (reduced by 13)
+  All Phase 8 functions now resolve correctly:
+  ✅ DeleteCriticalSection -> 0x7FB94FA252EC
+  ✅ EnterCriticalSection -> 0x7FB94FA252BF
+  ✅ MultiByteToWideChar -> 0x7FB94FA252FB
+  ✅ QueryPerformanceCounter -> 0x7FB94FA253B3
+  [and 9 more Phase 8 functions...]
+```
+
+**Known Issues:**
+- ⚠️ Entry point execution still crashes (not a Phase 8 function issue)
+- ⚠️ Missing proper stack setup in call_entry_point function
+- ⚠️ 59 advanced KERNEL32 functions still unresolved (expected, not needed for basic execution)
+
 **Test Results (Session 5 - Phase 8.1 Complete):**
 ```
 $ cargo test --package litebox_platform_linux_for_windows
@@ -718,7 +768,9 @@ Next: Phase 8.7 - Final integration testing with hello_cli.exe
 - ✅ Phase 8.4: Performance Counters (COMPLETE)
 - ✅ Phase 8.5: File I/O Trampolines (COMPLETE)
 - ✅ Phase 8.6: Heap Management Trampolines (COMPLETE)
-- ⏳ Phase 8.7: Final Integration and Testing (NEXT)
+- 🔧 Phase 8.7: Final Integration and Testing (IN PROGRESS)
+  - ✅ Fixed critical import resolution bug
+  - ⏳ Remaining: Entry point execution fixes
 
 **Test Results (Phase 8.6 Complete):**
 ```

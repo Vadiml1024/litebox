@@ -307,6 +307,23 @@ impl DllManager {
             ("RtlUnwindEx", KERNEL32_BASE + 0x33),
             ("RtlVirtualUnwind", KERNEL32_BASE + 0x34),
             ("AddVectoredExceptionHandler", KERNEL32_BASE + 0x35),
+            // Phase 8.2: Critical Sections
+            ("InitializeCriticalSection", KERNEL32_BASE + 0x36),
+            ("EnterCriticalSection", KERNEL32_BASE + 0x37),
+            ("LeaveCriticalSection", KERNEL32_BASE + 0x38),
+            ("TryEnterCriticalSection", KERNEL32_BASE + 0x39),
+            ("DeleteCriticalSection", KERNEL32_BASE + 0x3A),
+            // Phase 8.3: String Operations
+            ("MultiByteToWideChar", KERNEL32_BASE + 0x3B),
+            ("WideCharToMultiByte", KERNEL32_BASE + 0x3C),
+            ("lstrlenW", KERNEL32_BASE + 0x3D),
+            ("CompareStringOrdinal", KERNEL32_BASE + 0x3E),
+            // Phase 8.4: Performance Counters
+            ("QueryPerformanceCounter", KERNEL32_BASE + 0x3F),
+            ("QueryPerformanceFrequency", KERNEL32_BASE + 0x40),
+            ("GetSystemTimePreciseAsFileTime", KERNEL32_BASE + 0x41),
+            // Phase 8.5 and 8.6: Note - CreateFileW, ReadFile, WriteFile, CloseHandle,
+            // GetProcessHeap, HeapAlloc, HeapFree, HeapReAlloc are already in the list above
         ];
 
         self.register_stub_dll("KERNEL32.dll", exports);
