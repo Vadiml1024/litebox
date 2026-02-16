@@ -39,6 +39,74 @@ pub static mut msvcrt__commode: i32 = 0;
 pub static mut msvcrt___initenv: *mut *mut i8 = ptr::null_mut();
 
 // ============================================================================
+// Data Access Functions
+// ============================================================================
+// These functions return pointers to global data variables
+
+/// Get pointer to file mode (_fmode)
+///
+/// # Safety
+/// Returns a pointer to a static mutable variable. The caller must ensure
+/// proper synchronization if accessing from multiple threads.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt___p__fmode() -> *mut i32 {
+    core::ptr::addr_of_mut!(msvcrt__fmode)
+}
+
+/// Get pointer to commit mode (_commode)
+///
+/// # Safety
+/// Returns a pointer to a static mutable variable. The caller must ensure
+/// proper synchronization if accessing from multiple threads.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt___p__commode() -> *mut i32 {
+    core::ptr::addr_of_mut!(msvcrt__commode)
+}
+
+// ============================================================================
+// CRT Initialization Functions
+// ============================================================================
+
+/// Set command line arguments (_setargv)
+///
+/// This is called during CRT initialization to parse command line arguments.
+/// For now, this is a no-op stub since we handle arguments in __getmainargs.
+///
+/// # Safety
+/// This function is safe to call but marked unsafe for C ABI compatibility.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt__setargv() {
+    // No-op stub - we handle arguments in __getmainargs
+}
+
+/// Set invalid parameter handler
+///
+/// This is called during CRT initialization to set a handler for invalid parameters.
+/// For now, this is a no-op stub.
+///
+/// # Safety
+/// This function is unsafe as it deals with function pointers.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt__set_invalid_parameter_handler(
+    _handler: *mut core::ffi::c_void,
+) -> *mut core::ffi::c_void {
+    // No-op stub - return null to indicate no previous handler
+    ptr::null_mut()
+}
+
+/// PE runtime relocator
+///
+/// This function is called by MinGW runtime to perform additional relocations.
+/// Since relocations are already handled by our PE loader, this is a no-op.
+///
+/// # Safety
+/// This function is safe to call but marked unsafe for C ABI compatibility.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt__pei386_runtime_relocator() {
+    // No-op stub - relocations already handled by PE loader
+}
+
+// ============================================================================
 // Memory Management Functions
 // ============================================================================
 
