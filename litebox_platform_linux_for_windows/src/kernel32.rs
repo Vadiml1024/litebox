@@ -295,12 +295,6 @@ pub unsafe extern "C" fn kernel32_InitializeCriticalSection(
     cs.internal = Arc::into_raw(data) as usize;
 }
 
-/// Enter a critical section (EnterCriticalSection)
-///
-/// This acquires the critical section lock. If another thread owns it,
-/// this function blocks until the lock becomes available.
-/// Supports recursion - the same thread can enter multiple times.
-///
 /// Enter a critical section (acquire the lock).
 ///
 /// If the critical section is already owned by this thread, increments the recursion count.
@@ -358,12 +352,6 @@ pub unsafe extern "C" fn kernel32_EnterCriticalSection(critical_section: *mut Cr
     core::mem::forget(data);
 }
 
-/// Leave a critical section (LeaveCriticalSection)
-///
-/// This releases the critical section lock. If this thread has entered
-/// multiple times (recursion), only the outermost leave will actually
-/// release the lock.
-///
 /// Leave a critical section (release the lock).
 ///
 /// Decrements the recursion count. If the count reaches zero, releases ownership.
