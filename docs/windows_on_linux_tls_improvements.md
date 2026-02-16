@@ -42,7 +42,7 @@ thread_local! {
 }
 
 pub unsafe extern "C" fn kernel32_GetLastError() -> u32 {
-    LAST_ERROR.with(|error| error.get())
+    LAST_ERROR.with(Cell::get)
 }
 ```
 
