@@ -24,7 +24,7 @@ use std::sync::Mutex;
 
 /// File mode (_fmode) - default file open mode
 /// 0x4000 = _O_BINARY (binary mode), 0x8000 = _O_TEXT (text mode)
-/// Default is text mode (0x8000)
+/// Default is binary mode (0x4000)
 #[unsafe(no_mangle)]
 pub static mut msvcrt__fmode: i32 = 0x4000; // Binary mode by default
 
