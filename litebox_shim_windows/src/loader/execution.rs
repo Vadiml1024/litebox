@@ -254,7 +254,10 @@ impl Drop for ExecutionContext {
             // (not stack_base) because munmap expects the address returned by mmap.
             #[allow(clippy::cast_possible_truncation)]
             unsafe {
-                libc::munmap(stack_ptr.cast::<libc::c_void>(), self.stack_size as libc::size_t);
+                libc::munmap(
+                    stack_ptr.cast::<libc::c_void>(),
+                    self.stack_size as libc::size_t,
+                );
             }
         }
     }
