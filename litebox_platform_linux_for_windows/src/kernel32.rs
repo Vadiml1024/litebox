@@ -4302,4 +4302,108 @@ mod tests {
         let result = unsafe { kernel32_FreeEnvironmentStringsW(env) };
         assert_eq!(result, 1, "FreeEnvironmentStringsW should return TRUE");
     }
+
+    #[test]
+    fn test_get_current_process() {
+        let handle = unsafe { kernel32_GetCurrentProcess() };
+        assert!(
+            !handle.is_null(),
+            "GetCurrentProcess should return non-null"
+        );
+        // Windows pseudo-handle for current process is -1
+        assert_eq!(handle as usize, usize::MAX);
+    }
+
+    #[test]
+    fn test_get_current_thread() {
+        let handle = unsafe { kernel32_GetCurrentThread() };
+        assert!(!handle.is_null(), "GetCurrentThread should return non-null");
+        // Windows pseudo-handle for current thread is -2
+        assert_eq!(handle as usize, usize::MAX - 1);
+    }
+
+    #[test]
+    fn test_get_module_handle_a() {
+        let handle = unsafe { kernel32_GetModuleHandleA(core::ptr::null()) };
+        assert!(
+            !handle.is_null(),
+            "GetModuleHandleA(NULL) should return non-null"
+        );
+        assert_eq!(handle as usize, 0x400000);
+    }
+
+    #[test]
+    fn test_get_system_info() {
+        let mut info = [0u8; 48]; // SystemInfo is 48 bytes
+        unsafe { kernel32_GetSystemInfo(info.as_mut_ptr()) };
+
+        // Verify page size (offset 0x04, u32)
+        let page_size = u32::from_le_bytes(info[4..8].try_into().unwrap());
+        assert_eq!(page_size, 4096, "Page size should be 4096");
+
+        // Verify number of processors (offset 0x20, u32)
+        let num_processors = u32::from_le_bytes(info[0x20..0x24].try_into().unwrap());
+        assert!(num_processors >= 1, "Should have at least 1 processor");
+    }
+
+    #[test]
+    fn test_get_console_mode() {
+        let mut mode: u32 = 0;
+        let result =
+            unsafe { kernel32_GetConsoleMode(1 as *mut core::ffi::c_void, &mut mode as *mut u32) };
+        assert_eq!(result, 1, "GetConsoleMode should return TRUE");
+        assert_ne!(mode, 0, "Mode should be non-zero");
+    }
+
+    #[test]
+    fn test_get_console_output_cp() {
+        let cp = unsafe { kernel32_GetConsoleOutputCP() };
+        assert_eq!(cp, 65001, "Console output code page should be UTF-8");
+    }
+
+    #[test]
+    fn test_virtual_protect() {
+        let mut old_protect: u32 = 0;
+        let result = unsafe {
+            kernel32_VirtualProtect(
+                0x1000 as *mut core::ffi::c_void,
+                4096,
+                0x04, // PAGE_READWRITE
+                &mut old_protect as *mut u32,
+            )
+        };
+        assert_eq!(result, 1, "VirtualProtect should return TRUE");
+        assert_eq!(
+            old_protect, 0x40,
+            "Old protect should be PAGE_EXECUTE_READWRITE"
+        );
+    }
+
+    #[test]
+    fn test_free_library() {
+        let result = unsafe { kernel32_FreeLibrary(0x1000 as *mut core::ffi::c_void) };
+        assert_eq!(result, 1, "FreeLibrary should return TRUE");
+    }
+
+    #[test]
+    fn test_find_close() {
+        let result = unsafe { kernel32_FindClose(0x1000 as *mut core::ffi::c_void) };
+        assert_eq!(result, 1, "FindClose should return TRUE");
+    }
+
+    #[test]
+    fn test_get_environment_variable_w() {
+        let name: [u16; 5] = [b'P' as u16, b'A' as u16, b'T' as u16, b'H' as u16, 0];
+        let result =
+            unsafe { kernel32_GetEnvironmentVariableW(name.as_ptr(), core::ptr::null_mut(), 0) };
+        assert_eq!(result, 0, "GetEnvironmentVariableW stub should return 0");
+    }
+
+    #[test]
+    fn test_set_environment_variable_w() {
+        let name: [u16; 2] = [b'X' as u16, 0];
+        let value: [u16; 2] = [b'Y' as u16, 0];
+        let result = unsafe { kernel32_SetEnvironmentVariableW(name.as_ptr(), value.as_ptr()) };
+        assert_eq!(result, 1, "SetEnvironmentVariableW should return TRUE");
+    }
 }

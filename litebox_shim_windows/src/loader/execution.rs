@@ -190,6 +190,58 @@ impl Default for PebLdrData {
     }
 }
 
+/// LDR_DATA_TABLE_ENTRY - Module information entry
+///
+/// Each loaded module has an entry in the PEB_LDR_DATA linked lists.
+/// CRT code may walk these lists to find module information such as the
+/// DllBase, SizeOfImage, or module name.
+///
+/// We provide a minimal entry for the main executable module.
+#[repr(C)]
+#[derive(Debug, Clone)]
+pub struct LdrDataTableEntry {
+    /// InLoadOrderLinks (LIST_ENTRY) [Flink, Blink] (offset 0x00)
+    pub in_load_order_links: [u64; 2],
+    /// InMemoryOrderLinks (LIST_ENTRY) [Flink, Blink] (offset 0x10)
+    pub in_memory_order_links: [u64; 2],
+    /// InInitializationOrderLinks (LIST_ENTRY) [Flink, Blink] (offset 0x20)
+    pub in_initialization_order_links: [u64; 2],
+    /// DllBase - base address of the module (offset 0x30)
+    pub dll_base: u64,
+    /// EntryPoint - entry point of the module (offset 0x38)
+    pub entry_point: u64,
+    /// SizeOfImage (offset 0x40)
+    pub size_of_image: u64,
+    /// FullDllName (UNICODE_STRING stub) - [Length, MaxLength, padding, Buffer] (offset 0x48)
+    pub full_dll_name: [u64; 2],
+    /// BaseDllName (UNICODE_STRING stub) - [Length, MaxLength, padding, Buffer] (offset 0x58)
+    pub base_dll_name: [u64; 2],
+    /// Reserved fields to prevent crashes during list traversal (offset 0x68+)
+    _reserved: [u64; 8],
+}
+
+impl LdrDataTableEntry {
+    /// Create a new LDR_DATA_TABLE_ENTRY for the main module
+    ///
+    /// # Arguments
+    /// * `dll_base` - Base address of the loaded module
+    /// * `entry_point` - Entry point address
+    /// * `size_of_image` - Size of the module in memory
+    pub fn new(dll_base: u64, entry_point: u64, size_of_image: u64) -> Self {
+        Self {
+            in_load_order_links: [0, 0],           // Will be patched by caller
+            in_memory_order_links: [0, 0],         // Will be patched by caller
+            in_initialization_order_links: [0, 0], // Will be patched by caller
+            dll_base,
+            entry_point,
+            size_of_image,
+            full_dll_name: [0, 0], // Empty UNICODE_STRING
+            base_dll_name: [0, 0], // Empty UNICODE_STRING
+            _reserved: [0; 8],
+        }
+    }
+}
+
 /// RTL_USER_PROCESS_PARAMETERS - Minimal stub for process parameters
 ///
 /// Contains command line, environment, and other process startup information.
@@ -311,6 +363,8 @@ pub struct ExecutionContext {
     pub peb: Box<ProcessEnvironmentBlock>,
     /// PEB Loader Data
     pub ldr: Box<PebLdrData>,
+    /// Main module LDR entry (linked into the PEB_LDR_DATA lists)
+    pub main_module_entry: Box<LdrDataTableEntry>,
     /// Process Parameters
     pub process_parameters: Box<RtlUserProcessParameters>,
     /// TEB address in memory (for self-pointer)
@@ -381,6 +435,34 @@ impl ExecutionContext {
         // Now update with proper circular list pointers
         *ldr = PebLdrData::new_with_address(ldr_address);
 
+        // Create main module LDR entry and link it into the lists
+        let mut main_module_entry = Box::new(LdrDataTableEntry::new(image_base, 0, 0));
+        let entry_address = &raw const *main_module_entry as u64;
+
+        // Link the entry into all three circular lists
+        // The list heads in PebLdrData point to the LIST_ENTRY within the entry,
+        // and the entry's LIST_ENTRY points back to the list head.
+        //
+        // PEB_LDR_DATA list heads are at offsets 0x10, 0x20, 0x30 from ldr_address
+        // LDR_DATA_TABLE_ENTRY list links are at offsets 0x00, 0x10, 0x20 from entry_address
+        let load_order_head = ldr_address + 0x10;
+        let memory_order_head = ldr_address + 0x20;
+        let init_order_head = ldr_address + 0x30;
+
+        // InLoadOrderLinks: entry at offset 0x00
+        main_module_entry.in_load_order_links = [load_order_head, load_order_head];
+        ldr.in_load_order_module_list = [entry_address, entry_address];
+
+        // InMemoryOrderLinks: entry at offset 0x10
+        let entry_memory_links = entry_address + 0x10;
+        main_module_entry.in_memory_order_links = [memory_order_head, memory_order_head];
+        ldr.in_memory_order_module_list = [entry_memory_links, entry_memory_links];
+
+        // InInitializationOrderLinks: entry at offset 0x20
+        let entry_init_links = entry_address + 0x20;
+        main_module_entry.in_initialization_order_links = [init_order_head, init_order_head];
+        ldr.in_initialization_order_module_list = [entry_init_links, entry_init_links];
+
         // Create Process Parameters
         let process_parameters = Box::<RtlUserProcessParameters>::default();
         let process_parameters_address = &raw const *process_parameters as u64;
@@ -416,6 +498,7 @@ impl ExecutionContext {
             teb,
             peb,
             ldr,
+            main_module_entry,
             process_parameters,
             teb_address,
             stack_base,
