@@ -102,8 +102,14 @@ pub struct ProcessEnvironmentBlock {
     pub ldr: u64,
     /// Process parameters pointer (offset 0x20) - initialized to non-null
     pub process_parameters: u64,
-    /// Additional reserved fields
-    _reserved: [u64; 50],
+    /// SubSystemData (offset 0x28) - not used
+    pub sub_system_data: u64,
+    /// Process heap handle (offset 0x30) - MUST be non-null for CRT initialization
+    pub process_heap: u64,
+    /// FastPebLock pointer (offset 0x38) - not used
+    pub fast_peb_lock: u64,
+    /// Additional reserved fields (offset 0x40+)
+    _reserved: [u64; 47],
 }
 
 /// PEB_LDR_DATA - Minimal stub for module loader information
@@ -240,7 +246,18 @@ impl ProcessEnvironmentBlock {
     ///
     /// Initializes PEB with minimal stubs for Ldr and ProcessParameters
     /// to prevent crashes when CRT code accesses these fields.
-    pub fn new(image_base_address: u64, ldr: u64, process_parameters: u64) -> Self {
+    ///
+    /// # Arguments
+    /// * `image_base_address` - Base address where the PE image is loaded
+    /// * `ldr` - Pointer to PEB_LDR_DATA structure
+    /// * `process_parameters` - Pointer to RTL_USER_PROCESS_PARAMETERS structure
+    /// * `process_heap` - Process heap handle (must be non-null for CRT)
+    pub fn new(
+        image_base_address: u64,
+        ldr: u64,
+        process_parameters: u64,
+        process_heap: u64,
+    ) -> Self {
         Self {
             inherited_address_space: 0,
             read_image_file_exec_options: 0,
@@ -251,7 +268,10 @@ impl ProcessEnvironmentBlock {
             image_base_address,
             ldr,
             process_parameters,
-            _reserved: [0; 50],
+            sub_system_data: 0,
+            process_heap,
+            fast_peb_lock: 0,
+            _reserved: [0; 47],
         }
     }
 
@@ -366,10 +386,13 @@ impl ExecutionContext {
         let process_parameters_address = &raw const *process_parameters as u64;
 
         // Create PEB with pointers to Ldr and ProcessParameters
+        // Use 0x7FFE_0000 as a fake process heap handle (same as kernel32_GetProcessHeap)
+        let process_heap = 0x7FFE_0000u64;
         let peb = Box::new(ProcessEnvironmentBlock::new(
             image_base,
             ldr_address,
             process_parameters_address,
+            process_heap,
         ));
         let peb_address = &raw const *peb as u64;
 
@@ -383,6 +406,11 @@ impl ExecutionContext {
         // Set TEB self-pointer
         let teb_address = &raw const *teb as u64;
         teb.self_pointer = teb_address;
+
+        // Set thread and process IDs in TEB client_id
+        // SAFETY: getpid and gettid are safe to call
+        let pid = unsafe { libc::getpid() };
+        teb.client_id = [pid as u64, pid as u64];
 
         Ok(Self {
             teb,
@@ -678,11 +706,18 @@ mod tests {
         let image_base = 0x0000_0001_4000_0000u64;
         let ldr_address = 0x7FFF_0000_0000u64;
         let process_params_address = 0x7FFF_0001_0000u64;
-        let peb = ProcessEnvironmentBlock::new(image_base, ldr_address, process_params_address);
+        let process_heap = 0x7FFE_0000u64;
+        let peb = ProcessEnvironmentBlock::new(
+            image_base,
+            ldr_address,
+            process_params_address,
+            process_heap,
+        );
 
         assert_eq!(peb.image_base_address, image_base);
         assert_eq!(peb.ldr, ldr_address);
         assert_eq!(peb.process_parameters, process_params_address);
+        assert_eq!(peb.process_heap, process_heap);
         assert_eq!(peb.being_debugged, 0);
     }
 
@@ -764,5 +799,48 @@ mod tests {
             );
             assert_eq!(tls_data, tls_template.as_slice());
         }
+    }
+
+    #[test]
+    fn test_peb_field_offsets() {
+        use std::mem::offset_of;
+
+        // Verify critical PEB field offsets match Windows x64 layout
+        assert_eq!(
+            offset_of!(ProcessEnvironmentBlock, inherited_address_space),
+            0x00
+        );
+        assert_eq!(offset_of!(ProcessEnvironmentBlock, being_debugged), 0x02);
+        assert_eq!(offset_of!(ProcessEnvironmentBlock, mutant), 0x08);
+        assert_eq!(
+            offset_of!(ProcessEnvironmentBlock, image_base_address),
+            0x10
+        );
+        assert_eq!(offset_of!(ProcessEnvironmentBlock, ldr), 0x18);
+        assert_eq!(
+            offset_of!(ProcessEnvironmentBlock, process_parameters),
+            0x20
+        );
+        assert_eq!(offset_of!(ProcessEnvironmentBlock, process_heap), 0x30);
+    }
+
+    #[test]
+    fn test_execution_context_has_process_heap() {
+        let image_base = 0x0000_0001_4000_0000u64;
+        let context = ExecutionContext::new(image_base, 0).unwrap();
+
+        // Verify process heap is non-null (required for CRT initialization)
+        assert_ne!(context.peb.process_heap, 0);
+        assert_eq!(context.peb.process_heap, 0x7FFE_0000);
+    }
+
+    #[test]
+    fn test_teb_client_id_set() {
+        let image_base = 0x0000_0001_4000_0000u64;
+        let context = ExecutionContext::new(image_base, 0).unwrap();
+
+        // Verify client_id (process/thread IDs) are set
+        assert_ne!(context.teb.client_id[0], 0); // Process ID
+        assert_ne!(context.teb.client_id[1], 0); // Thread ID
     }
 }
