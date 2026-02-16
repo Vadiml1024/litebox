@@ -1132,6 +1132,7 @@ name = "litebox_shim_windows"
 version = "0.1.0"
 dependencies = [
  "bitflags 2.9.4",
+ "libc",
  "litebox",
  "thiserror",
  "zerocopy",

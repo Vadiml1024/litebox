@@ -29,6 +29,9 @@ pub enum WindowsShimError {
 
     #[error("Invalid parameter: {0}")]
     InvalidParameter(String),
+
+    #[error("Memory allocation failed: {0}")]
+    MemoryAllocationFailed(String),
 }
 
 pub type Result<T> = core::result::Result<T, WindowsShimError>;

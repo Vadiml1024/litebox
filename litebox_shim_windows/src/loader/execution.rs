@@ -158,6 +158,8 @@ pub struct ExecutionContext {
     pub stack_base: u64,
     /// Stack size in bytes
     pub stack_size: u64,
+    /// Pointer to allocated stack memory (for cleanup)
+    stack_ptr: Option<*mut u8>,
 }
 
 impl ExecutionContext {
@@ -169,6 +171,10 @@ impl ExecutionContext {
     ///
     /// # Returns
     /// A new ExecutionContext with allocated TEB and PEB
+    ///
+    /// # Safety
+    /// This function uses mmap to allocate stack memory. The caller must ensure
+    /// the ExecutionContext is properly dropped to free the allocated memory.
     pub fn new(image_base: u64, stack_size: u64) -> Result<Self> {
         let stack_size = if stack_size == 0 {
             1024 * 1024 // Default 1MB stack
@@ -176,9 +182,32 @@ impl ExecutionContext {
             stack_size
         };
 
-        // For now, use a placeholder stack address
-        // In a real implementation, we would allocate actual stack memory
-        let stack_base = 0x0000_7FFF_FFFF_0000u64;
+        // Allocate actual stack memory using mmap
+        // SAFETY: We're calling mmap with valid parameters to allocate memory
+        // for the stack. The memory will be freed in the Drop implementation.
+        #[allow(clippy::cast_possible_truncation)]
+        let stack_ptr = unsafe {
+            libc::mmap(
+                core::ptr::null_mut(),
+                stack_size as libc::size_t,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                -1,
+                0,
+            )
+        };
+
+        if stack_ptr == libc::MAP_FAILED {
+            return Err(WindowsShimError::MemoryAllocationFailed(
+                "Failed to allocate stack memory".to_string(),
+            ));
+        }
+
+        // Stack grows downward, so stack_base is at the top of the allocated region
+        // SAFETY: We just allocated this memory successfully, so it's a valid pointer
+        #[allow(clippy::cast_sign_loss)]
+        #[allow(clippy::cast_possible_truncation)]
+        let stack_base = unsafe { stack_ptr.add(stack_size as usize) }.addr() as u64;
 
         // Create PEB first
         let peb = Box::new(ProcessEnvironmentBlock::new(image_base));
@@ -201,6 +230,7 @@ impl ExecutionContext {
             teb_address,
             stack_base,
             stack_size,
+            stack_ptr: Some(stack_ptr.cast::<u8>()),
         })
     }
 
@@ -215,16 +245,33 @@ impl ExecutionContext {
     }
 }
 
+impl Drop for ExecutionContext {
+    fn drop(&mut self) {
+        // Clean up allocated stack memory
+        if let Some(stack_ptr) = self.stack_ptr {
+            // SAFETY: This memory was allocated by mmap in the constructor,
+            // so it's safe to unmap it here. We use the original stack_ptr
+            // (not stack_base) because munmap expects the address returned by mmap.
+            #[allow(clippy::cast_possible_truncation)]
+            unsafe {
+                libc::munmap(stack_ptr.cast::<libc::c_void>(), self.stack_size as libc::size_t);
+            }
+        }
+    }
+}
+
 /// Call a Windows PE entry point with proper ABI setup
 ///
 /// This function handles the ABI translation between Linux (System V AMD64) and
-/// Windows (Microsoft x64 calling convention).
+/// Windows (Microsoft x64 calling convention). It sets up a proper stack and
+/// calls the entry point with the Windows ABI.
 ///
 /// # Safety
 /// This function is unsafe because:
 /// - It calls a function pointer at an arbitrary memory address
 /// - It assumes the entry point is valid code
 /// - It assumes the memory is executable
+/// - It switches to a different stack during execution
 /// - No validation is performed on the entry point
 ///
 /// The caller must ensure:
@@ -232,16 +279,17 @@ impl ExecutionContext {
 /// - The PE binary has been properly loaded and relocated
 /// - All imports have been resolved
 /// - The execution context is properly initialized
+/// - The GS register has been set to point to the TEB
 ///
 /// # Arguments
 /// * `entry_point_address` - Address of the entry point to call (base + RVA)
-/// * `_context` - Execution context (TEB/PEB) - currently unused but needed for future
+/// * `context` - Execution context with TEB/PEB and allocated stack
 ///
 /// # Returns
 /// The exit code returned by the entry point, or an error if execution fails
 pub unsafe fn call_entry_point(
     entry_point_address: usize,
-    _context: &ExecutionContext,
+    context: &ExecutionContext,
 ) -> Result<i32> {
     // Validate entry point is not null
     if entry_point_address == 0 {
@@ -250,35 +298,63 @@ pub unsafe fn call_entry_point(
         ));
     }
 
-    // NOTE: In a full implementation, we would:
-    // 1. Set up the GS segment register to point to the TEB
-    // 2. Set up the stack pointer to the allocated stack
-    // 3. Ensure 16-byte stack alignment
-    // 4. Set up initial register state (RCX, RDX, R8, R9 for parameters)
-    // 5. Handle any exceptions that occur during execution
+    // Windows x64 calling convention requires the stack to be 16-byte aligned
+    // before the call instruction. Since call pushes an 8-byte return address,
+    // we need to ensure RSP is 16-byte aligned + 8 before we make the call.
     //
-    // For now, this is a simplified version that demonstrates the concept.
-    // Calling arbitrary code is extremely dangerous and would likely crash.
+    // The stack grows downward, so stack_base is the highest address.
+    // We need to leave some space at the top for the "shadow space" (32 bytes)
+    // required by the Windows x64 calling convention for the first 4 parameters.
 
-    // Cast the address to a function pointer
-    // This is the core of the ABI translation issue - we're assuming the
-    // entry point can be called with no arguments and returns an int.
-    // Real Windows entry points have different signatures.
-    //
-    // SAFETY: We're transmuting a usize to a function pointer, which is inherently unsafe.
-    // The caller must ensure the address points to valid, executable code.
-    let entry_fn = unsafe { core::mem::transmute::<usize, EntryPointFn>(entry_point_address) };
+    let stack_top = context.stack_base;
 
-    // Call the entry point
-    // NOTE: This will almost certainly crash in practice because:
-    // - The TEB is not accessible via GS register
-    // - The stack is not properly set up
-    // - We're not handling the actual Windows calling convention
-    // This is a placeholder for demonstration purposes.
+    // Align to 16 bytes and subtract 8 (so after call pushes return address, it's aligned)
+    let aligned_stack = (stack_top & !0xF) - 8;
+
+    // Reserve shadow space (32 bytes) - required by Windows x64 ABI
+    let stack_with_shadow = aligned_stack - 32;
+
+    // Call the entry point with proper stack setup
+    // We use inline assembly to:
+    // 1. Save current RSP
+    // 2. Switch to the new stack
+    // 3. Call the entry point
+    // 4. Restore the original RSP
+    // 5. Return the result
     //
-    // SAFETY: We're calling a function pointer created from an arbitrary address.
-    // The caller must ensure this points to valid code that can be safely executed.
-    let exit_code = unsafe { entry_fn() };
+    // SAFETY: We're switching stacks and calling arbitrary code. The caller must
+    // ensure the entry point is valid code and all imports are resolved.
+    let exit_code: i32;
+    unsafe {
+        core::arch::asm!(
+            // Save the current stack pointer
+            "push rbp",
+            "mov rbp, rsp",
+
+            // Switch to the new stack
+            "mov rsp, {new_stack}",
+
+            // Ensure 16-byte alignment (stack should already be aligned from our calculation)
+            "and rsp, -16",
+
+            // Call the entry point
+            // Note: The entry point might be mainCRTStartup or similar, which
+            // expects no parameters. Windows x64 ABI requires shadow space to be
+            // allocated by caller even if no parameters are passed.
+            "call {entry_point}",
+
+            // Restore the original stack
+            "mov rsp, rbp",
+            "pop rbp",
+
+            entry_point = in(reg) entry_point_address,
+            new_stack = in(reg) stack_with_shadow,
+            lateout("rax") exit_code,
+
+            // Clobber list - these registers may be modified by the callee
+            clobber_abi("C"),
+        );
+    }
 
     Ok(exit_code)
 }
