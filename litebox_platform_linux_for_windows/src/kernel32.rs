@@ -1925,16 +1925,56 @@ pub unsafe extern "C" fn kernel32_GetFullPathNameW(
     0 // 0 - error
 }
 
-/// GetLastError stub - gets the last error code
+/// Last error manager for thread-local error codes
+struct LastErrorManager {
+    /// Map of thread_id -> last error code
+    errors: HashMap<u32, u32>,
+}
+
+impl LastErrorManager {
+    fn new() -> Self {
+        Self {
+            errors: HashMap::new(),
+        }
+    }
+
+    fn get_error(&self, thread_id: u32) -> u32 {
+        self.errors.get(&thread_id).copied().unwrap_or(0)
+    }
+
+    fn set_error(&mut self, thread_id: u32, error_code: u32) {
+        self.errors.insert(thread_id, error_code);
+    }
+}
+
+/// Global last error manager protected by a mutex
+static LAST_ERROR_MANAGER: Mutex<Option<LastErrorManager>> = Mutex::new(None);
+
+/// Initialize the last error manager (called once)
+fn ensure_last_error_manager_initialized() {
+    let mut manager = LAST_ERROR_MANAGER.lock().unwrap();
+    if manager.is_none() {
+        *manager = Some(LastErrorManager::new());
+    }
+}
+
+/// GetLastError - gets the last error code for the current thread
 ///
-/// In real Windows, this is thread-local and set by many APIs.
-/// For now, we return 0 (no error).
+/// In Windows, this is thread-local and set by many APIs.
+/// This implementation maintains per-thread error codes using a global map.
 ///
 /// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
+/// The function body is safe, but marked `unsafe` because it's part of an FFI boundary
+/// with `extern "C"` calling convention. Callers must ensure proper calling convention.
+///
+/// # Panics
+/// Panics if the LAST_ERROR_MANAGER mutex is poisoned.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_GetLastError() -> u32 {
-    0 // ERROR_SUCCESS
+    ensure_last_error_manager_initialized();
+    let thread_id = kernel32_GetCurrentThreadId();
+    let manager = LAST_ERROR_MANAGER.lock().unwrap();
+    manager.as_ref().map_or(0, |m| m.get_error(thread_id))
 }
 
 /// GetModuleHandleW stub - gets a module handle
@@ -2032,13 +2072,25 @@ pub unsafe extern "C" fn kernel32_SetFilePointerEx(
     0 // FALSE - not implemented
 }
 
-/// SetLastError stub - sets the last error code
+/// SetLastError - sets the last error code for the current thread
+///
+/// In Windows, this is thread-local storage used by many APIs to report errors.
+/// This implementation maintains per-thread error codes using a global map.
 ///
 /// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
+/// The function body is safe, but marked `unsafe` because it's part of an FFI boundary
+/// with `extern "C"` calling convention. Callers must ensure proper calling convention.
+///
+/// # Panics
+/// Panics if the LAST_ERROR_MANAGER mutex is poisoned.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn kernel32_SetLastError(_error_code: u32) {
-    // No-op stub - in real Windows this is thread-local
+pub unsafe extern "C" fn kernel32_SetLastError(error_code: u32) {
+    ensure_last_error_manager_initialized();
+    let thread_id = kernel32_GetCurrentThreadId();
+    let mut manager = LAST_ERROR_MANAGER.lock().unwrap();
+    if let Some(m) = manager.as_mut() {
+        m.set_error(thread_id, error_code);
+    }
 }
 
 /// WaitForSingleObject stub - waits for an object
@@ -3619,5 +3671,65 @@ mod tests {
 
         let result3 = unsafe { kernel32_HeapFree(heap, 0, ptr3) };
         assert_eq!(result3, 1);
+    }
+
+    #[test]
+    fn test_get_set_last_error() {
+        // Initially, last error should be 0
+        let initial_error = unsafe { kernel32_GetLastError() };
+        assert_eq!(initial_error, 0, "Initial error should be 0");
+
+        // Set an error code
+        unsafe { kernel32_SetLastError(5) }; // ERROR_ACCESS_DENIED
+
+        // Get the error back
+        let error = unsafe { kernel32_GetLastError() };
+        assert_eq!(error, 5, "GetLastError should return the set error code");
+
+        // Set a different error
+        unsafe { kernel32_SetLastError(2) }; // ERROR_FILE_NOT_FOUND
+
+        let error2 = unsafe { kernel32_GetLastError() };
+        assert_eq!(error2, 2, "GetLastError should return the new error code");
+
+        // Reset to 0
+        unsafe { kernel32_SetLastError(0) };
+        let error3 = unsafe { kernel32_GetLastError() };
+        assert_eq!(error3, 0, "Error should be reset to 0");
+    }
+
+    #[test]
+    fn test_last_error_thread_isolation() {
+        use std::sync::{Arc, Barrier};
+
+        // Create a barrier to synchronize threads
+        let barrier = Arc::new(Barrier::new(2));
+        let barrier_clone = barrier.clone();
+
+        // Set error in main thread
+        unsafe { kernel32_SetLastError(100) };
+
+        // Spawn a thread that sets a different error
+        let handle = std::thread::spawn(move || {
+            // Set error in spawned thread
+            unsafe { kernel32_SetLastError(200) };
+
+            // Wait for main thread
+            barrier_clone.wait();
+
+            // Check that spawned thread's error is isolated
+            let error = unsafe { kernel32_GetLastError() };
+            assert_eq!(error, 200, "Spawned thread should have its own error");
+        });
+
+        // Wait for spawned thread
+        barrier.wait();
+
+        // Check that main thread's error is still 100
+        let error = unsafe { kernel32_GetLastError() };
+        assert_eq!(error, 100, "Main thread error should be isolated");
+
+        // Wait for thread to finish
+        handle.join().unwrap();
     }
 }
