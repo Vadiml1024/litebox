@@ -342,9 +342,10 @@ pub unsafe extern "C" fn msvcrt__initterm(start: *mut extern "C" fn(), end: *mut
     while current < end {
         // SAFETY: Caller guarantees current is within valid range [start, end)
         let func = unsafe { *current };
-        // Check if function pointer is not null before calling
+        // Check if function pointer is not null or -1 (sentinel value) before calling
         let func_ptr = func as *const fn();
-        if !func_ptr.is_null() {
+        let func_addr = func_ptr as usize;
+        if !func_ptr.is_null() && func_addr != usize::MAX {
             func();
         }
         // SAFETY: Caller guarantees current can be advanced within the range
@@ -358,6 +359,13 @@ pub unsafe extern "C" fn msvcrt__initterm(start: *mut extern "C" fn(), end: *mut
 /// This function is unsafe as it deals with raw pointers.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn msvcrt__onexit(func: extern "C" fn()) -> extern "C" fn() {
+    // Check if function pointer is valid (not null or -1)
+    let func_ptr = func as *const fn();
+    let func_addr = func_ptr as usize;
+    if func_ptr.is_null() || func_addr == usize::MAX {
+        return func; // Return as-is for invalid pointers
+    }
+
     // Store in a static vector for later execution
     static ONEXIT_FUNCS: Mutex<Vec<extern "C" fn()>> = Mutex::new(Vec::new());
 
