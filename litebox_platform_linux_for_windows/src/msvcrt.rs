@@ -315,29 +315,25 @@ pub unsafe extern "C" fn msvcrt___getmainargs(
     _do_wildcard: i32,
     _start_info: *mut u8,
 ) -> i32 {
-    use std::sync::Mutex;
-
-    // Static storage for argc value
-    static ARGC_VAL: Mutex<i32> = Mutex::new(0);
-
-    // Allocate static null-terminated arrays
+    // Static null-terminated arrays for argv and env
+    // These are immutable after initialization, so no synchronization needed
     static mut ARGV_STORAGE: [*mut i8; 1] = [core::ptr::null_mut()];
     static mut ENV_STORAGE: [*mut i8; 1] = [core::ptr::null_mut()];
 
     // Set argc to 0 (no arguments)
     if !argc.is_null() {
-        if let Ok(mut argc_val) = ARGC_VAL.lock() {
-            *argc_val = 0;
-            *argc = *argc_val;
-        }
+        *argc = 0;
     }
 
     // Set argv to empty array with null terminator
+    // SAFETY: We're accessing mutable static, but it's only being read after initialization
+    // and the contents (null pointers) never change
     if !argv.is_null() {
         *argv = core::ptr::addr_of_mut!(ARGV_STORAGE).cast();
     }
 
     // Set env to empty array with null terminator
+    // SAFETY: Same as argv - immutable after initialization
     if !env.is_null() {
         *env = core::ptr::addr_of_mut!(ENV_STORAGE).cast();
     }
