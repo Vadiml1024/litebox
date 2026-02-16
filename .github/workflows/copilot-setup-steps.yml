@@ -1,8 +1,5 @@
-# Customize GitHub Copilot coding agent development environment
 name: "Copilot Setup Steps"
 
-# Automatically run the setup steps when they are changed to allow for easy validation, and
-# allow manual testing through the repository's "Actions" tab
 on:
   workflow_dispatch:
   push:
@@ -13,27 +10,41 @@ on:
       - .github/workflows/copilot-setup-steps.yml
 
 jobs:
-  # The job MUST be called `copilot-setup-steps` or it will not be picked up by Copilot.
   copilot-setup-steps:
     runs-on: ubuntu-latest
-
-    # Set the permissions to the lowest permissions possible needed for your steps.
-    # Copilot will be given its own token for its operations.
     permissions:
-      # Needed to clone the repository
       contents: read
-
-    # You can define any steps you want, and they will run before the agent starts.
-    # If you do not check out your code, Copilot will do this for you.
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
       - name: Set up Rust
         run: |
-          rustup toolchain install $(awk -F'"' '/channel/{print $2}' rust-toolchain.toml) --profile minimal --no-self-update --component rustfmt,clippy
+          rustup toolchain install $(awk -F'"' '/channel/{print $2}' rust-toolchain.toml) --profile minimal --no-self-update --component rustfmt,clippy --target x86_64-unknown-linux-gnu
+
       - name: Set up Nextest
-        run: |
-          curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C ${CARGO_HOME:-~/.cargo}/bin
+        uses: taiki-e/install-action@v2
+        with:
+          tool: nextest@0.9.114
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Cache custom out directories
+        uses: actions/cache@v4
+        with:
+          path: |
+            target/*/build/litebox_runner_linux_userland-*/out
+          key: copilot-agent-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}-${{ hashFiles('**/litebox_syscall_rewriter/**/*.rs') }}
+
+      - name: Install iperf3
+        run: sudo apt-get install -y iperf3
+
+      - name: Pre-build workspace
+        run: cargo build --locked 2>/dev/null || true
+
       - name: Set up tun device for Linux userland testing
         run: |
           sudo ./litebox_platform_linux_userland/scripts/tun-setup.sh
