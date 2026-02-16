@@ -309,14 +309,36 @@ pub unsafe extern "C" fn msvcrt___iob_func() -> *mut u8 {
 /// This function is unsafe as it deals with raw pointers.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn msvcrt___getmainargs(
-    _argc: *mut i32,
-    _argv: *mut *mut *mut i8,
-    _env: *mut *mut *mut i8,
+    argc: *mut i32,
+    argv: *mut *mut *mut i8,
+    env: *mut *mut *mut i8,
     _do_wildcard: i32,
     _start_info: *mut u8,
 ) -> i32 {
-    // Stub implementation - should populate argc/argv
-    0
+    // Static null-terminated arrays for argv and env
+    // These are immutable after initialization, so no synchronization needed
+    static mut ARGV_STORAGE: [*mut i8; 1] = [core::ptr::null_mut()];
+    static mut ENV_STORAGE: [*mut i8; 1] = [core::ptr::null_mut()];
+
+    // Set argc to 0 (no arguments)
+    if !argc.is_null() {
+        *argc = 0;
+    }
+
+    // Set argv to empty array with null terminator
+    // SAFETY: We're accessing mutable static, but it's only being read after initialization
+    // and the contents (null pointers) never change
+    if !argv.is_null() {
+        *argv = core::ptr::addr_of_mut!(ARGV_STORAGE).cast();
+    }
+
+    // Set env to empty array with null terminator
+    // SAFETY: Same as argv - immutable after initialization
+    if !env.is_null() {
+        *env = core::ptr::addr_of_mut!(ENV_STORAGE).cast();
+    }
+
+    0 // Success
 }
 
 /// Set application type (__set_app_type)
@@ -342,9 +364,10 @@ pub unsafe extern "C" fn msvcrt__initterm(start: *mut extern "C" fn(), end: *mut
     while current < end {
         // SAFETY: Caller guarantees current is within valid range [start, end)
         let func = unsafe { *current };
-        // Check if function pointer is not null before calling
+        // Check if function pointer is not null or -1 (sentinel value) before calling
         let func_ptr = func as *const fn();
-        if !func_ptr.is_null() {
+        let func_addr = func_ptr as usize;
+        if !func_ptr.is_null() && func_addr != usize::MAX {
             func();
         }
         // SAFETY: Caller guarantees current can be advanced within the range
@@ -358,6 +381,13 @@ pub unsafe extern "C" fn msvcrt__initterm(start: *mut extern "C" fn(), end: *mut
 /// This function is unsafe as it deals with raw pointers.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn msvcrt__onexit(func: extern "C" fn()) -> extern "C" fn() {
+    // Check if function pointer is valid (not null or -1)
+    let func_ptr = func as *const fn();
+    let func_addr = func_ptr as usize;
+    if func_ptr.is_null() || func_addr == usize::MAX {
+        return func; // Return as-is for invalid pointers
+    }
+
     // Store in a static vector for later execution
     static ONEXIT_FUNCS: Mutex<Vec<extern "C" fn()>> = Mutex::new(Vec::new());
 

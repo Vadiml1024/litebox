@@ -17,6 +17,7 @@
 use std::alloc;
 use std::cell::Cell;
 use std::collections::HashMap;
+use std::io::Write;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -2117,6 +2118,7 @@ pub unsafe extern "C" fn kernel32_WriteConsoleW(
         let slice = core::slice::from_raw_parts(buffer, number_of_chars_to_write as usize);
         if let Ok(s) = String::from_utf16(slice) {
             print!("{s}");
+            let _ = std::io::stdout().flush();
             if !number_of_chars_written.is_null() {
                 *number_of_chars_written = number_of_chars_to_write;
             }
