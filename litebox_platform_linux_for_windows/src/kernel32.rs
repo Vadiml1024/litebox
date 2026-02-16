@@ -1857,16 +1857,48 @@ pub unsafe extern "C" fn kernel32_FormatMessageW(
     0 // 0 - error/not implemented
 }
 
-/// GetCurrentDirectoryW stub - gets the current directory
+/// GetCurrentDirectoryW - gets the current working directory
+///
+/// Returns the length of the path copied to the buffer (not including null terminator).
+/// If the buffer is too small, returns the required buffer size (including null terminator).
 ///
 /// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
+/// Caller must ensure buffer is valid and buffer_length is accurate if buffer is non-null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_GetCurrentDirectoryW(
-    _buffer_length: u32,
-    _buffer: *mut u16,
+    buffer_length: u32,
+    buffer: *mut u16,
 ) -> u32 {
-    0 // 0 - error/not implemented
+    // Get current directory from std::env
+    let Ok(current_dir) = std::env::current_dir() else {
+        // Set last error to ERROR_ACCESS_DENIED (5)
+        kernel32_SetLastError(5);
+        return 0;
+    };
+
+    // Convert to string
+    let dir_str = current_dir.to_string_lossy();
+
+    // Convert Windows-style if needed (for consistency with Windows behavior)
+    // But since we're on Linux, keep it as-is
+
+    // Convert to UTF-16
+    let mut utf16: Vec<u16> = dir_str.encode_utf16().collect();
+    utf16.push(0); // Null terminator
+
+    // Check if buffer is large enough
+    if buffer.is_null() || buffer_length < utf16.len() as u32 {
+        // Return required buffer size (including null terminator)
+        return utf16.len() as u32;
+    }
+
+    // Copy to buffer
+    for (i, &ch) in utf16.iter().enumerate() {
+        *buffer.add(i) = ch;
+    }
+
+    // Return length without null terminator
+    (utf16.len() - 1) as u32
 }
 
 /// GetExitCodeProcess stub - gets the exit code of a process
@@ -2383,13 +2415,43 @@ pub unsafe extern "C" fn kernel32_RemoveDirectoryW(_path_name: *const u16) -> i3
     0 // FALSE
 }
 
-/// SetCurrentDirectoryW stub
+/// SetCurrentDirectoryW - sets the current working directory
+///
+/// Returns 1 (TRUE) on success, 0 (FALSE) on failure.
 ///
 /// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
+/// Caller must ensure path_name points to a valid null-terminated UTF-16 string.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn kernel32_SetCurrentDirectoryW(_path_name: *const u16) -> i32 {
-    0 // FALSE
+pub unsafe extern "C" fn kernel32_SetCurrentDirectoryW(path_name: *const u16) -> i32 {
+    if path_name.is_null() {
+        kernel32_SetLastError(87); // ERROR_INVALID_PARAMETER
+        return 0;
+    }
+
+    // Read UTF-16 string until null terminator
+    let mut len = 0;
+    while *path_name.add(len) != 0 {
+        len += 1;
+        // Safety check: prevent infinite loop
+        if len > 32768 {
+            // MAX_PATH is 260, but we allow more
+            kernel32_SetLastError(206); // ERROR_FILENAME_EXCED_RANGE
+            return 0;
+        }
+    }
+
+    // Convert to Rust string
+    let slice = core::slice::from_raw_parts(path_name, len);
+    let path_str = String::from_utf16_lossy(slice);
+
+    // Try to set the current directory
+    if std::env::set_current_dir(std::path::Path::new(path_str.as_str())).is_ok() {
+        1 // TRUE - success
+    } else {
+        // Set last error to ERROR_FILE_NOT_FOUND (2)
+        kernel32_SetLastError(2);
+        0 // FALSE - failure
+    }
 }
 
 /// SetFileAttributesW stub
@@ -3731,5 +3793,65 @@ mod tests {
 
         // Wait for thread to finish
         handle.join().unwrap();
+    }
+
+    #[test]
+    fn test_get_current_directory() {
+        // Get current directory
+        let buffer_size = 1024u32;
+        let mut buffer = vec![0u16; buffer_size as usize];
+
+        let result = unsafe { kernel32_GetCurrentDirectoryW(buffer_size, buffer.as_mut_ptr()) };
+        assert!(result > 0, "GetCurrentDirectoryW should succeed");
+        assert!(result < buffer_size, "Result should fit in buffer");
+
+        // Convert to string and verify it's a valid path
+        let dir_str = String::from_utf16_lossy(&buffer[..result as usize]);
+        assert!(!dir_str.is_empty(), "Directory should not be empty");
+    }
+
+    #[test]
+    fn test_set_current_directory() {
+        // Get original directory to restore later
+        let buffer_size = 1024u32;
+        let mut orig_buffer = vec![0u16; buffer_size as usize];
+        let orig_len =
+            unsafe { kernel32_GetCurrentDirectoryW(buffer_size, orig_buffer.as_mut_ptr()) };
+        assert!(orig_len > 0);
+
+        // Try to set to /tmp (which should exist on Linux)
+        let tmp_path: Vec<u16> = "/tmp\0".encode_utf16().collect();
+        let result = unsafe { kernel32_SetCurrentDirectoryW(tmp_path.as_ptr()) };
+        assert_eq!(result, 1, "SetCurrentDirectoryW to /tmp should succeed");
+
+        // Verify it changed
+        let mut new_buffer = vec![0u16; buffer_size as usize];
+        let new_len =
+            unsafe { kernel32_GetCurrentDirectoryW(buffer_size, new_buffer.as_mut_ptr()) };
+        assert!(new_len > 0);
+        let new_dir = String::from_utf16_lossy(&new_buffer[..new_len as usize]);
+        assert!(
+            new_dir.contains("tmp"),
+            "Current directory should now be /tmp"
+        );
+
+        // Restore original directory
+        let restore_result = unsafe { kernel32_SetCurrentDirectoryW(orig_buffer.as_ptr()) };
+        assert_eq!(restore_result, 1, "Should restore original directory");
+    }
+
+    #[test]
+    fn test_set_current_directory_invalid() {
+        // Try to set to a non-existent directory
+        let invalid_path: Vec<u16> = "/nonexistent_dir_12345\0".encode_utf16().collect();
+        let result = unsafe { kernel32_SetCurrentDirectoryW(invalid_path.as_ptr()) };
+        assert_eq!(
+            result, 0,
+            "SetCurrentDirectoryW should fail for invalid path"
+        );
+
+        // Check that last error was set
+        let error = unsafe { kernel32_GetLastError() };
+        assert_eq!(error, 2, "Last error should be ERROR_FILE_NOT_FOUND");
     }
 }
