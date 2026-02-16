@@ -143,6 +143,48 @@ pub fn get_function_table() -> Vec<FunctionImpl> {
             num_params: 1,
             impl_address: crate::msvcrt::msvcrt_exit as *const () as usize,
         },
+        FunctionImpl {
+            name: "__iob_func",
+            dll_name: "MSVCRT.dll",
+            num_params: 0,
+            impl_address: crate::msvcrt::msvcrt___iob_func as *const () as usize,
+        },
+        FunctionImpl {
+            name: "vfprintf",
+            dll_name: "MSVCRT.dll",
+            num_params: 3, // Variadic, but at least 3
+            impl_address: crate::msvcrt::msvcrt_vfprintf as *const () as usize,
+        },
+        FunctionImpl {
+            name: "_onexit",
+            dll_name: "MSVCRT.dll",
+            num_params: 1,
+            impl_address: crate::msvcrt::msvcrt__onexit as *const () as usize,
+        },
+        FunctionImpl {
+            name: "_amsg_exit",
+            dll_name: "MSVCRT.dll",
+            num_params: 1,
+            impl_address: crate::msvcrt::msvcrt__amsg_exit as *const () as usize,
+        },
+        FunctionImpl {
+            name: "_cexit",
+            dll_name: "MSVCRT.dll",
+            num_params: 0,
+            impl_address: crate::msvcrt::msvcrt__cexit as *const () as usize,
+        },
+        FunctionImpl {
+            name: "_fpreset",
+            dll_name: "MSVCRT.dll",
+            num_params: 0,
+            impl_address: crate::msvcrt::msvcrt__fpreset as *const () as usize,
+        },
+        FunctionImpl {
+            name: "__setusermatherr",
+            dll_name: "MSVCRT.dll",
+            num_params: 1,
+            impl_address: crate::msvcrt::msvcrt___setusermatherr as *const () as usize,
+        },
         // KERNEL32.dll functions - these are defined in kernel32.rs
         FunctionImpl {
             name: "Sleep",
@@ -882,6 +924,51 @@ impl LinuxPlatformForWindows {
                     func.dll_name, func.name, trampoline_addr
                 );
             }
+        }
+
+        Ok(())
+    }
+
+    /// Link data exports to their actual memory addresses
+    ///
+    /// This updates the DLL manager to point data imports to real memory locations
+    /// instead of stub addresses. Must be called after `link_trampolines_to_dll_manager()`.
+    ///
+    /// # Panics
+    /// Panics if the internal mutex is poisoned.
+    ///
+    /// # Safety
+    /// This function accesses mutable static variables to get their addresses.
+    /// It's safe because we only take addresses, not modify the values.
+    pub unsafe fn link_data_exports_to_dll_manager(&self) -> Result<()> {
+        let mut state = self.state.lock().unwrap();
+
+        // MSVCRT.dll data exports
+        // SAFETY: We're only taking the address of the static, not modifying it.
+        // These are global variables that C code expects to access directly.
+        let data_exports = vec![
+            (
+                "MSVCRT.dll",
+                "_fmode",
+                core::ptr::addr_of_mut!(crate::msvcrt::msvcrt__fmode) as usize,
+            ),
+            (
+                "MSVCRT.dll",
+                "_commode",
+                core::ptr::addr_of_mut!(crate::msvcrt::msvcrt__commode) as usize,
+            ),
+            (
+                "MSVCRT.dll",
+                "__initenv",
+                core::ptr::addr_of_mut!(crate::msvcrt::msvcrt___initenv) as usize,
+            ),
+        ];
+
+        for (dll_name, export_name, address) in data_exports {
+            state
+                .dll_manager
+                .update_export_address(dll_name, export_name, address)
+                .ok(); // Ignore errors - export may not be in DLL yet
         }
 
         Ok(())
