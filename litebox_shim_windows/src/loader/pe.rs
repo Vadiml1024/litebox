@@ -497,11 +497,6 @@ impl PeLoader {
                     ))
                 })?;
 
-            eprintln!(
-                "  Scanning section '{}' at RVA 0x{:X}, VA 0x{:X}, size {} bytes",
-                section.name, section.virtual_address, section_va, section.virtual_size
-            );
-
             // Scan for 0xffffffffffffffff pattern
             let section_size = section.virtual_size as usize;
             let mut offset = 0;
@@ -522,23 +517,8 @@ impl PeLoader {
                     let looks_like_ctor_list = next_value == 0
                         || (next_value >= base_address && next_value < base_address + 0x10000000);
 
-                    eprintln!(
-                        "  DEBUG: Found -1 at RVA 0x{:X}, next=0x{:X}, range=[0x{:X}, 0x{:X}), match={}",
-                        section.virtual_address + offset as u32,
-                        next_value,
-                        base_address,
-                        base_address + 0x10000000,
-                        looks_like_ctor_list
-                    );
-
                     if looks_like_ctor_list {
                         // Patch the -1 sentinel to 0 to prevent crashes
-                        eprintln!(
-                            "  Found __CTOR_LIST__ sentinel at RVA 0x{:X} in section '{}', patching -1 to 0 (next=0x{:X})",
-                            section.virtual_address + offset as u32,
-                            section.name,
-                            next_value
-                        );
                         unsafe { ptr.write(0) };
                         patches_applied += 1;
                     }
@@ -548,7 +528,6 @@ impl PeLoader {
             }
         }
 
-        eprintln!("  Applied {} __CTOR_LIST__ patches", patches_applied);
         Ok(())
     }
 
