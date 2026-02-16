@@ -1958,6 +1958,12 @@ pub unsafe extern "C" fn kernel32_GetFullPathNameW(
 }
 
 /// Last error manager for thread-local error codes
+///
+/// NOTE: This implementation stores error codes indefinitely for all threads
+/// that have ever set an error. In long-running applications that create and
+/// destroy many threads, this could lead to unbounded memory growth. This is
+/// acceptable for most use cases, but applications creating millions of threads
+/// should be aware of this limitation.
 struct LastErrorManager {
     /// Map of thread_id -> last error code
     errors: HashMap<u32, u32>,
@@ -2006,7 +2012,8 @@ pub unsafe extern "C" fn kernel32_GetLastError() -> u32 {
     ensure_last_error_manager_initialized();
     let thread_id = kernel32_GetCurrentThreadId();
     let manager = LAST_ERROR_MANAGER.lock().unwrap();
-    manager.as_ref().map_or(0, |m| m.get_error(thread_id))
+    // SAFETY: ensure_last_error_manager_initialized guarantees manager is Some
+    manager.as_ref().unwrap().get_error(thread_id)
 }
 
 /// GetModuleHandleW stub - gets a module handle
@@ -2435,7 +2442,7 @@ pub unsafe extern "C" fn kernel32_SetCurrentDirectoryW(path_name: *const u16) ->
         // Safety check: prevent infinite loop
         if len > 32768 {
             // MAX_PATH is 260, but we allow more
-            kernel32_SetLastError(206); // ERROR_FILENAME_EXCED_RANGE
+            kernel32_SetLastError(206); // ERROR_FILENAME_EXCEED_RANGE
             return 0;
         }
     }
