@@ -190,6 +190,11 @@ pub fn run(cli_args: CliArgs) -> Result<()> {
         println!("  No relocations needed (loaded at preferred base)");
     } else {
         println!("  Rebasing from 0x{image_base:X} to 0x{base_address:X}");
+        
+        // Get relocation count for debugging
+        let reloc_count = pe_loader.relocations().map(|r| r.len()).unwrap_or(0);
+        println!("  Found {reloc_count} relocation entries");
+        
         // SAFETY: We allocated the memory and just loaded the sections
         unsafe {
             pe_loader
