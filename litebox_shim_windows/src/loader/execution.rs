@@ -118,7 +118,7 @@ pub struct PebLdrData {
     pub in_load_order_module_list: [u64; 2],
     /// In memory order module list (LIST_ENTRY)
     pub in_memory_order_module_list: [u64; 2],
-    /// In initialization order module list (LIST_ENTRY) 
+    /// In initialization order module list (LIST_ENTRY)
     pub in_initialization_order_module_list: [u64; 2],
     /// Entry in progress (not used)
     pub entry_in_progress: u64,
@@ -137,6 +137,7 @@ impl PebLdrData {
         let init_order_offset = 0x30u64;
 
         Self {
+            #[allow(clippy::cast_possible_truncation)]
             length: std::mem::size_of::<Self>() as u32,
             initialized: 1, // Mark as initialized
             ss_handle: 0,
@@ -157,12 +158,15 @@ impl PebLdrData {
             entry_in_progress: 0,
         }
     }
+}
 
+impl Default for PebLdrData {
     /// Create a new minimal PEB_LDR_DATA structure with null lists
-    /// 
+    ///
     /// Use this when the address is not yet known
-    pub fn new() -> Self {
+    fn default() -> Self {
         Self {
+            #[allow(clippy::cast_possible_truncation)]
             length: std::mem::size_of::<Self>() as u32,
             initialized: 1, // Mark as initialized
             ss_handle: 0,
@@ -205,11 +209,13 @@ pub struct RtlUserProcessParameters {
     _reserved: [u64; 20],
 }
 
-impl RtlUserProcessParameters {
+impl Default for RtlUserProcessParameters {
     /// Create a new minimal RTL_USER_PROCESS_PARAMETERS structure
-    pub fn new() -> Self {
+    fn default() -> Self {
         Self {
+            #[allow(clippy::cast_possible_truncation)]
             maximum_length: std::mem::size_of::<Self>() as u32,
+            #[allow(clippy::cast_possible_truncation)]
             length: std::mem::size_of::<Self>() as u32,
             flags: 0,
             debug_flags: 0,
@@ -340,14 +346,14 @@ impl ExecutionContext {
         let stack_base = unsafe { stack_ptr.add(stack_size as usize) }.addr() as u64;
 
         // Create PEB Loader Data - first without address
-        let mut ldr = Box::new(PebLdrData::new());
+        let mut ldr = Box::<PebLdrData>::default();
         let ldr_address = &raw const *ldr as u64;
-        
+
         // Now update with proper circular list pointers
         *ldr = PebLdrData::new_with_address(ldr_address);
 
         // Create Process Parameters
-        let process_parameters = Box::new(RtlUserProcessParameters::new());
+        let process_parameters = Box::<RtlUserProcessParameters>::default();
         let process_parameters_address = &raw const *process_parameters as u64;
 
         // Create PEB with pointers to Ldr and ProcessParameters
