@@ -1589,6 +1589,723 @@ pub unsafe extern "C" fn kernel32_GetStartupInfoW(startup_info: *mut u8) {
     info.hStdError = 2;
 }
 
+//
+// Stub implementations for missing APIs
+//
+// These are minimal implementations that return failure or no-op.
+// They allow programs to link and run, but don't provide full functionality.
+//
+
+/// CancelIo stub - cancels pending I/O operations
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_CancelIo(_file: *mut core::ffi::c_void) -> i32 {
+    0 // FALSE - not implemented
+}
+
+/// CopyFileExW stub - copies a file
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_CopyFileExW(
+    _existing_file_name: *const u16,
+    _new_file_name: *const u16,
+    _progress_routine: *mut core::ffi::c_void,
+    _data: *mut core::ffi::c_void,
+    _cancel: *mut i32,
+    _copy_flags: u32,
+) -> i32 {
+    0 // FALSE - not implemented
+}
+
+/// CreateDirectoryW stub - creates a directory
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_CreateDirectoryW(
+    _path_name: *const u16,
+    _security_attributes: *mut core::ffi::c_void,
+) -> i32 {
+    0 // FALSE - not implemented
+}
+
+/// CreateEventW stub - creates an event object
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_CreateEventW(
+    _security_attributes: *mut core::ffi::c_void,
+    _manual_reset: i32,
+    _initial_state: i32,
+    _name: *const u16,
+) -> *mut core::ffi::c_void {
+    core::ptr::null_mut() // NULL - not implemented
+}
+
+/// CreateFileMappingA stub - creates a file mapping object
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_CreateFileMappingA(
+    _file: *mut core::ffi::c_void,
+    _security_attributes: *mut core::ffi::c_void,
+    _protect: u32,
+    _maximum_size_high: u32,
+    _maximum_size_low: u32,
+    _name: *const u8,
+) -> *mut core::ffi::c_void {
+    core::ptr::null_mut() // NULL - not implemented
+}
+
+/// CreateHardLinkW stub - creates a hard link
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_CreateHardLinkW(
+    _file_name: *const u16,
+    _existing_file_name: *const u16,
+    _security_attributes: *mut core::ffi::c_void,
+) -> i32 {
+    0 // FALSE - not implemented
+}
+
+/// CreatePipe stub - creates a pipe
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_CreatePipe(
+    _read_pipe: *mut *mut core::ffi::c_void,
+    _write_pipe: *mut *mut core::ffi::c_void,
+    _pipe_attributes: *mut core::ffi::c_void,
+    _size: u32,
+) -> i32 {
+    0 // FALSE - not implemented
+}
+
+/// CreateProcessW stub - creates a new process
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_CreateProcessW(
+    _application_name: *const u16,
+    _command_line: *mut u16,
+    _process_attributes: *mut core::ffi::c_void,
+    _thread_attributes: *mut core::ffi::c_void,
+    _inherit_handles: i32,
+    _creation_flags: u32,
+    _environment: *mut core::ffi::c_void,
+    _current_directory: *const u16,
+    _startup_info: *mut core::ffi::c_void,
+    _process_information: *mut core::ffi::c_void,
+) -> i32 {
+    0 // FALSE - not implemented
+}
+
+/// CreateSymbolicLinkW stub - creates a symbolic link
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_CreateSymbolicLinkW(
+    _symlink_file_name: *const u16,
+    _target_file_name: *const u16,
+    _flags: u32,
+) -> i32 {
+    0 // FALSE - not implemented
+}
+
+/// CreateThread stub - creates a thread
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_CreateThread(
+    _thread_attributes: *mut core::ffi::c_void,
+    _stack_size: usize,
+    _start_address: *mut core::ffi::c_void,
+    _parameter: *mut core::ffi::c_void,
+    _creation_flags: u32,
+    _thread_id: *mut u32,
+) -> *mut core::ffi::c_void {
+    core::ptr::null_mut() // NULL - not implemented
+}
+
+/// CreateToolhelp32Snapshot stub - creates a snapshot of processes/threads/etc
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_CreateToolhelp32Snapshot(
+    _flags: u32,
+    _process_id: u32,
+) -> *mut core::ffi::c_void {
+    usize::MAX as *mut core::ffi::c_void // INVALID_HANDLE_VALUE
+}
+
+/// CreateWaitableTimerExW stub - creates a waitable timer
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_CreateWaitableTimerExW(
+    _timer_attributes: *mut core::ffi::c_void,
+    _timer_name: *const u16,
+    _flags: u32,
+    _desired_access: u32,
+) -> *mut core::ffi::c_void {
+    core::ptr::null_mut() // NULL - not implemented
+}
+
+/// DeleteFileW stub - deletes a file
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_DeleteFileW(_file_name: *const u16) -> i32 {
+    0 // FALSE - not implemented
+}
+
+/// DeleteProcThreadAttributeList stub - deletes a process thread attribute list
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_DeleteProcThreadAttributeList(
+    _attribute_list: *mut core::ffi::c_void,
+) {
+    // No-op stub
+}
+
+/// DeviceIoControl stub - sends a control code to a device driver
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_DeviceIoControl(
+    _device: *mut core::ffi::c_void,
+    _io_control_code: u32,
+    _in_buffer: *mut core::ffi::c_void,
+    _in_buffer_size: u32,
+    _out_buffer: *mut core::ffi::c_void,
+    _out_buffer_size: u32,
+    _bytes_returned: *mut u32,
+    _overlapped: *mut core::ffi::c_void,
+) -> i32 {
+    0 // FALSE - not implemented
+}
+
+/// DuplicateHandle stub - duplicates a handle
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_DuplicateHandle(
+    _source_process_handle: *mut core::ffi::c_void,
+    _source_handle: *mut core::ffi::c_void,
+    _target_process_handle: *mut core::ffi::c_void,
+    _target_handle: *mut *mut core::ffi::c_void,
+    _desired_access: u32,
+    _inherit_handle: i32,
+    _options: u32,
+) -> i32 {
+    0 // FALSE - not implemented
+}
+
+/// FlushFileBuffers stub - flushes file buffers
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_FlushFileBuffers(_file: *mut core::ffi::c_void) -> i32 {
+    1 // TRUE - pretend success
+}
+
+/// FormatMessageW stub - formats a message string
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_FormatMessageW(
+    _flags: u32,
+    _source: *const core::ffi::c_void,
+    _message_id: u32,
+    _language_id: u32,
+    _buffer: *mut u16,
+    _size: u32,
+    _arguments: *mut *mut core::ffi::c_void,
+) -> u32 {
+    0 // 0 - error/not implemented
+}
+
+/// GetCurrentDirectoryW stub - gets the current directory
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_GetCurrentDirectoryW(
+    _buffer_length: u32,
+    _buffer: *mut u16,
+) -> u32 {
+    0 // 0 - error/not implemented
+}
+
+/// GetExitCodeProcess stub - gets the exit code of a process
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_GetExitCodeProcess(
+    _process: *mut core::ffi::c_void,
+    _exit_code: *mut u32,
+) -> i32 {
+    0 // FALSE - not implemented
+}
+
+/// GetFileAttributesW stub - gets file attributes
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_GetFileAttributesW(_file_name: *const u16) -> u32 {
+    0xFFFF_FFFF // INVALID_FILE_ATTRIBUTES
+}
+
+/// GetFileInformationByHandle stub - gets file information by handle
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_GetFileInformationByHandle(
+    _file: *mut core::ffi::c_void,
+    _file_information: *mut core::ffi::c_void,
+) -> i32 {
+    0 // FALSE - not implemented
+}
+
+/// GetFileType stub - gets the type of a file
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_GetFileType(_file: *mut core::ffi::c_void) -> u32 {
+    0 // FILE_TYPE_UNKNOWN
+}
+
+/// GetFullPathNameW stub - gets the full path name of a file
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_GetFullPathNameW(
+    _file_name: *const u16,
+    _buffer_length: u32,
+    _buffer: *mut u16,
+    _file_part: *mut *mut u16,
+) -> u32 {
+    0 // 0 - error
+}
+
+/// GetLastError stub - gets the last error code
+///
+/// In real Windows, this is thread-local and set by many APIs.
+/// For now, we return 0 (no error).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_GetLastError() -> u32 {
+    0 // ERROR_SUCCESS
+}
+
+/// GetModuleHandleW stub - gets a module handle
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_GetModuleHandleW(
+    _module_name: *const u16,
+) -> *mut core::ffi::c_void {
+    // Return a fake non-null handle for the main module (NULL parameter)
+    0x400000 as *mut core::ffi::c_void
+}
+
+/// GetProcAddress stub - gets a procedure address
+///
+/// Note: This is already handled by the DLL manager, but we provide
+/// a stub in case it's called directly.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_GetProcAddress(
+    _module: *mut core::ffi::c_void,
+    _proc_name: *const u8,
+) -> *mut core::ffi::c_void {
+    core::ptr::null_mut() // NULL - not found
+}
+
+/// GetStdHandle stub - gets a standard device handle
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_GetStdHandle(_std_handle: u32) -> *mut core::ffi::c_void {
+    // STD_INPUT_HANDLE = -10, STD_OUTPUT_HANDLE = -11, STD_ERROR_HANDLE = -12
+    // Return non-null handles
+    match _std_handle as i32 {
+        -10 => 0x10 as *mut core::ffi::c_void, // stdin
+        -11 => 0x11 as *mut core::ffi::c_void, // stdout
+        -12 => 0x12 as *mut core::ffi::c_void, // stderr
+        _ => core::ptr::null_mut(),
+    }
+}
+
+/// LoadLibraryA stub - loads a library (ANSI version)
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_LoadLibraryA(
+    _lib_file_name: *const u8,
+) -> *mut core::ffi::c_void {
+    core::ptr::null_mut() // NULL - not found
+}
+
+/// LoadLibraryW stub - loads a library (wide version)
+///
+/// Note: This is already handled by the DLL manager, but we provide
+/// a stub in case it's called directly.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_LoadLibraryW(
+    _lib_file_name: *const u16,
+) -> *mut core::ffi::c_void {
+    core::ptr::null_mut() // NULL - not found
+}
+
+/// SetConsoleCtrlHandler stub - sets a console control handler
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_SetConsoleCtrlHandler(
+    _handler_routine: *mut core::ffi::c_void,
+    _add: i32,
+) -> i32 {
+    1 // TRUE - pretend success
+}
+
+/// SetFilePointerEx stub - sets the file pointer
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_SetFilePointerEx(
+    _file: *mut core::ffi::c_void,
+    _distance_to_move: i64,
+    _new_file_pointer: *mut i64,
+    _move_method: u32,
+) -> i32 {
+    0 // FALSE - not implemented
+}
+
+/// SetLastError stub - sets the last error code
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_SetLastError(_error_code: u32) {
+    // No-op stub - in real Windows this is thread-local
+}
+
+/// WaitForSingleObject stub - waits for an object
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_WaitForSingleObject(
+    _handle: *mut core::ffi::c_void,
+    _milliseconds: u32,
+) -> u32 {
+    0 // WAIT_OBJECT_0 - pretend object is signaled
+}
+
+/// WriteConsoleW stub - writes to the console (wide version)
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_WriteConsoleW(
+    _console_output: *mut core::ffi::c_void,
+    _buffer: *const u16,
+    _number_of_chars_to_write: u32,
+    _number_of_chars_written: *mut u32,
+    _reserved: *mut core::ffi::c_void,
+) -> i32 {
+    // Try to write to stdout
+    if !_buffer.is_null() && _number_of_chars_to_write > 0 {
+        let slice = core::slice::from_raw_parts(_buffer, _number_of_chars_to_write as usize);
+        if let Ok(s) = String::from_utf16(slice) {
+            print!("{}", s);
+            if !_number_of_chars_written.is_null() {
+                *_number_of_chars_written = _number_of_chars_to_write;
+            }
+            return 1; // TRUE
+        }
+    }
+    0 // FALSE
+}
+
+// Additional stubs for remaining missing APIs
+
+/// GetFileInformationByHandleEx stub
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_GetFileInformationByHandleEx(
+    _file: *mut core::ffi::c_void,
+    _file_information_class: u32,
+    _file_information: *mut core::ffi::c_void,
+    _buffer_size: u32,
+) -> i32 {
+    0 // FALSE
+}
+
+/// GetFileSizeEx stub
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_GetFileSizeEx(
+    _file: *mut core::ffi::c_void,
+    _file_size: *mut i64,
+) -> i32 {
+    0 // FALSE
+}
+
+/// GetFinalPathNameByHandleW stub
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_GetFinalPathNameByHandleW(
+    _file: *mut core::ffi::c_void,
+    _file_path: *mut u16,
+    _file_path_size: u32,
+    _flags: u32,
+) -> u32 {
+    0 // 0 = error
+}
+
+/// GetOverlappedResult stub
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_GetOverlappedResult(
+    _file: *mut core::ffi::c_void,
+    _overlapped: *mut core::ffi::c_void,
+    _number_of_bytes_transferred: *mut u32,
+    _wait: i32,
+) -> i32 {
+    0 // FALSE
+}
+
+/// GetProcessId stub
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_GetProcessId(_process: *mut core::ffi::c_void) -> u32 {
+    1 // Return a fake process ID
+}
+
+/// GetSystemDirectoryW stub
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_GetSystemDirectoryW(_buffer: *mut u16, _size: u32) -> u32 {
+    0 // 0 = error
+}
+
+/// GetTempPathW stub - gets the temporary directory path
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_GetTempPathW(buffer_length: u32, buffer: *mut u16) -> u32 {
+    if buffer.is_null() || buffer_length == 0 {
+        return 0;
+    }
+
+    // Return "/tmp/" as the temp path
+    let temp_path = [
+        b'/' as u16,
+        b't' as u16,
+        b'm' as u16,
+        b'p' as u16,
+        b'/' as u16,
+        0u16,
+    ];
+
+    if buffer_length < temp_path.len() as u32 {
+        return temp_path.len() as u32; // Required buffer size
+    }
+
+    // Copy the temp path
+    for (i, &ch) in temp_path.iter().enumerate() {
+        *buffer.add(i) = ch;
+    }
+
+    (temp_path.len() - 1) as u32 // Length without null terminator
+}
+
+/// GetWindowsDirectoryW stub
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_GetWindowsDirectoryW(_buffer: *mut u16, _size: u32) -> u32 {
+    0 // 0 = error
+}
+
+/// InitOnceBeginInitialize stub
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_InitOnceBeginInitialize(
+    _init_once: *mut core::ffi::c_void,
+    _flags: u32,
+    _pending: *mut i32,
+    _context: *mut *mut core::ffi::c_void,
+) -> i32 {
+    // Set pending to FALSE, indicating initialization is complete
+    if !_pending.is_null() {
+        *_pending = 0;
+    }
+    1 // TRUE
+}
+
+/// InitOnceComplete stub
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_InitOnceComplete(
+    _init_once: *mut core::ffi::c_void,
+    _flags: u32,
+    _context: *mut core::ffi::c_void,
+) -> i32 {
+    1 // TRUE
+}
+
+/// InitializeProcThreadAttributeList stub
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_InitializeProcThreadAttributeList(
+    _attribute_list: *mut core::ffi::c_void,
+    _attribute_count: u32,
+    _flags: u32,
+    _size: *mut usize,
+) -> i32 {
+    0 // FALSE
+}
+
+/// LockFileEx stub
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_LockFileEx(
+    _file: *mut core::ffi::c_void,
+    _flags: u32,
+    _reserved: u32,
+    _number_of_bytes_to_lock_low: u32,
+    _number_of_bytes_to_lock_high: u32,
+    _overlapped: *mut core::ffi::c_void,
+) -> i32 {
+    1 // TRUE - pretend success
+}
+
+/// MapViewOfFile stub
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_MapViewOfFile(
+    _file_mapping_object: *mut core::ffi::c_void,
+    _desired_access: u32,
+    _file_offset_high: u32,
+    _file_offset_low: u32,
+    _number_of_bytes_to_map: usize,
+) -> *mut core::ffi::c_void {
+    core::ptr::null_mut() // NULL
+}
+
+/// Module32FirstW stub
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_Module32FirstW(
+    _snapshot: *mut core::ffi::c_void,
+    _module_entry: *mut core::ffi::c_void,
+) -> i32 {
+    0 // FALSE
+}
+
+/// Module32NextW stub
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_Module32NextW(
+    _snapshot: *mut core::ffi::c_void,
+    _module_entry: *mut core::ffi::c_void,
+) -> i32 {
+    0 // FALSE
+}
+
+/// MoveFileExW stub
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_MoveFileExW(
+    _existing_file_name: *const u16,
+    _new_file_name: *const u16,
+    _flags: u32,
+) -> i32 {
+    0 // FALSE
+}
+
+/// ReadFileEx stub
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_ReadFileEx(
+    _file: *mut core::ffi::c_void,
+    _buffer: *mut u8,
+    _number_of_bytes_to_read: u32,
+    _overlapped: *mut core::ffi::c_void,
+    _completion_routine: *mut core::ffi::c_void,
+) -> i32 {
+    0 // FALSE
+}
+
+/// RemoveDirectoryW stub
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_RemoveDirectoryW(_path_name: *const u16) -> i32 {
+    0 // FALSE
+}
+
+/// SetCurrentDirectoryW stub
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_SetCurrentDirectoryW(_path_name: *const u16) -> i32 {
+    0 // FALSE
+}
+
+/// SetFileAttributesW stub
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_SetFileAttributesW(
+    _file_name: *const u16,
+    _file_attributes: u32,
+) -> i32 {
+    0 // FALSE
+}
+
+/// SetFileInformationByHandle stub
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_SetFileInformationByHandle(
+    _file: *mut core::ffi::c_void,
+    _file_information_class: u32,
+    _file_information: *mut core::ffi::c_void,
+    _buffer_size: u32,
+) -> i32 {
+    0 // FALSE
+}
+
+/// SetFileTime stub
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_SetFileTime(
+    _file: *mut core::ffi::c_void,
+    _creation_time: *const core::ffi::c_void,
+    _last_access_time: *const core::ffi::c_void,
+    _last_write_time: *const core::ffi::c_void,
+) -> i32 {
+    1 // TRUE - pretend success
+}
+
+/// SetHandleInformation stub
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_SetHandleInformation(
+    _object: *mut core::ffi::c_void,
+    _mask: u32,
+    _flags: u32,
+) -> i32 {
+    1 // TRUE - pretend success
+}
+
+/// UnlockFile stub
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_UnlockFile(
+    _file: *mut core::ffi::c_void,
+    _offset_low: u32,
+    _offset_high: u32,
+    _number_of_bytes_to_unlock_low: u32,
+    _number_of_bytes_to_unlock_high: u32,
+) -> i32 {
+    1 // TRUE - pretend success
+}
+
+/// UnmapViewOfFile stub
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_UnmapViewOfFile(_base_address: *const core::ffi::c_void) -> i32 {
+    1 // TRUE - pretend success
+}
+
+/// UpdateProcThreadAttribute stub
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_UpdateProcThreadAttribute(
+    _attribute_list: *mut core::ffi::c_void,
+    _flags: u32,
+    _attribute: usize,
+    _value: *mut core::ffi::c_void,
+    _size: usize,
+    _previous_value: *mut core::ffi::c_void,
+    _return_size: *mut usize,
+) -> i32 {
+    0 // FALSE
+}
+
+/// WriteFileEx stub
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_WriteFileEx(
+    _file: *mut core::ffi::c_void,
+    _buffer: *const u8,
+    _number_of_bytes_to_write: u32,
+    _overlapped: *mut core::ffi::c_void,
+    _completion_routine: *mut core::ffi::c_void,
+) -> i32 {
+    0 // FALSE
+}
+
+/// SetThreadStackGuarantee stub
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_SetThreadStackGuarantee(_stack_size_in_bytes: *mut u32) -> i32 {
+    1 // TRUE - pretend success
+}
+
+/// SetWaitableTimer stub
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_SetWaitableTimer(
+    _timer: *mut core::ffi::c_void,
+    _due_time: *const i64,
+    _period: i32,
+    _completion_routine: *mut core::ffi::c_void,
+    _arg_to_completion_routine: *mut core::ffi::c_void,
+    _resume: i32,
+) -> i32 {
+    1 // TRUE - pretend success
+}
+
+/// SleepEx stub - sleep with alertable wait
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_SleepEx(_milliseconds: u32, _alertable: i32) -> u32 {
+    if _milliseconds > 0 {
+        thread::sleep(Duration::from_millis(u64::from(_milliseconds)));
+    }
+    0 // Return 0 (not alertable)
+}
+
+/// SwitchToThread stub - yields execution to another thread
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_SwitchToThread() -> i32 {
+    thread::yield_now();
+    1 // TRUE
+}
+
+/// TerminateProcess stub
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_TerminateProcess(
+    _process: *mut core::ffi::c_void,
+    _exit_code: u32,
+) -> i32 {
+    0 // FALSE - not implemented
+}
+
+/// WaitForMultipleObjects stub
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_WaitForMultipleObjects(
+    _count: u32,
+    _handles: *const *mut core::ffi::c_void,
+    _wait_all: i32,
+    _milliseconds: u32,
+) -> u32 {
+    0 // WAIT_OBJECT_0 - pretend first object is signaled
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
