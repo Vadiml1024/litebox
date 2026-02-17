@@ -286,7 +286,7 @@ pub unsafe extern "C" fn kernel32_TlsSetValue(slot: u32, value: usize) -> u32 {
 /// We treat it as an opaque structure that just needs to hold a pointer to our internal data.
 #[repr(C)]
 pub struct CriticalSection {
-    /// Internal data pointer (points to Arc<Mutex<CriticalSectionData>>)
+    /// Internal data pointer (points to `Arc<Mutex<CriticalSectionData>>`)
     internal: usize,
     /// Padding to match Windows CRITICAL_SECTION size (40 bytes total)
     _padding: [u8; 32],
