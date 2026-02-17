@@ -634,6 +634,311 @@ pub unsafe extern "C" fn msvcrt___C_specific_handler(
     1
 }
 
+/// Compare two null-terminated strings (strcmp)
+///
+/// # Safety
+/// This function is unsafe as it deals with raw pointers.
+/// The caller must ensure both pointers point to valid null-terminated strings.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_strcmp(s1: *const i8, s2: *const i8) -> i32 {
+    if s1.is_null() || s2.is_null() {
+        return if s1.is_null() && s2.is_null() {
+            0
+        } else if s1.is_null() {
+            -1
+        } else {
+            1
+        };
+    }
+    let mut i = 0usize;
+    loop {
+        let c1 = (*s1.add(i)).cast_unsigned();
+        let c2 = (*s2.add(i)).cast_unsigned();
+        if c1 != c2 {
+            return i32::from(c1) - i32::from(c2);
+        }
+        if c1 == 0 {
+            return 0;
+        }
+        i += 1;
+    }
+}
+
+/// Copy a null-terminated string (strcpy)
+///
+/// # Safety
+/// This function is unsafe as it deals with raw pointers.
+/// The caller must ensure dest has enough space and src is a valid null-terminated string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_strcpy(dest: *mut i8, src: *const i8) -> *mut i8 {
+    if dest.is_null() || src.is_null() {
+        return dest;
+    }
+    let mut i = 0usize;
+    loop {
+        let c = *src.add(i);
+        *dest.add(i) = c;
+        if c == 0 {
+            break;
+        }
+        i += 1;
+    }
+    dest
+}
+
+/// Concatenate two null-terminated strings (strcat)
+///
+/// # Safety
+/// This function is unsafe as it deals with raw pointers.
+/// The caller must ensure dest has enough space for the concatenated result.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_strcat(dest: *mut i8, src: *const i8) -> *mut i8 {
+    if dest.is_null() || src.is_null() {
+        return dest;
+    }
+    // Find end of dest
+    let mut i = 0usize;
+    while *dest.add(i) != 0 {
+        i += 1;
+    }
+    // Copy src to end of dest
+    let mut j = 0usize;
+    loop {
+        let c = *src.add(j);
+        *dest.add(i + j) = c;
+        if c == 0 {
+            break;
+        }
+        j += 1;
+    }
+    dest
+}
+
+/// Find first occurrence of a character in a string (strchr)
+///
+/// # Safety
+/// This function is unsafe as it deals with raw pointers.
+/// The caller must ensure s is a valid null-terminated string.
+#[unsafe(no_mangle)]
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+pub unsafe extern "C" fn msvcrt_strchr(s: *const i8, c: i32) -> *const i8 {
+    if s.is_null() {
+        return ptr::null();
+    }
+    let target = c as i8;
+    let mut i = 0usize;
+    loop {
+        let ch = *s.add(i);
+        if ch == target {
+            return s.add(i);
+        }
+        if ch == 0 {
+            return ptr::null();
+        }
+        i += 1;
+    }
+}
+
+/// Find last occurrence of a character in a string (strrchr)
+///
+/// # Safety
+/// This function is unsafe as it deals with raw pointers.
+/// The caller must ensure s is a valid null-terminated string.
+#[unsafe(no_mangle)]
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+pub unsafe extern "C" fn msvcrt_strrchr(s: *const i8, c: i32) -> *const i8 {
+    if s.is_null() {
+        return ptr::null();
+    }
+    let target = c as i8;
+    let mut last: *const i8 = ptr::null();
+    let mut i = 0usize;
+    loop {
+        let ch = *s.add(i);
+        if ch == target {
+            last = s.add(i);
+        }
+        if ch == 0 {
+            return last;
+        }
+        i += 1;
+    }
+}
+
+/// Find first occurrence of a substring in a string (strstr)
+///
+/// # Safety
+/// This function is unsafe as it deals with raw pointers.
+/// The caller must ensure both pointers point to valid null-terminated strings.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_strstr(haystack: *const i8, needle: *const i8) -> *const i8 {
+    if haystack.is_null() || needle.is_null() {
+        return ptr::null();
+    }
+    // Empty needle matches at the start
+    if *needle == 0 {
+        return haystack;
+    }
+    let needle_len = CStr::from_ptr(needle).to_bytes().len();
+    let mut i = 0usize;
+    while *haystack.add(i) != 0 {
+        let mut matched = true;
+        for j in 0..needle_len {
+            if *haystack.add(i + j) == 0 || *haystack.add(i + j) != *needle.add(j) {
+                matched = false;
+                break;
+            }
+        }
+        if matched {
+            return haystack.add(i);
+        }
+        i += 1;
+    }
+    ptr::null()
+}
+
+/// Initialize term table with error return (_initterm_e)
+///
+/// Like _initterm, but the function pointers return an int error code.
+/// Returns 0 on success, or the first non-zero return value on failure.
+///
+/// # Safety
+/// This function is unsafe as it deals with raw pointers.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt__initterm_e(
+    start: *mut extern "C" fn() -> i32,
+    end: *mut extern "C" fn() -> i32,
+) -> i32 {
+    if start.is_null() || end.is_null() {
+        return 0;
+    }
+
+    let mut current = start;
+    while current < end {
+        let func_ptr_raw = *(current.cast::<usize>());
+
+        if func_ptr_raw != 0 && func_ptr_raw != usize::MAX {
+            // SAFETY: Same contract as _initterm - entries are valid function pointers
+            // with ABI extern "C" fn() -> i32, populated by the CRT/loader.
+            let func: extern "C" fn() -> i32 = core::mem::transmute(func_ptr_raw);
+            let result = func();
+            if result != 0 {
+                return result;
+            }
+        }
+
+        current = current.add(1);
+    }
+    0
+}
+
+/// Get pointer to argc (__p___argc)
+///
+/// # Safety
+/// Returns a pointer to a static variable. Thread-safety is managed by the caller.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt___p___argc() -> *mut i32 {
+    static mut ARGC_STATIC: i32 = 0;
+    core::ptr::addr_of_mut!(ARGC_STATIC)
+}
+
+/// Get pointer to argv (__p___argv)
+///
+/// # Safety
+/// Returns a pointer to a static variable. Thread-safety is managed by the caller.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt___p___argv() -> *mut *mut *mut i8 {
+    static mut ARGV_PTR: *mut *mut i8 = core::ptr::null_mut();
+    core::ptr::addr_of_mut!(ARGV_PTR)
+}
+
+/// CRT internal lock (_lock)
+///
+/// Used by the CRT for thread-safe access to internal data structures.
+/// Lock IDs include _HEAP_LOCK (4), _ENV_LOCK (7), etc.
+///
+/// # Safety
+/// This function is safe to call but marked unsafe for C ABI compatibility.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt__lock(_locknum: i32) {
+    // No-op stub - in our single-threaded emulation, locking is not needed
+}
+
+/// CRT internal unlock (_unlock)
+///
+/// # Safety
+/// This function is safe to call but marked unsafe for C ABI compatibility.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt__unlock(_locknum: i32) {
+    // No-op stub - in our single-threaded emulation, locking is not needed
+}
+
+/// Get environment variable (getenv)
+///
+/// # Safety
+/// This function is unsafe as it deals with raw pointers.
+/// The caller must ensure name is a valid null-terminated string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_getenv(name: *const i8) -> *const i8 {
+    if name.is_null() {
+        return ptr::null();
+    }
+    // Use libc getenv which returns a pointer to the actual environment value
+    libc::getenv(name)
+}
+
+/// Get errno location (_errno)
+/// This is the MSVCRT name for errno access (as opposed to __errno_location)
+///
+/// # Safety
+/// This function returns a pointer to thread-local errno storage.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt__errno() -> *mut i32 {
+    msvcrt___errno_location()
+}
+
+/// Initialize locale conversion (__lconv_init)
+///
+/// Called during CRT startup to initialize locale data.
+///
+/// # Safety
+/// This function is safe to call but marked unsafe for C ABI compatibility.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt___lconv_init() -> i32 {
+    // No-op stub - return 0 for success
+    0
+}
+
+/// CRT exception filter (_XcptFilter)
+///
+/// Returns EXCEPTION_CONTINUE_SEARCH to let the exception propagate.
+///
+/// # Safety
+/// This function is safe to call but marked unsafe for C ABI compatibility.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt__XcptFilter(
+    _exception_code: u32,
+    _exception_pointers: *mut core::ffi::c_void,
+) -> i32 {
+    // Return EXCEPTION_CONTINUE_SEARCH (1)
+    1
+}
+
+/// Control floating-point behavior (_controlfp)
+///
+/// # Safety
+/// This function is safe to call but marked unsafe for C ABI compatibility.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt__controlfp(new_val: u32, mask: u32) -> u32 {
+    // Return the "new" control word - in practice just echo back what was set
+    // Default x87 control word on Windows: 0x0009001F
+    if mask == 0 {
+        0x0009_001F // Default value
+    } else {
+        (0x0009_001F & !mask) | (new_val & mask)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -751,5 +1056,177 @@ mod tests {
             11,
             "Only valid functions should be called (1 + 10 = 11)"
         );
+    }
+
+    #[test]
+    fn test_strcmp() {
+        unsafe {
+            let s1 = b"hello\0";
+            let s2 = b"hello\0";
+            let s3 = b"world\0";
+            let s4 = b"hell\0";
+            assert_eq!(
+                msvcrt_strcmp(s1.as_ptr().cast::<i8>(), s2.as_ptr().cast::<i8>()),
+                0
+            );
+            assert!(msvcrt_strcmp(s1.as_ptr().cast::<i8>(), s3.as_ptr().cast::<i8>()) < 0);
+            assert!(msvcrt_strcmp(s3.as_ptr().cast::<i8>(), s1.as_ptr().cast::<i8>()) > 0);
+            assert!(msvcrt_strcmp(s1.as_ptr().cast::<i8>(), s4.as_ptr().cast::<i8>()) != 0);
+        }
+    }
+
+    #[test]
+    fn test_strcpy() {
+        unsafe {
+            let src = b"hello\0";
+            let mut dest = [0i8; 10];
+            let result = msvcrt_strcpy(dest.as_mut_ptr(), src.as_ptr().cast::<i8>());
+            assert_eq!(result, dest.as_mut_ptr());
+            assert_eq!(dest[0], b'h'.cast_signed());
+            assert_eq!(dest[4], b'o'.cast_signed());
+            assert_eq!(dest[5], 0);
+        }
+    }
+
+    #[test]
+    fn test_strcat() {
+        unsafe {
+            let mut dest = [0i8; 20];
+            let s1 = b"hello\0";
+            let s2 = b" world\0";
+            msvcrt_strcpy(dest.as_mut_ptr(), s1.as_ptr().cast::<i8>());
+            msvcrt_strcat(dest.as_mut_ptr(), s2.as_ptr().cast::<i8>());
+            let result = CStr::from_ptr(dest.as_ptr());
+            assert_eq!(result.to_str().unwrap(), "hello world");
+        }
+    }
+
+    #[test]
+    fn test_strchr() {
+        unsafe {
+            let s = b"hello world\0";
+            let result = msvcrt_strchr(s.as_ptr().cast::<i8>(), i32::from(b'o'));
+            assert!(!result.is_null());
+            assert_eq!(*result, b'o'.cast_signed());
+            // Should find first occurrence
+            let offset = result as usize - s.as_ptr() as usize;
+            assert_eq!(offset, 4);
+            // Character not found
+            let result = msvcrt_strchr(s.as_ptr().cast::<i8>(), i32::from(b'z'));
+            assert!(result.is_null());
+        }
+    }
+
+    #[test]
+    fn test_strrchr() {
+        unsafe {
+            let s = b"hello world\0";
+            let result = msvcrt_strrchr(s.as_ptr().cast::<i8>(), i32::from(b'o'));
+            assert!(!result.is_null());
+            // Should find last occurrence (at index 7, in "world")
+            let offset = result as usize - s.as_ptr() as usize;
+            assert_eq!(offset, 7);
+        }
+    }
+
+    #[test]
+    fn test_strstr() {
+        unsafe {
+            let haystack = b"hello world\0";
+            let needle = b"world\0";
+            let result =
+                msvcrt_strstr(haystack.as_ptr().cast::<i8>(), needle.as_ptr().cast::<i8>());
+            assert!(!result.is_null());
+            let offset = result as usize - haystack.as_ptr() as usize;
+            assert_eq!(offset, 6);
+            // Not found
+            let needle2 = b"xyz\0";
+            let result = msvcrt_strstr(
+                haystack.as_ptr().cast::<i8>(),
+                needle2.as_ptr().cast::<i8>(),
+            );
+            assert!(result.is_null());
+            // Empty needle
+            let empty = b"\0";
+            let result = msvcrt_strstr(haystack.as_ptr().cast::<i8>(), empty.as_ptr().cast::<i8>());
+            assert!(!result.is_null());
+            assert_eq!(result, haystack.as_ptr().cast::<i8>());
+        }
+    }
+
+    #[test]
+    fn test_initterm_e() {
+        use std::sync::atomic::{AtomicI32, Ordering};
+
+        static CALL_RESULT: AtomicI32 = AtomicI32::new(0);
+
+        extern "C" fn success_func() -> i32 {
+            CALL_RESULT.fetch_add(1, Ordering::SeqCst);
+            0 // success
+        }
+
+        extern "C" fn fail_func() -> i32 {
+            42 // error
+        }
+
+        // Test successful completion
+        CALL_RESULT.store(0, Ordering::SeqCst);
+        let mut table: [usize; 3] = [
+            success_func as *const () as usize,
+            0, // null - skip
+            success_func as *const () as usize,
+        ];
+
+        unsafe {
+            let result = msvcrt__initterm_e(
+                table.as_mut_ptr().cast::<extern "C" fn() -> i32>(),
+                table.as_mut_ptr().add(3).cast::<extern "C" fn() -> i32>(),
+            );
+            assert_eq!(result, 0);
+            assert_eq!(CALL_RESULT.load(Ordering::SeqCst), 2);
+        }
+
+        // Test failure stops iteration
+        let mut table2: [usize; 2] = [
+            fail_func as *const () as usize,
+            success_func as *const () as usize, // should not be called
+        ];
+
+        CALL_RESULT.store(0, Ordering::SeqCst);
+        unsafe {
+            let result = msvcrt__initterm_e(
+                table2.as_mut_ptr().cast::<extern "C" fn() -> i32>(),
+                table2.as_mut_ptr().add(2).cast::<extern "C" fn() -> i32>(),
+            );
+            assert_eq!(result, 42);
+            assert_eq!(CALL_RESULT.load(Ordering::SeqCst), 0); // success_func not called
+        }
+    }
+
+    #[test]
+    fn test_getenv() {
+        unsafe {
+            // PATH should exist on Linux
+            let name = b"PATH\0";
+            let result = msvcrt_getenv(name.as_ptr().cast::<i8>());
+            // PATH should be set in any reasonable environment
+            assert!(!result.is_null());
+
+            // Nonexistent variable
+            let name = b"LITEBOX_NONEXISTENT_VAR_12345\0";
+            let result = msvcrt_getenv(name.as_ptr().cast::<i8>());
+            assert!(result.is_null());
+        }
+    }
+
+    #[test]
+    fn test_errno() {
+        unsafe {
+            let ptr = msvcrt__errno();
+            assert!(!ptr.is_null());
+            // Should be same as __errno_location
+            let ptr2 = msvcrt___errno_location();
+            assert_eq!(ptr, ptr2);
+        }
     }
 }
