@@ -473,7 +473,7 @@ impl PeLoader {
     /// Patch __CTOR_LIST__ to fix sentinel values that cause crashes
     ///
     /// MinGW CRT uses __CTOR_LIST__ for C++ global constructors. The list format is:
-    /// [-1 sentinel] [func_ptr_1] [func_ptr_2] ... [0 terminator]
+    /// `[-1 sentinel] [func_ptr_1] [func_ptr_2] ... [0 terminator]`
     ///
     /// Background: Rustc uses LLVM's @llvm.global_ctors mechanism for global constructors.
     /// The MinGW CRT (crtbegin.o) implements __do_global_ctors_aux which processes
@@ -1032,5 +1032,135 @@ mod tests {
         let data = vec![0; 64];
         let result = PeLoader::new(data);
         assert!(result.is_err()); // Will fail because it's not a valid PE
+    }
+
+    /// Helper to create a minimal valid PE binary for testing
+    fn create_minimal_pe(section_data: &[u8], virtual_address: u32, virtual_size: u32) -> Vec<u8> {
+        let mut data = vec![0u8; 4096];
+
+        // DOS header
+        data[0] = 0x4D; // 'M'
+        data[1] = 0x5A; // 'Z'
+        // e_lfanew at offset 60 (0x3C) - point to PE header at offset 128
+        let pe_offset: u32 = 128;
+        data[60..64].copy_from_slice(&pe_offset.to_le_bytes());
+
+        // PE signature at offset 128
+        let pe_sig: u32 = 0x00004550;
+        data[128..132].copy_from_slice(&pe_sig.to_le_bytes());
+
+        // COFF File Header (20 bytes) at offset 132
+        let file_header_offset = 132;
+        // Machine = AMD64 (0x8664)
+        data[file_header_offset..file_header_offset + 2].copy_from_slice(&0x8664u16.to_le_bytes());
+        // NumberOfSections = 1
+        data[file_header_offset + 2..file_header_offset + 4].copy_from_slice(&1u16.to_le_bytes());
+        // SizeOfOptionalHeader
+        let opt_header_size =
+            core::mem::size_of::<OptionalHeader64>() + 16 * core::mem::size_of::<DataDirectory>();
+        #[allow(clippy::cast_possible_truncation)]
+        let opt_header_size_u16 = opt_header_size as u16;
+        data[file_header_offset + 16..file_header_offset + 18]
+            .copy_from_slice(&opt_header_size_u16.to_le_bytes());
+
+        // Optional Header (PE32+) at offset 152
+        let opt_offset = file_header_offset + 20;
+        // Magic = PE32+ (0x20B)
+        data[opt_offset..opt_offset + 2].copy_from_slice(&0x020Bu16.to_le_bytes());
+        // ImageBase
+        data[opt_offset + 24..opt_offset + 32].copy_from_slice(&0x140000000u64.to_le_bytes());
+        // SectionAlignment
+        data[opt_offset + 32..opt_offset + 36].copy_from_slice(&0x1000u32.to_le_bytes());
+        // FileAlignment
+        data[opt_offset + 36..opt_offset + 40].copy_from_slice(&0x200u32.to_le_bytes());
+        // NumberOfRvaAndSizes = 16
+        data[opt_offset + 108..opt_offset + 112].copy_from_slice(&16u32.to_le_bytes());
+
+        // Section header follows after optional header + data directories
+        let section_offset = opt_offset + opt_header_size;
+
+        // Section name ".test\0\0\0"
+        data[section_offset..section_offset + 5].copy_from_slice(b".test");
+        // VirtualSize
+        data[section_offset + 8..section_offset + 12].copy_from_slice(&virtual_size.to_le_bytes());
+        // VirtualAddress
+        data[section_offset + 12..section_offset + 16]
+            .copy_from_slice(&virtual_address.to_le_bytes());
+        // SizeOfRawData
+        #[allow(clippy::cast_possible_truncation)]
+        let raw_size = section_data.len() as u32;
+        data[section_offset + 16..section_offset + 20].copy_from_slice(&raw_size.to_le_bytes());
+        // PointerToRawData (put data at offset 512)
+        let raw_data_offset = 512u32;
+        data[section_offset + 20..section_offset + 24]
+            .copy_from_slice(&raw_data_offset.to_le_bytes());
+        // Characteristics (readable, writable)
+        data[section_offset + 36..section_offset + 40]
+            .copy_from_slice(&0xC0000040u32.to_le_bytes());
+
+        // Copy section data
+        let start = raw_data_offset as usize;
+        let end = start + section_data.len();
+        if end <= data.len() {
+            data[start..end].copy_from_slice(section_data);
+        }
+
+        data
+    }
+
+    #[test]
+    fn test_patch_ctor_list_basic() {
+        // Create section data with a __CTOR_LIST__ pattern:
+        // [-1] [0 terminator] — simplest valid __CTOR_LIST__
+        let va = 0x1000u32;
+
+        let mut section_data = vec![0u8; 256];
+        // Write -1 sentinel at offset 0
+        section_data[0..8].copy_from_slice(&0xFFFFFFFFFFFFFFFFu64.to_le_bytes());
+        // Write 0 terminator at offset 8 (makes it a valid __CTOR_LIST__)
+        section_data[8..16].copy_from_slice(&0u64.to_le_bytes());
+
+        let pe = PeLoader::new(create_minimal_pe(&section_data, va, 256)).unwrap();
+
+        // Allocate memory and load sections
+        let mem = vec![0u8; 0x2000];
+        let mem_base = mem.as_ptr() as u64;
+
+        unsafe {
+            pe.load_sections(mem_base).unwrap();
+            pe.patch_ctor_list(mem_base).unwrap();
+        }
+
+        // Verify the sentinel was patched to 0
+        let patched_value = unsafe { ((mem_base + u64::from(va)) as *const u64).read_unaligned() };
+        assert_eq!(patched_value, 0, "Sentinel should be patched to 0");
+    }
+
+    #[test]
+    fn test_patch_ctor_list_no_sentinel() {
+        // Create section data WITHOUT any __CTOR_LIST__ pattern
+        let va = 0x1000u32;
+        let mut section_data = vec![0u8; 256];
+        // Write some regular data
+        section_data[0..8].copy_from_slice(&0x12345678u64.to_le_bytes());
+        section_data[8..16].copy_from_slice(&0xABCDu64.to_le_bytes());
+
+        let pe = PeLoader::new(create_minimal_pe(&section_data, va, 256)).unwrap();
+
+        let mem = vec![0u8; 0x2000];
+        let mem_base = mem.as_ptr() as u64;
+
+        unsafe {
+            pe.load_sections(mem_base).unwrap();
+            pe.patch_ctor_list(mem_base).unwrap();
+        }
+
+        // Verify data was not modified
+        let value = unsafe { ((mem_base + u64::from(va)) as *const u64).read_unaligned() };
+        assert_eq!(value, 0x12345678, "Non-sentinel data should be unchanged");
+
+        // Verify adjacent data was also not modified
+        let value2 = unsafe { ((mem_base + u64::from(va) + 8) as *const u64).read_unaligned() };
+        assert_eq!(value2, 0xABCD, "Adjacent data should be unchanged");
     }
 }

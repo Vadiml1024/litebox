@@ -286,7 +286,7 @@ pub unsafe extern "C" fn kernel32_TlsSetValue(slot: u32, value: usize) -> u32 {
 /// We treat it as an opaque structure that just needs to hold a pointer to our internal data.
 #[repr(C)]
 pub struct CriticalSection {
-    /// Internal data pointer (points to Arc<Mutex<CriticalSectionData>>)
+    /// Internal data pointer (points to `Arc<Mutex<CriticalSectionData>>`)
     internal: usize,
     /// Padding to match Windows CRITICAL_SECTION size (40 bytes total)
     _padding: [u8; 32],
@@ -2695,6 +2695,292 @@ pub unsafe extern "C" fn kernel32_WaitForMultipleObjects(
     0 // WAIT_OBJECT_0 - pretend first object is signaled
 }
 
+/// ExitProcess - terminates the calling process and all its threads
+///
+/// # Safety
+/// This function terminates the process immediately.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_ExitProcess(exit_code: u32) {
+    std::process::exit(exit_code as i32);
+}
+
+/// GetCurrentProcess - returns a pseudo-handle for the current process
+///
+/// # Safety
+/// This function is safe to call. It returns a constant pseudo-handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_GetCurrentProcess() -> *mut core::ffi::c_void {
+    // Windows returns -1 (0xFFFFFFFFFFFFFFFF) as the pseudo-handle for the current process
+    -1_i64 as usize as *mut core::ffi::c_void
+}
+
+/// GetCurrentThread - returns a pseudo-handle for the current thread
+///
+/// # Safety
+/// This function is safe to call. It returns a constant pseudo-handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_GetCurrentThread() -> *mut core::ffi::c_void {
+    // Windows returns -2 (0xFFFFFFFFFFFFFFFE) as the pseudo-handle for the current thread
+    -2_i64 as usize as *mut core::ffi::c_void
+}
+
+/// GetModuleHandleA - returns the module handle for a named module (ANSI version)
+///
+/// # Safety
+/// This function is a stub that returns a default base address.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_GetModuleHandleA(
+    _module_name: *const u8,
+) -> *mut core::ffi::c_void {
+    // Return default image base address
+    0x400000_usize as *mut core::ffi::c_void
+}
+
+/// GetModuleFileNameW - retrieves the fully qualified path for the file that contains a module
+///
+/// # Safety
+/// Caller must ensure `filename` points to a valid buffer of at least `size` u16 elements
+/// when it is non-null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_GetModuleFileNameW(
+    _module: *mut core::ffi::c_void,
+    _filename: *mut u16,
+    _size: u32,
+) -> u32 {
+    0 // Failure - not implemented
+}
+
+/// Windows SYSTEM_INFO structure (x86_64 layout).
+///
+/// Matches the Windows API `SYSTEM_INFO` struct at
+/// <https://learn.microsoft.com/en-us/windows/win32/api/sysinfoapi/ns-sysinfoapi-system_info>.
+/// Field names follow Windows naming conventions. Pointer-sized fields use `u64`
+/// to match the fixed x86_64 Windows ABI layout (always 8 bytes).
+#[repr(C)]
+struct SystemInfo {
+    w_processor_architecture: u16,
+    w_reserved: u16,
+    dw_page_size: u32,
+    lp_minimum_application_address: u64,
+    lp_maximum_application_address: u64,
+    dw_active_processor_mask: u64,
+    dw_number_of_processors: u32,
+    dw_processor_type: u32,
+    dw_allocation_granularity: u32,
+    w_processor_level: u16,
+    w_processor_revision: u16,
+}
+
+/// GetSystemInfo - retrieves information about the current system
+///
+/// # Safety
+/// Caller must ensure `system_info` points to a valid buffer of at least
+/// `core::mem::size_of::<SystemInfo>()` bytes when it is non-null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_GetSystemInfo(system_info: *mut u8) {
+    if system_info.is_null() {
+        return;
+    }
+    let info = SystemInfo {
+        w_processor_architecture: 9, // PROCESSOR_ARCHITECTURE_AMD64
+        w_reserved: 0,
+        dw_page_size: 4096,
+        lp_minimum_application_address: 0x10000,
+        lp_maximum_application_address: 0x7FFF_FFFE_FFFF,
+        dw_active_processor_mask: 1,
+        dw_number_of_processors: 1,
+        dw_processor_type: 8664, // PROCESSOR_AMD_X8664
+        dw_allocation_granularity: 65536,
+        w_processor_level: 6,
+        w_processor_revision: 0,
+    };
+    // SAFETY: Caller guarantees system_info points to a valid buffer of sufficient size.
+    core::ptr::copy_nonoverlapping(
+        (&raw const info).cast::<u8>(),
+        system_info,
+        core::mem::size_of::<SystemInfo>(),
+    );
+}
+
+/// GetConsoleMode - retrieves the current input mode of a console's input buffer
+///
+/// # Safety
+/// Caller must ensure `mode` points to a valid u32 when it is non-null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_GetConsoleMode(
+    _console_handle: *mut core::ffi::c_void,
+    mode: *mut u32,
+) -> i32 {
+    if !mode.is_null() {
+        // SAFETY: Caller guarantees mode is valid and non-null (checked above).
+        *mode = 3; // ENABLE_PROCESSED_INPUT | ENABLE_LINE_INPUT
+    }
+    1 // TRUE - success
+}
+
+/// GetConsoleOutputCP - retrieves the output code page used by the console
+///
+/// # Safety
+/// This function is safe to call. It returns a constant value.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_GetConsoleOutputCP() -> u32 {
+    65001 // UTF-8
+}
+
+/// ReadConsoleW - reads character input from the console input buffer (wide version)
+///
+/// # Safety
+/// Caller must ensure `chars_read` points to a valid u32 when it is non-null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_ReadConsoleW(
+    _console_input: *mut core::ffi::c_void,
+    _buffer: *mut u16,
+    _chars_to_read: u32,
+    chars_read: *mut u32,
+    _input_control: *mut core::ffi::c_void,
+) -> i32 {
+    if !chars_read.is_null() {
+        // SAFETY: Caller guarantees chars_read is valid and non-null (checked above).
+        *chars_read = 0;
+    }
+    1 // TRUE - success (no input available)
+}
+
+/// GetEnvironmentVariableW - retrieves the value of an environment variable (wide version)
+///
+/// # Safety
+/// This function is a stub that returns 0 (variable not found).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_GetEnvironmentVariableW(
+    _name: *const u16,
+    _buffer: *mut u16,
+    _size: u32,
+) -> u32 {
+    0 // Not found
+}
+
+/// SetEnvironmentVariableW - sets the value of an environment variable (wide version)
+///
+/// # Safety
+/// This function is a stub that returns success without modifying anything.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_SetEnvironmentVariableW(
+    _name: *const u16,
+    _value: *const u16,
+) -> i32 {
+    1 // TRUE - success
+}
+
+/// VirtualProtect - changes the protection on a region of committed pages
+///
+/// # Safety
+/// Caller must ensure `old_protect` points to a valid u32 when it is non-null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_VirtualProtect(
+    _address: *mut core::ffi::c_void,
+    _size: usize,
+    _new_protect: u32,
+    old_protect: *mut u32,
+) -> i32 {
+    if !old_protect.is_null() {
+        // SAFETY: Caller guarantees old_protect is valid and non-null (checked above).
+        *old_protect = 0x40; // PAGE_EXECUTE_READWRITE
+    }
+    1 // TRUE - success
+}
+
+/// VirtualQuery - retrieves information about a range of pages
+///
+/// # Safety
+/// This function is a stub that returns 0 (failure).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_VirtualQuery(
+    _address: *const core::ffi::c_void,
+    _buffer: *mut u8,
+    _length: usize,
+) -> usize {
+    0 // Failure - not implemented
+}
+
+/// FreeLibrary - frees the loaded dynamic-link library module
+///
+/// # Safety
+/// This function is a stub that returns success without freeing anything.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_FreeLibrary(_module: *mut core::ffi::c_void) -> i32 {
+    1 // TRUE - success
+}
+
+/// FindFirstFileExW - searches a directory for a file or subdirectory (wide version)
+///
+/// # Safety
+/// This function is a stub that returns INVALID_HANDLE_VALUE.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_FindFirstFileExW(
+    _filename: *const u16,
+    _info_level: u32,
+    _find_data: *mut u8,
+    _search_op: u32,
+    _search_filter: *mut core::ffi::c_void,
+    _additional_flags: u32,
+) -> *mut core::ffi::c_void {
+    // INVALID_HANDLE_VALUE
+    -1_i64 as usize as *mut core::ffi::c_void
+}
+
+/// FindNextFileW - continues a file search from a previous call to FindFirstFile
+///
+/// # Safety
+/// This function is a stub that returns 0 (no more files).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_FindNextFileW(
+    _find_file: *mut core::ffi::c_void,
+    _find_data: *mut u8,
+) -> i32 {
+    0 // FALSE - no more files
+}
+
+/// FindClose - closes a file search handle
+///
+/// # Safety
+/// This function is a stub that returns success.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_FindClose(_find_file: *mut core::ffi::c_void) -> i32 {
+    1 // TRUE - success
+}
+
+/// WaitOnAddress - waits for the value at the specified address to change
+///
+/// # Safety
+/// This function is a stub that returns success immediately.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_WaitOnAddress(
+    _address: *mut core::ffi::c_void,
+    _compare_address: *mut core::ffi::c_void,
+    _address_size: usize,
+    _milliseconds: u32,
+) -> i32 {
+    1 // TRUE - success
+}
+
+/// WakeByAddressAll - wakes all threads waiting on an address
+///
+/// # Safety
+/// This function is a no-op stub.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_WakeByAddressAll(_address: *mut core::ffi::c_void) {
+    // No-op stub
+}
+
+/// WakeByAddressSingle - wakes one thread waiting on an address
+///
+/// # Safety
+/// This function is a no-op stub.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_WakeByAddressSingle(_address: *mut core::ffi::c_void) {
+    // No-op stub
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3928,7 +4214,7 @@ mod tests {
                 stdout,
                 data.as_ptr(),
                 data.len() as u32,
-                &mut bytes_written,
+                &raw mut bytes_written,
                 core::ptr::null_mut(),
             )
         };
@@ -3948,7 +4234,7 @@ mod tests {
                 invalid_handle,
                 data.as_ptr(),
                 data.len() as u32,
-                &mut bytes_written,
+                &raw mut bytes_written,
                 core::ptr::null_mut(),
             )
         };
@@ -3968,7 +4254,7 @@ mod tests {
                 stdout,
                 core::ptr::null(),
                 10,
-                &mut bytes_written,
+                &raw mut bytes_written,
                 core::ptr::null_mut(),
             )
         };
@@ -4015,5 +4301,114 @@ mod tests {
         let env = unsafe { kernel32_GetEnvironmentStringsW() };
         let result = unsafe { kernel32_FreeEnvironmentStringsW(env) };
         assert_eq!(result, 1, "FreeEnvironmentStringsW should return TRUE");
+    }
+
+    #[test]
+    fn test_get_current_process() {
+        let handle = unsafe { kernel32_GetCurrentProcess() };
+        assert!(
+            !handle.is_null(),
+            "GetCurrentProcess should return non-null"
+        );
+        // Windows pseudo-handle for current process is -1
+        assert_eq!(handle as usize, usize::MAX);
+    }
+
+    #[test]
+    fn test_get_current_thread() {
+        let handle = unsafe { kernel32_GetCurrentThread() };
+        assert!(!handle.is_null(), "GetCurrentThread should return non-null");
+        // Windows pseudo-handle for current thread is -2
+        assert_eq!(handle as usize, usize::MAX - 1);
+    }
+
+    #[test]
+    fn test_get_module_handle_a() {
+        let handle = unsafe { kernel32_GetModuleHandleA(core::ptr::null()) };
+        assert!(
+            !handle.is_null(),
+            "GetModuleHandleA(NULL) should return non-null"
+        );
+        assert_eq!(handle as usize, 0x400000);
+    }
+
+    #[test]
+    fn test_get_system_info() {
+        let mut info = [0u8; 48]; // SystemInfo is 48 bytes
+        unsafe { kernel32_GetSystemInfo(info.as_mut_ptr()) };
+
+        // Verify page size (offset 0x04, u32)
+        let page_size = u32::from_le_bytes(info[4..8].try_into().unwrap());
+        assert_eq!(page_size, 4096, "Page size should be 4096");
+
+        // Verify number of processors (offset 0x20, u32)
+        let num_processors = u32::from_le_bytes(info[0x20..0x24].try_into().unwrap());
+        assert!(num_processors >= 1, "Should have at least 1 processor");
+    }
+
+    #[test]
+    fn test_get_console_mode() {
+        let mut mode: u32 = 0;
+        let result = unsafe { kernel32_GetConsoleMode(std::ptr::dangling_mut(), &raw mut mode) };
+        assert_eq!(result, 1, "GetConsoleMode should return TRUE");
+        assert_ne!(mode, 0, "Mode should be non-zero");
+    }
+
+    #[test]
+    fn test_get_console_output_cp() {
+        let cp = unsafe { kernel32_GetConsoleOutputCP() };
+        assert_eq!(cp, 65001, "Console output code page should be UTF-8");
+    }
+
+    #[test]
+    fn test_virtual_protect() {
+        let mut old_protect: u32 = 0;
+        let result = unsafe {
+            kernel32_VirtualProtect(
+                0x1000 as *mut core::ffi::c_void,
+                4096,
+                0x04, // PAGE_READWRITE
+                &raw mut old_protect,
+            )
+        };
+        assert_eq!(result, 1, "VirtualProtect should return TRUE");
+        assert_eq!(
+            old_protect, 0x40,
+            "Old protect should be PAGE_EXECUTE_READWRITE"
+        );
+    }
+
+    #[test]
+    fn test_free_library() {
+        let result = unsafe { kernel32_FreeLibrary(0x1000 as *mut core::ffi::c_void) };
+        assert_eq!(result, 1, "FreeLibrary should return TRUE");
+    }
+
+    #[test]
+    fn test_find_close() {
+        let result = unsafe { kernel32_FindClose(0x1000 as *mut core::ffi::c_void) };
+        assert_eq!(result, 1, "FindClose should return TRUE");
+    }
+
+    #[test]
+    fn test_get_environment_variable_w() {
+        let name: [u16; 5] = [
+            u16::from(b'P'),
+            u16::from(b'A'),
+            u16::from(b'T'),
+            u16::from(b'H'),
+            0,
+        ];
+        let result =
+            unsafe { kernel32_GetEnvironmentVariableW(name.as_ptr(), core::ptr::null_mut(), 0) };
+        assert_eq!(result, 0, "GetEnvironmentVariableW stub should return 0");
+    }
+
+    #[test]
+    fn test_set_environment_variable_w() {
+        let name: [u16; 2] = [u16::from(b'X'), 0];
+        let value: [u16; 2] = [u16::from(b'Y'), 0];
+        let result = unsafe { kernel32_SetEnvironmentVariableW(name.as_ptr(), value.as_ptr()) };
+        assert_eq!(result, 1, "SetEnvironmentVariableW should return TRUE");
     }
 }

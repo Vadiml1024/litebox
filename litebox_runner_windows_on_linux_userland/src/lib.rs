@@ -72,7 +72,7 @@ pub fn run(cli_args: CliArgs) -> Result<()> {
 
     println!("\nSections:");
     for section in &sections {
-        let is_bss = section.virtual_size > 0 && section.data.len() == 0;
+        let is_bss = section.virtual_size > 0 && section.data.is_empty();
         let section_type = if is_bss {
             " (BSS - uninitialized)"
         } else if section.data.len() < section.virtual_size as usize {
@@ -327,11 +327,8 @@ pub fn run(cli_args: CliArgs) -> Result<()> {
         let actual_end = tls.end_address.wrapping_add(delta);
         let actual_index = tls.address_of_index.wrapping_add(delta);
 
-        println!(
-            "  TLS data range (relocated): 0x{:X} - 0x{:X}",
-            actual_start, actual_end
-        );
-        println!("  TLS index address (relocated): 0x{:X}", actual_index);
+        println!("  TLS data range (relocated): 0x{actual_start:X} - 0x{actual_end:X}");
+        println!("  TLS index address (relocated): 0x{actual_index:X}");
 
         // SAFETY: We allocated memory for the image and loaded sections.
         // The TLS addresses are from the TLS directory and point to valid memory.

@@ -376,10 +376,11 @@ pub unsafe extern "C" fn msvcrt___iob_func() -> *mut u8 {
 /// # Safety
 /// This function is unsafe as it deals with raw pointers.
 #[unsafe(no_mangle)]
+#[allow(clippy::similar_names)]
 pub unsafe extern "C" fn msvcrt___getmainargs(
-    argc: *mut i32,
-    argv: *mut *mut *mut i8,
-    env: *mut *mut *mut i8,
+    p_argc: *mut i32,
+    p_argv: *mut *mut *mut i8,
+    p_env: *mut *mut *mut i8,
     _do_wildcard: i32,
     _start_info: *mut u8,
 ) -> i32 {
@@ -389,21 +390,21 @@ pub unsafe extern "C" fn msvcrt___getmainargs(
     static mut ENV_STORAGE: [*mut i8; 1] = [core::ptr::null_mut()];
 
     // Set argc to 0 (no arguments)
-    if !argc.is_null() {
-        *argc = 0;
+    if !p_argc.is_null() {
+        *p_argc = 0;
     }
 
     // Set argv to empty array with null terminator
     // SAFETY: We're accessing mutable static, but it's only being read after initialization
     // and the contents (null pointers) never change
-    if !argv.is_null() {
-        *argv = core::ptr::addr_of_mut!(ARGV_STORAGE).cast();
+    if !p_argv.is_null() {
+        *p_argv = core::ptr::addr_of_mut!(ARGV_STORAGE).cast();
     }
 
     // Set env to empty array with null terminator
     // SAFETY: Same as argv - immutable after initialization
-    if !env.is_null() {
-        *env = core::ptr::addr_of_mut!(ENV_STORAGE).cast();
+    if !p_env.is_null() {
+        *p_env = core::ptr::addr_of_mut!(ENV_STORAGE).cast();
     }
 
     0 // Success
@@ -431,7 +432,7 @@ pub unsafe extern "C" fn msvcrt__initterm(start: *mut extern "C" fn(), end: *mut
     let mut current = start;
     while current < end {
         // SAFETY: Caller guarantees current is within valid range [start, end)
-        let func_ptr_raw = unsafe { *(current as *mut usize) };
+        let func_ptr_raw = unsafe { *(current.cast::<usize>()) };
 
         // Check if function pointer is not null or -1 (sentinel value) before calling
         if func_ptr_raw != 0 && func_ptr_raw != usize::MAX {
@@ -467,15 +468,15 @@ pub unsafe extern "C" fn msvcrt__initterm(start: *mut extern "C" fn(), end: *mut
 /// This function is unsafe as it deals with raw pointers.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn msvcrt__onexit(func: extern "C" fn()) -> extern "C" fn() {
+    // Store in a static vector for later execution
+    static ONEXIT_FUNCS: Mutex<Vec<extern "C" fn()>> = Mutex::new(Vec::new());
+
     // Check if function pointer is valid (not null or -1)
     let func_ptr = func as *const fn();
     let func_addr = func_ptr as usize;
     if func_ptr.is_null() || func_addr == usize::MAX {
         return func; // Return as-is for invalid pointers
     }
-
-    // Store in a static vector for later execution
-    static ONEXIT_FUNCS: Mutex<Vec<extern "C" fn()>> = Mutex::new(Vec::new());
 
     if let Ok(mut funcs) = ONEXIT_FUNCS.lock() {
         funcs.push(func);
@@ -728,19 +729,19 @@ mod tests {
 
         // Create an init table with valid functions, null, and sentinel values
         let mut init_table: [usize; 6] = [
-            0,                   // null - should be skipped
-            test_func1 as usize, // valid function
-            usize::MAX,          // -1 sentinel - should be skipped
-            test_func2 as usize, // valid function
-            0,                   // null - should be skipped
-            usize::MAX,          // -1 sentinel - should be skipped
+            0,                                // null - should be skipped
+            test_func1 as *const () as usize, // valid function
+            usize::MAX,                       // -1 sentinel - should be skipped
+            test_func2 as *const () as usize, // valid function
+            0,                                // null - should be skipped
+            usize::MAX,                       // -1 sentinel - should be skipped
         ];
 
         // Call _initterm
         unsafe {
             msvcrt__initterm(
-                init_table.as_mut_ptr() as *mut extern "C" fn(),
-                init_table.as_mut_ptr().add(6) as *mut extern "C" fn(),
+                init_table.as_mut_ptr().cast::<extern "C" fn()>(),
+                init_table.as_mut_ptr().add(6).cast::<extern "C" fn()>(),
             );
         }
 

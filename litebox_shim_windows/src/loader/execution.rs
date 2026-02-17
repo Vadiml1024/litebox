@@ -102,8 +102,14 @@ pub struct ProcessEnvironmentBlock {
     pub ldr: u64,
     /// Process parameters pointer (offset 0x20) - initialized to non-null
     pub process_parameters: u64,
-    /// Additional reserved fields
-    _reserved: [u64; 50],
+    /// SubSystemData (offset 0x28) - not used
+    pub sub_system_data: u64,
+    /// Process heap handle (offset 0x30) - MUST be non-null for CRT initialization
+    pub process_heap: u64,
+    /// FastPebLock pointer (offset 0x38) - not used
+    pub fast_peb_lock: u64,
+    /// Additional reserved fields (offset 0x40+)
+    _reserved: [u64; 47],
 }
 
 /// PEB_LDR_DATA - Minimal stub for module loader information
@@ -184,6 +190,58 @@ impl Default for PebLdrData {
     }
 }
 
+/// LDR_DATA_TABLE_ENTRY - Module information entry
+///
+/// Each loaded module has an entry in the PEB_LDR_DATA linked lists.
+/// CRT code may walk these lists to find module information such as the
+/// DllBase, SizeOfImage, or module name.
+///
+/// We provide a minimal entry for the main executable module.
+#[repr(C)]
+#[derive(Debug, Clone)]
+pub struct LdrDataTableEntry {
+    /// InLoadOrderLinks (LIST_ENTRY) [Flink, Blink] (offset 0x00)
+    pub in_load_order_links: [u64; 2],
+    /// InMemoryOrderLinks (LIST_ENTRY) [Flink, Blink] (offset 0x10)
+    pub in_memory_order_links: [u64; 2],
+    /// InInitializationOrderLinks (LIST_ENTRY) [Flink, Blink] (offset 0x20)
+    pub in_initialization_order_links: [u64; 2],
+    /// DllBase - base address of the module (offset 0x30)
+    pub dll_base: u64,
+    /// EntryPoint - entry point of the module (offset 0x38)
+    pub entry_point: u64,
+    /// SizeOfImage (offset 0x40)
+    pub size_of_image: u64,
+    /// FullDllName (UNICODE_STRING stub) - [Length, MaxLength, padding, Buffer] (offset 0x48)
+    pub full_dll_name: [u64; 2],
+    /// BaseDllName (UNICODE_STRING stub) - [Length, MaxLength, padding, Buffer] (offset 0x58)
+    pub base_dll_name: [u64; 2],
+    /// Reserved fields to prevent crashes during list traversal (offset 0x68+)
+    _reserved: [u64; 8],
+}
+
+impl LdrDataTableEntry {
+    /// Create a new LDR_DATA_TABLE_ENTRY for the main module
+    ///
+    /// # Arguments
+    /// * `dll_base` - Base address of the loaded module
+    /// * `entry_point` - Entry point address
+    /// * `size_of_image` - Size of the module in memory
+    pub fn new(dll_base: u64, entry_point: u64, size_of_image: u64) -> Self {
+        Self {
+            in_load_order_links: [0, 0],           // Will be patched by caller
+            in_memory_order_links: [0, 0],         // Will be patched by caller
+            in_initialization_order_links: [0, 0], // Will be patched by caller
+            dll_base,
+            entry_point,
+            size_of_image,
+            full_dll_name: [0, 0], // Empty UNICODE_STRING
+            base_dll_name: [0, 0], // Empty UNICODE_STRING
+            _reserved: [0; 8],
+        }
+    }
+}
+
 /// RTL_USER_PROCESS_PARAMETERS - Minimal stub for process parameters
 ///
 /// Contains command line, environment, and other process startup information.
@@ -240,7 +298,18 @@ impl ProcessEnvironmentBlock {
     ///
     /// Initializes PEB with minimal stubs for Ldr and ProcessParameters
     /// to prevent crashes when CRT code accesses these fields.
-    pub fn new(image_base_address: u64, ldr: u64, process_parameters: u64) -> Self {
+    ///
+    /// # Arguments
+    /// * `image_base_address` - Base address where the PE image is loaded
+    /// * `ldr` - Pointer to PEB_LDR_DATA structure
+    /// * `process_parameters` - Pointer to RTL_USER_PROCESS_PARAMETERS structure
+    /// * `process_heap` - Process heap handle (must be non-null for CRT)
+    pub fn new(
+        image_base_address: u64,
+        ldr: u64,
+        process_parameters: u64,
+        process_heap: u64,
+    ) -> Self {
         Self {
             inherited_address_space: 0,
             read_image_file_exec_options: 0,
@@ -251,7 +320,10 @@ impl ProcessEnvironmentBlock {
             image_base_address,
             ldr,
             process_parameters,
-            _reserved: [0; 50],
+            sub_system_data: 0,
+            process_heap,
+            fast_peb_lock: 0,
+            _reserved: [0; 47],
         }
     }
 
@@ -291,6 +363,8 @@ pub struct ExecutionContext {
     pub peb: Box<ProcessEnvironmentBlock>,
     /// PEB Loader Data
     pub ldr: Box<PebLdrData>,
+    /// Main module LDR entry (linked into the PEB_LDR_DATA lists)
+    pub main_module_entry: Box<LdrDataTableEntry>,
     /// Process Parameters
     pub process_parameters: Box<RtlUserProcessParameters>,
     /// TEB address in memory (for self-pointer)
@@ -361,15 +435,46 @@ impl ExecutionContext {
         // Now update with proper circular list pointers
         *ldr = PebLdrData::new_with_address(ldr_address);
 
+        // Create main module LDR entry and link it into the lists
+        let mut main_module_entry = Box::new(LdrDataTableEntry::new(image_base, 0, 0));
+        let entry_address = &raw const *main_module_entry as u64;
+
+        // Link the entry into all three circular lists
+        // The list heads in PebLdrData point to the LIST_ENTRY within the entry,
+        // and the entry's LIST_ENTRY points back to the list head.
+        //
+        // PEB_LDR_DATA list heads are at offsets 0x10, 0x20, 0x30 from ldr_address
+        // LDR_DATA_TABLE_ENTRY list links are at offsets 0x00, 0x10, 0x20 from entry_address
+        let load_order_head = ldr_address + 0x10;
+        let memory_order_head = ldr_address + 0x20;
+        let init_order_head = ldr_address + 0x30;
+
+        // InLoadOrderLinks: entry at offset 0x00
+        main_module_entry.in_load_order_links = [load_order_head, load_order_head];
+        ldr.in_load_order_module_list = [entry_address, entry_address];
+
+        // InMemoryOrderLinks: entry at offset 0x10
+        let entry_memory_links = entry_address + 0x10;
+        main_module_entry.in_memory_order_links = [memory_order_head, memory_order_head];
+        ldr.in_memory_order_module_list = [entry_memory_links, entry_memory_links];
+
+        // InInitializationOrderLinks: entry at offset 0x20
+        let entry_init_links = entry_address + 0x20;
+        main_module_entry.in_initialization_order_links = [init_order_head, init_order_head];
+        ldr.in_initialization_order_module_list = [entry_init_links, entry_init_links];
+
         // Create Process Parameters
         let process_parameters = Box::<RtlUserProcessParameters>::default();
         let process_parameters_address = &raw const *process_parameters as u64;
 
         // Create PEB with pointers to Ldr and ProcessParameters
+        // Use 0x7FFE_0000 as a fake process heap handle (same as kernel32_GetProcessHeap)
+        let process_heap = 0x7FFE_0000u64;
         let peb = Box::new(ProcessEnvironmentBlock::new(
             image_base,
             ldr_address,
             process_parameters_address,
+            process_heap,
         ));
         let peb_address = &raw const *peb as u64;
 
@@ -384,10 +489,21 @@ impl ExecutionContext {
         let teb_address = &raw const *teb as u64;
         teb.self_pointer = teb_address;
 
+        // Set thread and process IDs in TEB client_id
+        // client_id[0] = process ID, client_id[1] = thread ID
+        // SAFETY: getpid is a safe syscall; SYS_gettid returns the thread ID
+        let pid = unsafe { libc::getpid() };
+        let tid = unsafe { libc::syscall(libc::SYS_gettid) };
+        #[allow(clippy::cast_sign_loss)]
+        {
+            teb.client_id = [pid as u64, tid as u64];
+        }
+
         Ok(Self {
             teb,
             peb,
             ldr,
+            main_module_entry,
             process_parameters,
             teb_address,
             stack_base,
@@ -439,6 +555,7 @@ impl ExecutionContext {
         size_of_zero_fill: u32,
     ) -> Result<()> {
         // Calculate size of TLS template data
+        #[allow(clippy::cast_possible_truncation)]
         let template_size = tls_end_va.checked_sub(tls_start_va).ok_or_else(|| {
             WindowsShimError::InvalidParameter(format!(
                 "Invalid TLS range: start 0x{tls_start_va:X} >= end 0x{tls_end_va:X}"
@@ -521,17 +638,17 @@ impl ExecutionContext {
 impl Drop for ExecutionContext {
     fn drop(&mut self) {
         // Clean up allocated TLS data memory
-        if let Some(tls_data_ptr) = self.tls_data_ptr {
-            if self.tls_data_size > 0 {
-                // SAFETY: This memory was allocated by mmap in initialize_tls,
-                // so it's safe to unmap it here.
-                #[allow(clippy::cast_possible_truncation)]
-                unsafe {
-                    libc::munmap(
-                        tls_data_ptr.cast::<libc::c_void>(),
-                        self.tls_data_size as libc::size_t,
-                    );
-                }
+        if let Some(tls_data_ptr) = self.tls_data_ptr
+            && self.tls_data_size > 0
+        {
+            // SAFETY: This memory was allocated by mmap in initialize_tls,
+            // so it's safe to unmap it here.
+            #[allow(clippy::cast_possible_truncation)]
+            unsafe {
+                libc::munmap(
+                    tls_data_ptr.cast::<libc::c_void>(),
+                    self.tls_data_size as libc::size_t,
+                );
             }
         }
 
@@ -678,11 +795,18 @@ mod tests {
         let image_base = 0x0000_0001_4000_0000u64;
         let ldr_address = 0x7FFF_0000_0000u64;
         let process_params_address = 0x7FFF_0001_0000u64;
-        let peb = ProcessEnvironmentBlock::new(image_base, ldr_address, process_params_address);
+        let process_heap = 0x7FFE_0000u64;
+        let peb = ProcessEnvironmentBlock::new(
+            image_base,
+            ldr_address,
+            process_params_address,
+            process_heap,
+        );
 
         assert_eq!(peb.image_base_address, image_base);
         assert_eq!(peb.ldr, ldr_address);
         assert_eq!(peb.process_parameters, process_params_address);
+        assert_eq!(peb.process_heap, process_heap);
         assert_eq!(peb.being_debugged, 0);
     }
 
@@ -735,7 +859,7 @@ mod tests {
 
         // Allocate space for TLS index
         let mut tls_index: u32 = 0xFFFFFFFF;
-        let index_ptr = &mut tls_index as *mut u32 as u64;
+        let index_ptr = &raw mut tls_index as u64;
 
         // Initialize TLS with our test data
         unsafe {
@@ -764,5 +888,48 @@ mod tests {
             );
             assert_eq!(tls_data, tls_template.as_slice());
         }
+    }
+
+    #[test]
+    fn test_peb_field_offsets() {
+        use std::mem::offset_of;
+
+        // Verify critical PEB field offsets match Windows x64 layout
+        assert_eq!(
+            offset_of!(ProcessEnvironmentBlock, inherited_address_space),
+            0x00
+        );
+        assert_eq!(offset_of!(ProcessEnvironmentBlock, being_debugged), 0x02);
+        assert_eq!(offset_of!(ProcessEnvironmentBlock, mutant), 0x08);
+        assert_eq!(
+            offset_of!(ProcessEnvironmentBlock, image_base_address),
+            0x10
+        );
+        assert_eq!(offset_of!(ProcessEnvironmentBlock, ldr), 0x18);
+        assert_eq!(
+            offset_of!(ProcessEnvironmentBlock, process_parameters),
+            0x20
+        );
+        assert_eq!(offset_of!(ProcessEnvironmentBlock, process_heap), 0x30);
+    }
+
+    #[test]
+    fn test_execution_context_has_process_heap() {
+        let image_base = 0x0000_0001_4000_0000u64;
+        let context = ExecutionContext::new(image_base, 0).unwrap();
+
+        // Verify process heap is non-null (required for CRT initialization)
+        assert_ne!(context.peb.process_heap, 0);
+        assert_eq!(context.peb.process_heap, 0x7FFE_0000);
+    }
+
+    #[test]
+    fn test_teb_client_id_set() {
+        let image_base = 0x0000_0001_4000_0000u64;
+        let context = ExecutionContext::new(image_base, 0).unwrap();
+
+        // Verify client_id (process/thread IDs) are set
+        assert_ne!(context.teb.client_id[0], 0); // Process ID
+        assert_ne!(context.teb.client_id[1], 0); // Thread ID
     }
 }
