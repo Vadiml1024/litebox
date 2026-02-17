@@ -3220,9 +3220,15 @@ pub unsafe extern "C" fn kernel32_GetLocaleInfoW(
     lp_lc_data: *mut u16,
     cch_data: i32,
 ) -> i32 {
-    if cch_data == 0 || lp_lc_data.is_null() {
+    // When cch_data is 0, this is a size query: return required size
+    if cch_data == 0 {
         // Return required size including null terminator
         return 2; // Minimum: one char + null
+    }
+
+    // Non-zero size with a null buffer is invalid
+    if lp_lc_data.is_null() {
+        return 0;
     }
 
     // Return a minimal response (just a null-terminated empty-ish string)
@@ -3264,12 +3270,23 @@ pub unsafe extern "C" fn kernel32_LCMapStringW(
         return src_len as i32;
     }
 
+    if lp_dest_str.is_null() {
+        // Invalid destination pointer when a non-zero length is requested
+        return 0;
+    }
+
     // Simple copy (no actual locale transformation)
     let copy_len = core::cmp::min(src_len, cch_dest as usize);
     core::ptr::copy_nonoverlapping(lp_src_str, lp_dest_str, copy_len);
 
     copy_len as i32
 }
+
+/// Tracks VirtualAlloc allocations so VirtualFree(MEM_RELEASE) can release the
+/// correct size when the caller passes `dwSize = 0` (as the Windows API requires).
+static VIRTUAL_ALLOC_TRACKER: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<usize, usize>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
 
 /// VirtualAlloc - reserves, commits, or changes the state of a region of pages
 ///
@@ -3305,6 +3322,10 @@ pub unsafe extern "C" fn kernel32_VirtualAlloc(
     if ptr == libc::MAP_FAILED {
         core::ptr::null_mut()
     } else {
+        // Record allocation size so VirtualFree can release the full region
+        if let Ok(mut tracker) = VIRTUAL_ALLOC_TRACKER.lock() {
+            tracker.insert(ptr as usize, dw_size);
+        }
         ptr
     }
 }
@@ -3325,10 +3346,22 @@ pub unsafe extern "C" fn kernel32_VirtualFree(
 
     // MEM_RELEASE = 0x8000
     if dw_free_type == 0x8000 {
-        // For MEM_RELEASE, Windows requires dwSize == 0 and releases the entire region.
-        // Since we don't track allocation sizes, callers must pass the original size
-        // via dw_size as a workaround, or we fall back to one page.
-        let size = if dw_size == 0 { 4096 } else { dw_size };
+        // Per the Windows API contract, dwSize must be 0 for MEM_RELEASE;
+        // the OS releases the entire region originally reserved by VirtualAlloc.
+        // We look up the original allocation size from our tracker.
+        let size = if dw_size == 0 {
+            VIRTUAL_ALLOC_TRACKER
+                .lock()
+                .ok()
+                .and_then(|mut t| t.remove(&(lp_address as usize)))
+                .unwrap_or(4096) // Fallback to one page if not tracked
+        } else {
+            // Non-standard usage; honour the caller-supplied size
+            if let Ok(mut tracker) = VIRTUAL_ALLOC_TRACKER.lock() {
+                tracker.remove(&(lp_address as usize));
+            }
+            dw_size
+        };
         if libc::munmap(lp_address, size) == 0 {
             return 1; // TRUE
         }
@@ -4929,7 +4962,9 @@ mod tests {
             *ptr.cast::<u8>() = 42;
             assert_eq!(*(ptr as *const u8), 42);
 
-            let result = kernel32_VirtualFree(ptr, 4096, 0x8000); // MEM_RELEASE
+            // Per Windows API contract, MEM_RELEASE uses dwSize = 0;
+            // our tracker should supply the original allocation size.
+            let result = kernel32_VirtualFree(ptr, 0, 0x8000); // MEM_RELEASE
             assert_eq!(result, 1); // TRUE
         }
     }

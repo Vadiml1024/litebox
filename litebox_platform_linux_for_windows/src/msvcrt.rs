@@ -832,6 +832,20 @@ pub unsafe extern "C" fn msvcrt__initterm_e(
     0
 }
 
+/// Global argc value for `__p___argc`.
+///
+/// Initialized to 0 and written once during CRT startup by `__getmainargs`.
+/// After that single write the value is only read, so concurrent readers are safe
+/// without additional synchronization (single-threaded CRT init guarantees this).
+static ARGC_STATIC: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+
+/// Global argv pointer for `__p___argv`.
+///
+/// Initialized to null and written once during CRT startup by `__getmainargs`.
+/// After that single write the value is only read.
+static ARGV_PTR: std::sync::atomic::AtomicPtr<*mut i8> =
+    std::sync::atomic::AtomicPtr::new(core::ptr::null_mut());
+
 /// Get pointer to argc (__p___argc)
 ///
 /// Returns a pointer to the global argc value. Currently initialized to 0
@@ -840,11 +854,13 @@ pub unsafe extern "C" fn msvcrt__initterm_e(
 /// and `__p___argc` provides an alternate access path.
 ///
 /// # Safety
-/// Returns a pointer to a static variable. Thread-safety is managed by the caller.
+/// The returned `*mut i32` points to the interior of an `AtomicI32`.
+/// Callers (the CRT) treat it as a plain int, which is fine because
+/// the CRT initialises this value exactly once during single-threaded
+/// startup and only reads it afterwards.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn msvcrt___p___argc() -> *mut i32 {
-    static mut ARGC_STATIC: i32 = 0;
-    core::ptr::addr_of_mut!(ARGC_STATIC)
+    ARGC_STATIC.as_ptr()
 }
 
 /// Get pointer to argv (__p___argv)
@@ -855,11 +871,13 @@ pub unsafe extern "C" fn msvcrt___p___argc() -> *mut i32 {
 /// and `__p___argv` provides an alternate access path.
 ///
 /// # Safety
-/// Returns a pointer to a static variable. Thread-safety is managed by the caller.
+/// The returned `*mut *mut *mut i8` points to the interior of an `AtomicPtr`.
+/// Callers (the CRT) treat it as a plain pointer, which is fine because
+/// the CRT initialises this value exactly once during single-threaded
+/// startup and only reads it afterwards.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn msvcrt___p___argv() -> *mut *mut *mut i8 {
-    static mut ARGV_PTR: *mut *mut i8 = core::ptr::null_mut();
-    core::ptr::addr_of_mut!(ARGV_PTR)
+    ARGV_PTR.as_ptr().cast()
 }
 
 /// CRT internal lock (_lock)
