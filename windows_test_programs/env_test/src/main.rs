@@ -19,7 +19,17 @@ fn main() {
     let vars_to_check = vec!["PATH", "HOME", "USER", "TEMP", "TMP"];
     for var_name in vars_to_check {
         match env::var(var_name) {
-            Ok(value) => println!("  {}: {}", var_name, value),
+            Ok(value) => {
+                let value_len = value.len();
+                let prefix_len = value_len.min(20);
+                let prefix = &value[..prefix_len];
+                let display_value = if value_len > prefix_len {
+                    format!("{}... (length={})", prefix, value_len)
+                } else {
+                    format!("{} (length={})", prefix, value_len)
+                };
+                println!("  {}: {}", var_name, display_value);
+            }
             Err(_) => println!("  {}: <not set>", var_name),
         }
     }

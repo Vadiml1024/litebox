@@ -262,20 +262,35 @@ fn test_dll_manager_has_all_required_exports() {
 
 #[cfg(test)]
 mod test_program_helpers {
+    use std::env;
     use std::path::PathBuf;
     use std::process::Command;
 
     /// Get the path to a Windows test program executable
     pub fn get_test_program_path(name: &str) -> PathBuf {
         let manifest_dir = env!("CARGO_MANIFEST_DIR");
-        PathBuf::from(manifest_dir)
-            .parent()
-            .unwrap()
-            .join("windows_test_programs")
-            .join("target")
-            .join("x86_64-pc-windows-gnu")
-            .join("release")
-            .join(format!("{name}.exe"))
+        let workspace_root = PathBuf::from(manifest_dir).parent().unwrap().to_path_buf();
+
+        // Default target directory for the windows_test_programs crate
+        let default_target_dir = workspace_root.join("windows_test_programs").join("target");
+
+        // Honor CARGO_TARGET_DIR if set, otherwise use the default
+        let target_dir = env::var("CARGO_TARGET_DIR")
+            .map(PathBuf::from)
+            .unwrap_or(default_target_dir);
+
+        let base = target_dir.join("x86_64-pc-windows-gnu");
+
+        // Prefer release builds, but fall back to debug if needed
+        for profile in ["release", "debug"] {
+            let candidate = base.join(profile).join(format!("{name}.exe"));
+            if candidate.exists() {
+                return candidate;
+            }
+        }
+
+        // If nothing exists yet, return the conventional release path
+        base.join("release").join(format!("{name}.exe"))
     }
 
     /// Run a Windows test program and return the output
@@ -303,6 +318,7 @@ mod test_program_helpers {
 
 /// Test that we can load and potentially run the hello_cli program
 #[test]
+#[ignore = "Requires MinGW-built Windows test programs (run with --ignored after building windows_test_programs)"]
 fn test_hello_cli_program_exists() {
     use test_program_helpers::*;
 
@@ -315,6 +331,7 @@ fn test_hello_cli_program_exists() {
 
 /// Test that we can load and potentially run the file_io_test program
 #[test]
+#[ignore = "Requires MinGW-built Windows test programs (run with --ignored after building windows_test_programs)"]
 fn test_file_io_test_program_exists() {
     use test_program_helpers::*;
 
@@ -327,6 +344,7 @@ fn test_file_io_test_program_exists() {
 
 /// Test that we can load and potentially run the args_test program
 #[test]
+#[ignore = "Requires MinGW-built Windows test programs (run with --ignored after building windows_test_programs)"]
 fn test_args_test_program_exists() {
     use test_program_helpers::*;
 
@@ -339,6 +357,7 @@ fn test_args_test_program_exists() {
 
 /// Test that we can load and potentially run the env_test program
 #[test]
+#[ignore = "Requires MinGW-built Windows test programs (run with --ignored after building windows_test_programs)"]
 fn test_env_test_program_exists() {
     use test_program_helpers::*;
 
@@ -351,6 +370,7 @@ fn test_env_test_program_exists() {
 
 /// Test that we can load and potentially run the string_test program
 #[test]
+#[ignore = "Requires MinGW-built Windows test programs (run with --ignored after building windows_test_programs)"]
 fn test_string_test_program_exists() {
     use test_program_helpers::*;
 
@@ -363,6 +383,7 @@ fn test_string_test_program_exists() {
 
 /// Test that we can load and potentially run the math_test program
 #[test]
+#[ignore = "Requires MinGW-built Windows test programs (run with --ignored after building windows_test_programs)"]
 fn test_math_test_program_exists() {
     use test_program_helpers::*;
 

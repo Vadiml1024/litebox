@@ -154,6 +154,8 @@ The test helper infrastructure (`run_test_program` function) is ready to be used
 - All test programs use standard Rust code (no unsafe blocks except in env_test for `set_var`/`remove_var`)
 - Programs use edition 2024
 - All programs follow litebox coding standards
-- Each test program reports success (✓) or failure (✗) for each operation
-- Test programs are self-contained and clean up after themselves
+- Most test programs (`file_io_test`, `string_test`, `math_test`) validate their operations and report success (✓) or failure (✗), exiting with non-zero status on failure
+- Some programs (`args_test`, `hello_cli`) primarily demonstrate functionality by displaying output
+- Test programs that create temporary files use unique temp directories and clean up after themselves
+- Environment variables are printed with redacted values to avoid exposing sensitive information in CI logs
 - MinGW toolchain (x86_64-w64-mingw32) is used for cross-compilation

@@ -1,9 +1,5 @@
 # Windows Test Programs
 
-This directory contains simple Windows programs used to test the Windows-on-Linux platform in LiteBox.
-
-# Windows Test Programs
-
 This directory contains Windows programs used to test the Windows-on-Linux platform in LiteBox.
 
 ## Test Programs
@@ -32,7 +28,7 @@ Comprehensive file I/O operations test that validates:
 - Directory creation and listing
 - Nested file operations
 
-This test creates temporary files and directories, performs operations on them, and cleans up afterward.
+This test creates files and directories in a unique temporary directory, performs operations on them, validates results, and cleans up afterward. Exits with non-zero status on any test failure.
 
 ### args_test
 
@@ -146,4 +142,4 @@ These test programs serve as a comprehensive test suite to verify that:
 8. Memory allocation and management are functional
 9. The Windows-on-Linux platform is working as expected
 
-Each test program is self-contained and performs a series of tests, reporting success (✓) or failure (✗) for each operation. This makes it easy to identify which parts of the platform are working and which need attention.
+Most test programs validate their operations and report success (✓) or failure (✗) for each check, exiting with non-zero status on any failure. Programs like `file_io_test`, `string_test`, and `math_test` perform actual validation. Programs like `args_test` and `hello_cli` primarily demonstrate functionality by displaying output.
