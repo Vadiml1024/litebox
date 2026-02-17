@@ -2981,6 +2981,451 @@ pub unsafe extern "C" fn kernel32_WakeByAddressSingle(_address: *mut core::ffi::
     // No-op stub
 }
 
+/// GetACP - returns the current ANSI code page identifier
+///
+/// # Safety
+/// This function is safe to call but marked unsafe for C ABI compatibility.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_GetACP() -> u32 {
+    // Return UTF-8 code page (65001) for compatibility
+    65001
+}
+
+/// IsProcessorFeaturePresent - checks if a processor feature is present
+///
+/// # Safety
+/// This function is safe to call but marked unsafe for C ABI compatibility.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_IsProcessorFeaturePresent(feature: u32) -> i32 {
+    // PF_FASTFAIL_AVAILABLE = 23
+    // PF_SSE2_INSTRUCTIONS_AVAILABLE = 10
+    // PF_NX_ENABLED = 12
+    match feature {
+        // SSE2 (10), NX (12), and FastFail (23) are available on x86-64
+        10 | 12 | 23 => 1,
+        _ => 0,
+    }
+}
+
+/// IsDebuggerPresent - checks if a debugger is attached to the process
+///
+/// # Safety
+/// This function is safe to call but marked unsafe for C ABI compatibility.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_IsDebuggerPresent() -> i32 {
+    0 // No debugger attached
+}
+
+/// GetStringTypeW - retrieves character type information for wide characters
+///
+/// # Safety
+/// This function is unsafe as it deals with raw pointers.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_GetStringTypeW(
+    _dw_info_type: u32,
+    lp_src_str: *const u16,
+    cch_src: i32,
+    lp_char_type: *mut u16,
+) -> i32 {
+    if lp_src_str.is_null() || lp_char_type.is_null() {
+        return 0; // FALSE
+    }
+
+    let len = if cch_src == -1 {
+        // Count until null terminator
+        let mut n = 0;
+        while *lp_src_str.add(n) != 0 {
+            n += 1;
+        }
+        n
+    } else {
+        cch_src as usize
+    };
+
+    // Fill with basic character type info
+    // C1_ALPHA = 0x100, C1_LOWER = 0x002, C1_UPPER = 0x001
+    for i in 0..len {
+        let ch = *lp_src_str.add(i);
+        let mut char_type: u16 = 0;
+        // Only classify ASCII-range characters
+        if ch < 128 {
+            let byte = ch as u8;
+            if byte.is_ascii_alphabetic() {
+                char_type |= 0x100; // C1_ALPHA
+                if byte.is_ascii_lowercase() {
+                    char_type |= 0x002; // C1_LOWER
+                } else if byte.is_ascii_uppercase() {
+                    char_type |= 0x001; // C1_UPPER
+                }
+            } else if byte.is_ascii_digit() {
+                char_type |= 0x004; // C1_DIGIT
+            } else if byte.is_ascii_whitespace() {
+                char_type |= 0x008; // C1_SPACE
+            } else if byte.is_ascii_punctuation() {
+                char_type |= 0x010; // C1_PUNCT
+            } else if byte.is_ascii_control() {
+                char_type |= 0x020; // C1_CNTRL
+            }
+        }
+        *lp_char_type.add(i) = char_type;
+    }
+
+    1 // TRUE (success)
+}
+
+/// HeapSize - returns the size of a memory block allocated from a heap
+///
+/// # Safety
+/// This function is unsafe as it deals with raw pointers.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_HeapSize(
+    _heap: *mut core::ffi::c_void,
+    _flags: u32,
+    mem: *const core::ffi::c_void,
+) -> usize {
+    if mem.is_null() {
+        return usize::MAX; // Error indicator
+    }
+    // We can't reliably determine the size of a Rust-allocated block
+    // without tracking allocations. Return error to signal this limitation.
+    usize::MAX
+}
+
+/// InitializeCriticalSectionAndSpinCount - initialize with spin count
+///
+/// # Safety
+/// This function is unsafe as it deals with raw pointers.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_InitializeCriticalSectionAndSpinCount(
+    critical_section: *mut CriticalSection,
+    _spin_count: u32,
+) -> i32 {
+    kernel32_InitializeCriticalSection(critical_section);
+    1 // TRUE (success)
+}
+
+/// InitializeCriticalSectionEx - extended initialization
+///
+/// # Safety
+/// This function is unsafe as it deals with raw pointers.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_InitializeCriticalSectionEx(
+    critical_section: *mut CriticalSection,
+    _spin_count: u32,
+    _flags: u32,
+) -> i32 {
+    kernel32_InitializeCriticalSection(critical_section);
+    1 // TRUE (success)
+}
+
+/// FlsAlloc - allocate a fiber-local storage (FLS) index
+///
+/// FLS is similar to TLS but works with fibers. We implement it as a wrapper
+/// around our TLS implementation since we don't support fibers.
+///
+/// # Safety
+/// This function is unsafe as it deals with function pointers.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_FlsAlloc(_callback: *mut core::ffi::c_void) -> u32 {
+    // Use TLS allocation since we don't support fibers
+    kernel32_TlsAlloc()
+}
+
+/// FlsFree - free a fiber-local storage (FLS) index
+///
+/// # Safety
+/// This function is safe to call but marked unsafe for C ABI compatibility.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_FlsFree(fls_index: u32) -> i32 {
+    // Use TLS free since FLS maps to TLS
+    kernel32_TlsFree(fls_index) as i32
+}
+
+/// FlsGetValue - get value in fiber-local storage
+///
+/// # Safety
+/// This function is safe to call but marked unsafe for C ABI compatibility.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_FlsGetValue(fls_index: u32) -> usize {
+    kernel32_TlsGetValue(fls_index)
+}
+
+/// FlsSetValue - set value in fiber-local storage
+///
+/// # Safety
+/// This function is safe to call but marked unsafe for C ABI compatibility.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_FlsSetValue(fls_index: u32, fls_data: usize) -> i32 {
+    kernel32_TlsSetValue(fls_index, fls_data) as i32
+}
+
+/// IsValidCodePage - check if a code page is valid
+///
+/// # Safety
+/// This function is safe to call but marked unsafe for C ABI compatibility.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_IsValidCodePage(code_page: u32) -> i32 {
+    // Support common code pages
+    match code_page {
+        437 | 850 | 1252 | 65001 | 20127 => 1, // TRUE
+        _ => 0,                                // FALSE
+    }
+}
+
+/// GetOEMCP - get OEM code page
+///
+/// # Safety
+/// This function is safe to call but marked unsafe for C ABI compatibility.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_GetOEMCP() -> u32 {
+    437 // US English OEM code page
+}
+
+/// GetCPInfo - get code page information
+///
+/// # Safety
+/// This function is unsafe as it deals with raw pointers.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_GetCPInfo(code_page: u32, cp_info: *mut u8) -> i32 {
+    if cp_info.is_null() {
+        return 0; // FALSE
+    }
+
+    // CPINFO structure: MaxCharSize (UINT, 4 bytes) + DefaultChar (2 bytes) + LeadByte (12 bytes) = 18 bytes
+    // Zero-initialize first
+    core::ptr::write_bytes(cp_info, 0, 18);
+
+    // Set MaxCharSize based on code page
+    let max_char_size: u32 = match code_page {
+        65001 => 4, // UTF-8: up to 4 bytes per character
+        _ => 1,     // Single-byte code pages and default
+    };
+    core::ptr::copy_nonoverlapping((&raw const max_char_size).cast::<u8>(), cp_info, 4);
+
+    // DefaultChar: '?' (0x3F)
+    *cp_info.add(4) = 0x3F;
+
+    1 // TRUE (success)
+}
+
+/// GetLocaleInfoW - get locale information
+///
+/// # Safety
+/// This function is unsafe as it deals with raw pointers.
+#[unsafe(no_mangle)]
+#[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+pub unsafe extern "C" fn kernel32_GetLocaleInfoW(
+    _locale: u32,
+    _lc_type: u32,
+    lp_lc_data: *mut u16,
+    cch_data: i32,
+) -> i32 {
+    // When cch_data is 0, this is a size query: return required size
+    if cch_data == 0 {
+        // Return required size including null terminator
+        return 2; // Minimum: one char + null
+    }
+
+    // Non-zero size with a null buffer is invalid
+    if lp_lc_data.is_null() {
+        return 0;
+    }
+
+    // Return a minimal response (just a null-terminated empty-ish string)
+    if cch_data >= 1 {
+        *lp_lc_data = 0; // Null terminator
+    }
+    1
+}
+
+/// LCMapStringW - map a string using locale information
+///
+/// # Safety
+/// This function is unsafe as it deals with raw pointers.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_LCMapStringW(
+    _locale: u32,
+    _map_flags: u32,
+    lp_src_str: *const u16,
+    cch_src: i32,
+    lp_dest_str: *mut u16,
+    cch_dest: i32,
+) -> i32 {
+    if lp_src_str.is_null() {
+        return 0;
+    }
+
+    let src_len = if cch_src == -1 {
+        let mut n = 0;
+        while *lp_src_str.add(n) != 0 {
+            n += 1;
+        }
+        n + 1 // Include null terminator
+    } else {
+        cch_src as usize
+    };
+
+    if cch_dest == 0 {
+        // Return required buffer size
+        return src_len as i32;
+    }
+
+    if lp_dest_str.is_null() {
+        // Invalid destination pointer when a non-zero length is requested
+        return 0;
+    }
+
+    // Simple copy (no actual locale transformation)
+    let copy_len = core::cmp::min(src_len, cch_dest as usize);
+    core::ptr::copy_nonoverlapping(lp_src_str, lp_dest_str, copy_len);
+
+    copy_len as i32
+}
+
+/// Tracks VirtualAlloc allocations so VirtualFree(MEM_RELEASE) can release the
+/// correct size when the caller passes `dwSize = 0` (as the Windows API requires).
+static VIRTUAL_ALLOC_TRACKER: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<usize, usize>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+/// VirtualAlloc - reserves, commits, or changes the state of a region of pages
+///
+/// # Safety
+/// This function is unsafe as it deals with raw memory allocation.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_VirtualAlloc(
+    lp_address: *mut core::ffi::c_void,
+    dw_size: usize,
+    _allocation_type: u32,
+    _protect: u32,
+) -> *mut core::ffi::c_void {
+    if dw_size == 0 {
+        return core::ptr::null_mut();
+    }
+
+    // Use mmap to allocate memory
+    let addr = if lp_address.is_null() {
+        core::ptr::null_mut()
+    } else {
+        lp_address
+    };
+
+    let ptr = libc::mmap(
+        addr,
+        dw_size,
+        libc::PROT_READ | libc::PROT_WRITE,
+        libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+        -1,
+        0,
+    );
+
+    if ptr == libc::MAP_FAILED {
+        core::ptr::null_mut()
+    } else {
+        // Record allocation size so VirtualFree can release the full region
+        if let Ok(mut tracker) = VIRTUAL_ALLOC_TRACKER.lock() {
+            tracker.insert(ptr as usize, dw_size);
+        }
+        ptr
+    }
+}
+
+/// VirtualFree - releases, decommits, or releases and decommits a region of pages
+///
+/// # Safety
+/// This function is unsafe as it deals with raw memory deallocation.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_VirtualFree(
+    lp_address: *mut core::ffi::c_void,
+    dw_size: usize,
+    dw_free_type: u32,
+) -> i32 {
+    if lp_address.is_null() {
+        return 0; // FALSE
+    }
+
+    // MEM_RELEASE = 0x8000
+    if dw_free_type == 0x8000 {
+        // Per the Windows API contract, dwSize must be 0 for MEM_RELEASE;
+        // the OS releases the entire region originally reserved by VirtualAlloc.
+        // We look up the original allocation size from our tracker.
+        let size = if dw_size == 0 {
+            VIRTUAL_ALLOC_TRACKER
+                .lock()
+                .ok()
+                .and_then(|mut t| t.remove(&(lp_address as usize)))
+                .unwrap_or(4096) // Fallback to one page if not tracked
+        } else {
+            // Non-standard usage; honour the caller-supplied size
+            if let Ok(mut tracker) = VIRTUAL_ALLOC_TRACKER.lock() {
+                tracker.remove(&(lp_address as usize));
+            }
+            dw_size
+        };
+        if libc::munmap(lp_address, size) == 0 {
+            return 1; // TRUE
+        }
+    }
+
+    0 // FALSE
+}
+
+/// DecodePointer - decodes a previously encoded pointer
+///
+/// # Safety
+/// This function is safe to call but marked unsafe for C ABI compatibility.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_DecodePointer(
+    ptr: *mut core::ffi::c_void,
+) -> *mut core::ffi::c_void {
+    // In our emulation, pointers are not actually encoded, so just return as-is
+    ptr
+}
+
+/// EncodePointer - encodes a pointer
+///
+/// # Safety
+/// This function is safe to call but marked unsafe for C ABI compatibility.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_EncodePointer(
+    ptr: *mut core::ffi::c_void,
+) -> *mut core::ffi::c_void {
+    // In our emulation, we don't actually encode pointers
+    ptr
+}
+
+/// GetTickCount64 - retrieves the number of milliseconds since system start
+///
+/// # Safety
+/// This function is safe to call but marked unsafe for C ABI compatibility.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_GetTickCount64() -> u64 {
+    let mut ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    libc::clock_gettime(libc::CLOCK_MONOTONIC, &raw mut ts);
+    (ts.tv_sec as u64) * 1000 + (ts.tv_nsec as u64) / 1_000_000
+}
+
+/// SetEvent - sets the specified event object to the signaled state
+///
+/// # Safety
+/// This function is a stub.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_SetEvent(_event: *mut core::ffi::c_void) -> i32 {
+    1 // TRUE (success stub)
+}
+
+/// ResetEvent - resets the specified event object to nonsignaled
+///
+/// # Safety
+/// This function is a stub.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_ResetEvent(_event: *mut core::ffi::c_void) -> i32 {
+    1 // TRUE (success stub)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4410,5 +4855,144 @@ mod tests {
         let value: [u16; 2] = [u16::from(b'Y'), 0];
         let result = unsafe { kernel32_SetEnvironmentVariableW(name.as_ptr(), value.as_ptr()) };
         assert_eq!(result, 1, "SetEnvironmentVariableW should return TRUE");
+    }
+
+    #[test]
+    fn test_get_acp() {
+        let result = unsafe { kernel32_GetACP() };
+        assert_eq!(result, 65001); // UTF-8
+    }
+
+    #[test]
+    fn test_is_processor_feature_present() {
+        unsafe {
+            assert_eq!(kernel32_IsProcessorFeaturePresent(10), 1); // SSE2
+            assert_eq!(kernel32_IsProcessorFeaturePresent(12), 1); // NX
+            assert_eq!(kernel32_IsProcessorFeaturePresent(23), 1); // FastFail
+            assert_eq!(kernel32_IsProcessorFeaturePresent(99), 0); // Unknown
+        }
+    }
+
+    #[test]
+    fn test_is_debugger_present() {
+        let result = unsafe { kernel32_IsDebuggerPresent() };
+        assert_eq!(result, 0);
+    }
+
+    #[test]
+    fn test_fls_operations() {
+        unsafe {
+            let index = kernel32_FlsAlloc(core::ptr::null_mut());
+            assert_ne!(index, 0xFFFFFFFF); // TLS_OUT_OF_INDEXES
+
+            let set_result = kernel32_FlsSetValue(index, 0x42);
+            assert_eq!(set_result, 1); // TRUE
+
+            let value = kernel32_FlsGetValue(index);
+            assert_eq!(value, 0x42);
+
+            let free_result = kernel32_FlsFree(index);
+            assert_eq!(free_result, 1); // TRUE
+        }
+    }
+
+    #[test]
+    fn test_get_oem_cp() {
+        let result = unsafe { kernel32_GetOEMCP() };
+        assert_eq!(result, 437);
+    }
+
+    #[test]
+    fn test_is_valid_code_page() {
+        unsafe {
+            assert_eq!(kernel32_IsValidCodePage(65001), 1); // UTF-8
+            assert_eq!(kernel32_IsValidCodePage(1252), 1); // Windows-1252
+            assert_eq!(kernel32_IsValidCodePage(99999), 0); // Invalid
+        }
+    }
+
+    #[test]
+    fn test_get_cp_info() {
+        unsafe {
+            let mut cp_info = [0u8; 18];
+            let result = kernel32_GetCPInfo(65001, cp_info.as_mut_ptr());
+            assert_eq!(result, 1); // TRUE
+            // First 4 bytes are MaxCharSize (should be 4 for UTF-8)
+            let max_char_size =
+                u32::from_le_bytes([cp_info[0], cp_info[1], cp_info[2], cp_info[3]]);
+            assert_eq!(max_char_size, 4);
+            // DefaultChar should be '?'
+            assert_eq!(cp_info[4], 0x3F);
+        }
+    }
+
+    #[test]
+    fn test_decode_encode_pointer() {
+        unsafe {
+            let original = 0x12345678usize as *mut core::ffi::c_void;
+            let encoded = kernel32_EncodePointer(original);
+            let decoded = kernel32_DecodePointer(encoded);
+            assert_eq!(decoded, original);
+        }
+    }
+
+    #[test]
+    fn test_get_tick_count_64() {
+        unsafe {
+            let tick1 = kernel32_GetTickCount64();
+            assert!(tick1 > 0);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            let tick2 = kernel32_GetTickCount64();
+            assert!(tick2 >= tick1);
+        }
+    }
+
+    #[test]
+    fn test_virtual_alloc_free() {
+        unsafe {
+            let ptr = kernel32_VirtualAlloc(
+                core::ptr::null_mut(),
+                4096,
+                0x3000, // MEM_COMMIT | MEM_RESERVE
+                0x04,   // PAGE_READWRITE
+            );
+            assert!(!ptr.is_null());
+
+            // Write to the allocated memory to verify it's usable
+            *ptr.cast::<u8>() = 42;
+            assert_eq!(*(ptr as *const u8), 42);
+
+            // Per Windows API contract, MEM_RELEASE uses dwSize = 0;
+            // our tracker should supply the original allocation size.
+            let result = kernel32_VirtualFree(ptr, 0, 0x8000); // MEM_RELEASE
+            assert_eq!(result, 1); // TRUE
+        }
+    }
+
+    #[test]
+    fn test_get_string_type_w() {
+        unsafe {
+            let input: [u16; 4] = [u16::from(b'A'), u16::from(b'1'), u16::from(b' '), 0];
+            let mut output = [0u16; 3];
+            let result = kernel32_GetStringTypeW(1, input.as_ptr(), 3, output.as_mut_ptr());
+            assert_eq!(result, 1); // TRUE
+            // 'A' should have C1_ALPHA | C1_UPPER
+            assert_ne!(output[0] & 0x100, 0); // C1_ALPHA
+            assert_ne!(output[0] & 0x001, 0); // C1_UPPER
+            // '1' should have C1_DIGIT
+            assert_ne!(output[1] & 0x004, 0); // C1_DIGIT
+            // ' ' should have C1_SPACE
+            assert_ne!(output[2] & 0x008, 0); // C1_SPACE
+        }
+    }
+
+    #[test]
+    fn test_initialize_critical_section_and_spin_count() {
+        unsafe {
+            let mut cs = core::mem::zeroed::<CriticalSection>();
+            let result = kernel32_InitializeCriticalSectionAndSpinCount(&raw mut cs, 4000);
+            assert_eq!(result, 1); // TRUE
+            kernel32_DeleteCriticalSection(&raw mut cs);
+        }
     }
 }

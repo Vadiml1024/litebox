@@ -1,4 +1,64 @@
-# Windows-on-Linux Support - Session Summary (2026-02-16 Session 7)
+# Windows-on-Linux Support - Session Summary (2026-02-17 Session 8)
+
+## Work Completed ✅
+
+### 1. Added Missing MSVCRT Functions (16 new functions)
+
+**Problem:** MinGW CRT initialization requires many MSVCRT functions that were not
+implemented, causing crashes when the CRT startup code tried to call them.
+
+**Solution:** Added 16 new MSVCRT function implementations:
+- **String operations**: `strcmp`, `strcpy`, `strcat`, `strchr`, `strrchr`, `strstr`
+- **CRT initialization**: `_initterm_e` (extended initializer with error return)
+- **Argument access**: `__p___argc`, `__p___argv`
+- **Thread safety**: `_lock`, `_unlock`
+- **Environment**: `getenv` (delegates to libc)
+- **Error handling**: `_errno`, `_XcptFilter`
+- **Locale**: `__lconv_init`
+- **Floating point**: `_controlfp`
+
+### 2. Added Missing KERNEL32 Functions (23 new functions)
+
+**Problem:** CRT startup and common Windows programs need additional KERNEL32 APIs
+for code page handling, locale operations, memory management, and process features.
+
+**Solution:** Added 23 new KERNEL32 function implementations:
+- **Code page/locale**: `GetACP`, `IsValidCodePage`, `GetOEMCP`, `GetCPInfo`,
+  `GetLocaleInfoW`, `LCMapStringW`, `GetStringTypeW`
+- **Memory management**: `VirtualAlloc`, `VirtualFree`, `HeapSize`
+- **Critical sections**: `InitializeCriticalSectionAndSpinCount`,
+  `InitializeCriticalSectionEx`
+- **Fiber-local storage**: `FlsAlloc`, `FlsFree`, `FlsGetValue`, `FlsSetValue`
+- **Process features**: `IsProcessorFeaturePresent`, `IsDebuggerPresent`
+- **Pointer encoding**: `DecodePointer`, `EncodePointer`
+- **Timing**: `GetTickCount64`
+- **Events**: `SetEvent`, `ResetEvent`
+
+### 3. Registered All New Functions
+
+- Added 39 new entries to `function_table.rs` for trampoline generation
+- Added 16 new MSVCRT DLL exports and 23 new KERNEL32 DLL exports in `dll.rs`
+- All functions have working trampolines bridging Windows x64 to System V calling convention
+
+### 4. Test Results
+
+```bash
+cargo test -p litebox_shim_windows -p litebox_platform_linux_for_windows -p litebox_runner_windows_on_linux_userland
+Result: 206 passed (144 platform + 46 shim + 16 runner)
+```
+
+22 new unit tests added. All ratchet tests passing.
+
+### Files Modified This Session
+- `litebox_platform_linux_for_windows/src/msvcrt.rs` - 16 new functions + 9 tests
+- `litebox_platform_linux_for_windows/src/kernel32.rs` - 23 new functions + 13 tests
+- `litebox_platform_linux_for_windows/src/function_table.rs` - 39 new trampoline entries
+- `litebox_shim_windows/src/loader/dll.rs` - 39 new DLL exports
+- `dev_tests/src/ratchet.rs` - Updated ratchet counts
+
+---
+
+## Previous Session Summary (2026-02-16 Session 7)
 
 ## Work Completed ✅
 

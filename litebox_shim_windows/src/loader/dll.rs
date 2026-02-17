@@ -388,6 +388,33 @@ impl DllManager {
             ("SwitchToThread", KERNEL32_BASE + 0x7D),
             ("TerminateProcess", KERNEL32_BASE + 0x7E),
             ("WaitForMultipleObjects", KERNEL32_BASE + 0x7F),
+            // Phase 10: Additional KERNEL32 functions
+            ("GetACP", KERNEL32_BASE + 0x80),
+            ("IsProcessorFeaturePresent", KERNEL32_BASE + 0x81),
+            ("IsDebuggerPresent", KERNEL32_BASE + 0x82),
+            ("GetStringTypeW", KERNEL32_BASE + 0x83),
+            ("HeapSize", KERNEL32_BASE + 0x84),
+            (
+                "InitializeCriticalSectionAndSpinCount",
+                KERNEL32_BASE + 0x85,
+            ),
+            ("InitializeCriticalSectionEx", KERNEL32_BASE + 0x86),
+            ("FlsAlloc", KERNEL32_BASE + 0x87),
+            ("FlsFree", KERNEL32_BASE + 0x88),
+            ("FlsGetValue", KERNEL32_BASE + 0x89),
+            ("FlsSetValue", KERNEL32_BASE + 0x8A),
+            ("IsValidCodePage", KERNEL32_BASE + 0x8B),
+            ("GetOEMCP", KERNEL32_BASE + 0x8C),
+            ("GetCPInfo", KERNEL32_BASE + 0x8D),
+            ("GetLocaleInfoW", KERNEL32_BASE + 0x8E),
+            ("LCMapStringW", KERNEL32_BASE + 0x8F),
+            ("VirtualAlloc", KERNEL32_BASE + 0x90),
+            ("VirtualFree", KERNEL32_BASE + 0x91),
+            ("DecodePointer", KERNEL32_BASE + 0x92),
+            ("EncodePointer", KERNEL32_BASE + 0x93),
+            ("GetTickCount64", KERNEL32_BASE + 0x94),
+            ("SetEvent", KERNEL32_BASE + 0x95),
+            ("ResetEvent", KERNEL32_BASE + 0x96),
         ];
 
         self.register_stub_dll("KERNEL32.dll", exports);
@@ -458,6 +485,23 @@ impl DllManager {
             ("_setargv", MSVCRT_BASE + 0x21),
             ("_set_invalid_parameter_handler", MSVCRT_BASE + 0x22),
             ("_pei386_runtime_relocator", MSVCRT_BASE + 0x23),
+            // Phase 10: Additional MSVCRT functions
+            ("strcmp", MSVCRT_BASE + 0x24),
+            ("strcpy", MSVCRT_BASE + 0x25),
+            ("strcat", MSVCRT_BASE + 0x26),
+            ("strchr", MSVCRT_BASE + 0x27),
+            ("strrchr", MSVCRT_BASE + 0x28),
+            ("strstr", MSVCRT_BASE + 0x29),
+            ("_initterm_e", MSVCRT_BASE + 0x2A),
+            ("__p___argc", MSVCRT_BASE + 0x2B),
+            ("__p___argv", MSVCRT_BASE + 0x2C),
+            ("_lock", MSVCRT_BASE + 0x2D),
+            ("_unlock", MSVCRT_BASE + 0x2E),
+            ("getenv", MSVCRT_BASE + 0x2F),
+            ("_errno", MSVCRT_BASE + 0x30),
+            ("__lconv_init", MSVCRT_BASE + 0x31),
+            ("_XcptFilter", MSVCRT_BASE + 0x32),
+            ("_controlfp", MSVCRT_BASE + 0x33),
         ];
 
         self.register_stub_dll("MSVCRT.dll", exports);
