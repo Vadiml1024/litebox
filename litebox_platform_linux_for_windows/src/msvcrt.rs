@@ -834,6 +834,11 @@ pub unsafe extern "C" fn msvcrt__initterm_e(
 
 /// Get pointer to argc (__p___argc)
 ///
+/// Returns a pointer to the global argc value. Currently initialized to 0
+/// since command-line argument passing is handled by `__getmainargs`.
+/// The CRT startup code calls `__getmainargs` first, which sets argc/argv,
+/// and `__p___argc` provides an alternate access path.
+///
 /// # Safety
 /// Returns a pointer to a static variable. Thread-safety is managed by the caller.
 #[unsafe(no_mangle)]
@@ -843,6 +848,11 @@ pub unsafe extern "C" fn msvcrt___p___argc() -> *mut i32 {
 }
 
 /// Get pointer to argv (__p___argv)
+///
+/// Returns a pointer to the global argv pointer. Currently initialized to null
+/// since command-line argument passing is handled by `__getmainargs`.
+/// The CRT startup code calls `__getmainargs` first, which sets argc/argv,
+/// and `__p___argv` provides an alternate access path.
 ///
 /// # Safety
 /// Returns a pointer to a static variable. Thread-safety is managed by the caller.
