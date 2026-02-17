@@ -275,11 +275,14 @@ mod test_program_helpers {
             .join("target")
             .join("x86_64-pc-windows-gnu")
             .join("release")
-            .join(format!("{}.exe", name))
+            .join(format!("{name}.exe"))
     }
 
     /// Run a Windows test program and return the output
-    pub fn run_test_program(name: &str, args: &[&str]) -> Result<std::process::Output, std::io::Error> {
+    pub fn run_test_program(
+        name: &str,
+        args: &[&str],
+    ) -> Result<std::process::Output, std::io::Error> {
         let runner_exe = env!("CARGO_BIN_EXE_litebox_runner_windows_on_linux_userland");
         let test_program = get_test_program_path(name);
 

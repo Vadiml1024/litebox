@@ -23,8 +23,8 @@ fn main() {
     
     // Test 2: Floating-point arithmetic
     println!("\nTest 2: Floating-point arithmetic");
-    let x = 3.14159;
-    let y = 2.71828;
+    let x = std::f64::consts::PI;
+    let y = std::f64::consts::E;
     println!("  {:.5} + {:.5} = {:.5}", x, y, x + y);
     println!("  {:.5} - {:.5} = {:.5}", x, y, x - y);
     println!("  {:.5} * {:.5} = {:.5}", x, y, x * y);
