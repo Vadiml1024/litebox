@@ -56,6 +56,31 @@ jobs:
           cd windows_test_programs
           cargo build --release --target x86_64-pc-windows-gnu -p hello_gui
 
+      - name: Build file I/O test
+        run: |
+          cd windows_test_programs
+          cargo build --release --target x86_64-pc-windows-gnu -p file_io_test
+
+      - name: Build args test
+        run: |
+          cd windows_test_programs
+          cargo build --release --target x86_64-pc-windows-gnu -p args_test
+
+      - name: Build env test
+        run: |
+          cd windows_test_programs
+          cargo build --release --target x86_64-pc-windows-gnu -p env_test
+
+      - name: Build string test
+        run: |
+          cd windows_test_programs
+          cargo build --release --target x86_64-pc-windows-gnu -p string_test
+
+      - name: Build math test
+        run: |
+          cd windows_test_programs
+          cargo build --release --target x86_64-pc-windows-gnu -p math_test
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -63,6 +88,11 @@ jobs:
           path: |
             windows_test_programs/target/x86_64-pc-windows-gnu/release/hello_cli.exe
             windows_test_programs/target/x86_64-pc-windows-gnu/release/hello_gui.exe
+            windows_test_programs/target/x86_64-pc-windows-gnu/release/file_io_test.exe
+            windows_test_programs/target/x86_64-pc-windows-gnu/release/args_test.exe
+            windows_test_programs/target/x86_64-pc-windows-gnu/release/env_test.exe
+            windows_test_programs/target/x86_64-pc-windows-gnu/release/string_test.exe
+            windows_test_programs/target/x86_64-pc-windows-gnu/release/math_test.exe
           retention-days: 30
 
       - name: Display build info

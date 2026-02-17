@@ -49,14 +49,23 @@ jobs:
           cd windows_test_programs
           cargo build --release --target x86_64-pc-windows-gnu -p hello_cli
           cargo build --release --target x86_64-pc-windows-gnu -p hello_gui
+          cargo build --release --target x86_64-pc-windows-gnu -p file_io_test
+          cargo build --release --target x86_64-pc-windows-gnu -p args_test
+          cargo build --release --target x86_64-pc-windows-gnu -p env_test
+          cargo build --release --target x86_64-pc-windows-gnu -p string_test
+          cargo build --release --target x86_64-pc-windows-gnu -p math_test
 
       - name: Verify Windows executables
         run: |
           echo "Checking Windows test programs..."
-          ls -lh windows_test_programs/target/x86_64-pc-windows-gnu/release/hello_cli.exe
-          ls -lh windows_test_programs/target/x86_64-pc-windows-gnu/release/hello_gui.exe
+          ls -lh windows_test_programs/target/x86_64-pc-windows-gnu/release/*.exe
           file windows_test_programs/target/x86_64-pc-windows-gnu/release/hello_cli.exe
           file windows_test_programs/target/x86_64-pc-windows-gnu/release/hello_gui.exe
+          file windows_test_programs/target/x86_64-pc-windows-gnu/release/file_io_test.exe
+          file windows_test_programs/target/x86_64-pc-windows-gnu/release/args_test.exe
+          file windows_test_programs/target/x86_64-pc-windows-gnu/release/env_test.exe
+          file windows_test_programs/target/x86_64-pc-windows-gnu/release/string_test.exe
+          file windows_test_programs/target/x86_64-pc-windows-gnu/release/math_test.exe
 
       - name: Build Windows-on-Linux runner
         run: |
