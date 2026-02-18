@@ -1258,6 +1258,61 @@ pub fn get_function_table() -> Vec<FunctionImpl> {
             num_params: 1,
             impl_address: crate::kernel32::kernel32_ResetEvent as *const () as usize,
         },
+        // NTDLL.dll functions
+        FunctionImpl {
+            name: "NtWriteFile",
+            dll_name: "NTDLL.dll",
+            num_params: 9,
+            impl_address: crate::ntdll_impl::ntdll_NtWriteFile as *const () as usize,
+        },
+        FunctionImpl {
+            name: "NtReadFile",
+            dll_name: "NTDLL.dll",
+            num_params: 9,
+            impl_address: crate::ntdll_impl::ntdll_NtReadFile as *const () as usize,
+        },
+        FunctionImpl {
+            name: "NtCreateFile",
+            dll_name: "NTDLL.dll",
+            num_params: 11,
+            impl_address: crate::ntdll_impl::ntdll_NtCreateFile as *const () as usize,
+        },
+        FunctionImpl {
+            name: "NtOpenFile",
+            dll_name: "NTDLL.dll",
+            num_params: 6,
+            impl_address: crate::ntdll_impl::ntdll_NtOpenFile as *const () as usize,
+        },
+        FunctionImpl {
+            name: "NtClose",
+            dll_name: "NTDLL.dll",
+            num_params: 1,
+            impl_address: crate::ntdll_impl::ntdll_NtClose as *const () as usize,
+        },
+        FunctionImpl {
+            name: "NtAllocateVirtualMemory",
+            dll_name: "NTDLL.dll",
+            num_params: 6,
+            impl_address: crate::ntdll_impl::ntdll_NtAllocateVirtualMemory as *const () as usize,
+        },
+        FunctionImpl {
+            name: "NtFreeVirtualMemory",
+            dll_name: "NTDLL.dll",
+            num_params: 4,
+            impl_address: crate::ntdll_impl::ntdll_NtFreeVirtualMemory as *const () as usize,
+        },
+        FunctionImpl {
+            name: "NtCreateNamedPipeFile",
+            dll_name: "NTDLL.dll",
+            num_params: 14,
+            impl_address: crate::ntdll_impl::ntdll_NtCreateNamedPipeFile as *const () as usize,
+        },
+        FunctionImpl {
+            name: "RtlNtStatusToDosError",
+            dll_name: "NTDLL.dll",
+            num_params: 1,
+            impl_address: crate::ntdll_impl::ntdll_RtlNtStatusToDosError as *const () as usize,
+        },
     ]
 }
 

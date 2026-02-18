@@ -10,6 +10,7 @@
 pub mod function_table;
 pub mod kernel32;
 pub mod msvcrt;
+pub mod ntdll_impl;
 pub mod trampoline;
 
 use std::collections::HashMap;

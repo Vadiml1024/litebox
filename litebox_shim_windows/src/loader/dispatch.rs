@@ -51,13 +51,41 @@ pub type ImplFunction = usize;
 /// Generate x86-64 machine code for a trampoline that adapts calling conventions
 ///
 /// This generates a stub that:
-/// 1. Ensures 16-byte stack alignment (System V ABI requirement)
-/// 2. Moves parameters from Windows x64 registers to System V AMD64 registers
-/// 3. Handles stack parameters for 5+ parameter functions
+/// 1. Saves Windows callee-saved registers `RDI` and `RSI` (volatile in System V ABI)
+/// 2. Ensures 16-byte stack alignment (System V ABI requirement)
+/// 3. Moves parameters from Windows x64 registers/stack to System V AMD64 registers/stack:
+///    - Windows RCX/RDX/R8/R9 (params 1-4) → Linux RDI/RSI/RDX/RCX
+///    - Windows stack params 5-6 → Linux R8/R9 (register params in System V)
+///    - Windows stack params 7+ → Linux stack at [RSP+0], [RSP+8], ...
 /// 4. Calls the actual implementation
+/// 5. Restores `RDI` and `RSI` before returning
+///
+/// ## Callee-saved register differences (why this matters)
+///
+/// Windows x64 callee-saved: `RBX`, `RBP`, `RDI`, `RSI`, `RSP`, `R12`-`R15`, `XMM6`-`XMM15`\
+/// System V AMD64 callee-saved: `RBX`, `RBP`, `RSP`, `R12`-`R15`
+///
+/// `RDI` and `RSI` are callee-saved in Windows but caller-saved (volatile) in Linux.
+/// Without explicit save/restore, Linux implementations can freely clobber `RSI`/`RDI`,
+/// corrupting Windows code that relies on those registers being preserved across API calls.
+///
+/// ## Example stub (2 parameters):
+/// ```asm
+/// push rdi              ; save Windows callee-saved RDI (RSP%16: 8→0)
+/// push rsi              ; save Windows callee-saved RSI (RSP%16: 0→8)
+/// sub  rsp, 8           ; 16-byte align for System V call (RSP%16: 8→0)
+/// mov  rdi, rcx         ; param1: Windows RCX → Linux RDI
+/// mov  rsi, rdx         ; param2: Windows RDX → Linux RSI
+/// movabs rax, <impl>
+/// call rax
+/// add  rsp, 8           ; undo alignment
+/// pop  rsi              ; restore RSI
+/// pop  rdi              ; restore RDI
+/// ret
+/// ```
 ///
 /// # Parameters
-/// * `num_params` - Number of integer/pointer parameters (0-8 recommended)
+/// * `num_params` - Number of integer/pointer parameters (0-8 supported)
 /// * `impl_address` - Address of the actual implementation function
 ///
 /// # Returns
@@ -70,60 +98,77 @@ pub fn generate_trampoline(num_params: usize, impl_address: u64) -> Vec<u8> {
     let mut code = Vec::new();
 
     // Register mapping:
-    // Windows x64: RCX, RDX, R8, R9, then stack at [rsp+32], [rsp+40], ...
-    // Linux x64:   RDI, RSI, RDX, RCX, R8, R9, then stack at [rsp+0], [rsp+8], ...
+    //   Windows x64: RCX, RDX, R8, R9, then stack at [RSP+40], [RSP+48], ...
+    //     (shadow space 32 bytes + return address 8 bytes = first stack param at RSP+40)
+    //   Linux x64:   RDI, RSI, RDX, RCX, R8, R9, then stack at [RSP+0], [RSP+8], ...
+
+    // === PROLOGUE ===
+    // Save Windows callee-saved registers that Linux treats as volatile (RDI and RSI).
     //
-    // Stack alignment requirement:
-    // - System V ABI requires RSP to be 16-byte aligned before 'call'
-    // - On function entry, RSP is misaligned by 8 bytes (due to return address push)
-    // - For odd number of stack params, we need to add 8 bytes padding
-    // - For even number (including 0), no padding needed
+    // Stack alignment accounting:
+    //   - At trampoline entry: RSP % 16 == 8  (return address on stack)
+    //   - After push rdi:      RSP % 16 == 0
+    //   - After push rsi:      RSP % 16 == 8  (misaligned)
+    //   - After sub rsp, 8:    RSP % 16 == 0  (aligned for System V call)
 
-    // Calculate stack parameters (beyond first 4 in registers)
-    let stack_params = num_params.saturating_sub(4);
+    code.push(0x57); // push rdi
+    code.push(0x56); // push rsi
+    code.extend_from_slice(&[0x48, 0x83, 0xEC, 0x08]); // sub rsp, 8
 
-    // Determine if we need stack alignment padding
-    // Windows has shadow space at rsp+32, but we're using tail call approach
-    // We need to ensure 16-byte alignment before the call
-    let needs_alignment = !stack_params.is_multiple_of(2);
-    let alignment_bytes = if needs_alignment { 8 } else { 0 };
+    // Stack layout after prologue (RSP = RSP_entry - 24):
+    //   RSP + 0:  alignment padding (8 bytes)
+    //   RSP + 8:  saved rsi
+    //   RSP + 16: saved rdi
+    //   RSP + 24: return address     (= RSP_entry + 0)
+    //   RSP + 32: Windows shadow[0]  (= RSP_entry + 8)
+    //   RSP + 40: Windows shadow[1]
+    //   RSP + 48: Windows shadow[2]
+    //   RSP + 56: Windows shadow[3]
+    //   RSP + 64: Windows param 5    (= RSP_entry + 40)
+    //   RSP + 72: Windows param 6    (= RSP_entry + 48)
+    //   RSP + 80: Windows param 7    (= RSP_entry + 56)
+    //   RSP + 88: Windows param 8    (= RSP_entry + 64)
 
-    // If we have stack parameters or need alignment, set up stack frame
-    if stack_params > 0 || needs_alignment {
-        // Save return address by pushing it
-        // (already on stack from caller)
+    // === LINUX STACK PARAMETERS (params 7+) ===
+    // System V uses RDI,RSI,RDX,RCX,R8,R9 for the first 6 params (not 4 like Windows).
+    // Only params 7+ need to go on the Linux stack.
+    let linux_stack_params = num_params.saturating_sub(6);
 
-        // Allocate stack space for parameters + alignment
-        let stack_space = (stack_params * 8) + alignment_bytes;
-        if stack_space > 0 {
-            // sub rsp, stack_space
-            #[allow(clippy::cast_possible_truncation)]
-            if stack_space <= 127 {
-                code.extend_from_slice(&[0x48, 0x83, 0xEC, stack_space as u8]);
-            } else {
-                code.extend_from_slice(&[0x48, 0x81, 0xEC]);
-                code.extend_from_slice(&(stack_space as u32).to_le_bytes());
-            }
+    let stack_extra: usize; // additional RSP adjustment for Linux stack params
+    if linux_stack_params > 0 {
+        // Allocate aligned stack space for Linux stack params.
+        // RSP is currently 16-byte aligned; linux_stack_params * 8 bytes rounded up to 16.
+        let align_pad = if linux_stack_params % 2 == 1 {
+            8usize
+        } else {
+            0
+        };
+        stack_extra = linux_stack_params * 8 + align_pad;
+
+        // sub rsp, stack_extra
+        #[allow(clippy::cast_possible_truncation)]
+        if stack_extra <= 127 {
+            code.extend_from_slice(&[0x48, 0x83, 0xEC, stack_extra as u8]);
+        } else {
+            code.extend_from_slice(&[0x48, 0x81, 0xEC]);
+            code.extend_from_slice(&(stack_extra as u32).to_le_bytes());
         }
 
-        // Copy stack parameters from Windows shadow space to Linux stack
-        // Windows convention: params 5+ at [rsp + stack_space + 8 + 32 + (i)*8]
-        //   where: stack_space = our allocated space
-        //          +8 = return address pushed by caller (above our allocation)
-        //          +32 = Windows shadow space (reserved by caller)
-        //          +(i)*8 = offset for parameter i (i=0 is 5th param, i=1 is 6th, etc.)
-        // Linux convention: params 5+ at [rsp + (i)*8] (directly on our stack)
+        // Copy each Linux stack param (params 7+) from the Windows stack.
+        // After sub rsp, stack_extra:
+        //   Windows param (7+i) is at [RSP + stack_extra + 80 + i*8]
+        //   Linux stack param i goes at [RSP + i*8]
         #[allow(clippy::cast_possible_truncation)]
-        for i in 0..stack_params {
-            let windows_offset = stack_space + 8 + 32 + (i * 8); // +8 for return addr
+        for i in 0..linux_stack_params {
+            let win_offset = stack_extra + 80 + i * 8;
             let linux_offset = i * 8;
 
-            // mov rax, [rsp + windows_offset]
-            if windows_offset <= 127 {
-                code.extend_from_slice(&[0x48, 0x8B, 0x44, 0x24, windows_offset as u8]);
+            // mov rax, [rsp + win_offset]
+            if win_offset <= 127 {
+                code.extend_from_slice(&[0x48, 0x8B, 0x44, 0x24, win_offset as u8]);
             } else {
                 code.extend_from_slice(&[0x48, 0x8B, 0x84, 0x24]);
-                code.extend_from_slice(&(windows_offset as u32).to_le_bytes());
+                code.extend_from_slice(&(win_offset as u32).to_le_bytes());
             }
 
             // mov [rsp + linux_offset], rax
@@ -134,60 +179,72 @@ pub fn generate_trampoline(num_params: usize, impl_address: u64) -> Vec<u8> {
                 code.extend_from_slice(&(linux_offset as u32).to_le_bytes());
             }
         }
+    } else {
+        stack_extra = 0;
     }
 
-    // Move register parameters (first 4)
-    // Win RCX -> Linux RDI (param 1)
-    // Win RDX -> Linux RSI (param 2)
-    // Win R8  -> Linux RDX (param 3)
-    // Win R9  -> Linux RCX (param 4)
-
+    // === REGISTER PARAMETERS 1-4 ===
+    // Windows RCX/RDX/R8/R9 → Linux RDI/RSI/RDX/RCX
+    // Order: params 1 and 2 FIRST (RDI ← RCX, RSI ← RDX) before RCX/RDX are
+    // overwritten by the param 3/4 moves.
     if num_params >= 1 {
-        // mov rdi, rcx
-        code.extend_from_slice(&[0x48, 0x89, 0xCF]);
+        code.extend_from_slice(&[0x48, 0x89, 0xCF]); // mov rdi, rcx
     }
     if num_params >= 2 {
-        // mov rsi, rdx
-        code.extend_from_slice(&[0x48, 0x89, 0xD6]);
+        code.extend_from_slice(&[0x48, 0x89, 0xD6]); // mov rsi, rdx
     }
     if num_params >= 3 {
-        // mov rdx, r8
-        code.extend_from_slice(&[0x4C, 0x89, 0xC2]);
+        code.extend_from_slice(&[0x4C, 0x89, 0xC2]); // mov rdx, r8
     }
     if num_params >= 4 {
-        // mov rcx, r9
-        code.extend_from_slice(&[0x4C, 0x89, 0xC9]);
+        code.extend_from_slice(&[0x4C, 0x89, 0xC9]); // mov rcx, r9
     }
 
-    // Call the implementation
-    // movabs rax, impl_address
-    code.extend_from_slice(&[0x48, 0xB8]);
-    code.extend_from_slice(&impl_address.to_le_bytes());
-
-    if stack_params > 0 || needs_alignment {
-        // call rax (not jmp, since we need to clean up stack)
-        code.extend_from_slice(&[0xFF, 0xD0]);
-
-        // Clean up stack
-        let stack_space = (stack_params * 8) + alignment_bytes;
-        if stack_space > 0 {
-            // add rsp, stack_space
-            #[allow(clippy::cast_possible_truncation)]
-            if stack_space <= 127 {
-                code.extend_from_slice(&[0x48, 0x83, 0xC4, stack_space as u8]);
-            } else {
-                code.extend_from_slice(&[0x48, 0x81, 0xC4]);
-                code.extend_from_slice(&(stack_space as u32).to_le_bytes());
-            }
+    // === REGISTER PARAMETERS 5-6 ===
+    // R8 and R9 are now free (their original values were moved to RDX/RCX above).
+    // Load Windows params 5 and 6 from the stack into Linux R8 and R9.
+    // After the prologue and any stack_extra: Windows param 5 is at [RSP + stack_extra + 64].
+    if num_params >= 5 {
+        let p5_offset = stack_extra + 64;
+        // mov r8, [rsp + p5_offset]
+        #[allow(clippy::cast_possible_truncation)]
+        if p5_offset <= 127 {
+            code.extend_from_slice(&[0x4C, 0x8B, 0x44, 0x24, p5_offset as u8]);
+        } else {
+            code.extend_from_slice(&[0x4C, 0x8B, 0x84, 0x24]);
+            code.extend_from_slice(&(p5_offset as u32).to_le_bytes());
         }
-
-        // ret
-        code.extend_from_slice(&[0xC3]);
-    } else {
-        // Tail call optimization for 0-4 parameters
-        // jmp rax
-        code.extend_from_slice(&[0xFF, 0xE0]);
     }
+    if num_params >= 6 {
+        let p6_offset = stack_extra + 72;
+        // mov r9, [rsp + p6_offset]
+        #[allow(clippy::cast_possible_truncation)]
+        if p6_offset <= 127 {
+            code.extend_from_slice(&[0x4C, 0x8B, 0x4C, 0x24, p6_offset as u8]);
+        } else {
+            code.extend_from_slice(&[0x4C, 0x8B, 0x8C, 0x24]);
+            code.extend_from_slice(&(p6_offset as u32).to_le_bytes());
+        }
+    }
+
+    // === CALL ===
+    code.extend_from_slice(&[0x48, 0xB8]); // movabs rax, impl_address
+    code.extend_from_slice(&impl_address.to_le_bytes());
+    code.extend_from_slice(&[0xFF, 0xD0]); // call rax
+
+    // === EPILOGUE ===
+    // Undo the Linux stack allocation plus the prologue's alignment sub.
+    let epilogue_add = stack_extra + 8; // stack_extra + prologue's "sub rsp, 8"
+    #[allow(clippy::cast_possible_truncation)]
+    if epilogue_add <= 127 {
+        code.extend_from_slice(&[0x48, 0x83, 0xC4, epilogue_add as u8]); // add rsp, N
+    } else {
+        code.extend_from_slice(&[0x48, 0x81, 0xC4]);
+        code.extend_from_slice(&(epilogue_add as u32).to_le_bytes());
+    }
+    code.push(0x5E); // pop rsi
+    code.push(0x5F); // pop rdi
+    code.push(0xC3); // ret
 
     code
 }
@@ -286,135 +343,259 @@ pub unsafe fn write_to_executable_memory(dest: u64, code: &[u8]) {
 mod tests {
     use super::*;
 
+    /// Prologue bytes: push rdi (57), push rsi (56), sub rsp,8 (48 83 EC 08) = 6 bytes
+    const PROLOGUE: &[u8] = &[0x57, 0x56, 0x48, 0x83, 0xEC, 0x08];
+    /// Epilogue tail (without add rsp): pop rsi (5E), pop rdi (5F), ret (C3) = 3 bytes
+    const EPILOGUE_TAIL: &[u8] = &[0x5E, 0x5F, 0xC3];
+    /// call rax = FF D0
+    const CALL_RAX: &[u8] = &[0xFF, 0xD0];
+    /// movabs rax prefix = 48 B8
+    const MOVABS_RAX: &[u8] = &[0x48, 0xB8];
+    /// add rsp, 8 = 48 83 C4 08
+    const ADD_RSP_8: &[u8] = &[0x48, 0x83, 0xC4, 0x08];
+
+    /// All trampolines must start with the RSI/RDI save prologue.
+    fn assert_has_prologue(code: &[u8]) {
+        assert!(
+            code.len() >= PROLOGUE.len(),
+            "Code too short to contain prologue"
+        );
+        assert_eq!(
+            &code[..PROLOGUE.len()],
+            PROLOGUE,
+            "Code must start with push rdi; push rsi; sub rsp,8"
+        );
+    }
+
+    /// All trampolines must end with pop rsi; pop rdi; ret.
+    fn assert_has_epilogue_tail(code: &[u8]) {
+        let n = code.len();
+        assert!(
+            n >= EPILOGUE_TAIL.len(),
+            "Code too short to contain epilogue"
+        );
+        assert_eq!(
+            &code[n - EPILOGUE_TAIL.len()..],
+            EPILOGUE_TAIL,
+            "Code must end with pop rsi; pop rdi; ret"
+        );
+    }
+
     #[test]
     fn test_generate_trampoline_0_params() {
         let code = generate_trampoline(0, 0x1234_5678_9ABC_DEF0);
-        // Should contain movabs rax, addr (10 bytes) + jmp rax (2 bytes)
-        assert_eq!(code.len(), 12);
-        // Check for movabs rax prefix
-        assert_eq!(&code[0..2], &[0x48, 0xB8]);
-        // Check for jmp rax suffix
-        assert_eq!(&code[10..12], &[0xFF, 0xE0]);
+        // prologue(6) + movabs(10) + call(2) + add rsp,8(4) + epilogue_tail(3) = 25 bytes
+        assert_eq!(code.len(), 25);
+        assert_has_prologue(&code);
+        assert_has_epilogue_tail(&code);
+        // movabs rax starts right after the 6-byte prologue
+        assert_eq!(&code[6..8], MOVABS_RAX);
+        // all trampolines use 'call rax', never 'jmp rax'
+        assert!(
+            code.windows(2).any(|w| w == CALL_RAX),
+            "Must use 'call rax', not 'jmp rax'"
+        );
+        assert!(
+            !code.windows(2).any(|w| w == [0xFF, 0xE0]),
+            "Must NOT use 'jmp rax'"
+        );
     }
 
     #[test]
     fn test_generate_trampoline_1_param() {
         let code = generate_trampoline(1, 0x1234_5678_9ABC_DEF0);
-        // mov rdi, rcx (3) + movabs (10) + jmp (2) = 15 bytes
-        assert_eq!(code.len(), 15);
-        // Check for mov rdi, rcx
-        assert_eq!(&code[0..3], &[0x48, 0x89, 0xCF]);
+        // prologue(6) + mov rdi,rcx(3) + movabs(10) + call(2) + add rsp,8(4) + tail(3) = 28
+        assert_eq!(code.len(), 28);
+        assert_has_prologue(&code);
+        assert_has_epilogue_tail(&code);
+        // mov rdi, rcx (48 89 CF) right after prologue
+        assert_eq!(&code[6..9], &[0x48, 0x89, 0xCF]);
     }
 
     #[test]
     fn test_generate_trampoline_2_params() {
         let code = generate_trampoline(2, 0x1234_5678_9ABC_DEF0);
-        // mov rdi,rcx (3) + mov rsi,rdx (3) + movabs (10) + jmp (2) = 18 bytes
-        assert_eq!(code.len(), 18);
-        // Check for mov rdi, rcx
-        assert_eq!(&code[0..3], &[0x48, 0x89, 0xCF]);
-        // Check for mov rsi, rdx
-        assert_eq!(&code[3..6], &[0x48, 0x89, 0xD6]);
+        // prologue(6) + mov rdi(3) + mov rsi(3) + movabs(10) + call(2) + add(4) + tail(3) = 31
+        assert_eq!(code.len(), 31);
+        assert_has_prologue(&code);
+        assert_has_epilogue_tail(&code);
+        // mov rdi, rcx
+        assert_eq!(&code[6..9], &[0x48, 0x89, 0xCF]);
+        // mov rsi, rdx
+        assert_eq!(&code[9..12], &[0x48, 0x89, 0xD6]);
     }
 
     #[test]
     fn test_generate_trampoline_3_params() {
         let code = generate_trampoline(3, 0x1234_5678_9ABC_DEF0);
-        // Check basic structure
-        assert!(!code.is_empty());
-        // Check for mov rdi, rcx
-        assert_eq!(&code[0..3], &[0x48, 0x89, 0xCF]);
-        // Check for mov rsi, rdx
-        assert_eq!(&code[3..6], &[0x48, 0x89, 0xD6]);
-        // Check for mov rdx, r8
-        assert_eq!(&code[6..9], &[0x4C, 0x89, 0xC2]);
+        // prologue(6) + mov rdi(3) + mov rsi(3) + mov rdx,r8(3) + movabs(10) + call(2) + add(4) + tail(3) = 34
+        assert_eq!(code.len(), 34);
+        assert_has_prologue(&code);
+        assert_has_epilogue_tail(&code);
+        assert_eq!(&code[6..9], &[0x48, 0x89, 0xCF]); // mov rdi, rcx
+        assert_eq!(&code[9..12], &[0x48, 0x89, 0xD6]); // mov rsi, rdx
+        assert_eq!(&code[12..15], &[0x4C, 0x89, 0xC2]); // mov rdx, r8
     }
 
     #[test]
     fn test_generate_trampoline_4_params() {
         let code = generate_trampoline(4, 0x1234_5678_9ABC_DEF0);
-        // Check basic structure
-        assert!(!code.is_empty());
-        // Check for mov rdi, rcx
-        assert_eq!(&code[0..3], &[0x48, 0x89, 0xCF]);
-        // Should still use tail call optimization (jmp) for 4 params
-        assert!(code.contains(&0xFF) && code.contains(&0xE0));
+        // prologue(6) + 4×mov(12) + movabs(10) + call(2) + add(4) + tail(3) = 37
+        assert_eq!(code.len(), 37);
+        assert_has_prologue(&code);
+        assert_has_epilogue_tail(&code);
+        // All trampolines now use 'call rax', not 'jmp rax'
+        assert!(
+            code.windows(2).any(|w| w == CALL_RAX),
+            "4-param trampoline must use 'call rax'"
+        );
+        assert!(
+            !code.windows(2).any(|w| w == [0xFF, 0xE0]),
+            "4-param trampoline must NOT use 'jmp rax'"
+        );
     }
 
     #[test]
     fn test_generate_trampoline_5_params() {
         let code = generate_trampoline(5, 0x1234_5678_9ABC_DEF0);
-        // 5 params means 1 stack parameter
-        // Should have: stack setup, stack copy, register moves, call, stack cleanup, ret
-        assert!(!code.is_empty());
-
-        // Check that code contains mov rdi, rcx somewhere
-        // Pattern: 0x48, 0x89, 0xCF
-        let has_mov_rdi_rcx = code.windows(3).any(|w| w == [0x48, 0x89, 0xCF]);
-        assert!(has_mov_rdi_rcx, "Should contain 'mov rdi, rcx'");
-
-        // Should contain 'call rax' (0xFF, 0xD0) not 'jmp rax' (0xFF, 0xE0)
-        let has_call = code.windows(2).any(|w| w == [0xFF, 0xD0]);
-        assert!(has_call, "Should use 'call rax' for 5+ parameters");
-
-        // Should contain 'ret' (0xC3) at the end
-        assert_eq!(*code.last().unwrap(), 0xC3, "Should end with 'ret'");
+        // 5 params: all fit in Linux registers (RDI,RSI,RDX,RCX,R8) – no Linux stack params.
+        // prologue(6) + 4×reg_mov(12) + mov r8,[rsp+64](5) + movabs(10) + call(2) + add(4) + tail(3) = 42
+        assert_eq!(code.len(), 42);
+        assert_has_prologue(&code);
+        assert_has_epilogue_tail(&code);
+        assert!(
+            code.windows(2).any(|w| w == CALL_RAX),
+            "Should use 'call rax'"
+        );
+        // 'mov r8, [rsp+64]' = 4C 8B 44 24 40
+        let has_load_r8 = code.windows(5).any(|w| w == [0x4C, 0x8B, 0x44, 0x24, 0x40]);
+        assert!(has_load_r8, "Should load param5 into R8 from [rsp+64]");
     }
 
     #[test]
     fn test_generate_trampoline_6_params() {
         let code = generate_trampoline(6, 0x1234_5678_9ABC_DEF0);
-        // 6 params means 2 stack parameters (even number, no alignment padding needed)
-        assert!(!code.is_empty());
-
-        // Should contain 'call rax' not 'jmp rax'
-        let has_call = code.windows(2).any(|w| w == [0xFF, 0xD0]);
-        assert!(has_call, "Should use 'call rax' for 6 parameters");
-
-        // Should contain 'ret' at the end
-        assert_eq!(*code.last().unwrap(), 0xC3);
+        // 6 params: all in Linux registers – no Linux stack params.
+        // prologue(6) + 4×reg_mov(12) + mov r8(5) + mov r9(5) + movabs(10) + call(2) + add(4) + tail(3) = 47
+        assert_eq!(code.len(), 47);
+        assert_has_prologue(&code);
+        assert_has_epilogue_tail(&code);
+        assert!(
+            code.windows(2).any(|w| w == CALL_RAX),
+            "Should use 'call rax'"
+        );
+        // 'mov r9, [rsp+72]' = 4C 8B 4C 24 48
+        let has_load_r9 = code.windows(5).any(|w| w == [0x4C, 0x8B, 0x4C, 0x24, 0x48]);
+        assert!(has_load_r9, "Should load param6 into R9 from [rsp+72]");
     }
 
     #[test]
     fn test_generate_trampoline_8_params() {
         let code = generate_trampoline(8, 0x1234_5678_9ABC_DEF0);
-        // 8 params means 4 stack parameters
-        assert!(!code.is_empty());
-
-        // Should use 'call rax' for 5+ parameters
-        let has_call = code.windows(2).any(|w| w == [0xFF, 0xD0]);
-        assert!(has_call, "Should use 'call rax' for 8 parameters");
-
-        // Should end with 'ret'
-        assert_eq!(*code.last().unwrap(), 0xC3);
-    }
-
-    #[test]
-    fn test_stack_alignment_odd_params() {
-        // 5 params = 1 stack param (odd) -> needs 8 bytes alignment padding
-        let code = generate_trampoline(5, 0x1234_5678_9ABC_DEF0);
-
-        // The code should allocate 8 (param) + 8 (alignment) = 16 bytes
-        // sub rsp, 16: 48 83 EC 10
-        let has_sub_16 = code.windows(4).any(|w| w == [0x48, 0x83, 0xEC, 0x10]);
+        // 8 params: linux_stack_params=2, align_pad=0, stack_extra=16
+        // prologue(6) + sub rsp,16(4) + 2×(mov rax+mov store)(10) + 4×reg_mov(12) +
+        //   mov r8(5) + mov r9(5) + movabs(10) + call(2) + add rsp,24(4) + tail(3) = 71
+        assert_eq!(code.len(), 71);
+        assert_has_prologue(&code);
+        assert_has_epilogue_tail(&code);
         assert!(
-            has_sub_16,
-            "Should allocate 16 bytes (8 param + 8 align) for 5 params"
+            code.windows(2).any(|w| w == CALL_RAX),
+            "Should use 'call rax'"
+        );
+        // epilogue add rsp, 24 (stack_extra=16, +8 prologue = 24 = 0x18)
+        let has_add_24 = code.windows(4).any(|w| w == [0x48, 0x83, 0xC4, 0x18]);
+        assert!(
+            has_add_24,
+            "Epilogue should add rsp, 24 for 8-param function"
         );
     }
 
     #[test]
-    fn test_stack_alignment_even_params() {
-        // 6 params = 2 stack params (even) -> no alignment padding needed
-        let code = generate_trampoline(6, 0x1234_5678_9ABC_DEF0);
+    fn test_stack_params_go_to_registers_not_stack() {
+        // Params 5 and 6 should go to Linux R8 and R9 (register params in System V),
+        // NOT onto the Linux stack as the old implementation incorrectly did.
+        let code5 = generate_trampoline(5, 0x1234_5678_9ABC_DEF0);
+        let code6 = generate_trampoline(6, 0x1234_5678_9ABC_DEF0);
 
-        // The code should allocate 16 bytes (2 params * 8)
-        // sub rsp, 16: 48 83 EC 10
-        let has_sub_16 = code.windows(4).any(|w| w == [0x48, 0x83, 0xEC, 0x10]);
+        // For 5 params there should be no 'sub rsp' beyond the prologue's 'sub rsp, 8'
+        // (prologue sub rsp,8 is at bytes 2-5; no second sub rsp should appear)
+        let sub_rsp_count = code5
+            .windows(3)
+            .filter(|w| w == &[0x48, 0x83, 0xEC])
+            .count();
+        assert_eq!(
+            sub_rsp_count, 1,
+            "5-param trampoline should only have the prologue sub rsp,8"
+        );
+        let sub_rsp_count6 = code6
+            .windows(3)
+            .filter(|w| w == &[0x48, 0x83, 0xEC])
+            .count();
+        assert_eq!(
+            sub_rsp_count6, 1,
+            "6-param trampoline should only have the prologue sub rsp,8"
+        );
+    }
+
+    #[test]
+    fn test_linux_stack_params_for_7_plus_params() {
+        // 7 params: linux_stack_params=1, stack_extra=16 (8 param + 8 align pad)
+        let code7 = generate_trampoline(7, 0x1234_5678_9ABC_DEF0);
+        assert_has_prologue(&code7);
+        assert_has_epilogue_tail(&code7);
+        // sub rsp, 16 for linux stack allocation: 48 83 EC 10
+        let has_sub_16 = code7.windows(4).any(|w| w == [0x48, 0x83, 0xEC, 0x10]);
         assert!(
             has_sub_16,
-            "Should allocate 16 bytes (2 params * 8) for 6 params"
+            "7-param trampoline should sub rsp,16 for stack_extra"
         );
+
+        // 8 params: linux_stack_params=2, stack_extra=16 (2 params, no extra pad)
+        let code8 = generate_trampoline(8, 0x1234_5678_9ABC_DEF0);
+        let has_sub_16_8 = code8.windows(4).any(|w| w == [0x48, 0x83, 0xEC, 0x10]);
+        assert!(
+            has_sub_16_8,
+            "8-param trampoline should sub rsp,16 for stack_extra"
+        );
+    }
+
+    #[test]
+    fn test_rdi_rsi_save_restore_present() {
+        // Every trampoline must save RSI/RDI in prologue and restore in epilogue.
+        for n in 0..=8 {
+            let code = generate_trampoline(n, 0xDEAD_BEEF_1234_5678);
+            // Prologue starts with: push rdi (57), push rsi (56)
+            assert_eq!(
+                code[0], 0x57,
+                "param count {n}: first byte must be 'push rdi' (0x57)"
+            );
+            assert_eq!(
+                code[1], 0x56,
+                "param count {n}: second byte must be 'push rsi' (0x56)"
+            );
+            // Epilogue ends with: pop rsi (5E), pop rdi (5F), ret (C3)
+            let n_bytes = code.len();
+            assert_eq!(
+                code[n_bytes - 3],
+                0x5E,
+                "param count {n}: third-from-last byte must be 'pop rsi' (0x5E)"
+            );
+            assert_eq!(
+                code[n_bytes - 2],
+                0x5F,
+                "param count {n}: second-from-last byte must be 'pop rdi' (0x5F)"
+            );
+            assert_eq!(
+                code[n_bytes - 1],
+                0xC3,
+                "param count {n}: last byte must be 'ret' (0xC3)"
+            );
+            // No trampoline should use 'jmp rax' anymore
+            assert!(
+                !code.windows(2).any(|w| w == [0xFF, 0xE0]),
+                "param count {n}: must NOT use 'jmp rax'"
+            );
+        }
     }
 
     #[test]
@@ -424,5 +605,6 @@ mod tests {
         // Should generate code for 2 integer parameters
         // FP parameters are already in correct XMM registers
         assert!(!code.is_empty());
+        assert_has_prologue(&code);
     }
 }
