@@ -15,6 +15,35 @@ or contact [opencode@microsoft.com](mailto:opencode@microsoft.com) with any addi
 
 ## Development Setup
 
+### Quick Setup (Recommended)
+
+For the fastest development experience, run the automated setup checker:
+
+```bash
+./scripts/setup-workspace.sh
+```
+
+This will check for and guide you to install:
+- Fast linker (mold or lld) - speeds up linking by 3-5x
+- cargo-nextest - speeds up tests by 2-3x
+- Other recommended tools
+
+Or install manually:
+
+```bash
+# Fast linker (choose one)
+sudo apt install mold        # Recommended
+# OR
+sudo apt install lld         # Alternative
+
+# Fast test runner
+cargo install cargo-nextest
+
+# After installing, edit .cargo/config.toml to enable the fast linker
+```
+
+For more optimization tips, see [Workspace Setup Optimization Guide](./docs/workspace_setup_optimization.md).
+
 ### Prerequisites
 
 #### Rust Toolchain
