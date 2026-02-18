@@ -26,7 +26,7 @@
 | `GetEnvironmentVariableW` | kernel32.rs | ✅ Real `getenv` via libc |
 | `SetEnvironmentVariableW` | kernel32.rs | ✅ Real `setenv`/`unsetenv` via libc |
 | `GetEnvironmentStringsW` | kernel32.rs | ✅ Returns full process environment block |
-| `FreeEnvironmentStringsW` | kernel32.rs | ✅ No-op (process-lifetime leak) |
+| `FreeEnvironmentStringsW` | kernel32.rs | ✅ Properly frees the allocated block via registry |
 | `GetCommandLineW` | kernel32.rs | ✅ Reads from `PROCESS_COMMAND_LINE` global |
 | `set_process_command_line` | kernel32.rs (pub) | ✅ Called by runner before entry point |
 | `CreateDirectoryW` | kernel32.rs | ✅ `std::fs::create_dir` + path translation |
