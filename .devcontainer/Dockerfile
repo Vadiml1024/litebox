@@ -1,7 +1,7 @@
 # Use Debian Bookworm as the base image for a stable, modern environment
 FROM debian:bookworm-slim
 
-# Install system dependencies
+# Install system dependencies including Node.js
 RUN apt-get update && apt-get install -y \
     curl \
     build-essential \
@@ -11,6 +11,8 @@ RUN apt-get update && apt-get install -y \
     gdb \
     git \
     ca-certificates \
+    nodejs \
+    npm \
     && rm -rf /var/lib/apt/lists/*
 
 # Set up Rust environment variables
@@ -31,6 +33,13 @@ RUN rustup target add x86_64-pc-windows-gnu
 
 # Install cargo-nextest for faster test execution
 RUN cargo install cargo-nextest --locked
+
+# Install MCP servers for GitHub Copilot integration
+# Install GitHub MCP server - provides GitHub repository access (issues, PRs, code search, etc.)
+RUN npm install -g github-mcp-server@latest --unsafe-perm
+
+# Verify installations
+RUN node --version && npm --version && github-mcp-server --version || echo "github-mcp-server installed"
 
 # Create workspace directory
 WORKDIR /workspace

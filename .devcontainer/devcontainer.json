@@ -42,11 +42,12 @@
 	
 	// Set environment variables
 	"remoteEnv": {
-		"RUST_BACKTRACE": "1"
+		"RUST_BACKTRACE": "1",
+		"NODE_ENV": "development"
 	},
 	
-	// Post-create command to set up the environment
-	"postCreateCommand": "rustc --version && cargo --version && cargo nextest --version",
+	// Post-create command to set up the environment and verify installations
+	"postCreateCommand": "rustc --version && cargo --version && cargo nextest --version && node --version && npm --version",
 	
 	// Features to add (optional)
 	"features": {},
