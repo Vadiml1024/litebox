@@ -259,3 +259,138 @@ fn test_dll_manager_has_all_required_exports() {
         assert!(result.is_ok(), "WS2_32.dll should export {func_name}");
     }
 }
+
+#[cfg(test)]
+mod test_program_helpers {
+    use std::env;
+    use std::path::PathBuf;
+    use std::process::Command;
+
+    /// Get the path to a Windows test program executable
+    pub fn get_test_program_path(name: &str) -> PathBuf {
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+        let workspace_root = PathBuf::from(manifest_dir).parent().unwrap().to_path_buf();
+
+        // Default target directory for the windows_test_programs crate
+        let default_target_dir = workspace_root.join("windows_test_programs").join("target");
+
+        // Honor CARGO_TARGET_DIR if set, otherwise use the default
+        let target_dir = env::var("CARGO_TARGET_DIR")
+            .map(PathBuf::from)
+            .unwrap_or(default_target_dir);
+
+        let base = target_dir.join("x86_64-pc-windows-gnu");
+
+        // Prefer release builds, but fall back to debug if needed
+        for profile in ["release", "debug"] {
+            let candidate = base.join(profile).join(format!("{name}.exe"));
+            if candidate.exists() {
+                return candidate;
+            }
+        }
+
+        // If nothing exists yet, return the conventional release path
+        base.join("release").join(format!("{name}.exe"))
+    }
+
+    /// Run a Windows test program and return the output
+    #[allow(dead_code)]
+    pub fn run_test_program(
+        name: &str,
+        args: &[&str],
+    ) -> Result<std::process::Output, std::io::Error> {
+        let runner_exe = env!("CARGO_BIN_EXE_litebox_runner_windows_on_linux_userland");
+        let test_program = get_test_program_path(name);
+
+        let mut cmd = Command::new(runner_exe);
+        cmd.arg(test_program);
+        for arg in args {
+            cmd.arg(arg);
+        }
+
+        cmd.output()
+    }
+
+    /// Check if a test program exists
+    pub fn test_program_exists(name: &str) -> bool {
+        get_test_program_path(name).exists()
+    }
+}
+
+/// Test that we can load and potentially run the hello_cli program
+#[test]
+#[ignore = "Requires MinGW-built Windows test programs (run with --ignored after building windows_test_programs)"]
+fn test_hello_cli_program_exists() {
+    use test_program_helpers::*;
+
+    // Verify the test program was built
+    assert!(
+        test_program_exists("hello_cli"),
+        "hello_cli.exe should be built in windows_test_programs"
+    );
+}
+
+/// Test that we can load and potentially run the file_io_test program
+#[test]
+#[ignore = "Requires MinGW-built Windows test programs (run with --ignored after building windows_test_programs)"]
+fn test_file_io_test_program_exists() {
+    use test_program_helpers::*;
+
+    // Verify the test program was built
+    assert!(
+        test_program_exists("file_io_test"),
+        "file_io_test.exe should be built in windows_test_programs"
+    );
+}
+
+/// Test that we can load and potentially run the args_test program
+#[test]
+#[ignore = "Requires MinGW-built Windows test programs (run with --ignored after building windows_test_programs)"]
+fn test_args_test_program_exists() {
+    use test_program_helpers::*;
+
+    // Verify the test program was built
+    assert!(
+        test_program_exists("args_test"),
+        "args_test.exe should be built in windows_test_programs"
+    );
+}
+
+/// Test that we can load and potentially run the env_test program
+#[test]
+#[ignore = "Requires MinGW-built Windows test programs (run with --ignored after building windows_test_programs)"]
+fn test_env_test_program_exists() {
+    use test_program_helpers::*;
+
+    // Verify the test program was built
+    assert!(
+        test_program_exists("env_test"),
+        "env_test.exe should be built in windows_test_programs"
+    );
+}
+
+/// Test that we can load and potentially run the string_test program
+#[test]
+#[ignore = "Requires MinGW-built Windows test programs (run with --ignored after building windows_test_programs)"]
+fn test_string_test_program_exists() {
+    use test_program_helpers::*;
+
+    // Verify the test program was built
+    assert!(
+        test_program_exists("string_test"),
+        "string_test.exe should be built in windows_test_programs"
+    );
+}
+
+/// Test that we can load and potentially run the math_test program
+#[test]
+#[ignore = "Requires MinGW-built Windows test programs (run with --ignored after building windows_test_programs)"]
+fn test_math_test_program_exists() {
+    use test_program_helpers::*;
+
+    // Verify the test program was built
+    assert!(
+        test_program_exists("math_test"),
+        "math_test.exe should be built in windows_test_programs"
+    );
+}

@@ -1,5 +1,5 @@
 [workspace]
-members = ["hello_cli", "hello_gui", "minimal_test"]
+members = ["hello_cli", "hello_gui", "file_io_test", "args_test", "env_test", "string_test", "math_test"]
 resolver = "2"
 
 [profile.release]

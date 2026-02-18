@@ -1,8 +1,8 @@
 # Windows Test Programs
 
-This directory contains simple Windows programs used to test the Windows-on-Linux platform in LiteBox.
+This directory contains Windows programs used to test the Windows-on-Linux platform in LiteBox.
 
-## Programs
+## Test Programs
 
 ### hello_cli
 
@@ -17,6 +17,56 @@ A simple GUI program that:
 - Shows a message box with "Hello LiteBox!"
 - Demonstrates basic Windows GUI functionality
 - Tests Windows API calls (MessageBoxW) in the Windows-on-Linux environment
+
+### file_io_test
+
+Comprehensive file I/O operations test that validates:
+- Creating and writing files
+- Reading file contents
+- File metadata queries
+- Deleting files
+- Directory creation and listing
+- Nested file operations
+
+This test creates files and directories in a unique temporary directory, performs operations on them, validates results, and cleans up afterward. Exits with non-zero status on any test failure.
+
+### args_test
+
+Command-line argument parsing test that validates:
+- Accessing the program name (argv[0])
+- Parsing command-line arguments
+- Handling arguments with spaces
+- Getting the current executable path
+
+Run with various arguments to test: `args_test.exe arg1 "arg with spaces" arg3`
+
+### env_test
+
+Environment variable operations test that validates:
+- Reading common environment variables (PATH, HOME, USER, etc.)
+- Setting custom environment variables
+- Removing environment variables
+- Listing all environment variables
+
+### string_test
+
+String operations test that validates:
+- String concatenation and manipulation
+- String comparison (case-sensitive and case-insensitive)
+- String searching (finding substrings)
+- String splitting and trimming
+- Unicode string handling
+- Case conversion (uppercase/lowercase)
+
+### math_test
+
+Mathematical operations test that validates:
+- Integer arithmetic (addition, subtraction, multiplication, division, modulo)
+- Floating-point arithmetic
+- Math library functions (sqrt, pow, sin, cos, tan, exp, ln)
+- Special floating-point values (infinity, NaN)
+- Rounding operations (floor, ceil, round, trunc)
+- Bitwise operations (AND, OR, XOR, NOT, shifts)
 
 ## Building
 
@@ -39,20 +89,27 @@ cargo build --release --target x86_64-pc-windows-gnu
 The resulting executables will be in:
 - `target/x86_64-pc-windows-gnu/release/hello_cli.exe`
 - `target/x86_64-pc-windows-gnu/release/hello_gui.exe`
+- `target/x86_64-pc-windows-gnu/release/file_io_test.exe`
+- `target/x86_64-pc-windows-gnu/release/args_test.exe`
+- `target/x86_64-pc-windows-gnu/release/env_test.exe`
+- `target/x86_64-pc-windows-gnu/release/string_test.exe`
+- `target/x86_64-pc-windows-gnu/release/math_test.exe`
 
 ## Testing
 
-These programs can be used to test the Windows-on-Linux runner once the DLL loading and API implementation is complete:
+These programs can be used to test the Windows-on-Linux runner:
 
 ```bash
 # Build the runner
 cargo build -p litebox_runner_windows_on_linux_userland
 
-# Run the CLI program (requires Windows API implementation to be complete)
+# Run the test programs
 ./target/debug/litebox_runner_windows_on_linux_userland ./windows_test_programs/target/x86_64-pc-windows-gnu/release/hello_cli.exe
-
-# Run the GUI program (if GUI support is implemented)
-./target/debug/litebox_runner_windows_on_linux_userland ./windows_test_programs/target/x86_64-pc-windows-gnu/release/hello_gui.exe
+./target/debug/litebox_runner_windows_on_linux_userland ./windows_test_programs/target/x86_64-pc-windows-gnu/release/file_io_test.exe
+./target/debug/litebox_runner_windows_on_linux_userland ./windows_test_programs/target/x86_64-pc-windows-gnu/release/args_test.exe arg1 arg2
+./target/debug/litebox_runner_windows_on_linux_userland ./windows_test_programs/target/x86_64-pc-windows-gnu/release/env_test.exe
+./target/debug/litebox_runner_windows_on_linux_userland ./windows_test_programs/target/x86_64-pc-windows-gnu/release/string_test.exe
+./target/debug/litebox_runner_windows_on_linux_userland ./windows_test_programs/target/x86_64-pc-windows-gnu/release/math_test.exe
 ```
 
 ### Current Status
@@ -74,8 +131,15 @@ This confirms the PE loader is working correctly. Full execution will be possibl
 
 ## Purpose
 
-These minimal test programs serve as basic smoke tests to verify that:
-1. Windows executables can be loaded and executed
-2. Console I/O works correctly
-3. Basic Windows API calls are functional
-4. The Windows-on-Linux platform is working as expected
+These test programs serve as a comprehensive test suite to verify that:
+1. Windows executables can be loaded and executed correctly
+2. File I/O operations work properly (create, read, write, delete, directory ops)
+3. Command-line argument parsing is functional
+4. Environment variable operations work correctly
+5. String manipulation and CRT functions are implemented
+6. Mathematical operations and floating-point handling work correctly
+7. Console I/O works correctly
+8. Memory allocation and management are functional
+9. The Windows-on-Linux platform is working as expected
+
+Most test programs validate their operations and report success (✓) or failure (✗) for each check, exiting with non-zero status on any failure. Programs like `file_io_test`, `string_test`, and `math_test` perform actual validation. Programs like `args_test` and `hello_cli` primarily demonstrate functionality by displaying output.

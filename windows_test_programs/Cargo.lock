@@ -3,6 +3,18 @@
 version = 4
 
 [[package]]
+name = "args_test"
+version = "0.1.0"
+
+[[package]]
+name = "env_test"
+version = "0.1.0"
+
+[[package]]
+name = "file_io_test"
+version = "0.1.0"
+
+[[package]]
 name = "hello_cli"
 version = "0.1.0"
 
@@ -14,7 +26,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "minimal_test"
+name = "math_test"
 version = "0.1.0"
 
 [[package]]
@@ -34,6 +46,10 @@ checksum = "21b2ebcf727b7760c461f091f9f0f539b77b8e87f2fd88131e7f1b433b3cece4"
 dependencies = [
  "proc-macro2",
 ]
+
+[[package]]
+name = "string_test"
+version = "0.1.0"
 
 [[package]]
 name = "syn"
