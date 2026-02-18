@@ -2,6 +2,17 @@
 
 This guide explains how to create and use a GitHub Codespace for the LiteBox repository with pre-installed MCP servers.
 
+## Quick Start
+
+**Can't see the branch?** Jump to [Troubleshooting: Can't See the Branch](#cant-see-the-branch-copilotadd-mcp-servers-to-devcontainer)
+
+**Fastest method:**
+```bash
+gh codespace create --repo Vadiml1024/litebox --branch copilot/add-mcp-servers-to-devcontainer --web
+```
+
+Or go directly to the branch: https://github.com/Vadiml1024/litebox/tree/copilot/add-mcp-servers-to-devcontainer
+
 ## What is a GitHub Codespace?
 
 GitHub Codespaces provides a complete, cloud-based development environment that runs in your browser or VS Code. It uses the `.devcontainer` configuration in this repository to automatically set up:
@@ -16,17 +27,35 @@ GitHub Codespaces provides a complete, cloud-based development environment that 
 
 ### Method 1: GitHub Web UI (Recommended)
 
+#### Step-by-Step Instructions:
+
 1. **Navigate to the repository** on GitHub:
    - Go to: https://github.com/Vadiml1024/litebox
 
-2. **Start creating a Codespace**:
+2. **Switch to the MCP servers branch**:
+   - Click on the branch dropdown (currently showing "main" or another branch name)
+   - Type `copilot/add-mcp-servers-to-devcontainer` in the search box
+   - Click on the branch name when it appears
+   - You should now see "copilot/add-mcp-servers-to-devcontainer" in the branch dropdown
+
+3. **Start creating a Codespace**:
    - Click the green **"Code"** button (top right of the file list)
    - Select the **"Codespaces"** tab
    - Click **"Create codespace on copilot/add-mcp-servers-to-devcontainer"**
+   - (The button should now show your selected branch name)
    
    ![Creating a Codespace](https://docs.github.com/assets/cb-77061/mw-1440/images/help/codespaces/new-codespace-button.webp)
 
-3. **Wait for the build** (first time only):
+#### Alternative: Use the branch selector in Codespace UI
+
+1. **Navigate to the repository**: https://github.com/Vadiml1024/litebox
+2. Click the green **"Code"** button → **"Codespaces"** tab
+3. Click the **"..."** (three dots) or dropdown arrow next to "Create codespace"
+4. Select **"New with options..."**
+5. In the branch dropdown, select `copilot/add-mcp-servers-to-devcontainer`
+6. Click **"Create codespace"**
+
+4. **Wait for the build** (first time only):
    - The first build takes 10-15 minutes to:
      - Pull the base Debian image
      - Install system packages (Node.js, npm, build tools)
@@ -36,7 +65,7 @@ GitHub Codespaces provides a complete, cloud-based development environment that 
      - Cache Cargo dependencies
    - Subsequent starts are much faster (< 1 minute)
 
-4. **Codespace is ready!**
+5. **Codespace is ready!**
    - VS Code will open in your browser
    - All tools and MCP servers are pre-installed
    - You can start developing immediately
@@ -181,6 +210,32 @@ If the Codespace fails to build:
    - Network timeout: Retry the build
    - Disk space: GitHub provides adequate space, but check if you're using a small machine type
 3. You can rebuild: `Codespaces: Rebuild Container` from the command palette
+
+### Can't See the Branch `copilot/add-mcp-servers-to-devcontainer`
+
+If you can't find the branch when creating a Codespace:
+
+**Solution 1: Navigate to the branch first**
+1. On the repository page, click the branch dropdown (shows "main" by default)
+2. Type `copilot/add-mcp-servers-to-devcontainer` in the search box
+3. Click on the branch when it appears
+4. Now click "Code" → "Codespaces" → The button should show "Create codespace on copilot/add-mcp-servers-to-devcontainer"
+
+**Solution 2: Use "New with options"**
+1. Click "Code" → "Codespaces"
+2. Click the "..." menu or dropdown arrow
+3. Select "New with options..."
+4. Choose `copilot/add-mcp-servers-to-devcontainer` from the branch dropdown
+5. Click "Create codespace"
+
+**Solution 3: Use GitHub CLI** (easiest)
+```bash
+gh codespace create --repo Vadiml1024/litebox --branch copilot/add-mcp-servers-to-devcontainer --web
+```
+
+**Solution 4: Create from the branch page directly**
+1. Go to: https://github.com/Vadiml1024/litebox/tree/copilot/add-mcp-servers-to-devcontainer
+2. Click "Code" → "Codespaces" → "Create codespace on copilot/add-mcp-servers-to-devcontainer"
 
 ### MCP Server Not Available
 
