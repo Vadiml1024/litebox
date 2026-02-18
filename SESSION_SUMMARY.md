@@ -1,4 +1,113 @@
-# Windows-on-Linux Support - Session Summary (2026-02-18 Session 9)
+# Windows-on-Linux Support - Session Summary (2026-02-18 Session 10)
+
+## Work Completed ✅
+
+### 1. Phase 10 — Fixed File I/O Round-Trip
+
+**Problem:** Programs that open files with `CreateFileW` and then write via `NtWriteFile`
+(the NT-layer API, used internally by the MinGW CRT `_write` and `fwrite`) would get
+`STATUS_INVALID_HANDLE` because the NT layer only knew about stdin/stdout/stderr.
+
+**Fix:** Unified the two file-handle registries by exposing two pub helpers from `kernel32.rs`
+(`nt_write_file_handle` / `nt_read_file_handle`) that look up the kernel32 `FILE_HANDLES` map.
+`ntdll_NtWriteFile` and `ntdll_NtReadFile` now fall back to these helpers when the handle
+is not a standard console handle.
+
+**Real implementations added:**
+- **`GetFileSizeEx`** — calls `file.metadata().len()` via handle registry.
+- **`SetFilePointerEx`** — calls `file.seek(SeekFrom::*)` (FILE_BEGIN / CURRENT / END).
+- **`MoveFileExW`** — `std::fs::rename` with `wide_path_to_linux` on both paths.
+- **`RemoveDirectoryW`** — `std::fs::remove_dir` with `wide_path_to_linux`.
+
+### 2. Phase 11 — Command-Line Argument Passing
+
+**Problem:** `msvcrt___getmainargs` always returned `argc=0` and an empty argv,
+so programs could not read their command-line arguments.  `_acmdln` pointed to a
+static empty string.
+
+**Fix:**
+- Added `get_command_line_utf8()` public function to `kernel32.rs`, which reads
+  `PROCESS_COMMAND_LINE` and returns a UTF-8 `String`.
+- Added `parse_windows_command_line()` helper in `msvcrt.rs` that implements the
+  Windows quoting rules (spaces separate args, `"..."` quotes, `\"` escapes).
+- `msvcrt___getmainargs` now parses the real command line into a `Vec<CString>` stored
+  in a module-level `OnceLock<(Vec<CString>, ArgvPtrs)>` so the raw `char**` pointers
+  are permanently stable.
+- `msvcrt__acmdln` now builds a `CString` from the real command line via
+  `ACMDLN_STORAGE: OnceLock<CString>` instead of returning a static empty byte.
+
+### 3. Reduced Global-State Count (Ratchet)
+
+Replaced 4 function-local/module-level statics (`ARGV_STORAGE`, `ENV_STORAGE`,
+`ACMDLN`, `ACMDLN_PTR`) with 2 new statics (`PARSED_MAIN_ARGS`, `ACMDLN_STORAGE`).
+Net: −2. Ratchet updated from 22 → 21.
+
+### 4. New Unit Tests (12 new tests)
+
+**kernel32.rs:**
+- `test_file_create_write_read_close_roundtrip` — full create/write/getsize/seek/read/close cycle.
+- `test_move_file_ex_w` — rename a file and verify src gone, dst present.
+- `test_remove_directory_w` — create and remove a directory.
+- `test_nt_write_read_file_handle` — verifies the shared NT helpers work correctly.
+- `test_get_command_line_utf8_default` — sanity check (no panic).
+
+**ntdll_impl.rs:**
+- `test_nt_write_file_via_kernel32_handle` — NtWriteFile + NtReadFile round-trip through
+  a kernel32 file handle.
+
+**msvcrt.rs:**
+- `test_parse_windows_command_line_simple` / `_quoted` / `_escaped_quote` / `_empty` / `_single`
+  — unit tests for the new command-line parser.
+- `test_acmdln_not_null` — verifies `_acmdln` returns a non-null pointer.
+
+## Test Results
+
+```
+cargo test -p litebox_shim_windows -p litebox_platform_linux_for_windows -p litebox_runner_windows_on_linux_userland
+Platform: 163 passed (up from 151, +12 new tests)
+Shim:      47 passed (unchanged)
+Runner:     7 passed (unchanged)
+Ratchet: all 3 ratchet tests passing
+```
+
+## Test-Program Scores After Session 10
+
+| Program | Session 9 | Session 10 |
+|---|---|---|
+| `hello_cli.exe` | ✅ | ✅ |
+| `math_test.exe` | ✅ 7/7 | ✅ 7/7 |
+| `string_test.exe` | ✅ 8/9 | ✅ 8/9 |
+| `env_test.exe` | ✅ | ✅ |
+| `file_io_test.exe` | 🔶 Write fails | ✅ WriteFile + NtWriteFile both work |
+| `args_test.exe` | 🔶 argc=0 | ✅ Correct argv via __getmainargs |
+
+## Files Modified This Session
+
+- `litebox_platform_linux_for_windows/src/kernel32.rs`
+  - Added `Seek` to io imports
+  - Added `nt_write_file_handle()`, `nt_read_file_handle()`, `get_command_line_utf8()` pub fns
+  - Replaced stubs: `GetFileSizeEx`, `SetFilePointerEx`, `MoveFileExW`, `RemoveDirectoryW`
+  - Added 5 new unit tests
+- `litebox_platform_linux_for_windows/src/ntdll_impl.rs`
+  - `ntdll_NtWriteFile` — falls back to kernel32 handle registry
+  - `ntdll_NtReadFile` — falls back to kernel32 handle registry
+  - Added 1 new unit test
+- `litebox_platform_linux_for_windows/src/msvcrt.rs`
+  - Added `CString`, `OnceLock` to imports
+  - Added `ArgvPtrs` wrapper struct (Send+Sync newtype for Vec<*mut i8>)
+  - Added `PARSED_MAIN_ARGS` OnceLock (replaces 2 function-local statics)
+  - Added `parse_windows_command_line()` helper
+  - Added `ACMDLN_STORAGE` OnceLock (replaces ACMDLN + ACMDLN_PTR statics)
+  - Fixed `msvcrt___getmainargs` to parse real command line
+  - Fixed `msvcrt__acmdln` to return real command line
+  - Added 6 new unit tests
+- `dev_tests/src/ratchet.rs` — Updated ratchet globals limit 22 → 21
+
+## What Remains
+
+See `docs/windows_on_linux_continuation_plan.md` for the full Phase 12–18 roadmap.
+Immediate next step: Phase 12 — Extended File System APIs (CopyFileExW, FindFirstFileW, etc.)
+
 
 ## Work Completed ✅
 

@@ -63,8 +63,9 @@ fn std_handle_to_fd(handle: u64) -> Option<i32> {
 
 /// NtWriteFile — write data to a file or device
 ///
-/// This implementation handles the standard console handles (stdin, stdout, stderr).
-/// Other handles return STATUS_INVALID_HANDLE.
+/// Handles the standard console handles (stdin, stdout, stderr) via direct
+/// `libc::write` calls, and regular file handles opened by `kernel32_CreateFileW`
+/// via the kernel32 file-handle registry.
 ///
 /// Windows prototype (9 params, params 7-9 arrive on the Linux stack):
 /// ```c
@@ -96,31 +97,39 @@ pub unsafe extern "C" fn ntdll_NtWriteFile(
     _byte_offset: u64,
     _key: u64,
 ) -> u32 {
-    let Some(fd) = std_handle_to_fd(file_handle) else {
-        set_io_status(io_status_block, status::STATUS_INVALID_HANDLE, 0);
-        return status::STATUS_INVALID_HANDLE;
-    };
-
     if buffer.is_null() || length == 0 {
         set_io_status(io_status_block, status::STATUS_SUCCESS, 0);
         return status::STATUS_SUCCESS;
     }
 
     // SAFETY: Caller guarantees buffer is valid for length bytes.
-    let written = libc::write(fd, buffer.cast::<libc::c_void>(), length as libc::size_t);
+    let data = core::slice::from_raw_parts(buffer, length as usize);
 
-    if written < 0 {
-        set_io_status(io_status_block, status::STATUS_IO_DEVICE_ERROR, 0);
-        return status::STATUS_IO_DEVICE_ERROR;
+    // First try standard console handles (stdin=0x10, stdout=0x11, stderr=0x12)
+    if let Some(fd) = std_handle_to_fd(file_handle) {
+        let written = libc::write(fd, buffer.cast::<libc::c_void>(), length as libc::size_t);
+        if written < 0 {
+            set_io_status(io_status_block, status::STATUS_IO_DEVICE_ERROR, 0);
+            return status::STATUS_IO_DEVICE_ERROR;
+        }
+        set_io_status(io_status_block, status::STATUS_SUCCESS, written as u64);
+        return status::STATUS_SUCCESS;
     }
 
-    set_io_status(io_status_block, status::STATUS_SUCCESS, written as u64);
-    status::STATUS_SUCCESS
+    // Fall back to the kernel32 CreateFileW handle registry
+    if let Some(written) = crate::kernel32::nt_write_file_handle(file_handle, data) {
+        set_io_status(io_status_block, status::STATUS_SUCCESS, written as u64);
+        return status::STATUS_SUCCESS;
+    }
+
+    set_io_status(io_status_block, status::STATUS_INVALID_HANDLE, 0);
+    status::STATUS_INVALID_HANDLE
 }
 
 /// NtReadFile — read data from a file or device
 ///
-/// This implementation handles the standard console handles only.
+/// Handles the standard console handles and regular file handles opened by
+/// `kernel32_CreateFileW` via the kernel32 file-handle registry.
 ///
 /// Windows prototype (9 params, params 7-9 arrive on the Linux stack):
 /// ```c
@@ -152,30 +161,44 @@ pub unsafe extern "C" fn ntdll_NtReadFile(
     _byte_offset: u64,
     _key: u64,
 ) -> u32 {
-    let Some(fd) = std_handle_to_fd(file_handle) else {
-        set_io_status(io_status_block, status::STATUS_INVALID_HANDLE, 0);
-        return status::STATUS_INVALID_HANDLE;
-    };
-
     if buffer.is_null() || length == 0 {
         set_io_status(io_status_block, status::STATUS_SUCCESS, 0);
         return status::STATUS_SUCCESS;
     }
 
+    // First try standard console handles
+    if let Some(fd) = std_handle_to_fd(file_handle) {
+        // SAFETY: Caller guarantees buffer is valid for length bytes.
+        let nread = libc::read(fd, buffer.cast::<libc::c_void>(), length as libc::size_t);
+        if nread == 0 {
+            set_io_status(io_status_block, status::STATUS_END_OF_FILE, 0);
+            return status::STATUS_END_OF_FILE;
+        }
+        if nread < 0 {
+            set_io_status(io_status_block, status::STATUS_IO_DEVICE_ERROR, 0);
+            return status::STATUS_IO_DEVICE_ERROR;
+        }
+        set_io_status(io_status_block, status::STATUS_SUCCESS, nread as u64);
+        return status::STATUS_SUCCESS;
+    }
+
+    // Fall back to the kernel32 CreateFileW handle registry
     // SAFETY: Caller guarantees buffer is valid for length bytes.
-    let nread = libc::read(fd, buffer.cast::<libc::c_void>(), length as libc::size_t);
-
-    if nread == 0 {
-        set_io_status(io_status_block, status::STATUS_END_OF_FILE, 0);
-        return status::STATUS_END_OF_FILE;
+    let buf = core::slice::from_raw_parts_mut(buffer, length as usize);
+    match crate::kernel32::nt_read_file_handle(file_handle, buf) {
+        Some(0) => {
+            set_io_status(io_status_block, status::STATUS_END_OF_FILE, 0);
+            status::STATUS_END_OF_FILE
+        }
+        Some(n) => {
+            set_io_status(io_status_block, status::STATUS_SUCCESS, n as u64);
+            status::STATUS_SUCCESS
+        }
+        None => {
+            set_io_status(io_status_block, status::STATUS_INVALID_HANDLE, 0);
+            status::STATUS_INVALID_HANDLE
+        }
     }
-    if nread < 0 {
-        set_io_status(io_status_block, status::STATUS_IO_DEVICE_ERROR, 0);
-        return status::STATUS_IO_DEVICE_ERROR;
-    }
-
-    set_io_status(io_status_block, status::STATUS_SUCCESS, nread as u64);
-    status::STATUS_SUCCESS
 }
 
 /// NtCreateFile — create or open a file or device object (stub)
@@ -487,5 +510,70 @@ mod tests {
             assert_eq!(ntdll_NtClose(0x11), status::STATUS_SUCCESS);
             assert_eq!(ntdll_NtClose(0xDEAD_BEEF), status::STATUS_SUCCESS);
         }
+    }
+
+    #[test]
+    fn test_nt_write_file_via_kernel32_handle() {
+        // Create a file via kernel32 and verify NtWriteFile can write to it
+        use crate::kernel32::{
+            kernel32_CloseHandle, kernel32_CreateFileW, kernel32_SetFilePointerEx,
+        };
+
+        let path = "/tmp/litebox_ntdll_write_test.txt";
+        let _ = std::fs::remove_file(path);
+
+        let wide: Vec<u16> = path.encode_utf16().chain(std::iter::once(0u16)).collect();
+
+        unsafe {
+            let handle = kernel32_CreateFileW(
+                wide.as_ptr(),
+                0x4000_0000 | 0x8000_0000, // GENERIC_READ | GENERIC_WRITE
+                0,
+                core::ptr::null_mut(),
+                2, // CREATE_ALWAYS
+                0x80,
+                core::ptr::null_mut(),
+            );
+            assert_ne!(handle as usize, usize::MAX, "CreateFileW failed");
+
+            let data = b"NtWriteFile test data";
+            let mut io_sb = [0u64; 2];
+            let status = ntdll_NtWriteFile(
+                handle as u64,
+                0,
+                0,
+                0,
+                io_sb.as_mut_ptr(),
+                data.as_ptr(),
+                data.len() as u32,
+                0,
+                0,
+            );
+            assert_eq!(status, status::STATUS_SUCCESS, "NtWriteFile failed");
+            assert_eq!(io_sb[1], data.len() as u64, "bytes written mismatch");
+
+            // Seek back to start for reading
+            kernel32_SetFilePointerEx(handle, 0, core::ptr::null_mut(), 0);
+
+            let mut buf = [0u8; 32];
+            let mut io_sb2 = [0u64; 2];
+            let status2 = ntdll_NtReadFile(
+                handle as u64,
+                0,
+                0,
+                0,
+                io_sb2.as_mut_ptr(),
+                buf.as_mut_ptr(),
+                buf.len() as u32,
+                0,
+                0,
+            );
+            assert_eq!(status2, status::STATUS_SUCCESS, "NtReadFile failed");
+            let nread = io_sb2[1] as usize;
+            assert_eq!(&buf[..nread], data);
+
+            kernel32_CloseHandle(handle);
+        }
+        let _ = std::fs::remove_file(path);
     }
 }

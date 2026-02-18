@@ -19,7 +19,7 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use std::ffi::CString;
 use std::fs::File;
-use std::io::{Read, Write};
+use std::io::{Read, Seek, Write};
 use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
@@ -158,6 +158,51 @@ fn with_file_handles<R>(f: impl FnOnce(&mut HashMap<usize, FileEntry>) -> R) -> 
 fn alloc_file_handle() -> usize {
     use std::sync::atomic::Ordering;
     FILE_HANDLE_COUNTER.fetch_add(4, Ordering::SeqCst)
+}
+
+/// Write `data` to the file registered under `handle` in the kernel32 file-handle map.
+///
+/// Returns `Some(bytes_written)` if the handle was found, `None` otherwise.
+/// Used by `ntdll_impl.rs` to route `NtWriteFile` calls through the kernel32 handle registry.
+pub fn nt_write_file_handle(handle: u64, data: &[u8]) -> Option<usize> {
+    let handle_val = handle as usize;
+    with_file_handles(|map| {
+        if let Some(entry) = map.get_mut(&handle_val) {
+            entry.file.write(data).ok()
+        } else {
+            None
+        }
+    })
+}
+
+/// Read from the file registered under `handle` in the kernel32 file-handle map.
+///
+/// Returns `Some(bytes_read)` if the handle was found, `None` otherwise.
+/// Used by `ntdll_impl.rs` to route `NtReadFile` calls through the kernel32 handle registry.
+pub fn nt_read_file_handle(handle: u64, buf: &mut [u8]) -> Option<usize> {
+    let handle_val = handle as usize;
+    with_file_handles(|map| {
+        if let Some(entry) = map.get_mut(&handle_val) {
+            entry.file.read(buf).ok()
+        } else {
+            None
+        }
+    })
+}
+
+/// Return the command line as a UTF-8 `String`.
+///
+/// Reads `PROCESS_COMMAND_LINE` (UTF-16) and converts to UTF-8.  Returns an empty
+/// string if the command line has not been set yet.
+pub fn get_command_line_utf8() -> String {
+    PROCESS_COMMAND_LINE
+        .get()
+        .map(|v| {
+            // strip trailing null terminator(s) before converting
+            let end = v.iter().position(|&c| c == 0).unwrap_or(v.len());
+            String::from_utf16_lossy(&v[..end]).to_string()
+        })
+        .unwrap_or_default()
 }
 
 // ── Environment-strings block registry ───────────────────────────────────
@@ -2570,18 +2615,49 @@ pub unsafe extern "C" fn kernel32_SetConsoleCtrlHandler(
     1 // TRUE - pretend success
 }
 
-/// SetFilePointerEx stub - sets the file pointer
+/// SetFilePointerEx - moves the file pointer of the specified file
+///
+/// Translates Windows `move_method` (FILE_BEGIN=0, FILE_CURRENT=1, FILE_END=2) to
+/// a `std::io::SeekFrom` and calls `seek()` on the file registered in the handle map.
 ///
 /// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
+/// `new_file_pointer` may be null; when non-null it must be a valid writable `i64`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_SetFilePointerEx(
-    _file: *mut core::ffi::c_void,
-    _distance_to_move: i64,
-    _new_file_pointer: *mut i64,
-    _move_method: u32,
+    file: *mut core::ffi::c_void,
+    distance_to_move: i64,
+    new_file_pointer: *mut i64,
+    move_method: u32,
 ) -> i32 {
-    0 // FALSE - not implemented
+    let handle_val = file as usize;
+    let seek_from = match move_method {
+        0 => std::io::SeekFrom::Start(distance_to_move as u64), // FILE_BEGIN
+        1 => std::io::SeekFrom::Current(distance_to_move),      // FILE_CURRENT
+        2 => std::io::SeekFrom::End(distance_to_move),          // FILE_END
+        _ => {
+            kernel32_SetLastError(87); // ERROR_INVALID_PARAMETER
+            return 0;
+        }
+    };
+    let result = with_file_handles(|map| {
+        if let Some(entry) = map.get_mut(&handle_val) {
+            entry.file.seek(seek_from).ok().map(|pos| pos as i64)
+        } else {
+            None
+        }
+    });
+    match result {
+        Some(pos) => {
+            if !new_file_pointer.is_null() {
+                *new_file_pointer = pos;
+            }
+            1 // TRUE
+        }
+        None => {
+            kernel32_SetLastError(6); // ERROR_INVALID_HANDLE
+            0 // FALSE
+        }
+    }
 }
 
 /// SetLastError - sets the last error code for the current thread
@@ -2652,16 +2728,38 @@ pub unsafe extern "C" fn kernel32_GetFileInformationByHandleEx(
     0 // FALSE
 }
 
-/// GetFileSizeEx stub
+/// GetFileSizeEx - retrieves the size of the specified file
+///
+/// Looks up the file handle in the kernel32 file-handle registry and calls
+/// `metadata().len()` to get the actual file size.
 ///
 /// # Safety
 /// This function is a stub that returns a safe default value without dereferencing any pointers.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_GetFileSizeEx(
-    _file: *mut core::ffi::c_void,
-    _file_size: *mut i64,
+    file: *mut core::ffi::c_void,
+    file_size: *mut i64,
 ) -> i32 {
-    0 // FALSE
+    if file_size.is_null() {
+        kernel32_SetLastError(87); // ERROR_INVALID_PARAMETER
+        return 0;
+    }
+    let handle_val = file as usize;
+    let size_result = with_file_handles(|map| {
+        map.get(&handle_val)
+            .and_then(|entry| entry.file.metadata().ok())
+            .map(|m| m.len() as i64)
+    });
+    match size_result {
+        Some(sz) => {
+            *file_size = sz;
+            1 // TRUE
+        }
+        None => {
+            kernel32_SetLastError(6); // ERROR_INVALID_HANDLE
+            0 // FALSE
+        }
+    }
 }
 
 /// GetFinalPathNameByHandleW stub
@@ -2851,17 +2949,32 @@ pub unsafe extern "C" fn kernel32_Module32NextW(
     0 // FALSE
 }
 
-/// MoveFileExW stub
+/// MoveFileExW - renames or moves a file or directory
+///
+/// Translates both path arguments with `wide_path_to_linux` then calls
+/// `std::fs::rename`.  The `flags` parameter is accepted but ignored.
 ///
 /// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
+/// `existing_file_name` and `new_file_name` must be valid null-terminated UTF-16
+/// strings when non-null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_MoveFileExW(
-    _existing_file_name: *const u16,
-    _new_file_name: *const u16,
+    existing_file_name: *const u16,
+    new_file_name: *const u16,
     _flags: u32,
 ) -> i32 {
-    0 // FALSE
+    if existing_file_name.is_null() || new_file_name.is_null() {
+        kernel32_SetLastError(87); // ERROR_INVALID_PARAMETER
+        return 0;
+    }
+    let src = wide_path_to_linux(existing_file_name);
+    let dst = wide_path_to_linux(new_file_name);
+    if std::fs::rename(&src, &dst).is_ok() {
+        1 // TRUE
+    } else {
+        kernel32_SetLastError(2); // ERROR_FILE_NOT_FOUND
+        0 // FALSE
+    }
 }
 
 /// ReadFileEx stub
@@ -2879,13 +2992,25 @@ pub unsafe extern "C" fn kernel32_ReadFileEx(
     0 // FALSE
 }
 
-/// RemoveDirectoryW stub
+/// RemoveDirectoryW - removes an existing empty directory
+///
+/// Translates the path with `wide_path_to_linux` then calls `std::fs::remove_dir`.
 ///
 /// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
+/// `path_name` must be a valid null-terminated UTF-16 string when non-null.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn kernel32_RemoveDirectoryW(_path_name: *const u16) -> i32 {
-    0 // FALSE
+pub unsafe extern "C" fn kernel32_RemoveDirectoryW(path_name: *const u16) -> i32 {
+    if path_name.is_null() {
+        kernel32_SetLastError(87); // ERROR_INVALID_PARAMETER
+        return 0;
+    }
+    let path = wide_path_to_linux(path_name);
+    if std::fs::remove_dir(&path).is_ok() {
+        1 // TRUE
+    } else {
+        kernel32_SetLastError(2); // ERROR_FILE_NOT_FOUND
+        0 // FALSE
+    }
 }
 
 /// SetCurrentDirectoryW - sets the current working directory
@@ -5487,5 +5612,172 @@ mod tests {
             assert_eq!(result, 1); // TRUE
             kernel32_DeleteCriticalSection(&raw mut cs);
         }
+    }
+
+    #[test]
+    fn test_file_create_write_read_close_roundtrip() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+        // Use a unique temp path to avoid conflicts with parallel test runs
+        let path = "/tmp/litebox_kernel32_roundtrip_test.txt";
+        let _ = std::fs::remove_file(path);
+
+        // Encode path as UTF-16
+        let wide_path: Vec<u16> = OsStr::new(path)
+            .as_bytes()
+            .iter()
+            .map(|&b| u16::from(b))
+            .chain(std::iter::once(0u16))
+            .collect();
+
+        unsafe {
+            // CreateFileW — CREATE_ALWAYS | GENERIC_WRITE
+            let handle = kernel32_CreateFileW(
+                wide_path.as_ptr(),
+                0x4000_0000, // GENERIC_WRITE
+                0,
+                core::ptr::null_mut(),
+                2, // CREATE_ALWAYS
+                0x80,
+                core::ptr::null_mut(),
+            );
+            assert_ne!(handle as usize, usize::MAX, "CreateFileW (write) failed");
+
+            let data = b"Hello, LiteBox!";
+            let mut written: u32 = 0;
+            let ok = kernel32_WriteFile(
+                handle,
+                data.as_ptr(),
+                data.len() as u32,
+                &raw mut written,
+                core::ptr::null_mut(),
+            );
+            assert_eq!(ok, 1, "WriteFile failed");
+            assert_eq!(written as usize, data.len());
+
+            // GetFileSizeEx
+            let mut file_size: i64 = -1;
+            let ok = kernel32_GetFileSizeEx(handle, &raw mut file_size);
+            assert_eq!(ok, 1, "GetFileSizeEx failed");
+            assert_eq!(file_size, data.len() as i64);
+
+            // SetFilePointerEx — seek to start (FILE_BEGIN = 0)
+            let ok = kernel32_SetFilePointerEx(handle, 0, core::ptr::null_mut(), 0);
+            assert_eq!(ok, 1, "SetFilePointerEx failed");
+
+            kernel32_CloseHandle(handle);
+
+            // Re-open for reading
+            let handle = kernel32_CreateFileW(
+                wide_path.as_ptr(),
+                0x8000_0000, // GENERIC_READ
+                0,
+                core::ptr::null_mut(),
+                3, // OPEN_EXISTING
+                0x80,
+                core::ptr::null_mut(),
+            );
+            assert_ne!(handle as usize, usize::MAX, "CreateFileW (read) failed");
+
+            let mut buf = [0u8; 32];
+            let mut bytes_read: u32 = 0;
+            let ok = kernel32_ReadFile(
+                handle,
+                buf.as_mut_ptr(),
+                buf.len() as u32,
+                &raw mut bytes_read,
+                core::ptr::null_mut(),
+            );
+            assert_eq!(ok, 1, "ReadFile failed");
+            assert_eq!(&buf[..bytes_read as usize], data);
+
+            kernel32_CloseHandle(handle);
+        }
+
+        // Cleanup
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_move_file_ex_w() {
+        let src = "/tmp/litebox_move_src.txt";
+        let dst = "/tmp/litebox_move_dst.txt";
+        std::fs::write(src, b"move me").unwrap();
+        let _ = std::fs::remove_file(dst);
+
+        let wide_src: Vec<u16> = src.encode_utf16().chain(std::iter::once(0u16)).collect();
+        let wide_dst: Vec<u16> = dst.encode_utf16().chain(std::iter::once(0u16)).collect();
+
+        unsafe {
+            let ok = kernel32_MoveFileExW(wide_src.as_ptr(), wide_dst.as_ptr(), 0);
+            assert_eq!(ok, 1, "MoveFileExW failed");
+        }
+
+        assert!(!std::path::Path::new(src).exists(), "source still exists");
+        assert!(std::path::Path::new(dst).exists(), "destination missing");
+        let _ = std::fs::remove_file(dst);
+    }
+
+    #[test]
+    fn test_remove_directory_w() {
+        let dir = "/tmp/litebox_rmdir_test";
+        let _ = std::fs::remove_dir(dir);
+        std::fs::create_dir(dir).unwrap();
+
+        let wide_dir: Vec<u16> = dir.encode_utf16().chain(std::iter::once(0u16)).collect();
+
+        unsafe {
+            let ok = kernel32_RemoveDirectoryW(wide_dir.as_ptr());
+            assert_eq!(ok, 1, "RemoveDirectoryW failed");
+        }
+
+        assert!(!std::path::Path::new(dir).exists());
+    }
+
+    #[test]
+    fn test_nt_write_read_file_handle() {
+        // Verify the shared helpers used by ntdll_impl work correctly
+        let path = "/tmp/litebox_nt_handle_test.txt";
+        let _ = std::fs::remove_file(path);
+
+        let wide: Vec<u16> = path.encode_utf16().chain(std::iter::once(0u16)).collect();
+
+        unsafe {
+            let handle = kernel32_CreateFileW(
+                wide.as_ptr(),
+                0x4000_0000 | 0x8000_0000, // GENERIC_READ | GENERIC_WRITE
+                0,
+                core::ptr::null_mut(),
+                2, // CREATE_ALWAYS
+                0x80,
+                core::ptr::null_mut(),
+            );
+            assert_ne!(handle as usize, usize::MAX);
+
+            let data = b"ntdll test";
+            let written = nt_write_file_handle(handle as u64, data);
+            assert_eq!(written, Some(data.len()));
+
+            // Seek back to start
+            kernel32_SetFilePointerEx(handle, 0, core::ptr::null_mut(), 0);
+
+            let mut buf = [0u8; 16];
+            let read = nt_read_file_handle(handle as u64, &mut buf);
+            assert_eq!(read, Some(data.len()));
+            assert_eq!(&buf[..data.len()], data);
+
+            kernel32_CloseHandle(handle);
+        }
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_get_command_line_utf8_default() {
+        // Before any command line is set, returns empty string
+        // (or the value already set by a previous test — we just verify it doesn't panic)
+        let s = get_command_line_utf8();
+        // Must be a valid UTF-8 string; no assertion on content since OnceLock
+        // may have been initialised by an earlier test.
+        let _ = s;
     }
 }
