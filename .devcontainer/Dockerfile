@@ -101,9 +101,9 @@ RUN mkdir -p litebox/src \
     litebox_shim_optee/src/lib.rs \
     litebox_shim_windows/src/lib.rs \
     litebox_syscall_rewriter/src/lib.rs \
-    litebox_runner_snp/src/lib.rs \
+    litebox_runner_snp/src/main.rs \
     dev_tests/src/lib.rs \
-    dev_bench/src/lib.rs
+    dev_bench/src/main.rs
 
 # Fetch all dependencies to cache them in the Docker layer
 # This step will be cached as long as Cargo.toml/Cargo.lock don't change
