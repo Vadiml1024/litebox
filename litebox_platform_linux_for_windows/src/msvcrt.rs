@@ -11,10 +11,10 @@
 #![allow(unsafe_op_in_unsafe_fn)]
 
 use std::alloc::{Layout, alloc, dealloc};
-use std::ffi::CStr;
+use std::ffi::{CStr, CString};
 use std::io::{self, Write};
 use std::ptr;
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 
 // ============================================================================
 // Data Exports
@@ -373,6 +373,10 @@ pub unsafe extern "C" fn msvcrt___iob_func() -> *mut u8 {
 
 /// Get main arguments (__getmainargs)
 ///
+/// Parses `PROCESS_COMMAND_LINE` (set by the runner) into ANSI `char**` arrays
+/// using Windows command-line quoting rules and stores them in a `OnceLock` so
+/// that the returned raw pointers remain stable for the lifetime of the process.
+///
 /// # Safety
 /// This function is unsafe as it deals with raw pointers.
 #[unsafe(no_mangle)]
@@ -384,27 +388,37 @@ pub unsafe extern "C" fn msvcrt___getmainargs(
     _do_wildcard: i32,
     _start_info: *mut u8,
 ) -> i32 {
-    // Static null-terminated arrays for argv and env
-    // These are immutable after initialization, so no synchronization needed
-    static mut ARGV_STORAGE: [*mut i8; 1] = [core::ptr::null_mut()];
-    static mut ENV_STORAGE: [*mut i8; 1] = [core::ptr::null_mut()];
+    let (_, argv_ptrs) = PARSED_MAIN_ARGS.get_or_init(|| {
+        let cmd = crate::kernel32::get_command_line_utf8();
+        let strings: Vec<CString> = parse_windows_command_line(&cmd)
+            .into_iter()
+            .map(|s| {
+                let safe = s.replace('\0', "?");
+                CString::new(safe).unwrap_or_else(|_| CString::new("").unwrap())
+            })
+            .collect();
+        // Build a null-terminated array of `*mut i8` pointers.
+        let mut ptrs: Vec<*mut i8> = strings.iter().map(|cs| cs.as_ptr().cast_mut()).collect();
+        ptrs.push(ptr::null_mut()); // null terminator
+        (strings, ArgvPtrs(ptrs))
+    });
 
-    // Set argc to 0 (no arguments)
+    let argc = (argv_ptrs.0.len().saturating_sub(1)) as i32; // exclude null terminator
+
     if !p_argc.is_null() {
-        *p_argc = 0;
+        *p_argc = argc;
     }
-
-    // Set argv to empty array with null terminator
-    // SAFETY: We're accessing mutable static, but it's only being read after initialization
-    // and the contents (null pointers) never change
     if !p_argv.is_null() {
-        *p_argv = core::ptr::addr_of_mut!(ARGV_STORAGE).cast();
+        // argv_ptrs.0 is a null-terminated array; pass a pointer to its first element.
+        *p_argv = argv_ptrs.0.as_ptr().cast_mut().cast();
     }
-
-    // Set env to empty array with null terminator
-    // SAFETY: Same as argv - immutable after initialization
+    // env: pass a single-element null-terminated array (no custom env parsing needed;
+    // programs that need the environment use GetEnvironmentStringsW instead).
     if !p_env.is_null() {
-        *p_env = core::ptr::addr_of_mut!(ENV_STORAGE).cast();
+        // SAFETY: NULL_ENV_PTR is an array of zeros (null pointers) stored as usize
+        // to avoid the `*mut i8: Sync` restriction on statics.
+        static NULL_ENV_PTR: [usize; 1] = [0];
+        *p_env = NULL_ENV_PTR.as_ptr().cast::<*mut i8>().cast_mut().cast();
     }
 
     0 // Success
@@ -569,26 +583,123 @@ pub unsafe extern "C" fn msvcrt___errno_location() -> *mut i32 {
     ERRNO.with(std::cell::RefCell::as_ptr)
 }
 
-/// Global command line pointer for _acmdln
-/// In a real implementation, this would point to the actual command line.
-/// For now, we use an empty string as a stub.
-static ACMDLN: &[u8] = b"\0";
+/// Wrapper so `Vec<*mut i8>` (not `Send`/`Sync`) can be stored in a static.
+///
+/// # Safety
+/// Pointers are derived from `CString` buffers that live inside the same
+/// `OnceLock` and are never mutated after initialisation.
+struct ArgvPtrs(Vec<*mut i8>);
+// SAFETY: The underlying CString buffers are pinned inside the same OnceLock
+// value and are never written to after initialisation.
+unsafe impl Send for ArgvPtrs {}
+unsafe impl Sync for ArgvPtrs {}
+
+/// Parsed process main arguments — populated lazily on the first `__getmainargs` call.
+///
+/// Stores:
+///   0: `Vec<CString>` — the argument strings (owns the memory).
+///   1: `ArgvPtrs`     — null-terminated array of `char*` pointers into element 0.
+///
+/// The `OnceLock` ensures the `CString` buffers are never moved after initialisation,
+/// making the raw pointers in element 1 permanently stable.
+static PARSED_MAIN_ARGS: OnceLock<(Vec<CString>, ArgvPtrs)> = OnceLock::new();
+
+/// Parse a Windows-style command line into individual argument strings.
+///
+/// Handles the common quoting rules:
+///   - Arguments separated by spaces / tabs.
+///   - `"..."` wraps a quoted argument (the quotes are stripped).
+///   - Backslashes followed by a quote use Windows' 2N / 2N+1 rules:
+///     - 2N backslashes + `"` => N backslashes + toggle quoting (no literal `"`).
+///     - 2N+1 backslashes + `"` => N backslashes + literal `"` (no toggle).
+///   - These rules apply both inside and outside quoted arguments.
+fn parse_windows_command_line(cmd: &str) -> Vec<String> {
+    let mut args = Vec::new();
+    let mut current = String::new();
+    let mut in_quotes = false;
+
+    // Work on a Vec<char> so we can look ahead by index without
+    // breaking UTF-8 encoding; we only treat ASCII `"`, `\`, space, and tab
+    // specially, which are all single-byte and single-char code points.
+    let chars: Vec<char> = cmd.chars().collect();
+    let mut i = 0;
+
+    while i < chars.len() {
+        let c = chars[i];
+        match c {
+            ' ' | '\t' if !in_quotes => {
+                if !current.is_empty() {
+                    args.push(current.clone());
+                    current.clear();
+                }
+                i += 1;
+            }
+            '"' => {
+                // A bare quote toggles the in_quotes state and is not emitted.
+                in_quotes = !in_quotes;
+                i += 1;
+            }
+            '\\' => {
+                // Count consecutive backslashes.
+                let mut backslash_count = 0;
+                while i < chars.len() && chars[i] == '\\' {
+                    backslash_count += 1;
+                    i += 1;
+                }
+
+                let next_is_quote = i < chars.len() && chars[i] == '"';
+                if next_is_quote {
+                    // Emit one backslash for every pair.
+                    current.extend(std::iter::repeat('\\').take(backslash_count / 2));
+                    if backslash_count % 2 == 0 {
+                        // Even number of backslashes: the quote is a delimiter.
+                        in_quotes = !in_quotes;
+                        i += 1; // consume the quote
+                    } else {
+                        // Odd number of backslashes: the quote is escaped.
+                        current.push('"');
+                        i += 1; // consume the quote
+                    }
+                } else {
+                    // No quote follows: emit all backslashes literally.
+                    current.extend(std::iter::repeat('\\').take(backslash_count));
+                }
+            }
+            other => {
+                current.push(other);
+                i += 1;
+            }
+        }
+    }
+
+    if !current.is_empty() {
+        args.push(current);
+    }
+    args
+}
+
+/// ANSI command-line storage for `_acmdln`.
+///
+/// Lazily built from `PROCESS_COMMAND_LINE` on first access.
+static ACMDLN_STORAGE: OnceLock<CString> = OnceLock::new();
 
 /// Get pointer to command line string (_acmdln)
 ///
-/// This is a global variable in MSVCRT that points to the command line arguments.
-/// Programs access it via `_acmdln` which is a char** (pointer to pointer).
+/// This is a global variable in MSVCRT that points to the ANSI command line.
+/// Programs access it via `_acmdln` which is a `char*`.
 ///
 /// # Safety
 /// Returns a pointer to static memory that is valid for the lifetime of the program.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn msvcrt__acmdln() -> *const *const u8 {
-    // Return a pointer to a pointer to the command line string
-    // We store the pointer as usize for thread safety
-    use std::sync::OnceLock;
-    static ACMDLN_PTR: OnceLock<usize> = OnceLock::new();
-    let ptr_val = *ACMDLN_PTR.get_or_init(|| ACMDLN.as_ptr() as usize);
-    ptr_val as *const *const u8
+pub unsafe extern "C" fn msvcrt__acmdln() -> *const u8 {
+    let cstr = ACMDLN_STORAGE.get_or_init(|| {
+        let utf8 = crate::kernel32::get_command_line_utf8();
+        // SAFETY: `utf8` comes from a valid String; CString::new only fails on interior NUL
+        // bytes.  We replace any interior NULs with '?' to be safe.
+        let safe = utf8.replace('\0', "?");
+        CString::new(safe).unwrap_or_else(|_| CString::new("").unwrap())
+    });
+    cstr.as_ptr().cast::<u8>()
 }
 
 /// Check if a byte is a multibyte lead byte (_ismbblead)
@@ -1256,5 +1367,65 @@ mod tests {
             let ptr2 = msvcrt___errno_location();
             assert_eq!(ptr, ptr2);
         }
+    }
+
+    #[test]
+    fn test_parse_windows_command_line_simple() {
+        let args = parse_windows_command_line("prog.exe arg1 arg2");
+        assert_eq!(args, vec!["prog.exe", "arg1", "arg2"]);
+    }
+
+    #[test]
+    fn test_parse_windows_command_line_quoted() {
+        let args = parse_windows_command_line(r#"prog.exe "hello world" arg2"#);
+        assert_eq!(args, vec!["prog.exe", "hello world", "arg2"]);
+    }
+
+    #[test]
+    fn test_parse_windows_command_line_escaped_quote() {
+        // 1 backslash before quote = odd → literal quote (no quoting toggle)
+        let args = parse_windows_command_line(r#"prog.exe "say \"hi\"" end"#);
+        assert_eq!(args, vec!["prog.exe", r#"say "hi""#, "end"]);
+    }
+
+    #[test]
+    fn test_parse_windows_command_line_empty() {
+        let args = parse_windows_command_line("");
+        assert!(args.is_empty());
+    }
+
+    #[test]
+    fn test_parse_windows_command_line_single() {
+        let args = parse_windows_command_line("prog.exe");
+        assert_eq!(args, vec!["prog.exe"]);
+    }
+
+    #[test]
+    fn test_parse_windows_command_line_backslash_in_path() {
+        // Backslashes not followed by a quote are literal
+        let args = parse_windows_command_line(r"prog.exe C:\path\to\file.txt");
+        assert_eq!(args, vec!["prog.exe", r"C:\path\to\file.txt"]);
+    }
+
+    #[test]
+    fn test_parse_windows_command_line_even_backslashes_before_quote() {
+        // 2 backslashes + " => 1 backslash + quote toggle (quote is a delimiter)
+        let args = parse_windows_command_line(r#"prog.exe "path\\" end"#);
+        // Inside quotes: "path\\" → 2 backslashes before closing quote → 1 literal backslash, quote closes
+        assert_eq!(args, vec!["prog.exe", r"path\", "end"]);
+    }
+
+    #[test]
+    fn test_parse_windows_command_line_unquoted_escaped_quote() {
+        // Outside quotes: \" = escaped quote (literal quote, no toggle)
+        let args = parse_windows_command_line(r#"prog.exe arg\"with\"quote"#);
+        assert_eq!(args, vec!["prog.exe", r#"arg"with"quote"#]);
+    }
+
+    #[test]
+    fn test_acmdln_not_null() {
+        let ptr = unsafe { msvcrt__acmdln() };
+        // Should return a valid pointer (not null)
+        assert!(!ptr.is_null());
     }
 }
