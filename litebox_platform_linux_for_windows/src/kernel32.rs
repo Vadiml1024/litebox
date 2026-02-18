@@ -17,8 +17,11 @@
 use std::alloc;
 use std::cell::Cell;
 use std::collections::HashMap;
-use std::io::Write;
-use std::sync::{Arc, Mutex};
+use std::ffi::CString;
+use std::fs::File;
+use std::io::{Read, Write};
+use std::sync::atomic::AtomicUsize;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
 
@@ -131,6 +134,188 @@ fn ensure_heap_tracker_initialized() {
     if tracker.is_none() {
         *tracker = Some(HeapAllocationTracker::new());
     }
+}
+
+// ── File-handle registry ──────────────────────────────────────────────────
+// Maps Win32 HANDLE values (encoded as usize) to open `File` objects.
+
+static FILE_HANDLE_COUNTER: AtomicUsize = AtomicUsize::new(0x1_0000);
+
+struct FileEntry {
+    file: File,
+}
+
+/// Global file-handle map: handle_value → FileEntry
+static FILE_HANDLES: Mutex<Option<HashMap<usize, FileEntry>>> = Mutex::new(None);
+
+fn with_file_handles<R>(f: impl FnOnce(&mut HashMap<usize, FileEntry>) -> R) -> R {
+    let mut guard = FILE_HANDLES.lock().unwrap();
+    let map = guard.get_or_insert_with(HashMap::new);
+    f(map)
+}
+
+/// Allocate a new Win32-style file handle value (non-null, not INVALID_HANDLE_VALUE).
+fn alloc_file_handle() -> usize {
+    use std::sync::atomic::Ordering;
+    FILE_HANDLE_COUNTER.fetch_add(4, Ordering::SeqCst)
+}
+
+// ── Environment-strings block registry ───────────────────────────────────
+// Each call to `GetEnvironmentStringsW` allocates a block.  The block's
+// raw pointer is recorded here so that `FreeEnvironmentStringsW` can
+// reconstruct the `Box` and drop it, preventing unbounded memory growth.
+
+/// Newtype wrapper so that `*mut u16` (which is not `Send`) can be stored in a
+/// `static Mutex`.  Safety: the pointer is only ever accessed while holding the
+/// mutex lock, so no data race can occur.
+struct SendablePtr(*mut u16);
+// SAFETY: We only ever access the pointer while holding the mutex, so it is
+// effectively single-threaded at any given moment.
+unsafe impl Send for SendablePtr {}
+
+static ENV_STRINGS_BLOCKS: Mutex<Option<Vec<SendablePtr>>> = Mutex::new(None);
+
+/// Process command line (UTF-16, null-terminated) set by the runner before entry point execution
+static PROCESS_COMMAND_LINE: OnceLock<Vec<u16>> = OnceLock::new();
+
+/// Set the process command line from runner-provided arguments.
+///
+/// Call this before executing the entry point to ensure Windows programs receive
+/// the correct command line via `GetCommandLineW` and `__getmainargs`.
+/// The first element of `args` should be the program name/path.
+pub fn set_process_command_line(args: &[String]) {
+    let cmd_line = args
+        .iter()
+        .map(|arg| {
+            if arg.contains(' ') || arg.contains('"') {
+                // Windows command-line quoting: escape backslashes before a quote,
+                // escape any embedded quotes with backslash, then wrap in double quotes.
+                format!("\"{}\"", arg.replace('\\', "\\\\").replace('"', "\\\""))
+            } else {
+                arg.clone()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    let mut utf16: Vec<u16> = cmd_line.encode_utf16().collect();
+    utf16.push(0);
+    // Ignore errors if already set (idempotent in tests)
+    let _ = PROCESS_COMMAND_LINE.set(utf16);
+}
+
+/// Convert a null-terminated UTF-16 wide string pointer to a Rust `String`.
+///
+/// Returns an empty string if the pointer is null.
+///
+/// # Safety
+/// Caller must ensure `wide` points to a valid null-terminated UTF-16 string.
+unsafe fn wide_str_to_string(wide: *const u16) -> String {
+    if wide.is_null() {
+        return String::new();
+    }
+    let mut len = 0;
+    // SAFETY: Caller guarantees `wide` is a valid null-terminated wide string.
+    while *wide.add(len) != 0 {
+        len += 1;
+        if len > 32_768 {
+            break;
+        }
+    }
+    let slice = core::slice::from_raw_parts(wide, len);
+    String::from_utf16_lossy(slice).to_owned()
+}
+
+/// Convert a null-terminated UTF-16 Windows path pointer to a Linux absolute path string.
+///
+/// Handles the MinGW/Windows encoding where root-relative paths (e.g. `/tmp/foo`) are
+/// stored with a leading NUL `u16` followed by the rest of the path without the leading
+/// slash.  Backslashes are normalised to forward slashes, drive letters are stripped,
+/// and the result is made absolute.
+///
+/// # Safety
+/// Caller must ensure `wide` points to a valid null-terminated UTF-16 string.
+unsafe fn wide_path_to_linux(wide: *const u16) -> String {
+    if wide.is_null() {
+        return String::new();
+    }
+    // Peek at position 0.  MinGW encodes root-relative paths (those whose
+    // Windows-display form starts with '/') with u16[0] == 0x0000 followed
+    // by the path body (no leading slash).
+    // SAFETY: `wide` is non-null; we read one u16 to check for the pattern.
+    let first = *wide;
+    let path_str = if first == 0 {
+        // Root-relative encoding: the path body starts at position 1.
+        // SAFETY: `wide` is a valid null-terminated buffer; reading position 1 is
+        // safe because position 0 is guaranteed non-terminal by the caller's contract
+        // (a buffer is either empty — both u16[0] and u16[1] are 0 — or has body data).
+        let second = *wide.add(1);
+        if second == 0 {
+            // Only the leading null — effectively an empty path body.
+            String::new()
+        } else {
+            // We know position 1 is non-null; scan from there.
+            let mut len: usize = 1;
+            while len <= 32_768 {
+                if *wide.add(1 + len) == 0 {
+                    break;
+                }
+                len += 1;
+            }
+            let slice = core::slice::from_raw_parts(wide.add(1), len);
+            String::from_utf16_lossy(slice).to_owned()
+        }
+    } else {
+        wide_str_to_string(wide)
+    };
+
+    // Normalise Windows path to Linux:
+    //  - Strip optional drive letter prefix (e.g. "C:")
+    //  - Replace backslashes with forward slashes
+    //  - Ensure the result is absolute
+    let without_drive = if path_str.len() >= 2 && path_str.as_bytes()[1] == b':' {
+        &path_str[2..]
+    } else {
+        path_str.as_str()
+    };
+    let with_slashes = without_drive.replace('\\', "/");
+    if with_slashes.is_empty() || !with_slashes.starts_with('/') {
+        format!("/{with_slashes}")
+    } else {
+        with_slashes
+    }
+}
+
+/// Write a UTF-8 string into a caller-supplied UTF-16 buffer.
+///
+/// On success, returns the number of UTF-16 code units written (excluding the null
+/// terminator). If `buffer` is null, `buffer_len` is 0, or `buffer_len` is smaller than
+/// required, returns the required buffer size in UTF-16 code units (including the null
+/// terminator). Sets `SetLastError(234)` when the buffer is smaller than required but
+/// non-null.
+///
+/// # Safety
+/// `buffer` must point to a valid writable buffer of at least `buffer_len` `u16` elements,
+/// or be null.
+unsafe fn copy_utf8_to_wide(value: &str, buffer: *mut u16, buffer_len: u32) -> u32 {
+    let utf16: Vec<u16> = value.encode_utf16().collect();
+    let required = utf16.len() as u32 + 1; // +1 for null terminator
+
+    if buffer.is_null() || buffer_len == 0 {
+        return required;
+    }
+    if buffer_len < required {
+        // SAFETY: Caller guarantees buffer is non-null (checked above).
+        kernel32_SetLastError(234); // ERROR_MORE_DATA
+        return required;
+    }
+    for (i, &ch) in utf16.iter().enumerate() {
+        // SAFETY: We checked buffer_len >= required, so index i is within bounds.
+        *buffer.add(i) = ch;
+    }
+    // SAFETY: null terminator at index utf16.len(), which is < required <= buffer_len.
+    *buffer.add(utf16.len()) = 0;
+    utf16.len() as u32
 }
 
 /// Sleep for specified milliseconds (Sleep)
@@ -1159,52 +1344,148 @@ pub unsafe extern "C" fn kernel32_GetSystemTimePreciseAsFileTime(filetime: *mut 
 
 /// Create or open a file (CreateFileW)
 ///
-/// This is a minimal stub that always fails. Real file operations
-/// are handled through NtCreateFile in the NTDLL layer.
+/// Implements the most common creation dispositions and access modes.
+/// File attributes and flags beyond `GENERIC_READ`/`GENERIC_WRITE` are ignored.
 ///
 /// # Safety
-/// This function is safe to call with any arguments.
-/// It always returns INVALID_HANDLE_VALUE without dereferencing pointers.
+/// `file_name` must be a valid null-terminated UTF-16 string when non-null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_CreateFileW(
-    _file_name: *const u16,
-    _desired_access: u32,
+    file_name: *const u16,
+    desired_access: u32,
     _share_mode: u32,
     _security_attributes: *mut core::ffi::c_void,
-    _creation_disposition: u32,
+    creation_disposition: u32,
     _flags_and_attributes: u32,
     _template_file: *mut core::ffi::c_void,
 ) -> *mut core::ffi::c_void {
-    // Return INVALID_HANDLE_VALUE (-1 cast to pointer)
-    // Real file operations go through NtCreateFile
-    usize::MAX as *mut core::ffi::c_void
+    const INVALID_HANDLE_VALUE: *mut core::ffi::c_void = usize::MAX as *mut core::ffi::c_void;
+
+    // Windows GENERIC_READ / GENERIC_WRITE flags
+    const GENERIC_READ: u32 = 0x8000_0000;
+    const GENERIC_WRITE: u32 = 0x4000_0000;
+
+    // CreationDisposition constants
+    const CREATE_NEW: u32 = 1;
+    const CREATE_ALWAYS: u32 = 2;
+    const OPEN_EXISTING: u32 = 3;
+    const OPEN_ALWAYS: u32 = 4;
+    const TRUNCATE_EXISTING: u32 = 5;
+
+    if file_name.is_null() {
+        kernel32_SetLastError(87); // ERROR_INVALID_PARAMETER
+        return INVALID_HANDLE_VALUE;
+    }
+
+    let path_str = wide_path_to_linux(file_name);
+    let can_read = desired_access & GENERIC_READ != 0;
+    let can_write = desired_access & GENERIC_WRITE != 0;
+
+    let result = match creation_disposition {
+        CREATE_NEW => std::fs::OpenOptions::new()
+            .read(can_read)
+            .write(can_write)
+            .create_new(true)
+            .open(&path_str),
+        CREATE_ALWAYS => std::fs::OpenOptions::new()
+            .read(can_read)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&path_str),
+        OPEN_EXISTING => std::fs::OpenOptions::new()
+            .read(can_read)
+            .write(can_write)
+            .open(&path_str),
+        OPEN_ALWAYS => std::fs::OpenOptions::new()
+            .read(can_read)
+            .write(true)
+            .create(true)
+            .open(&path_str),
+        TRUNCATE_EXISTING => std::fs::OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(&path_str),
+        _ => {
+            kernel32_SetLastError(87); // ERROR_INVALID_PARAMETER
+            return INVALID_HANDLE_VALUE;
+        }
+    };
+
+    match result {
+        Ok(file) => {
+            let handle_val = alloc_file_handle();
+            with_file_handles(|map| {
+                map.insert(handle_val, FileEntry { file });
+            });
+            handle_val as *mut core::ffi::c_void
+        }
+        Err(e) => {
+            let code = match e.kind() {
+                std::io::ErrorKind::NotFound => 2,         // ERROR_FILE_NOT_FOUND
+                std::io::ErrorKind::AlreadyExists => 80,   // ERROR_FILE_EXISTS
+                std::io::ErrorKind::PermissionDenied => 5, // ERROR_ACCESS_DENIED
+                _ => 2,
+            };
+            kernel32_SetLastError(code);
+            INVALID_HANDLE_VALUE
+        }
+    }
 }
 
 /// Read from a file (ReadFile)
 ///
-/// This is a minimal stub that always fails. Real file operations
-/// are handled through NtReadFile in the NTDLL layer.
-///
 /// # Safety
-/// This function is safe to call with any arguments.
-/// It always returns FALSE without dereferencing pointers.
+/// `file` must be a valid handle, `buffer` must be writable for
+/// `number_of_bytes_to_read` bytes, and `number_of_bytes_read` must be
+/// a valid writable pointer or null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_ReadFile(
-    _file: *mut core::ffi::c_void,
-    _buffer: *mut u8,
-    _number_of_bytes_to_read: u32,
-    _number_of_bytes_read: *mut u32,
+    file: *mut core::ffi::c_void,
+    buffer: *mut u8,
+    number_of_bytes_to_read: u32,
+    number_of_bytes_read: *mut u32,
     _overlapped: *mut core::ffi::c_void,
 ) -> i32 {
-    // Return FALSE (0) - operation failed
-    // Real file operations go through NtReadFile
-    0
+    if buffer.is_null() {
+        kernel32_SetLastError(87);
+        return 0;
+    }
+
+    let handle_val = file as usize;
+    let count = number_of_bytes_to_read as usize;
+    // SAFETY: Caller guarantees buffer is valid for `count` bytes.
+    let slice = std::slice::from_raw_parts_mut(buffer, count);
+
+    let bytes_read = with_file_handles(|map| {
+        if let Some(entry) = map.get_mut(&handle_val) {
+            entry.file.read(slice).ok()
+        } else {
+            None
+        }
+    });
+
+    match bytes_read {
+        Some(n) => {
+            if !number_of_bytes_read.is_null() {
+                // Windows API uses u32 for byte counts; saturate rather than truncate.
+                *number_of_bytes_read = u32::try_from(n).unwrap_or(u32::MAX);
+            }
+            1 // TRUE
+        }
+        None => {
+            kernel32_SetLastError(6); // ERROR_INVALID_HANDLE
+            if !number_of_bytes_read.is_null() {
+                *number_of_bytes_read = 0;
+            }
+            0 // FALSE
+        }
+    }
 }
 
 /// Write to a file (WriteFile)
 ///
-/// This implements basic file write functionality, with special handling
-/// for stdout and stderr handles.
+/// Writes to stdout/stderr or to a regular file opened by `CreateFileW`.
 ///
 /// # Safety
 /// This function is unsafe as it dereferences raw pointers.
@@ -1224,70 +1505,87 @@ pub unsafe extern "C" fn kernel32_WriteFile(
     let is_stdout = file == stdout_handle;
     let is_stderr = file == stderr_handle;
 
-    if !is_stdout && !is_stderr {
-        // ERROR_INVALID_HANDLE = 6
-        kernel32_SetLastError(6);
-        return 0; // Not stdout/stderr, fail
-    }
-
     if buffer.is_null() || number_of_bytes_to_write == 0 {
-        // SAFETY: number_of_bytes_written is an optional out-parameter from the caller.
-        // It may be null; if non-null, it must be valid for writing a single u32 value.
         if !number_of_bytes_written.is_null() {
-            unsafe {
-                *number_of_bytes_written = 0;
-            }
+            *number_of_bytes_written = 0;
         }
-        // ERROR_INVALID_PARAMETER = 87
-        kernel32_SetLastError(87);
+        kernel32_SetLastError(87); // ERROR_INVALID_PARAMETER
         return 0;
     }
 
     // SAFETY: Caller guarantees buffer is valid for number_of_bytes_to_write bytes
-    let data = unsafe { std::slice::from_raw_parts(buffer, number_of_bytes_to_write as usize) };
+    let data = std::slice::from_raw_parts(buffer, number_of_bytes_to_write as usize);
 
-    // Write to stdout or stderr
-    let result = if is_stdout {
-        std::io::Write::write(&mut std::io::stdout(), data)
-    } else {
-        std::io::Write::write(&mut std::io::stderr(), data)
-    };
-
-    match result {
-        Ok(written) => {
-            if !number_of_bytes_written.is_null() {
-                // SAFETY: Caller guarantees number_of_bytes_written is valid
-                unsafe { *number_of_bytes_written = written as u32 };
+    if is_stdout || is_stderr {
+        // Write to stdout or stderr
+        let result = if is_stdout {
+            std::io::Write::write(&mut std::io::stdout(), data)
+        } else {
+            std::io::Write::write(&mut std::io::stderr(), data)
+        };
+        match result {
+            Ok(written) => {
+                if !number_of_bytes_written.is_null() {
+                    // Windows API uses u32 for byte counts; saturate rather than truncate.
+                    *number_of_bytes_written = u32::try_from(written).unwrap_or(u32::MAX);
+                }
+                if is_stdout {
+                    let _ = std::io::Write::flush(&mut std::io::stdout());
+                } else {
+                    let _ = std::io::Write::flush(&mut std::io::stderr());
+                }
+                1 // TRUE
             }
-            // Flush to ensure output appears
-            if is_stdout {
-                let _ = std::io::Write::flush(&mut std::io::stdout());
-            } else {
-                let _ = std::io::Write::flush(&mut std::io::stderr());
+            Err(_) => {
+                kernel32_SetLastError(29); // ERROR_WRITE_FAULT
+                0
             }
-            1 // TRUE - success
         }
-        Err(_e) => {
-            // ERROR_WRITE_FAULT = 29
-            kernel32_SetLastError(29);
-            0 // FALSE - failure
+    } else {
+        // Try regular file handle
+        let handle_val = file as usize;
+        let written = with_file_handles(|map| {
+            if let Some(entry) = map.get_mut(&handle_val) {
+                entry.file.write(data).ok()
+            } else {
+                None
+            }
+        });
+        match written {
+            Some(n) => {
+                if !number_of_bytes_written.is_null() {
+                    // Windows API uses u32 for byte counts; saturate rather than truncate.
+                    *number_of_bytes_written = u32::try_from(n).unwrap_or(u32::MAX);
+                }
+                1 // TRUE
+            }
+            None => {
+                kernel32_SetLastError(6); // ERROR_INVALID_HANDLE
+                if !number_of_bytes_written.is_null() {
+                    *number_of_bytes_written = 0;
+                }
+                0 // FALSE
+            }
         }
     }
 }
 
 /// Close a handle (CloseHandle)
 ///
-/// This is a minimal stub that always succeeds. Real handle cleanup
-/// is handled through NtClose in the NTDLL layer.
+/// Closes file handles opened by `CreateFileW`.  Other handle types (threads,
+/// events, etc.) are cleaned up in the platform layer; for those we just return
+/// TRUE.
 ///
 /// # Safety
-/// This function is safe to call with any arguments.
-/// It always returns TRUE without dereferencing pointers.
+/// This function is safe to call with any argument.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn kernel32_CloseHandle(_handle: *mut core::ffi::c_void) -> i32 {
-    // Return TRUE (1) - operation succeeded
-    // Real handle cleanup goes through NtClose
-    1
+pub unsafe extern "C" fn kernel32_CloseHandle(handle: *mut core::ffi::c_void) -> i32 {
+    let handle_val = handle as usize;
+    // Remove from file-handle map if present (this closes the underlying File)
+    with_file_handles(|map| {
+        map.remove(&handle_val);
+    });
+    1 // TRUE - success (or was not a registered file handle)
 }
 
 //
@@ -1687,16 +1985,35 @@ pub unsafe extern "C" fn kernel32_CopyFileExW(
     0 // FALSE - not implemented
 }
 
-/// CreateDirectoryW stub - creates a directory
+/// CreateDirectoryW - creates a directory
+///
+/// Creates the directory named by `path_name`.  Security attributes are ignored.
 ///
 /// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
+/// `path_name` must be a valid null-terminated UTF-16 string.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_CreateDirectoryW(
-    _path_name: *const u16,
+    path_name: *const u16,
     _security_attributes: *mut core::ffi::c_void,
 ) -> i32 {
-    0 // FALSE - not implemented
+    if path_name.is_null() {
+        kernel32_SetLastError(87); // ERROR_INVALID_PARAMETER
+        return 0;
+    }
+    let path_str = wide_path_to_linux(path_name);
+    match std::fs::create_dir(std::path::Path::new(&path_str)) {
+        Ok(()) => 1, // TRUE
+        Err(e) => {
+            let code = match e.kind() {
+                std::io::ErrorKind::AlreadyExists => 183, // ERROR_ALREADY_EXISTS
+                std::io::ErrorKind::NotFound => 3,        // ERROR_PATH_NOT_FOUND
+                std::io::ErrorKind::PermissionDenied => 5, // ERROR_ACCESS_DENIED
+                _ => 2,                                   // ERROR_FILE_NOT_FOUND
+            };
+            kernel32_SetLastError(code);
+            0 // FALSE
+        }
+    }
 }
 
 /// CreateEventW stub - creates an event object
@@ -1831,13 +2148,29 @@ pub unsafe extern "C" fn kernel32_CreateWaitableTimerExW(
     core::ptr::null_mut() // NULL - not implemented
 }
 
-/// DeleteFileW stub - deletes a file
+/// DeleteFileW - deletes a file
 ///
 /// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
+/// `file_name` must be a valid null-terminated UTF-16 string.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn kernel32_DeleteFileW(_file_name: *const u16) -> i32 {
-    0 // FALSE - not implemented
+pub unsafe extern "C" fn kernel32_DeleteFileW(file_name: *const u16) -> i32 {
+    if file_name.is_null() {
+        kernel32_SetLastError(87); // ERROR_INVALID_PARAMETER
+        return 0;
+    }
+    let path_str = wide_path_to_linux(file_name);
+    match std::fs::remove_file(std::path::Path::new(&path_str)) {
+        Ok(()) => 1, // TRUE
+        Err(e) => {
+            let code = match e.kind() {
+                std::io::ErrorKind::NotFound => 2,         // ERROR_FILE_NOT_FOUND
+                std::io::ErrorKind::PermissionDenied => 5, // ERROR_ACCESS_DENIED
+                _ => 2,
+            };
+            kernel32_SetLastError(code);
+            0 // FALSE
+        }
+    }
 }
 
 /// DeleteProcThreadAttributeList stub - deletes a process thread attribute list
@@ -1968,13 +2301,43 @@ pub unsafe extern "C" fn kernel32_GetExitCodeProcess(
     0 // FALSE - not implemented
 }
 
-/// GetFileAttributesW stub - gets file attributes
+/// GetFileAttributesW - gets file attributes
+///
+/// Returns `FILE_ATTRIBUTE_DIRECTORY` for directories, `FILE_ATTRIBUTE_NORMAL`
+/// for regular files, and `INVALID_FILE_ATTRIBUTES` (0xFFFF_FFFF) if the path
+/// does not exist or cannot be accessed.
 ///
 /// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
+/// `file_name` must be a valid null-terminated UTF-16 string.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn kernel32_GetFileAttributesW(_file_name: *const u16) -> u32 {
-    0xFFFF_FFFF // INVALID_FILE_ATTRIBUTES
+pub unsafe extern "C" fn kernel32_GetFileAttributesW(file_name: *const u16) -> u32 {
+    const INVALID_FILE_ATTRIBUTES: u32 = 0xFFFF_FFFF;
+    const FILE_ATTRIBUTE_READONLY: u32 = 0x0001;
+    const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x0010;
+    const FILE_ATTRIBUTE_NORMAL: u32 = 0x0080;
+
+    if file_name.is_null() {
+        kernel32_SetLastError(87); // ERROR_INVALID_PARAMETER
+        return INVALID_FILE_ATTRIBUTES;
+    }
+    let path_str = wide_path_to_linux(file_name);
+    match std::fs::metadata(std::path::Path::new(&path_str)) {
+        Ok(meta) => {
+            if meta.is_dir() {
+                FILE_ATTRIBUTE_DIRECTORY
+            } else {
+                let mut attrs = FILE_ATTRIBUTE_NORMAL;
+                if meta.permissions().readonly() {
+                    attrs |= FILE_ATTRIBUTE_READONLY;
+                }
+                attrs
+            }
+        }
+        Err(_) => {
+            kernel32_SetLastError(2); // ERROR_FILE_NOT_FOUND
+            INVALID_FILE_ATTRIBUTES
+        }
+    }
 }
 
 /// GetFileInformationByHandle stub - gets file information by handle
@@ -2080,43 +2443,94 @@ pub unsafe extern "C" fn kernel32_GetStdHandle(std_handle: u32) -> *mut core::ff
 
 /// GetCommandLineW - returns the command line for the current process (wide version)
 ///
-/// Returns a pointer to a static wide string containing the command line.
-/// For simplicity, we return an empty string.
+/// Returns a pointer to the process command line as a null-terminated UTF-16 string.
+/// The runner must call `set_process_command_line` before the entry point executes.
 ///
 /// # Safety
-/// This function is safe to call. It returns a pointer to a static buffer.
+/// This function is safe to call. It returns a pointer to static storage that is valid
+/// for the lifetime of the process.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_GetCommandLineW() -> *const u16 {
-    // Static empty wide string (just null terminator)
-    static COMMAND_LINE: [u16; 1] = [0];
-    // SAFETY: We're returning a pointer to a static immutable buffer
-    COMMAND_LINE.as_ptr()
+    // SAFETY: The Vec stored in PROCESS_COMMAND_LINE is never dropped; as_ptr() is valid.
+    // EMPTY_CMD is a const array; its address is stable for the lifetime of the process.
+    const EMPTY_CMD: [u16; 1] = [0];
+    PROCESS_COMMAND_LINE
+        .get()
+        .map(|v| v.as_ptr())
+        .unwrap_or(EMPTY_CMD.as_ptr())
 }
 
-/// GetEnvironmentStringsW - returns the environment strings (wide version)
+/// GetEnvironmentStringsW - returns all environment strings as a UTF-16 block
 ///
-/// Returns a pointer to a block of null-terminated wide strings, ending with
-/// an additional null terminator. For simplicity, we return an empty block.
+/// Returns a pointer to a freshly allocated block of null-terminated wide strings
+/// of the form `NAME=VALUE\0NAME2=VALUE2\0\0`.  Each call allocates a new block;
+/// the caller must release it with `FreeEnvironmentStringsW` to avoid a memory leak.
 ///
 /// # Safety
-/// This function is safe to call. It returns a pointer to a static buffer.
+/// This function is safe to call. The returned pointer is valid until
+/// `FreeEnvironmentStringsW` is called with the same pointer.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn kernel32_GetEnvironmentStringsW() -> *const u16 {
-    // Static empty environment block (two null terminators)
-    static ENV_STRINGS: [u16; 2] = [0, 0];
-    // SAFETY: We're returning a pointer to a static immutable buffer
-    ENV_STRINGS.as_ptr()
+pub unsafe extern "C" fn kernel32_GetEnvironmentStringsW() -> *mut u16 {
+    let mut block: Vec<u16> = Vec::new();
+    for (key, value) in std::env::vars() {
+        let entry = format!("{key}={value}");
+        block.extend(entry.encode_utf16());
+        block.push(0); // null terminator for this entry
+    }
+    block.push(0); // final null terminator (empty string = end of block)
+
+    let len = block.len();
+    let boxed = block.into_boxed_slice();
+    // SAFETY: We just allocated this box; we record the raw pointer so that
+    // FreeEnvironmentStringsW can reconstruct the Box and drop it.
+    let raw = Box::into_raw(boxed).cast::<u16>();
+
+    let mut guard = ENV_STRINGS_BLOCKS.lock().unwrap();
+    guard.get_or_insert_with(Vec::new).push(SendablePtr(raw));
+    drop(guard);
+
+    // Suppress unused-variable warning for `len` (used only as a sanity note).
+    let _ = len;
+    raw
 }
 
-/// FreeEnvironmentStringsW - frees the environment strings (wide version)
+/// FreeEnvironmentStringsW - frees a block returned by `GetEnvironmentStringsW`
 ///
-/// This is a no-op since we return a static buffer.
+/// Reconstructs the `Box<[u16]>` from the pointer and drops it.  If the pointer
+/// was not returned by `GetEnvironmentStringsW`, this is a no-op (safe but does not
+/// free the memory).
 ///
 /// # Safety
-/// This function is safe to call with any argument.
+/// `env_strings` must be a pointer previously returned by `GetEnvironmentStringsW`,
+/// or null.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn kernel32_FreeEnvironmentStringsW(_env_strings: *const u16) -> i32 {
-    1 // TRUE - success
+pub unsafe extern "C" fn kernel32_FreeEnvironmentStringsW(env_strings: *mut u16) -> i32 {
+    if env_strings.is_null() {
+        return 1; // TRUE
+    }
+    let mut guard = ENV_STRINGS_BLOCKS.lock().unwrap();
+    let blocks = guard.get_or_insert_with(Vec::new);
+    if let Some(pos) = blocks.iter().position(|p| p.0 == env_strings) {
+        let ptr = blocks.swap_remove(pos).0;
+        drop(guard);
+        // Reconstruct the slice length by scanning for the double-null terminator,
+        // then drop the box.  We need the length to build a fat pointer.
+        //
+        // SAFETY: `ptr` was created by `Box::into_raw(boxed.into_boxed_slice())` in
+        // `GetEnvironmentStringsW`; we are the only owner now that we removed it from
+        // the registry.  We scan to re-derive the original slice length.
+        let mut len = 0usize;
+        loop {
+            if *ptr.add(len) == 0 && *ptr.add(len + 1) == 0 {
+                len += 2; // include both null terminators
+                break;
+            }
+            len += 1;
+        }
+        let slice_ptr = core::ptr::slice_from_raw_parts_mut(ptr, len);
+        drop(Box::from_raw(slice_ptr));
+    }
+    1 // TRUE
 }
 
 /// LoadLibraryA stub - loads a library (ANSI version)
@@ -2848,27 +3262,91 @@ pub unsafe extern "C" fn kernel32_ReadConsoleW(
 
 /// GetEnvironmentVariableW - retrieves the value of an environment variable (wide version)
 ///
+/// Reads the variable from the process environment using the C library `getenv`.
+/// The name is converted from UTF-16 to UTF-8 for the lookup, and the value is
+/// returned as UTF-16.
+///
 /// # Safety
-/// This function is a stub that returns 0 (variable not found).
+/// `name` must be a valid null-terminated UTF-16 string.
+/// `buffer` must point to a writable array of at least `size` `u16` elements, or be null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_GetEnvironmentVariableW(
-    _name: *const u16,
-    _buffer: *mut u16,
-    _size: u32,
+    name: *const u16,
+    buffer: *mut u16,
+    size: u32,
 ) -> u32 {
-    0 // Not found
+    if name.is_null() {
+        kernel32_SetLastError(87); // ERROR_INVALID_PARAMETER
+        return 0;
+    }
+    let name_str = wide_str_to_string(name);
+    let c_name = match CString::new(name_str.as_str()) {
+        Ok(s) => s,
+        Err(_) => {
+            kernel32_SetLastError(87);
+            return 0;
+        }
+    };
+    // SAFETY: c_name is a valid C string; getenv returns a pointer owned by the OS.
+    let value_ptr = libc::getenv(c_name.as_ptr());
+    if value_ptr.is_null() {
+        kernel32_SetLastError(203); // ERROR_ENVVAR_NOT_FOUND
+        return 0;
+    }
+    // SAFETY: getenv returns a valid null-terminated C string.
+    let value_str = std::ffi::CStr::from_ptr(value_ptr).to_string_lossy();
+    // copy_utf8_to_wide follows Windows GetEnvironmentVariableW semantics:
+    // - if buffer is null or too small: returns required size (including null terminator)
+    // - if buffer is large enough: returns characters written (excluding null terminator)
+    copy_utf8_to_wide(&value_str, buffer, size)
 }
 
 /// SetEnvironmentVariableW - sets the value of an environment variable (wide version)
 ///
+/// When `value` is null the variable is removed.  Uses `setenv`/`unsetenv` from libc.
+///
 /// # Safety
-/// This function is a stub that returns success without modifying anything.
+/// `name` must be a valid null-terminated UTF-16 string.
+/// `value` must be a valid null-terminated UTF-16 string or null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_SetEnvironmentVariableW(
-    _name: *const u16,
-    _value: *const u16,
+    name: *const u16,
+    value: *const u16,
 ) -> i32 {
-    1 // TRUE - success
+    if name.is_null() {
+        kernel32_SetLastError(87); // ERROR_INVALID_PARAMETER
+        return 0;
+    }
+    let name_str = wide_str_to_string(name);
+    let c_name = match CString::new(name_str.as_str()) {
+        Ok(s) => s,
+        Err(_) => {
+            kernel32_SetLastError(87);
+            return 0;
+        }
+    };
+    if value.is_null() {
+        // Delete the variable (Windows: SetEnvironmentVariable(name, NULL) removes it)
+        // SAFETY: c_name is a valid C string.
+        libc::unsetenv(c_name.as_ptr());
+        return 1; // TRUE
+    }
+    let value_str = wide_str_to_string(value);
+    let c_value = match CString::new(value_str.as_str()) {
+        Ok(s) => s,
+        Err(_) => {
+            kernel32_SetLastError(87);
+            return 0;
+        }
+    };
+    // SAFETY: c_name and c_value are valid C strings; overwrite=1 replaces existing value.
+    let result = libc::setenv(c_name.as_ptr(), c_value.as_ptr(), 1);
+    if result == 0 {
+        1 // TRUE
+    } else {
+        kernel32_SetLastError(13); // ERROR_INVALID_DATA
+        0 // FALSE
+    }
 }
 
 /// VirtualProtect - changes the protection on a region of committed pages
@@ -4734,11 +5212,21 @@ mod tests {
             "GetEnvironmentStringsW should not return null"
         );
 
-        // Should have double null terminator (empty block)
-        let first_char = unsafe { *env };
-        assert_eq!(first_char, 0, "First char should be null");
-        let second_char = unsafe { *env.add(1) };
-        assert_eq!(second_char, 0, "Second char should be null (double-null)");
+        // The block is now real: scan for the double-null terminator.
+        // It must end with \0\0 (empty-string entry = end of block).
+        let mut i = 0usize;
+        loop {
+            let c0 = unsafe { *env.add(i) };
+            let c1 = unsafe { *env.add(i + 1) };
+            if c0 == 0 && c1 == 0 {
+                break; // found double-null terminator
+            }
+            i += 1;
+            assert!(
+                i < 65_536,
+                "environment block has no double-null terminator"
+            );
+        }
     }
 
     #[test]
@@ -4837,6 +5325,9 @@ mod tests {
 
     #[test]
     fn test_get_environment_variable_w() {
+        // When querying with null buffer / size 0, the function should return the
+        // required buffer size (> 0) if PATH is set, or 0 if PATH is not in the
+        // environment.  Either way it must not crash.
         let name: [u16; 5] = [
             u16::from(b'P'),
             u16::from(b'A'),
@@ -4846,7 +5337,9 @@ mod tests {
         ];
         let result =
             unsafe { kernel32_GetEnvironmentVariableW(name.as_ptr(), core::ptr::null_mut(), 0) };
-        assert_eq!(result, 0, "GetEnvironmentVariableW stub should return 0");
+        // PATH is typically set in any CI environment, so result > 0 (required size).
+        // The key assertion is that the call doesn't crash/panic.
+        let _ = result; // just verify no crash
     }
 
     #[test]

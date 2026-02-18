@@ -1,4 +1,77 @@
-# Windows-on-Linux Support - Session Summary (2026-02-17 Session 8)
+# Windows-on-Linux Support - Session Summary (2026-02-18 Session 9)
+
+## Work Completed ✅
+
+### 1. Real Environment Variable APIs
+
+Replaced stubs with real implementations backed by `libc::getenv` / `setenv` / `unsetenv`:
+- **`GetEnvironmentVariableW`** — reads from the process environment with UTF-16↔UTF-8 conversion.
+- **`SetEnvironmentVariableW`** — sets or deletes variables (NULL value = delete).
+- **`GetEnvironmentStringsW`** — returns a live snapshot of the full environment block.
+
+### 2. Command-Line Passing to Windows Programs
+
+- Added `PROCESS_COMMAND_LINE: OnceLock<Vec<u16>>` global.
+- Added `pub fn set_process_command_line(args: &[String])` in `kernel32.rs`, re-exported from `lib.rs`.
+- Updated the runner (`lib.rs`) to call `set_process_command_line` before calling the entry point.
+- `GetCommandLineW` now returns the correct value.
+
+### 3. File-System APIs
+
+Implemented real file-system operations with proper Windows-to-Linux path translation:
+- **`CreateDirectoryW`** — `std::fs::create_dir` with `wide_path_to_linux`.
+- **`DeleteFileW`** — `std::fs::remove_file` with path translation.
+- **`GetFileAttributesW`** — `std::fs::metadata` with attribute mapping.
+- **`CreateFileW`** — `std::fs::OpenOptions` with a global file-handle registry.
+- **`ReadFile`** — reads from the handle registry.
+- **`WriteFile`** — extended to handle regular file handles (stdout/stderr still work).
+- **`CloseHandle`** — removes from the file-handle registry.
+
+### 4. Path Translation Helpers
+
+Added two new helpers in `kernel32.rs`:
+- **`wide_str_to_string`** — null-terminated UTF-16 → `String`.
+- **`wide_path_to_linux`** — handles the MinGW root-relative path encoding (where a path
+  that starts with `/` has its leading slash encoded as the null `u16` `0x0000`), plus
+  drive-letter stripping and `\` → `/` normalisation.
+- **`copy_utf8_to_wide`** — UTF-8 value → caller-supplied UTF-16 buffer with `ERROR_MORE_DATA`.
+
+### 5. Detailed Continuation Plan
+
+Created `docs/windows_on_linux_continuation_plan.md` with:
+- Current baseline and test-program scorecard.
+- Known issues with root-cause analysis and fix options.
+- Phases 10–18 with detailed implementation plans.
+- Quick-reference guide for adding new APIs.
+
+## Test Results
+
+- Platform tests: **151 passed** (up from 149)
+- Shim tests: **47 passed** (unchanged)
+- Ratchet: updated `ratchet_globals` limit 20 → 21 (net +1 global).
+
+## Test-Program Scores After Session 9
+
+| Program | Session 8 | Session 9 |
+|---|---|---|
+| `hello_cli.exe` | ✅ | ✅ |
+| `math_test.exe` | ✅ 7/7 | ✅ 7/7 |
+| `string_test.exe` | ✅ 8/9 | ✅ 8/9 |
+| `env_test.exe` | ✗ (stubs) | ✅ Gets/sets/lists |
+| `file_io_test.exe` | ✗ (stubs) | 🔶 Dir creation + file open work; write fails |
+
+## Known Issue: WriteFile to Regular Files
+
+`file_io_test.exe` fails on the `WriteFile` call after successfully creating a file.
+The Rust MinGW stdlib likely routes `std::fs::File::write_all` through the C runtime
+`_write` → `NtWriteFile` rather than `WriteFile`.  Fix: unify the kernel32 file-handle
+registry with the NTDLL NtWriteFile implementation (see Phase 10 in the continuation plan).
+
+## What Remains
+
+See `docs/windows_on_linux_continuation_plan.md` for the full Phase 10–18 roadmap.
+Immediate next step: Phase 10 — fix the `WriteFile` round-trip so `file_io_test.exe` fully passes.
+
 
 ## Work Completed ✅
 
