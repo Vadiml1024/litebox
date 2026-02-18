@@ -442,7 +442,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ntdll_NtWriteFile_invalid_handle() {
+    fn test_nt_write_file_invalid_handle() {
         unsafe {
             let mut io_sb = [0u64; 2];
             let buf = b"hello";
@@ -462,7 +462,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ntdll_NtWriteFile_null_buffer() {
+    fn test_nt_write_file_null_buffer() {
         unsafe {
             let mut io_sb = [0u64; 2];
             let ret = ntdll_NtWriteFile(
@@ -482,7 +482,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ntdll_NtClose_always_succeeds() {
+    fn test_nt_close_always_succeeds() {
         unsafe {
             assert_eq!(ntdll_NtClose(0x11), status::STATUS_SUCCESS);
             assert_eq!(ntdll_NtClose(0xDEAD_BEEF), status::STATUS_SUCCESS);
