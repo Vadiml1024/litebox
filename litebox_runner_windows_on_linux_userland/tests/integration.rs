@@ -294,6 +294,7 @@ mod test_program_helpers {
     }
 
     /// Run a Windows test program and return the output
+    #[allow(dead_code)]
     pub fn run_test_program(
         name: &str,
         args: &[&str],
