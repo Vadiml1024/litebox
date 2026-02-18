@@ -2,6 +2,13 @@
 
 ## 🚀 Speed Up Your Development (5 Minutes)
 
+### Automated Setup (Easiest)
+```bash
+./scripts/setup-workspace.sh
+```
+
+This script will check your system and guide you through installing the recommended tools.
+
 ### Option 1: Fast Setup (Recommended)
 ```bash
 # Install fast linker (choose one)

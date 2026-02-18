@@ -17,15 +17,26 @@ or contact [opencode@microsoft.com](mailto:opencode@microsoft.com) with any addi
 
 ### Quick Setup (Recommended)
 
-For the fastest development experience, install these optional but highly recommended tools:
+For the fastest development experience, run the automated setup checker:
 
 ```bash
-# Fast linker (choose one) - speeds up linking by 3-5x
+./scripts/setup-workspace.sh
+```
+
+This will check for and guide you to install:
+- Fast linker (mold or lld) - speeds up linking by 3-5x
+- cargo-nextest - speeds up tests by 2-3x
+- Other recommended tools
+
+Or install manually:
+
+```bash
+# Fast linker (choose one)
 sudo apt install mold        # Recommended
 # OR
 sudo apt install lld         # Alternative
 
-# Fast test runner - speeds up tests by 2-3x
+# Fast test runner
 cargo install cargo-nextest
 
 # After installing, edit .cargo/config.toml to enable the fast linker
