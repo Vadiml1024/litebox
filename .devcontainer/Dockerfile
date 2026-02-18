@@ -26,7 +26,7 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --de
 
 # Copy rust-toolchain.toml to install the correct toolchain version
 COPY rust-toolchain.toml /tmp/rust-toolchain.toml
-RUN cd /tmp && rustup show && rm /tmp/rust-toolchain.toml
+RUN cd /tmp && rustup show && rustup default nightly-2026-01-15 && rm /tmp/rust-toolchain.toml
 
 # Add Windows GNU target for cross-compilation
 RUN rustup target add x86_64-pc-windows-gnu
