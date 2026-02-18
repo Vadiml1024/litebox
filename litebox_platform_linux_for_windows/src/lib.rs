@@ -13,6 +13,8 @@ pub mod msvcrt;
 pub mod ntdll_impl;
 pub mod trampoline;
 
+pub use kernel32::set_process_command_line;
+
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};

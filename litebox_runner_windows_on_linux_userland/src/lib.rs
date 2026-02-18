@@ -11,6 +11,7 @@
 use anyhow::{Result, anyhow};
 use clap::Parser;
 use litebox_platform_linux_for_windows::LinuxPlatformForWindows;
+use litebox_platform_linux_for_windows::set_process_command_line;
 use litebox_shim_windows::loader::{ExecutionContext, PeLoader, call_entry_point};
 use litebox_shim_windows::syscalls::ntdll::{NtdllApi, memory_protection};
 use litebox_shim_windows::tracing::{
@@ -379,6 +380,12 @@ pub fn run(cli_args: CliArgs) -> Result<()> {
     println!("  ✓ IAT patching");
     println!("  ✓ TEB/PEB setup");
     println!("  → Entry point at: 0x{entry_point_address:X}");
+
+    // Set the process command line so Windows APIs (GetCommandLineW, __getmainargs) return
+    // the correct arguments.  Build argv as [program_name, extra_args...].
+    let mut cmd_args = vec![cli_args.program.clone()];
+    cmd_args.extend(cli_args.arguments.iter().cloned());
+    set_process_command_line(&cmd_args);
 
     // Attempt to call the entry point
     // NOTE: This will likely fail in practice because:
