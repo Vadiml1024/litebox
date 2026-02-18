@@ -609,36 +609,69 @@ static PARSED_MAIN_ARGS: OnceLock<(Vec<CString>, ArgvPtrs)> = OnceLock::new();
 /// Handles the common quoting rules:
 ///   - Arguments separated by spaces / tabs.
 ///   - `"..."` wraps a quoted argument (the quotes are stripped).
-///   - `\"` inside a quoted argument is an escaped double-quote.
+///   - Backslashes followed by a quote use Windows' 2N / 2N+1 rules:
+///     - 2N backslashes + `"` => N backslashes + toggle quoting (no literal `"`).
+///     - 2N+1 backslashes + `"` => N backslashes + literal `"` (no toggle).
+///   - These rules apply both inside and outside quoted arguments.
 fn parse_windows_command_line(cmd: &str) -> Vec<String> {
     let mut args = Vec::new();
     let mut current = String::new();
     let mut in_quotes = false;
-    let mut chars = cmd.chars().peekable();
-    while let Some(c) = chars.next() {
+
+    // Work on a Vec<char> so we can look ahead by index without
+    // breaking UTF-8 encoding; we only treat ASCII `"`, `\`, space, and tab
+    // specially, which are all single-byte and single-char code points.
+    let chars: Vec<char> = cmd.chars().collect();
+    let mut i = 0;
+
+    while i < chars.len() {
+        let c = chars[i];
         match c {
-            '"' => {
-                in_quotes = !in_quotes;
-            }
-            '\\' if in_quotes => {
-                // Inside a quoted string, `\"` is an escaped quote; any other
-                // `\X` passes both characters through unchanged.
-                if chars.peek() == Some(&'"') {
-                    chars.next();
-                    current.push('"');
-                } else {
-                    current.push('\\');
-                }
-            }
             ' ' | '\t' if !in_quotes => {
                 if !current.is_empty() {
                     args.push(current.clone());
                     current.clear();
                 }
+                i += 1;
             }
-            other => current.push(other),
+            '"' => {
+                // A bare quote toggles the in_quotes state and is not emitted.
+                in_quotes = !in_quotes;
+                i += 1;
+            }
+            '\\' => {
+                // Count consecutive backslashes.
+                let mut backslash_count = 0;
+                while i < chars.len() && chars[i] == '\\' {
+                    backslash_count += 1;
+                    i += 1;
+                }
+
+                let next_is_quote = i < chars.len() && chars[i] == '"';
+                if next_is_quote {
+                    // Emit one backslash for every pair.
+                    current.extend(std::iter::repeat('\\').take(backslash_count / 2));
+                    if backslash_count % 2 == 0 {
+                        // Even number of backslashes: the quote is a delimiter.
+                        in_quotes = !in_quotes;
+                        i += 1; // consume the quote
+                    } else {
+                        // Odd number of backslashes: the quote is escaped.
+                        current.push('"');
+                        i += 1; // consume the quote
+                    }
+                } else {
+                    // No quote follows: emit all backslashes literally.
+                    current.extend(std::iter::repeat('\\').take(backslash_count));
+                }
+            }
+            other => {
+                current.push(other);
+                i += 1;
+            }
         }
     }
+
     if !current.is_empty() {
         args.push(current);
     }
@@ -1350,8 +1383,9 @@ mod tests {
 
     #[test]
     fn test_parse_windows_command_line_escaped_quote() {
+        // 1 backslash before quote = odd → literal quote (no quoting toggle)
         let args = parse_windows_command_line(r#"prog.exe "say \"hi\"" end"#);
-        assert_eq!(args, vec!["prog.exe", "say \"hi\"", "end"]);
+        assert_eq!(args, vec!["prog.exe", r#"say "hi""#, "end"]);
     }
 
     #[test]
@@ -1364,6 +1398,28 @@ mod tests {
     fn test_parse_windows_command_line_single() {
         let args = parse_windows_command_line("prog.exe");
         assert_eq!(args, vec!["prog.exe"]);
+    }
+
+    #[test]
+    fn test_parse_windows_command_line_backslash_in_path() {
+        // Backslashes not followed by a quote are literal
+        let args = parse_windows_command_line(r"prog.exe C:\path\to\file.txt");
+        assert_eq!(args, vec!["prog.exe", r"C:\path\to\file.txt"]);
+    }
+
+    #[test]
+    fn test_parse_windows_command_line_even_backslashes_before_quote() {
+        // 2 backslashes + " => 1 backslash + quote toggle (quote is a delimiter)
+        let args = parse_windows_command_line(r#"prog.exe "path\\" end"#);
+        // Inside quotes: "path\\" → 2 backslashes before closing quote → 1 literal backslash, quote closes
+        assert_eq!(args, vec!["prog.exe", r"path\", "end"]);
+    }
+
+    #[test]
+    fn test_parse_windows_command_line_unquoted_escaped_quote() {
+        // Outside quotes: \" = escaped quote (literal quote, no toggle)
+        let args = parse_windows_command_line(r#"prog.exe arg\"with\"quote"#);
+        assert_eq!(args, vec!["prog.exe", r#"arg"with"quote"#]);
     }
 
     #[test]

@@ -2631,9 +2631,16 @@ pub unsafe extern "C" fn kernel32_SetFilePointerEx(
 ) -> i32 {
     let handle_val = file as usize;
     let seek_from = match move_method {
-        0 => std::io::SeekFrom::Start(distance_to_move as u64), // FILE_BEGIN
-        1 => std::io::SeekFrom::Current(distance_to_move),      // FILE_CURRENT
-        2 => std::io::SeekFrom::End(distance_to_move),          // FILE_END
+        0 => {
+            if distance_to_move < 0 {
+                // Windows: SetFilePointerEx(FILE_BEGIN, negative) -> ERROR_NEGATIVE_SEEK (131)
+                kernel32_SetLastError(131);
+                return 0;
+            }
+            std::io::SeekFrom::Start(distance_to_move as u64) // FILE_BEGIN
+        }
+        1 => std::io::SeekFrom::Current(distance_to_move), // FILE_CURRENT
+        2 => std::io::SeekFrom::End(distance_to_move),     // FILE_END
         _ => {
             kernel32_SetLastError(87); // ERROR_INVALID_PARAMETER
             return 0;
@@ -2734,7 +2741,8 @@ pub unsafe extern "C" fn kernel32_GetFileInformationByHandleEx(
 /// `metadata().len()` to get the actual file size.
 ///
 /// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
+/// When `file_size` is non-null, it must be a valid, writable pointer to an `i64`
+/// where the file size will be stored.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_GetFileSizeEx(
     file: *mut core::ffi::c_void,
@@ -2969,11 +2977,18 @@ pub unsafe extern "C" fn kernel32_MoveFileExW(
     }
     let src = wide_path_to_linux(existing_file_name);
     let dst = wide_path_to_linux(new_file_name);
-    if std::fs::rename(&src, &dst).is_ok() {
-        1 // TRUE
-    } else {
-        kernel32_SetLastError(2); // ERROR_FILE_NOT_FOUND
-        0 // FALSE
+    match std::fs::rename(&src, &dst) {
+        Ok(()) => 1, // TRUE
+        Err(e) => {
+            let code = match e.kind() {
+                std::io::ErrorKind::NotFound => 2,         // ERROR_FILE_NOT_FOUND
+                std::io::ErrorKind::PermissionDenied => 5, // ERROR_ACCESS_DENIED
+                std::io::ErrorKind::AlreadyExists => 183,  // ERROR_ALREADY_EXISTS
+                _ => 2,                                    // ERROR_FILE_NOT_FOUND (generic)
+            };
+            kernel32_SetLastError(code);
+            0 // FALSE
+        }
     }
 }
 
@@ -3005,11 +3020,26 @@ pub unsafe extern "C" fn kernel32_RemoveDirectoryW(path_name: *const u16) -> i32
         return 0;
     }
     let path = wide_path_to_linux(path_name);
-    if std::fs::remove_dir(&path).is_ok() {
-        1 // TRUE
-    } else {
-        kernel32_SetLastError(2); // ERROR_FILE_NOT_FOUND
-        0 // FALSE
+    match std::fs::remove_dir(&path) {
+        Ok(()) => 1, // TRUE
+        Err(e) => {
+            let code = match e.kind() {
+                std::io::ErrorKind::NotFound => 2,         // ERROR_FILE_NOT_FOUND
+                std::io::ErrorKind::PermissionDenied => 5, // ERROR_ACCESS_DENIED
+                // std::io::ErrorKind::DirectoryNotEmpty doesn't exist yet on stable Rust,
+                // but POSIX ENOTEMPTY maps to `Other`.
+                _ => {
+                    // Check for ENOTEMPTY via the OS error code
+                    if e.raw_os_error() == Some(libc::ENOTEMPTY) {
+                        145 // ERROR_DIR_NOT_EMPTY
+                    } else {
+                        2 // ERROR_FILE_NOT_FOUND (generic)
+                    }
+                }
+            };
+            kernel32_SetLastError(code);
+            0 // FALSE
+        }
     }
 }
 
