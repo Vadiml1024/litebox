@@ -39,24 +39,17 @@ jobs:
             target/*/build/litebox_runner_linux_userland-*/out
           key: copilot-agent-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}-${{ hashFiles('**/litebox_syscall_rewriter/**/*.rs') }}
 
-      - name: Install iperf3
-        run: sudo apt-get install -y iperf3
-
-      - name: Install gdb
-        run: sudo apt-get install -y gdb
-
-      - name: Install MinGW cross-compiler for Windows program development
+      - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y mingw-w64
+          sudo apt-get install -y --no-install-recommends iperf3 gdb mingw-w64
 
-      - name: Pre-build Windows test programs
+      - name: Pre-build
         run: |
           cd windows_test_programs
           cargo build --release --target x86_64-pc-windows-gnu 2>/dev/null || true
-
-      - name: Pre-build workspace
-        run: cargo build --locked 2>/dev/null || true
+          cd ..
+          cargo build --locked 2>/dev/null || true
 
       - name: Set up tun device for Linux userland testing
         run: |
