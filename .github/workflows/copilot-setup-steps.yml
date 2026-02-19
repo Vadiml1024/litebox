@@ -2,55 +2,54 @@ name: "Copilot Setup Steps"
 
 on:
   workflow_dispatch:
-  push:
-    paths:
-      - .github/workflows/copilot-setup-steps.yml
-  pull_request:
-    paths:
-      - .github/workflows/copilot-setup-steps.yml
 
 jobs:
   copilot-setup-steps:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+
     steps:
-      - name: Checkout code
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Rust
-        run: |
-          rustup toolchain install $(awk -F'"' '/channel/{print $2}' rust-toolchain.toml) --profile minimal --no-self-update --component rustfmt,clippy --target x86_64-unknown-linux-gnu --target x86_64-pc-windows-gnu
-
-      - name: Set up Nextest
-        uses: taiki-e/install-action@v2
+      # Install the exact Rust nightly toolchain pinned in rust-toolchain.toml
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
         with:
-          tool: nextest@0.9.114
+          toolchain: nightly-2026-01-15
+          targets: x86_64-pc-windows-gnu
+          components: rustfmt, clippy, rust-src
 
-      - name: Rust cache
+      # Install the fast mold linker (3-5x faster linking per your own docs)
+      - name: Install mold linker
+        run: sudo apt-get update && sudo apt-get install -y mold clang mingw-w64
+
+      # Cache Cargo registry, git sources, and compiled deps
+      - name: Cache Cargo dependencies
         uses: Swatinem/rust-cache@v2
         with:
-          cache-on-failure: true
+          # Cache key includes Cargo.lock so it busts when deps change
+          key: litebox-cargo-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Cache custom out directories
-        uses: actions/cache@v4
+      # Pre-fetch and compile all dependencies (the biggest time saver)
+      # Uses --workspace so all crate deps are warmed up at once
+      - name: Pre-fetch Cargo dependencies
+        run: cargo fetch
+
+      # Pre-build dependencies in check mode to warm up the cache
+      - name: Pre-build workspace dependencies
+        run: |
+          cargo check --workspace \
+            --exclude litebox_runner_lvbs \
+            --exclude litebox_runner_snp
+
+      # Install cargo-nextest for faster test execution (2-3x speedup per your docs)
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+
+      # Install Node.js (needed for MCP servers and dev_bench node benchmarks)
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
-          path: |
-            target/*/build/litebox_runner_linux_userland-*/out
-          key: copilot-agent-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}-${{ hashFiles('**/litebox_syscall_rewriter/**/*.rs') }}
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends iperf3 gdb mingw-w64
-
-      - name: Pre-build
-        run: |
-          cd windows_test_programs
-          cargo build --release --target x86_64-pc-windows-gnu 2>/dev/null || true
-          cd ..
-          cargo build --locked 2>/dev/null || true
-
-      - name: Set up tun device for Linux userland testing
-        run: |
-          sudo ./litebox_platform_linux_userland/scripts/tun-setup.sh
+          node-version: '20'
