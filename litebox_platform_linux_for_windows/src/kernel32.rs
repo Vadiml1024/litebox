@@ -292,12 +292,12 @@ fn glob_match(name: &[u8], pattern: &[u8]) -> bool {
 /// # Safety
 /// `find_data` must point to a writable buffer of at least 592 bytes.
 unsafe fn fill_find_data(entry: &std::fs::DirEntry, find_data: *mut u8) {
+    const WIN32_FIND_DATAW_SIZE: usize = 592;
     if find_data.is_null() {
         return;
     }
     // Always zero-initialize the buffer so that callers never observe
     // uninitialized memory, even if metadata retrieval fails.
-    const WIN32_FIND_DATAW_SIZE: usize = 592;
     // SAFETY: Caller guarantees `find_data` points to at least
     // `WIN32_FIND_DATAW_SIZE` writable bytes (see function safety contract),
     // and we've just checked that the pointer is non-null.
@@ -367,7 +367,7 @@ pub fn get_command_line_utf8() -> String {
         .map(|v| {
             // strip trailing null terminator(s) before converting
             let end = v.iter().position(|&c| c == 0).unwrap_or(v.len());
-            String::from_utf16_lossy(&v[..end]).to_string()
+            String::from_utf16_lossy(&v[..end]).clone()
         })
         .unwrap_or_default()
 }
@@ -435,7 +435,7 @@ unsafe fn wide_str_to_string(wide: *const u16) -> String {
         }
     }
     let slice = core::slice::from_raw_parts(wide, len);
-    String::from_utf16_lossy(slice).to_owned()
+    String::from_utf16_lossy(slice).clone()
 }
 
 /// Convert a null-terminated UTF-16 Windows path pointer to a Linux absolute path string.
@@ -475,7 +475,7 @@ unsafe fn wide_path_to_linux(wide: *const u16) -> String {
                 len += 1;
             }
             let slice = core::slice::from_raw_parts(wide.add(1), len);
-            String::from_utf16_lossy(slice).to_owned()
+            String::from_utf16_lossy(slice).clone()
         }
     } else {
         wide_str_to_string(wide)
@@ -1613,6 +1613,7 @@ pub unsafe extern "C" fn kernel32_CreateFileW(
             .read(can_read)
             .write(true)
             .create(true)
+            .truncate(false)
             .open(&path_str),
         TRUNCATE_EXISTING => std::fs::OpenOptions::new()
             .write(true)
@@ -1634,8 +1635,7 @@ pub unsafe extern "C" fn kernel32_CreateFileW(
         }
         Err(e) => {
             let code = match e.kind() {
-                std::io::ErrorKind::NotFound => 2,         // ERROR_FILE_NOT_FOUND
-                std::io::ErrorKind::AlreadyExists => 80,   // ERROR_FILE_EXISTS
+                std::io::ErrorKind::AlreadyExists => 80, // ERROR_FILE_EXISTS
                 std::io::ErrorKind::PermissionDenied => 5, // ERROR_ACCESS_DENIED
                 _ => 2,
             };
@@ -1677,21 +1677,18 @@ pub unsafe extern "C" fn kernel32_ReadFile(
         }
     });
 
-    match bytes_read {
-        Some(n) => {
-            if !number_of_bytes_read.is_null() {
-                // Windows API uses u32 for byte counts; saturate rather than truncate.
-                *number_of_bytes_read = u32::try_from(n).unwrap_or(u32::MAX);
-            }
-            1 // TRUE
+    if let Some(n) = bytes_read {
+        if !number_of_bytes_read.is_null() {
+            // Windows API uses u32 for byte counts; saturate rather than truncate.
+            *number_of_bytes_read = u32::try_from(n).unwrap_or(u32::MAX);
         }
-        None => {
-            kernel32_SetLastError(6); // ERROR_INVALID_HANDLE
-            if !number_of_bytes_read.is_null() {
-                *number_of_bytes_read = 0;
-            }
-            0 // FALSE
+        1 // TRUE
+    } else {
+        kernel32_SetLastError(6); // ERROR_INVALID_HANDLE
+        if !number_of_bytes_read.is_null() {
+            *number_of_bytes_read = 0;
         }
+        0 // FALSE
     }
 }
 
@@ -1735,23 +1732,20 @@ pub unsafe extern "C" fn kernel32_WriteFile(
         } else {
             std::io::Write::write(&mut std::io::stderr(), data)
         };
-        match result {
-            Ok(written) => {
-                if !number_of_bytes_written.is_null() {
-                    // Windows API uses u32 for byte counts; saturate rather than truncate.
-                    *number_of_bytes_written = u32::try_from(written).unwrap_or(u32::MAX);
-                }
-                if is_stdout {
-                    let _ = std::io::Write::flush(&mut std::io::stdout());
-                } else {
-                    let _ = std::io::Write::flush(&mut std::io::stderr());
-                }
-                1 // TRUE
+        if let Ok(written) = result {
+            if !number_of_bytes_written.is_null() {
+                // Windows API uses u32 for byte counts; saturate rather than truncate.
+                *number_of_bytes_written = u32::try_from(written).unwrap_or(u32::MAX);
             }
-            Err(_) => {
-                kernel32_SetLastError(29); // ERROR_WRITE_FAULT
-                0
+            if is_stdout {
+                let _ = std::io::Write::flush(&mut std::io::stdout());
+            } else {
+                let _ = std::io::Write::flush(&mut std::io::stderr());
             }
+            1 // TRUE
+        } else {
+            kernel32_SetLastError(29); // ERROR_WRITE_FAULT
+            0
         }
     } else {
         // Try regular file handle
@@ -1763,21 +1757,18 @@ pub unsafe extern "C" fn kernel32_WriteFile(
                 None
             }
         });
-        match written {
-            Some(n) => {
-                if !number_of_bytes_written.is_null() {
-                    // Windows API uses u32 for byte counts; saturate rather than truncate.
-                    *number_of_bytes_written = u32::try_from(n).unwrap_or(u32::MAX);
-                }
-                1 // TRUE
+        if let Some(n) = written {
+            if !number_of_bytes_written.is_null() {
+                // Windows API uses u32 for byte counts; saturate rather than truncate.
+                *number_of_bytes_written = u32::try_from(n).unwrap_or(u32::MAX);
             }
-            None => {
-                kernel32_SetLastError(6); // ERROR_INVALID_HANDLE
-                if !number_of_bytes_written.is_null() {
-                    *number_of_bytes_written = 0;
-                }
-                0 // FALSE
+            1 // TRUE
+        } else {
+            kernel32_SetLastError(6); // ERROR_INVALID_HANDLE
+            if !number_of_bytes_written.is_null() {
+                *number_of_bytes_written = 0;
             }
+            0 // FALSE
         }
     }
 }
@@ -2393,6 +2384,9 @@ pub unsafe extern "C" fn kernel32_CreateSymbolicLinkW(
 
 /// CreateThread - creates a thread to execute within the virtual address space of the process
 ///
+/// # Panics
+/// Panics if the thread mutex is poisoned.
+///
 /// # Safety
 /// `start_address` must be a valid Windows thread function (MS-x64 ABI).
 /// `parameter` is passed as-is to the thread; the caller must ensure its validity.
@@ -2489,7 +2483,6 @@ pub unsafe extern "C" fn kernel32_DeleteFileW(file_name: *const u16) -> i32 {
         Ok(()) => 1, // TRUE
         Err(e) => {
             let code = match e.kind() {
-                std::io::ErrorKind::NotFound => 2,         // ERROR_FILE_NOT_FOUND
                 std::io::ErrorKind::PermissionDenied => 5, // ERROR_ACCESS_DENIED
                 _ => 2,
             };
@@ -2647,22 +2640,19 @@ pub unsafe extern "C" fn kernel32_GetFileAttributesW(file_name: *const u16) -> u
         return INVALID_FILE_ATTRIBUTES;
     }
     let path_str = wide_path_to_linux(file_name);
-    match std::fs::metadata(std::path::Path::new(&path_str)) {
-        Ok(meta) => {
-            if meta.is_dir() {
-                FILE_ATTRIBUTE_DIRECTORY
-            } else {
-                let mut attrs = FILE_ATTRIBUTE_NORMAL;
-                if meta.permissions().readonly() {
-                    attrs |= FILE_ATTRIBUTE_READONLY;
-                }
-                attrs
+    if let Ok(meta) = std::fs::metadata(std::path::Path::new(&path_str)) {
+        if meta.is_dir() {
+            FILE_ATTRIBUTE_DIRECTORY
+        } else {
+            let mut attrs = FILE_ATTRIBUTE_NORMAL;
+            if meta.permissions().readonly() {
+                attrs |= FILE_ATTRIBUTE_READONLY;
             }
+            attrs
         }
-        Err(_) => {
-            kernel32_SetLastError(2); // ERROR_FILE_NOT_FOUND
-            INVALID_FILE_ATTRIBUTES
-        }
+    } else {
+        kernel32_SetLastError(2); // ERROR_FILE_NOT_FOUND
+        INVALID_FILE_ATTRIBUTES
     }
 }
 
@@ -2743,7 +2733,7 @@ pub unsafe extern "C" fn kernel32_GetFullPathNameW(
     if !file_part.is_null() {
         let last_sep = utf16
             .iter()
-            .rposition(|&c| c == b'/' as u16 || c == b'\\' as u16);
+            .rposition(|&c| c == u16::from(b'/') || c == u16::from(b'\\'));
         let fname_offset = match last_sep {
             Some(pos) => pos + 1,
             None => 0,
@@ -2840,8 +2830,7 @@ pub unsafe extern "C" fn kernel32_GetCommandLineW() -> *const u16 {
     const EMPTY_CMD: [u16; 1] = [0];
     PROCESS_COMMAND_LINE
         .get()
-        .map(|v| v.as_ptr())
-        .unwrap_or(EMPTY_CMD.as_ptr())
+        .map_or(EMPTY_CMD.as_ptr(), std::vec::Vec::as_ptr)
 }
 
 /// GetEnvironmentStringsW - returns all environment strings as a UTF-16 block
@@ -2849,6 +2838,9 @@ pub unsafe extern "C" fn kernel32_GetCommandLineW() -> *const u16 {
 /// Returns a pointer to a freshly allocated block of null-terminated wide strings
 /// of the form `NAME=VALUE\0NAME2=VALUE2\0\0`.  Each call allocates a new block;
 /// the caller must release it with `FreeEnvironmentStringsW` to avoid a memory leak.
+///
+/// # Panics
+/// Panics if the environment strings mutex is poisoned.
 ///
 /// # Safety
 /// This function is safe to call. The returned pointer is valid until
@@ -2883,6 +2875,9 @@ pub unsafe extern "C" fn kernel32_GetEnvironmentStringsW() -> *mut u16 {
 /// Reconstructs the `Box<[u16]>` from the pointer and drops it.  If the pointer
 /// was not returned by `GetEnvironmentStringsW`, this is a no-op (safe but does not
 /// free the memory).
+///
+/// # Panics
+/// Panics if the environment strings mutex is poisoned.
 ///
 /// # Safety
 /// `env_strings` must be a pointer previously returned by `GetEnvironmentStringsW`,
@@ -2992,17 +2987,14 @@ pub unsafe extern "C" fn kernel32_SetFilePointerEx(
             None
         }
     });
-    match result {
-        Some(pos) => {
-            if !new_file_pointer.is_null() {
-                *new_file_pointer = pos;
-            }
-            1 // TRUE
+    if let Some(pos) = result {
+        if !new_file_pointer.is_null() {
+            *new_file_pointer = pos;
         }
-        None => {
-            kernel32_SetLastError(6); // ERROR_INVALID_HANDLE
-            0 // FALSE
-        }
+        1 // TRUE
+    } else {
+        kernel32_SetLastError(6); // ERROR_INVALID_HANDLE
+        0 // FALSE
     }
 }
 
@@ -3025,6 +3017,9 @@ pub unsafe extern "C" fn kernel32_SetLastError(error_code: u32) {
 /// For thread handles (created by CreateThread), this joins the thread.
 /// For other handles (events, mutexes, etc.) that are not in the thread registry, it
 /// returns WAIT_OBJECT_0 immediately (optimistic stub).
+///
+/// # Panics
+/// Panics if a thread's exit-code mutex is poisoned.
 ///
 /// # Safety
 /// `handle` must be a valid handle returned by CreateThread or another handle-producing API.
@@ -3150,15 +3145,12 @@ pub unsafe extern "C" fn kernel32_GetFileSizeEx(
             .and_then(|entry| entry.file.metadata().ok())
             .map(|m| m.len() as i64)
     });
-    match size_result {
-        Some(sz) => {
-            *file_size = sz;
-            1 // TRUE
-        }
-        None => {
-            kernel32_SetLastError(6); // ERROR_INVALID_HANDLE
-            0 // FALSE
-        }
+    if let Some(sz) = size_result {
+        *file_size = sz;
+        1 // TRUE
+    } else {
+        kernel32_SetLastError(6); // ERROR_INVALID_HANDLE
+        0 // FALSE
     }
 }
 
@@ -3373,7 +3365,6 @@ pub unsafe extern "C" fn kernel32_MoveFileExW(
         Ok(()) => 1, // TRUE
         Err(e) => {
             let code = match e.kind() {
-                std::io::ErrorKind::NotFound => 2,         // ERROR_FILE_NOT_FOUND
                 std::io::ErrorKind::PermissionDenied => 5, // ERROR_ACCESS_DENIED
                 std::io::ErrorKind::AlreadyExists => 183,  // ERROR_ALREADY_EXISTS
                 _ => 2,                                    // ERROR_FILE_NOT_FOUND (generic)
@@ -3659,6 +3650,9 @@ pub unsafe extern "C" fn kernel32_TerminateProcess(
 ///
 /// Handles not found in the thread registry are treated as already-signaled.
 ///
+/// # Panics
+/// Panics if a thread's exit-code mutex is poisoned.
+///
 /// # Safety
 /// `handles` must point to an array of `count` valid HANDLE values.
 #[unsafe(no_mangle)]
@@ -3745,7 +3739,7 @@ pub unsafe extern "C" fn kernel32_WaitForMultipleObjects(
                             || entry
                                 .join_handle
                                 .as_ref()
-                                .map_or(true, |jh| jh.is_finished())
+                                .is_none_or(std::thread::JoinHandle::is_finished)
                     } else {
                         true // non-thread handle: treat as signaled
                     }
@@ -3754,20 +3748,20 @@ pub unsafe extern "C" fn kernel32_WaitForMultipleObjects(
                 if is_done {
                     // Join the thread if possible.
                     with_thread_handles(|map| {
-                        if let Some(entry) = map.get_mut(&hval) {
-                            if let Some(jh) = entry.join_handle.take() {
-                                let _ = jh.join();
-                            }
+                        if let Some(entry) = map.get_mut(&hval)
+                            && let Some(jh) = entry.join_handle.take()
+                        {
+                            let _ = jh.join();
                         }
                     });
                     return WAIT_OBJECT_0 + i as u32;
                 }
             }
 
-            if let Some(timeout) = timeout_opt {
-                if start.elapsed() >= timeout {
-                    return WAIT_TIMEOUT;
-                }
+            if let Some(timeout) = timeout_opt
+                && start.elapsed() >= timeout
+            {
+                return WAIT_TIMEOUT;
             }
             thread::sleep(Duration::from_millis(1));
         }
@@ -3945,12 +3939,9 @@ pub unsafe extern "C" fn kernel32_GetEnvironmentVariableW(
         return 0;
     }
     let name_str = wide_str_to_string(name);
-    let c_name = match CString::new(name_str.as_str()) {
-        Ok(s) => s,
-        Err(_) => {
-            kernel32_SetLastError(87);
-            return 0;
-        }
+    let Ok(c_name) = CString::new(name_str.as_str()) else {
+        kernel32_SetLastError(87);
+        return 0;
     };
     // SAFETY: c_name is a valid C string; getenv returns a pointer owned by the OS.
     let value_ptr = libc::getenv(c_name.as_ptr());
@@ -3959,11 +3950,11 @@ pub unsafe extern "C" fn kernel32_GetEnvironmentVariableW(
         return 0;
     }
     // SAFETY: getenv returns a valid null-terminated C string.
-    let value_str = std::ffi::CStr::from_ptr(value_ptr).to_string_lossy();
+    let env_value = std::ffi::CStr::from_ptr(value_ptr).to_string_lossy();
     // copy_utf8_to_wide follows Windows GetEnvironmentVariableW semantics:
     // - if buffer is null or too small: returns required size (including null terminator)
     // - if buffer is large enough: returns characters written (excluding null terminator)
-    copy_utf8_to_wide(&value_str, buffer, size)
+    copy_utf8_to_wide(&env_value, buffer, size)
 }
 
 /// SetEnvironmentVariableW - sets the value of an environment variable (wide version)
@@ -3983,12 +3974,9 @@ pub unsafe extern "C" fn kernel32_SetEnvironmentVariableW(
         return 0;
     }
     let name_str = wide_str_to_string(name);
-    let c_name = match CString::new(name_str.as_str()) {
-        Ok(s) => s,
-        Err(_) => {
-            kernel32_SetLastError(87);
-            return 0;
-        }
+    let Ok(c_name) = CString::new(name_str.as_str()) else {
+        kernel32_SetLastError(87);
+        return 0;
     };
     if value.is_null() {
         // Delete the variable (Windows: SetEnvironmentVariable(name, NULL) removes it)
@@ -3997,12 +3985,9 @@ pub unsafe extern "C" fn kernel32_SetEnvironmentVariableW(
         return 1; // TRUE
     }
     let value_str = wide_str_to_string(value);
-    let c_value = match CString::new(value_str.as_str()) {
-        Ok(s) => s,
-        Err(_) => {
-            kernel32_SetLastError(87);
-            return 0;
-        }
+    let Ok(c_value) = CString::new(value_str.as_str()) else {
+        kernel32_SetLastError(87);
+        return 0;
     };
     // SAFETY: c_name and c_value are valid C strings; overwrite=1 replaces existing value.
     let result = libc::setenv(c_name.as_ptr(), c_value.as_ptr(), 1);
@@ -4160,9 +4145,7 @@ pub unsafe extern "C" fn kernel32_FindNextFileW(
     loop {
         // Find the next matching entry and extract its path while holding the lock.
         let found_path = with_find_handles(|map| {
-            let Some(state) = map.get_mut(&handle) else {
-                return None;
-            };
+            let state = map.get_mut(&handle)?;
             while state.current_index < state.entries.len() {
                 let idx = state.current_index;
                 state.current_index += 1;
@@ -4221,22 +4204,22 @@ unsafe fn fill_find_data_from_path(
 
     let ptr = find_data;
     // SAFETY: caller guarantees ≥592 bytes
-    core::ptr::write_unaligned(ptr as *mut u32, attrs);
-    core::ptr::write_unaligned(ptr.add(4) as *mut u32, tl);
-    core::ptr::write_unaligned(ptr.add(8) as *mut u32, th);
-    core::ptr::write_unaligned(ptr.add(12) as *mut u32, tl);
-    core::ptr::write_unaligned(ptr.add(16) as *mut u32, th);
-    core::ptr::write_unaligned(ptr.add(20) as *mut u32, tl);
-    core::ptr::write_unaligned(ptr.add(24) as *mut u32, th);
-    core::ptr::write_unaligned(ptr.add(28) as *mut u32, sh);
-    core::ptr::write_unaligned(ptr.add(32) as *mut u32, sl);
-    core::ptr::write_unaligned(ptr.add(36) as *mut u32, 0u32);
-    core::ptr::write_unaligned(ptr.add(40) as *mut u32, 0u32);
+    core::ptr::write_unaligned(ptr.cast::<u32>(), attrs);
+    core::ptr::write_unaligned(ptr.add(4).cast::<u32>(), tl);
+    core::ptr::write_unaligned(ptr.add(8).cast::<u32>(), th);
+    core::ptr::write_unaligned(ptr.add(12).cast::<u32>(), tl);
+    core::ptr::write_unaligned(ptr.add(16).cast::<u32>(), th);
+    core::ptr::write_unaligned(ptr.add(20).cast::<u32>(), tl);
+    core::ptr::write_unaligned(ptr.add(24).cast::<u32>(), th);
+    core::ptr::write_unaligned(ptr.add(28).cast::<u32>(), sh);
+    core::ptr::write_unaligned(ptr.add(32).cast::<u32>(), sl);
+    core::ptr::write_unaligned(ptr.add(36).cast::<u32>(), 0u32);
+    core::ptr::write_unaligned(ptr.add(40).cast::<u32>(), 0u32);
 
     let name = path.file_name().unwrap_or_default().to_string_lossy();
     let utf16: Vec<u16> = name.encode_utf16().collect();
     let copy_len = utf16.len().min(259);
-    let fp = ptr.add(44) as *mut u16;
+    let fp = ptr.add(44).cast::<u16>();
     for (i, &ch) in utf16[..copy_len].iter().enumerate() {
         core::ptr::write_unaligned(fp.add(i), ch);
     }
@@ -4244,7 +4227,7 @@ unsafe fn fill_find_data_from_path(
     for i in (copy_len + 1)..260 {
         core::ptr::write_unaligned(fp.add(i), 0u16);
     }
-    let ap = ptr.add(564) as *mut u16;
+    let ap = ptr.add(564).cast::<u16>();
     for i in 0..14 {
         core::ptr::write_unaligned(ap.add(i), 0u16);
     }
@@ -6587,7 +6570,7 @@ mod tests {
             );
 
             // The first file name should be non-empty
-            let fname_ptr = find_data.as_ptr().add(44) as *const u16;
+            let fname_ptr = find_data.as_ptr().add(44).cast::<u16>();
             let fname_slice = core::slice::from_raw_parts(fname_ptr, 260);
             let fname_len = fname_slice.iter().position(|&c| c == 0).unwrap_or(0);
             assert!(fname_len > 0, "First file name should not be empty");
@@ -6757,7 +6740,7 @@ mod tests {
 
     /// Thread start routine that stores a value via a pointer and returns it.
     unsafe extern "win64" fn thread_fn_store_and_return(param: *mut core::ffi::c_void) -> u32 {
-        let p = param as *mut u32;
+        let p = param.cast::<u32>();
         if !p.is_null() {
             *p = 0xBEEF;
         }
@@ -6772,7 +6755,7 @@ mod tests {
                 core::ptr::null_mut(),
                 0,
                 thread_fn_store_and_return as *mut core::ffi::c_void,
-                &raw mut value as *mut core::ffi::c_void,
+                (&raw mut value).cast::<core::ffi::c_void>(),
                 0,
                 core::ptr::null_mut(),
             )
@@ -6817,7 +6800,7 @@ mod tests {
                 core::ptr::null_mut(),
                 0,
                 thread_fn_store_and_return as *mut core::ffi::c_void,
-                &raw mut v1 as *mut core::ffi::c_void,
+                (&raw mut v1).cast::<core::ffi::c_void>(),
                 0,
                 core::ptr::null_mut(),
             )
@@ -6827,7 +6810,7 @@ mod tests {
                 core::ptr::null_mut(),
                 0,
                 thread_fn_store_and_return as *mut core::ffi::c_void,
-                &raw mut v2 as *mut core::ffi::c_void,
+                (&raw mut v2).cast::<core::ffi::c_void>(),
                 0,
                 core::ptr::null_mut(),
             )

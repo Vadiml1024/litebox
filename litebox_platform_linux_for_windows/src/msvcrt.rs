@@ -377,6 +377,9 @@ pub unsafe extern "C" fn msvcrt___iob_func() -> *mut u8 {
 /// using Windows command-line quoting rules and stores them in a `OnceLock` so
 /// that the returned raw pointers remain stable for the lifetime of the process.
 ///
+/// # Panics
+/// Panics if `CString::new("")` fails (which should never happen).
+///
 /// # Safety
 /// This function is unsafe as it deals with raw pointers.
 #[unsafe(no_mangle)]
@@ -403,7 +406,7 @@ pub unsafe extern "C" fn msvcrt___getmainargs(
         (strings, ArgvPtrs(ptrs))
     });
 
-    let argc = (argv_ptrs.0.len().saturating_sub(1)) as i32; // exclude null terminator
+    let argc = i32::try_from(argv_ptrs.0.len().saturating_sub(1)).unwrap_or(i32::MAX); // exclude null terminator
 
     if !p_argc.is_null() {
         *p_argc = argc;
@@ -650,7 +653,7 @@ fn parse_windows_command_line(cmd: &str) -> Vec<String> {
                 let next_is_quote = i < chars.len() && chars[i] == '"';
                 if next_is_quote {
                     // Emit one backslash for every pair.
-                    current.extend(std::iter::repeat('\\').take(backslash_count / 2));
+                    current.extend(std::iter::repeat_n('\\', backslash_count / 2));
                     if backslash_count % 2 == 0 {
                         // Even number of backslashes: the quote is a delimiter.
                         in_quotes = !in_quotes;
@@ -662,7 +665,7 @@ fn parse_windows_command_line(cmd: &str) -> Vec<String> {
                     }
                 } else {
                     // No quote follows: emit all backslashes literally.
-                    current.extend(std::iter::repeat('\\').take(backslash_count));
+                    current.extend(std::iter::repeat_n('\\', backslash_count));
                 }
             }
             other => {
@@ -687,6 +690,9 @@ static ACMDLN_STORAGE: OnceLock<CString> = OnceLock::new();
 ///
 /// This is a global variable in MSVCRT that points to the ANSI command line.
 /// Programs access it via `_acmdln` which is a `char*`.
+///
+/// # Panics
+/// Panics if `CString::new("")` fails (which should never happen).
 ///
 /// # Safety
 /// Returns a pointer to static memory that is valid for the lifetime of the program.
