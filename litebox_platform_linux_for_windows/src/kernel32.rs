@@ -194,6 +194,35 @@ fn alloc_find_handle() -> usize {
     FIND_HANDLE_COUNTER.fetch_add(4, Ordering::SeqCst)
 }
 
+// ── Thread-handle registry ────────────────────────────────────────────────
+// Maps synthetic HANDLE values (usize) to spawned Rust thread state.
+// Used by CreateThread / WaitForSingleObject / WaitForMultipleObjects.
+
+static THREAD_HANDLE_COUNTER: AtomicUsize = AtomicUsize::new(0x3_0000);
+
+struct ThreadEntry {
+    join_handle: Option<thread::JoinHandle<u32>>,
+    exit_code: Arc<Mutex<Option<u32>>>,
+}
+
+/// Global thread-handle map: handle_value → ThreadEntry
+static THREAD_HANDLES: Mutex<Option<HashMap<usize, ThreadEntry>>> = Mutex::new(None);
+
+fn with_thread_handles<R>(f: impl FnOnce(&mut HashMap<usize, ThreadEntry>) -> R) -> R {
+    let mut guard = THREAD_HANDLES.lock().unwrap();
+    let map = guard.get_or_insert_with(HashMap::new);
+    f(map)
+}
+
+fn alloc_thread_handle() -> usize {
+    use std::sync::atomic::Ordering;
+    THREAD_HANDLE_COUNTER.fetch_add(4, Ordering::SeqCst)
+}
+
+/// Windows thread start function pointer type (MS-x64 ABI).
+/// LPTHREAD_START_ROUTINE = DWORD (WINAPI *)(LPVOID lpThreadParameter)
+type WindowsThreadStart = unsafe extern "win64" fn(*mut core::ffi::c_void) -> u32;
+
 /// Simple glob pattern matching (Windows-style: `*` = any substring, `?` = any char).
 /// Comparison is case-insensitive (ASCII).
 fn find_matches_pattern(name: &str, pattern: &str) -> bool {
@@ -2362,20 +2391,61 @@ pub unsafe extern "C" fn kernel32_CreateSymbolicLinkW(
     0 // FALSE - not implemented
 }
 
-/// CreateThread stub - creates a thread
+/// CreateThread - creates a thread to execute within the virtual address space of the process
 ///
 /// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
+/// `start_address` must be a valid Windows thread function (MS-x64 ABI).
+/// `parameter` is passed as-is to the thread; the caller must ensure its validity.
+/// `thread_id` must either be null or point to a writable `u32`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_CreateThread(
     _thread_attributes: *mut core::ffi::c_void,
     _stack_size: usize,
-    _start_address: *mut core::ffi::c_void,
-    _parameter: *mut core::ffi::c_void,
+    start_address: *mut core::ffi::c_void,
+    parameter: *mut core::ffi::c_void,
     _creation_flags: u32,
-    _thread_id: *mut u32,
+    thread_id: *mut u32,
 ) -> *mut core::ffi::c_void {
-    core::ptr::null_mut() // NULL - not implemented
+    if start_address.is_null() {
+        kernel32_SetLastError(87); // ERROR_INVALID_PARAMETER
+        return core::ptr::null_mut();
+    }
+
+    // SAFETY: caller guarantees start_address is a valid Windows LPTHREAD_START_ROUTINE.
+    let thread_fn: WindowsThreadStart = core::mem::transmute(start_address);
+    let param_addr = parameter as usize;
+
+    let exit_code: Arc<Mutex<Option<u32>>> = Arc::new(Mutex::new(None));
+    let exit_code_clone = Arc::clone(&exit_code);
+
+    // SAFETY: We spawn a thread that calls the Windows thread function.
+    // param_addr is sent to the thread as a raw usize (avoiding Send requirement on *mut c_void).
+    // The caller must ensure the parameter pointer remains valid for the thread's lifetime.
+    let join_handle = thread::spawn(move || {
+        let param_ptr = param_addr as *mut core::ffi::c_void;
+        // SAFETY: thread_fn is a valid Windows thread function (MS-x64 ABI).
+        let result = unsafe { thread_fn(param_ptr) };
+        *exit_code_clone.lock().unwrap() = Some(result);
+        result
+    });
+
+    let handle = alloc_thread_handle();
+    with_thread_handles(|map| {
+        map.insert(
+            handle,
+            ThreadEntry {
+                join_handle: Some(join_handle),
+                exit_code,
+            },
+        );
+    });
+
+    // Use the handle value (truncated) as the thread ID: non-zero and unique per thread.
+    if !thread_id.is_null() {
+        *thread_id = (handle & 0xFFFF_FFFF) as u32;
+    }
+
+    handle as *mut core::ffi::c_void
 }
 
 /// CreateToolhelp32Snapshot stub - creates a snapshot of processes/threads/etc
@@ -2949,16 +3019,69 @@ pub unsafe extern "C" fn kernel32_SetLastError(error_code: u32) {
     LAST_ERROR.with(|error| error.set(error_code));
 }
 
-/// WaitForSingleObject stub - waits for an object
+/// WaitForSingleObject - waits until the specified object is in the signaled state or the
+/// time-out interval elapses.
+///
+/// For thread handles (created by CreateThread), this joins the thread.
+/// For other handles (events, mutexes, etc.) that are not in the thread registry, it
+/// returns WAIT_OBJECT_0 immediately (optimistic stub).
 ///
 /// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
+/// `handle` must be a valid handle returned by CreateThread or another handle-producing API.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_WaitForSingleObject(
-    _handle: *mut core::ffi::c_void,
-    _milliseconds: u32,
+    handle: *mut core::ffi::c_void,
+    milliseconds: u32,
 ) -> u32 {
-    0 // WAIT_OBJECT_0 - pretend object is signaled
+    const WAIT_OBJECT_0: u32 = 0x0000_0000;
+    const WAIT_TIMEOUT: u32 = 0x0000_0102;
+
+    let handle_val = handle as usize;
+
+    // Take ownership of the join handle (if this is a thread handle).
+    let thread_entry = with_thread_handles(|map| {
+        map.get_mut(&handle_val).map(|entry| {
+            let jh = entry.join_handle.take();
+            let ec = Arc::clone(&entry.exit_code);
+            (jh, ec)
+        })
+    });
+
+    let Some((join_handle_opt, exit_code)) = thread_entry else {
+        // Not a thread handle — treat as already-signaled (covers event/mutex stubs).
+        return WAIT_OBJECT_0;
+    };
+
+    let Some(join_handle) = join_handle_opt else {
+        // Thread was already joined.
+        return WAIT_OBJECT_0;
+    };
+
+    if milliseconds == u32::MAX {
+        // Infinite wait: block until the thread finishes.
+        let _ = join_handle.join();
+        return WAIT_OBJECT_0;
+    }
+
+    // Timed wait: poll the exit code with 1 ms sleep intervals.
+    let start = std::time::Instant::now();
+    let timeout = Duration::from_millis(u64::from(milliseconds));
+    loop {
+        if exit_code.lock().unwrap().is_some() {
+            let _ = join_handle.join();
+            return WAIT_OBJECT_0;
+        }
+        if start.elapsed() >= timeout {
+            // Return the join handle to the registry so the thread can be joined later.
+            with_thread_handles(|map| {
+                if let Some(entry) = map.get_mut(&handle_val) {
+                    entry.join_handle = Some(join_handle);
+                }
+            });
+            return WAIT_TIMEOUT;
+        }
+        thread::sleep(Duration::from_millis(1));
+    }
 }
 
 /// WriteConsoleW stub - writes to the console (wide version)
@@ -3507,30 +3630,148 @@ pub unsafe extern "C" fn kernel32_SwitchToThread() -> i32 {
     1 // TRUE
 }
 
-/// TerminateProcess stub
+/// TerminateProcess - terminates the specified process and all of its threads
+///
+/// When called with the current-process pseudo-handle (-1 / 0xFFFFFFFFFFFFFFFF), this
+/// immediately exits the process.  Terminating other processes is not supported.
 ///
 /// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
+/// Calling this with the current-process pseudo-handle is safe: it exits immediately.
+/// Passing other values is a no-op (returns FALSE).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_TerminateProcess(
-    _process: *mut core::ffi::c_void,
-    _exit_code: u32,
+    process: *mut core::ffi::c_void,
+    exit_code: u32,
 ) -> i32 {
-    0 // FALSE - not implemented
+    // -1 (0xFFFFFFFFFFFFFFFF) is the Windows pseudo-handle for the current process.
+    if process as isize == -1 {
+        std::process::exit(exit_code as i32);
+    }
+    0 // FALSE - cannot terminate other processes
 }
 
-/// WaitForMultipleObjects stub
+/// WaitForMultipleObjects - waits until one or all of the specified objects are in the
+/// signaled state or the time-out interval elapses.
+///
+/// For thread handles in the registry:
+///   - `wait_all != 0`: joins every thread in order; returns WAIT_OBJECT_0 when all finish.
+///   - `wait_all == 0`: polls all handles; returns WAIT_OBJECT_0 + i for the first to finish.
+///
+/// Handles not found in the thread registry are treated as already-signaled.
 ///
 /// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
+/// `handles` must point to an array of `count` valid HANDLE values.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_WaitForMultipleObjects(
-    _count: u32,
-    _handles: *const *mut core::ffi::c_void,
-    _wait_all: i32,
-    _milliseconds: u32,
+    count: u32,
+    handles: *const *mut core::ffi::c_void,
+    wait_all: i32,
+    milliseconds: u32,
 ) -> u32 {
-    0 // WAIT_OBJECT_0 - pretend first object is signaled
+    const WAIT_OBJECT_0: u32 = 0x0000_0000;
+    const WAIT_TIMEOUT: u32 = 0x0000_0102;
+
+    if count == 0 || handles.is_null() {
+        return WAIT_OBJECT_0;
+    }
+
+    // Collect handle values.
+    let handle_vals: Vec<usize> = (0..count as usize)
+        .map(|i| unsafe { *handles.add(i) as usize })
+        .collect();
+
+    if wait_all != 0 {
+        // Wait for ALL objects: join each thread handle sequentially.
+        let start = std::time::Instant::now();
+        let timeout_opt = if milliseconds == u32::MAX {
+            None
+        } else {
+            Some(Duration::from_millis(u64::from(milliseconds)))
+        };
+
+        for &hval in &handle_vals {
+            let thread_entry = with_thread_handles(|map| {
+                map.get_mut(&hval).map(|entry| {
+                    let jh = entry.join_handle.take();
+                    let ec = Arc::clone(&entry.exit_code);
+                    (jh, ec)
+                })
+            });
+
+            let Some((join_handle_opt, _)) = thread_entry else {
+                continue; // non-thread handle: treat as signaled
+            };
+            let Some(join_handle) = join_handle_opt else {
+                continue; // already joined
+            };
+
+            match timeout_opt {
+                None => {
+                    let _ = join_handle.join();
+                }
+                Some(timeout) => loop {
+                    if join_handle.is_finished() {
+                        let _ = join_handle.join();
+                        break;
+                    }
+                    if start.elapsed() >= timeout {
+                        with_thread_handles(|map| {
+                            if let Some(entry) = map.get_mut(&hval) {
+                                entry.join_handle = Some(join_handle);
+                            }
+                        });
+                        return WAIT_TIMEOUT;
+                    }
+                    thread::sleep(Duration::from_millis(1));
+                },
+            }
+        }
+        WAIT_OBJECT_0
+    } else {
+        // Wait for ANY object: poll all handles until one finishes.
+        let start = std::time::Instant::now();
+        let timeout_opt = if milliseconds == u32::MAX {
+            None
+        } else {
+            Some(Duration::from_millis(u64::from(milliseconds)))
+        };
+
+        loop {
+            for (i, &hval) in handle_vals.iter().enumerate() {
+                let is_done = with_thread_handles(|map| {
+                    if let Some(entry) = map.get(&hval) {
+                        // Signaled if exit_code is set or join_handle is finished/gone.
+                        entry.exit_code.lock().unwrap().is_some()
+                            || entry
+                                .join_handle
+                                .as_ref()
+                                .map_or(true, |jh| jh.is_finished())
+                    } else {
+                        true // non-thread handle: treat as signaled
+                    }
+                });
+
+                if is_done {
+                    // Join the thread if possible.
+                    with_thread_handles(|map| {
+                        if let Some(entry) = map.get_mut(&hval) {
+                            if let Some(jh) = entry.join_handle.take() {
+                                let _ = jh.join();
+                            }
+                        }
+                    });
+                    return WAIT_OBJECT_0 + i as u32;
+                }
+            }
+
+            if let Some(timeout) = timeout_opt {
+                if start.elapsed() >= timeout {
+                    return WAIT_TIMEOUT;
+                }
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
+    }
 }
 
 /// ExitProcess - terminates the calling process and all its threads
@@ -6512,5 +6753,94 @@ mod tests {
         }
 
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Thread start routine that stores a value via a pointer and returns it.
+    unsafe extern "win64" fn thread_fn_store_and_return(param: *mut core::ffi::c_void) -> u32 {
+        let p = param as *mut u32;
+        if !p.is_null() {
+            *p = 0xBEEF;
+        }
+        42
+    }
+
+    #[test]
+    fn test_create_thread_and_wait_infinite() {
+        let mut value: u32 = 0;
+        let handle = unsafe {
+            kernel32_CreateThread(
+                core::ptr::null_mut(),
+                0,
+                thread_fn_store_and_return as *mut core::ffi::c_void,
+                &raw mut value as *mut core::ffi::c_void,
+                0,
+                core::ptr::null_mut(),
+            )
+        };
+        assert!(
+            !handle.is_null(),
+            "CreateThread should return a non-null handle"
+        );
+
+        let result = unsafe { kernel32_WaitForSingleObject(handle, u32::MAX) };
+        assert_eq!(result, 0, "WaitForSingleObject should return WAIT_OBJECT_0");
+        assert_eq!(value, 0xBEEF, "Thread should have written 0xBEEF");
+    }
+
+    #[test]
+    fn test_create_thread_with_thread_id() {
+        let mut tid: u32 = 0;
+        let handle = unsafe {
+            kernel32_CreateThread(
+                core::ptr::null_mut(),
+                0,
+                thread_fn_store_and_return as *mut core::ffi::c_void,
+                core::ptr::null_mut(),
+                0,
+                &raw mut tid,
+            )
+        };
+        assert!(
+            !handle.is_null(),
+            "CreateThread should return a non-null handle"
+        );
+        assert_ne!(tid, 0, "thread_id should be set to a non-zero value");
+        unsafe { kernel32_WaitForSingleObject(handle, u32::MAX) };
+    }
+
+    #[test]
+    fn test_wait_for_multiple_objects_all() {
+        let mut v1: u32 = 0;
+        let mut v2: u32 = 0;
+        let h1 = unsafe {
+            kernel32_CreateThread(
+                core::ptr::null_mut(),
+                0,
+                thread_fn_store_and_return as *mut core::ffi::c_void,
+                &raw mut v1 as *mut core::ffi::c_void,
+                0,
+                core::ptr::null_mut(),
+            )
+        };
+        let h2 = unsafe {
+            kernel32_CreateThread(
+                core::ptr::null_mut(),
+                0,
+                thread_fn_store_and_return as *mut core::ffi::c_void,
+                &raw mut v2 as *mut core::ffi::c_void,
+                0,
+                core::ptr::null_mut(),
+            )
+        };
+        assert!(!h1.is_null() && !h2.is_null());
+
+        let handles = [h1, h2];
+        let result = unsafe { kernel32_WaitForMultipleObjects(2, handles.as_ptr(), 1, u32::MAX) };
+        assert_eq!(
+            result, 0,
+            "WaitForMultipleObjects(wait_all) should return WAIT_OBJECT_0"
+        );
+        assert_eq!(v1, 0xBEEF);
+        assert_eq!(v2, 0xBEEF);
     }
 }

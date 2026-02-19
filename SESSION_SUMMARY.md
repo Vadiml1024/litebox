@@ -1,13 +1,71 @@
-# Windows-on-Linux Support - Session Summary (2026-02-18 Session 11)
+# Windows-on-Linux Support - Session Summary (2026-02-19 Session 12)
 
 ## Work Completed ✅
 
-### Phase 12 — Extended File System APIs
+### Phase 13 — Process / Thread Robustness
 
-**Goal:** Cover the file-system surface area used by typical Windows programs that perform
-directory searches, file copies, and path resolution.
+**Goal:** Support multithreaded Windows programs by implementing real `CreateThread`,
+`WaitForSingleObject`, `WaitForMultipleObjects`, and `TerminateProcess`.
 
 #### New global infrastructure
+
+- **`THREAD_HANDLE_COUNTER` / `THREAD_HANDLES`** — A new thread-handle registry (same pattern
+  as `FILE_HANDLES` / `FIND_HANDLES`) used by `CreateThread` / `WaitForSingleObject` /
+  `WaitForMultipleObjects`.
+- **`WindowsThreadStart`** — `type` alias for `unsafe extern "win64" fn(*mut c_void) -> u32`,
+  matching the Windows `LPTHREAD_START_ROUTINE` (MS-x64 ABI).
+
+#### Real implementations added
+
+| API | Was | Now |
+|---|---|---|
+| `CreateThread` | Stub → `NULL` | ✅ Spawns a real Linux thread; passes parameter via MS-x64 ABI |
+| `WaitForSingleObject` | Stub → `WAIT_OBJECT_0` | ✅ Joins thread with optional timeout; falls back for non-thread handles |
+| `WaitForMultipleObjects` | Stub → `WAIT_OBJECT_0` | ✅ Wait-all and wait-any modes with timeout support |
+| `TerminateProcess` | Stub → `FALSE` | ✅ Calls `process::exit` for current-process pseudo-handle |
+
+#### Ratchet updates
+
+- `litebox_platform_linux_for_windows/` globals: 23 → 25 (two new handle registry statics)
+- `litebox_platform_linux_for_windows/` transmutes: 2 → 3 (one necessary `transmute` to cast
+  `*mut c_void` to `extern "win64" fn` — no safe alternative exists for FFI function pointers)
+
+### New Unit Tests (3 new tests)
+
+- `test_create_thread_and_wait_infinite` — create thread, write via param pointer, join infinite.
+- `test_create_thread_with_thread_id` — verify `*thread_id` is set to a non-zero value.
+- `test_wait_for_multiple_objects_all` — two threads + `WaitForMultipleObjects(wait_all=TRUE)`.
+
+## Test Results
+
+```
+cargo test -p litebox_platform_linux_for_windows -p litebox_shim_windows \
+           -p litebox_runner_windows_on_linux_userland
+Platform: 177 passed (up from 174, +3 new tests)
+Shim:      47 passed (unchanged)
+Runner:    16 passed (unchanged)
+Ratchet: all 3 ratchet tests passing
+```
+
+## Files Modified This Session
+
+- `litebox_platform_linux_for_windows/src/kernel32.rs`
+  - Added `THREAD_HANDLE_COUNTER`, `THREAD_HANDLES`, `ThreadEntry` (thread registry)
+  - Added `with_thread_handles`, `alloc_thread_handle` helpers
+  - Added `WindowsThreadStart` type alias (`extern "win64"`)
+  - Replaced stub `kernel32_CreateThread` with real spawn + registry
+  - Replaced stub `kernel32_WaitForSingleObject` with real join + timeout
+  - Replaced stub `kernel32_WaitForMultipleObjects` with wait-all / wait-any
+  - Implemented `kernel32_TerminateProcess` for current-process pseudo-handle
+  - Added 3 new unit tests
+- `dev_tests/src/ratchet.rs` — Updated globals 23 → 25, transmutes 2 → 3
+
+## What Remains
+
+See `docs/windows_on_linux_continuation_plan.md` for the full Phase 14–18 roadmap.
+Immediate next step: Phase 14 — Networking (WinSock2).
+
+---
 
 - **`FIND_HANDLE_COUNTER` / `FIND_HANDLES`** — A new directory-search-handle registry (same
   pattern as `FILE_HANDLES`) used by `FindFirstFileW` / `FindNextFileW` / `FindClose`.

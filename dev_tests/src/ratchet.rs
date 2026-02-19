@@ -13,7 +13,7 @@ fn ratchet_transmutes() -> Result<()> {
         &[
             ("dev_tests/", 2),
             ("litebox/", 8),
-            ("litebox_platform_linux_for_windows/", 2),
+            ("litebox_platform_linux_for_windows/", 3),
             ("litebox_platform_linux_userland/", 2),
         ],
         |file| {
@@ -36,7 +36,7 @@ fn ratchet_globals() -> Result<()> {
         &[
             ("dev_bench/", 1),
             ("litebox/", 9),
-            ("litebox_platform_linux_for_windows/", 23),
+            ("litebox_platform_linux_for_windows/", 25),
             ("litebox_platform_linux_kernel/", 5),
             ("litebox_platform_linux_userland/", 5),
             ("litebox_platform_lvbs/", 20),
