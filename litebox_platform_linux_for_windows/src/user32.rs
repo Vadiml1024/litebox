@@ -12,9 +12,6 @@
 
 // Allow unsafe operations inside unsafe functions
 #![allow(unsafe_op_in_unsafe_fn)]
-// Allow cast warnings as we're implementing Windows API which requires specific integer types
-#![allow(clippy::cast_sign_loss)]
-#![allow(clippy::cast_possible_truncation)]
 
 use core::ffi::c_void;
 
@@ -33,19 +30,21 @@ const FAKE_ATOM: u16 = 1;
 
 /// Convert a null-terminated UTF-16 pointer to a `String`, or return an empty
 /// string if the pointer is null.
-fn wide_to_string(ptr: *const u16) -> String {
+///
+/// # Safety
+/// `ptr` must be either null or a valid, non-dangling pointer to a
+/// null-terminated UTF-16 string. Reading up to 32 768 code units.
+unsafe fn wide_to_string(ptr: *const u16) -> String {
     if ptr.is_null() {
         return String::new();
     }
     // SAFETY: Caller guarantees `ptr` is a valid null-terminated UTF-16 string.
     let mut len = 0usize;
-    unsafe {
-        while *ptr.add(len) != 0 {
-            len += 1;
-        }
-        let slice = std::slice::from_raw_parts(ptr, len);
-        String::from_utf16_lossy(slice)
+    while len < 32_768 && *ptr.add(len) != 0 {
+        len += 1;
     }
+    let slice = std::slice::from_raw_parts(ptr, len);
+    String::from_utf16_lossy(slice)
 }
 
 // ── USER32 stub implementations ───────────────────────────────────────────────
