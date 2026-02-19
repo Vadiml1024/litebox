@@ -85,6 +85,9 @@ const FIONBIO: u32 = 0x8004_667E;
 // WSASend/WSARecv flags
 const MSG_PARTIAL: u32 = 0x8000;
 
+// Maximum number of WSABUF scatter/gather entries accepted per call
+const MAX_WSABUF_COUNT: u32 = 1_048_576;
+
 // ── WSA last error (thread-local would be ideal; we use a global for simplicity) ──
 static WSA_LAST_ERROR: Mutex<i32> = Mutex::new(0);
 
@@ -455,8 +458,13 @@ pub unsafe extern "C" fn ws2_connect(s: usize, name: *const libc::sockaddr, name
 ///
 /// # Safety
 /// `buf` must point to at least `len` bytes of readable data.
+/// `len` must be non-negative.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ws2_send(s: usize, buf: *const u8, len: i32, flags: i32) -> i32 {
+    if len < 0 {
+        set_wsa_error(WSAEINVAL);
+        return SOCKET_ERROR;
+    }
     let Some(fd) = lookup_socket_fd(s) else {
         set_wsa_error(WSAENOTSOCK);
         return SOCKET_ERROR;
@@ -474,8 +482,13 @@ pub unsafe extern "C" fn ws2_send(s: usize, buf: *const u8, len: i32, flags: i32
 ///
 /// # Safety
 /// `buf` must point to at least `len` bytes of writable memory.
+/// `len` must be non-negative.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ws2_recv(s: usize, buf: *mut u8, len: i32, flags: i32) -> i32 {
+    if len < 0 {
+        set_wsa_error(WSAEINVAL);
+        return SOCKET_ERROR;
+    }
     let Some(fd) = lookup_socket_fd(s) else {
         set_wsa_error(WSAENOTSOCK);
         return SOCKET_ERROR;
@@ -494,6 +507,7 @@ pub unsafe extern "C" fn ws2_recv(s: usize, buf: *mut u8, len: i32, flags: i32) 
 /// # Safety
 /// `buf` must point to at least `len` readable bytes.
 /// `to` must point to a valid sockaddr structure of `to_len` bytes.
+/// `len` must be non-negative.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ws2_sendto(
     s: usize,
@@ -503,6 +517,10 @@ pub unsafe extern "C" fn ws2_sendto(
     to: *const libc::sockaddr,
     to_len: i32,
 ) -> i32 {
+    if len < 0 {
+        set_wsa_error(WSAEINVAL);
+        return SOCKET_ERROR;
+    }
     let Some(fd) = lookup_socket_fd(s) else {
         set_wsa_error(WSAENOTSOCK);
         return SOCKET_ERROR;
@@ -527,6 +545,7 @@ pub unsafe extern "C" fn ws2_sendto(
 ///
 /// # Safety
 /// `buf` must point to at least `len` writable bytes.
+/// `len` must be non-negative.
 /// If `from` is non-null it must point to a buffer of at least `*from_len` bytes;
 /// `from_len` must be non-null if `from` is non-null.
 #[unsafe(no_mangle)]
@@ -538,6 +557,10 @@ pub unsafe extern "C" fn ws2_recvfrom(
     from: *mut libc::sockaddr,
     from_len: *mut i32,
 ) -> i32 {
+    if len < 0 {
+        set_wsa_error(WSAEINVAL);
+        return SOCKET_ERROR;
+    }
     let Some(fd) = lookup_socket_fd(s) else {
         set_wsa_error(WSAENOTSOCK);
         return SOCKET_ERROR;
@@ -584,7 +607,8 @@ pub struct WsaBuf {
 /// This is a simplified implementation that sends each buffer sequentially.
 ///
 /// # Safety
-/// `lp_buffers` must point to an array of `dw_buffer_count` valid `WSABUF` structures.
+/// `lp_buffers` must point to an array of `dw_buffer_count` valid `WSABUF` structures,
+/// or be null when `dw_buffer_count` is 0.
 /// `lp_number_of_bytes_sent` may be null; if non-null it receives the total byte count.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ws2_WSASend(
@@ -600,9 +624,20 @@ pub unsafe extern "C" fn ws2_WSASend(
         set_wsa_error(WSAENOTSOCK);
         return SOCKET_ERROR;
     };
+    // Validate buffer array pointer before any dereference.
+    if dw_buffer_count > 0 && lp_buffers.is_null() {
+        set_wsa_error(WSAEFAULT);
+        return SOCKET_ERROR;
+    }
+    // Guard against pathological counts that could cause overflows.
+    if dw_buffer_count > MAX_WSABUF_COUNT {
+        set_wsa_error(WSAEINVAL);
+        return SOCKET_ERROR;
+    }
     let flags = dw_flags as i32 & !(MSG_PARTIAL as i32);
     let mut total_sent: u32 = 0;
     for i in 0..dw_buffer_count as usize {
+        // SAFETY: validated above that lp_buffers is non-null and count is in bounds.
         let wsa_buf = &*lp_buffers.add(i);
         let result = libc::send(
             fd,
@@ -628,7 +663,8 @@ pub unsafe extern "C" fn ws2_WSASend(
 /// This is a simplified implementation that receives into each buffer sequentially.
 ///
 /// # Safety
-/// `lp_buffers` must point to an array of `dw_buffer_count` valid `WSABUF` structures.
+/// `lp_buffers` must point to an array of `dw_buffer_count` valid `WSABUF` structures,
+/// or be null when `dw_buffer_count` is 0.
 /// `lp_number_of_bytes_recvd` may be null; if non-null it receives the total byte count.
 /// `lp_flags` may be null (treated as 0).
 #[unsafe(no_mangle)]
@@ -645,6 +681,16 @@ pub unsafe extern "C" fn ws2_WSARecv(
         set_wsa_error(WSAENOTSOCK);
         return SOCKET_ERROR;
     };
+    // Validate buffer array pointer before any dereference.
+    if dw_buffer_count > 0 && lp_buffers.is_null() {
+        set_wsa_error(WSAEFAULT);
+        return SOCKET_ERROR;
+    }
+    // Guard against pathological counts that could cause overflows.
+    if dw_buffer_count > MAX_WSABUF_COUNT {
+        set_wsa_error(WSAEINVAL);
+        return SOCKET_ERROR;
+    }
     let flags = if lp_flags.is_null() {
         0
     } else {
@@ -652,6 +698,7 @@ pub unsafe extern "C" fn ws2_WSARecv(
     };
     let mut total_recvd: u32 = 0;
     for i in 0..dw_buffer_count as usize {
+        // SAFETY: validated above that lp_buffers is non-null and count is in bounds.
         let wsa_buf = &mut *lp_buffers.add(i);
         let result = libc::recv(
             fd,
@@ -681,8 +728,8 @@ pub unsafe extern "C" fn ws2_WSARecv(
 /// Get the local address of a socket.
 ///
 /// # Safety
-/// `name` must point to a buffer of at least `*name_len` bytes;
-/// `name_len` must be non-null.
+/// `name` and `name_len` must both be non-null.
+/// `name` must point to a buffer of at least `*name_len` bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ws2_getsockname(
     s: usize,
@@ -693,6 +740,10 @@ pub unsafe extern "C" fn ws2_getsockname(
         set_wsa_error(WSAENOTSOCK);
         return SOCKET_ERROR;
     };
+    if name_len.is_null() || name.is_null() {
+        set_wsa_error(WSAEFAULT);
+        return SOCKET_ERROR;
+    }
     let mut linux_len: libc::socklen_t = *name_len as libc::socklen_t;
     let result = libc::getsockname(fd, name, &raw mut linux_len);
     if result != 0 {
@@ -707,8 +758,8 @@ pub unsafe extern "C" fn ws2_getsockname(
 /// Get the remote address of a connected socket.
 ///
 /// # Safety
-/// `name` must point to a buffer of at least `*name_len` bytes;
-/// `name_len` must be non-null.
+/// `name` and `name_len` must both be non-null.
+/// `name` must point to a buffer of at least `*name_len` bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ws2_getpeername(
     s: usize,
@@ -719,6 +770,10 @@ pub unsafe extern "C" fn ws2_getpeername(
         set_wsa_error(WSAENOTSOCK);
         return SOCKET_ERROR;
     };
+    if name_len.is_null() || name.is_null() {
+        set_wsa_error(WSAEFAULT);
+        return SOCKET_ERROR;
+    }
     let mut linux_len: libc::socklen_t = *name_len as libc::socklen_t;
     let result = libc::getpeername(fd, name, &raw mut linux_len);
     if result != 0 {
@@ -733,8 +788,8 @@ pub unsafe extern "C" fn ws2_getpeername(
 /// Get a socket option.
 ///
 /// # Safety
-/// `opt_val` must point to a buffer of at least `*opt_len` bytes;
 /// `opt_len` must be non-null.
+/// `opt_val` must point to a buffer of at least `*opt_len` bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ws2_getsockopt(
     s: usize,
@@ -747,6 +802,10 @@ pub unsafe extern "C" fn ws2_getsockopt(
         set_wsa_error(WSAENOTSOCK);
         return SOCKET_ERROR;
     };
+    if opt_len.is_null() {
+        set_wsa_error(WSAEFAULT);
+        return SOCKET_ERROR;
+    }
     let mut linux_len: libc::socklen_t = *opt_len as libc::socklen_t;
     let result = libc::getsockopt(
         fd,
@@ -884,21 +943,32 @@ pub struct WinFdSet {
     fd_array: [usize; 64],
 }
 
+/// Windows `TIMEVAL` layout — two `i32` fields (`tv_sec`, `tv_usec`).
+///
+/// This differs from `libc::timeval` on 64-bit Linux where both fields are `i64`.
+/// We must translate explicitly to avoid misinterpreting the guest timeout value.
+#[repr(C)]
+pub struct WinTimeval {
+    tv_sec: i32,
+    tv_usec: i32,
+}
+
 /// Monitor sockets for readability, writability, or error conditions.
 ///
 /// This translates the Windows `fd_set` layout (count + socket array) to
-/// POSIX `fd_set` (bit mask over file descriptors).
+/// POSIX `fd_set` (bit mask over file descriptors) and translates the Windows
+/// `TIMEVAL` (two `i32` fields) to POSIX `timeval` (two `i64` fields on 64-bit).
 ///
 /// # Safety
 /// All non-null `fd_set` pointers must be valid `WinFdSet` structures.
-/// `timeout` must be null or point to a valid `TIMEVAL` (two `i32` fields).
+/// `timeout` must be null or point to a valid Windows `TIMEVAL` (two `i32` fields).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ws2_select(
     _n_fds: i32,
     read_fds: *mut WinFdSet,
     write_fds: *mut WinFdSet,
     except_fds: *mut WinFdSet,
-    timeout: *const libc::timeval,
+    timeout: *const WinTimeval,
 ) -> i32 {
     // Build POSIX fd_sets from Windows fd_sets
     let mut posix_read: libc::fd_set = core::mem::zeroed();
@@ -906,26 +976,67 @@ pub unsafe extern "C" fn ws2_select(
     let mut posix_except: libc::fd_set = core::mem::zeroed();
     let mut max_fd: i32 = -1;
 
-    // Helper: populate a POSIX fd_set from a Windows fd_set, returning max fd seen
-    let populate = |win: *mut WinFdSet, posix: &mut libc::fd_set, max: &mut i32| {
-        if win.is_null() {
-            return;
-        }
-        let count = (*win).fd_count as usize;
-        for i in 0..count.min(64) {
-            let sock = (*win).fd_array[i];
-            if let Some(fd) = lookup_socket_fd(sock) {
-                libc::FD_SET(fd, posix);
-                if fd > *max {
-                    *max = fd;
+    // Helper: populate a POSIX fd_set from a Windows fd_set, tracking the max fd.
+    // Returns SOCKET_ERROR if any fd is >= FD_SETSIZE (would overflow the fd_set).
+    let mut fd_setsize_exceeded = false;
+    let populate =
+        |win: *mut WinFdSet, posix: &mut libc::fd_set, max: &mut i32, exceeded: &mut bool| {
+            if win.is_null() {
+                return;
+            }
+            let count = (*win).fd_count as usize;
+            for i in 0..count.min(64) {
+                let sock = (*win).fd_array[i];
+                if let Some(fd) = lookup_socket_fd(sock) {
+                    if fd >= libc::FD_SETSIZE as i32 {
+                        *exceeded = true;
+                        return;
+                    }
+                    libc::FD_SET(fd, posix);
+                    if fd > *max {
+                        *max = fd;
+                    }
                 }
             }
-        }
-    };
+        };
 
-    populate(read_fds, &mut posix_read, &mut max_fd);
-    populate(write_fds, &mut posix_write, &mut max_fd);
-    populate(except_fds, &mut posix_except, &mut max_fd);
+    populate(
+        read_fds,
+        &mut posix_read,
+        &mut max_fd,
+        &mut fd_setsize_exceeded,
+    );
+    populate(
+        write_fds,
+        &mut posix_write,
+        &mut max_fd,
+        &mut fd_setsize_exceeded,
+    );
+    populate(
+        except_fds,
+        &mut posix_except,
+        &mut max_fd,
+        &mut fd_setsize_exceeded,
+    );
+
+    if fd_setsize_exceeded {
+        set_wsa_error(WSAEINVAL);
+        return SOCKET_ERROR;
+    }
+
+    // Translate the Windows TIMEVAL (two i32 fields) to a local libc::timeval
+    // (two i64 fields on 64-bit Linux).  We must NOT pass the guest pointer directly
+    // because the layouts differ, and select() may modify the timeval in place.
+    let mut linux_timeout: libc::timeval;
+    let timeout_ptr: *mut libc::timeval = if timeout.is_null() {
+        core::ptr::null_mut()
+    } else {
+        linux_timeout = libc::timeval {
+            tv_sec: libc::time_t::from((*timeout).tv_sec),
+            tv_usec: libc::suseconds_t::from((*timeout).tv_usec),
+        };
+        &raw mut linux_timeout
+    };
 
     let result = libc::select(
         max_fd + 1,
@@ -944,7 +1055,7 @@ pub unsafe extern "C" fn ws2_select(
         } else {
             &raw mut posix_except
         },
-        timeout.cast_mut(),
+        timeout_ptr,
     );
 
     if result < 0 {
@@ -962,6 +1073,7 @@ pub unsafe extern "C" fn ws2_select(
         for i in 0..old_count.min(64) {
             let sock = (*win).fd_array[i];
             if let Some(fd) = lookup_socket_fd(sock)
+                && fd < libc::FD_SETSIZE as i32
                 && libc::FD_ISSET(fd, posix)
             {
                 (*win).fd_array[new_count as usize] = sock;
