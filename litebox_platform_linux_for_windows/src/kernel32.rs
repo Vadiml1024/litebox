@@ -4728,6 +4728,18 @@ pub unsafe extern "C" fn kernel32_ResetEvent(_event: *mut core::ffi::c_void) -> 
     1 // TRUE (success stub)
 }
 
+/// `IsDBCSLeadByteEx` – test whether a byte is a DBCS lead byte in the given code page.
+///
+/// We only support single-byte encodings (code pages 0 and 65001/UTF-8), so
+/// this always returns FALSE (0).
+///
+/// # Safety
+/// This function is safe to call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_IsDBCSLeadByteEx(_code_page: u32, _test_char: u8) -> i32 {
+    0 // FALSE – not a DBCS lead byte
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

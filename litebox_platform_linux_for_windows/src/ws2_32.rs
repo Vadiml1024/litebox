@@ -209,6 +209,67 @@ fn win_proto_to_linux(proto: i32) -> i32 {
     proto
 }
 
+// ── Windows → Linux socket option translation ────────────────────────────────
+//
+// Windows uses different numeric values for SOL_SOCKET and many SO_* options.
+// We translate before forwarding to the Linux kernel.
+
+/// Windows `SOL_SOCKET` = 0xFFFF; Linux `SOL_SOCKET` = 1.
+const WIN_SOL_SOCKET: i32 = 0xFFFF;
+
+/// Translate a Windows socket-option *level* to the Linux equivalent.
+fn win_level_to_linux(level: i32) -> i32 {
+    if level == WIN_SOL_SOCKET {
+        libc::SOL_SOCKET
+    } else {
+        // IPPROTO_TCP (6), IPPROTO_UDP (17), etc. are the same on both platforms.
+        level
+    }
+}
+
+// Windows SO_* values at SOL_SOCKET level (winsock2.h)
+const WIN_SO_DEBUG: i32 = 0x0001;
+const WIN_SO_REUSEADDR: i32 = 0x0004;
+const WIN_SO_KEEPALIVE: i32 = 0x0008;
+const WIN_SO_DONTROUTE: i32 = 0x0010;
+const WIN_SO_BROADCAST: i32 = 0x0020;
+const WIN_SO_LINGER: i32 = 0x0080;
+const WIN_SO_OOBINLINE: i32 = 0x0100;
+const WIN_SO_SNDBUF: i32 = 0x1001;
+const WIN_SO_RCVBUF: i32 = 0x1002;
+const WIN_SO_SNDTIMEO: i32 = 0x1005;
+const WIN_SO_RCVTIMEO: i32 = 0x1006;
+const WIN_SO_ERROR: i32 = 0x1007;
+const WIN_SO_TYPE: i32 = 0x1008;
+
+/// Translate a Windows socket-option *name* to the Linux equivalent for the
+/// given (already-translated) Linux level.  Returns `None` for options that
+/// have no Linux counterpart (caller should return `WSAENOPROTOOPT`).
+fn win_optname_to_linux(linux_level: i32, win_optname: i32) -> Option<i32> {
+    if linux_level == libc::SOL_SOCKET {
+        let linux_opt = match win_optname {
+            WIN_SO_DEBUG => libc::SO_DEBUG,
+            WIN_SO_REUSEADDR => libc::SO_REUSEADDR,
+            WIN_SO_KEEPALIVE => libc::SO_KEEPALIVE,
+            WIN_SO_DONTROUTE => libc::SO_DONTROUTE,
+            WIN_SO_BROADCAST => libc::SO_BROADCAST,
+            WIN_SO_LINGER => libc::SO_LINGER,
+            WIN_SO_OOBINLINE => libc::SO_OOBINLINE,
+            WIN_SO_SNDBUF => libc::SO_SNDBUF,
+            WIN_SO_RCVBUF => libc::SO_RCVBUF,
+            WIN_SO_SNDTIMEO => libc::SO_SNDTIMEO,
+            WIN_SO_RCVTIMEO => libc::SO_RCVTIMEO,
+            WIN_SO_ERROR => libc::SO_ERROR,
+            WIN_SO_TYPE => libc::SO_TYPE,
+            _ => return None,
+        };
+        Some(linux_opt)
+    } else {
+        // For IPPROTO_TCP, IPPROTO_UDP, etc. the option values are the same.
+        Some(win_optname)
+    }
+}
+
 // ── WSAStartup / WSACleanup ───────────────────────────────────────────────────
 
 /// Windows WSADATA layout (simplified; callers only check the return value)
@@ -435,6 +496,10 @@ pub unsafe extern "C" fn ws2_accept(
 
 /// Connect a socket to a remote address.
 ///
+/// On a non-blocking socket, Linux returns `EINPROGRESS` while Windows
+/// returns `WSAEWOULDBLOCK`.  We remap `EINPROGRESS` here so callers that
+/// check for `WSAEWOULDBLOCK` work correctly.
+///
 /// # Safety
 /// `name` must point to a valid sockaddr structure of `name_len` bytes.
 #[unsafe(no_mangle)]
@@ -445,7 +510,14 @@ pub unsafe extern "C" fn ws2_connect(s: usize, name: *const libc::sockaddr, name
     };
     let result = libc::connect(fd, name, name_len as libc::socklen_t);
     if result != 0 {
-        set_wsa_error_from_errno();
+        let errno = *libc::__errno_location();
+        // Linux returns EINPROGRESS for a non-blocking connect in progress;
+        // Windows returns WSAEWOULDBLOCK.  Map accordingly.
+        if errno == libc::EINPROGRESS {
+            set_wsa_error(WSAEWOULDBLOCK);
+        } else {
+            set_wsa_error_from_errno();
+        }
         return SOCKET_ERROR;
     }
     set_wsa_error(0);
@@ -806,11 +878,16 @@ pub unsafe extern "C" fn ws2_getsockopt(
         set_wsa_error(WSAEFAULT);
         return SOCKET_ERROR;
     }
+    let linux_level = win_level_to_linux(level);
+    let Some(linux_opt) = win_optname_to_linux(linux_level, opt_name) else {
+        set_wsa_error(WSAENOPROTOOPT);
+        return SOCKET_ERROR;
+    };
     let mut linux_len: libc::socklen_t = *opt_len as libc::socklen_t;
     let result = libc::getsockopt(
         fd,
-        level,
-        opt_name,
+        linux_level,
+        linux_opt,
         opt_val.cast::<c_void>(),
         &raw mut linux_len,
     );
@@ -839,10 +916,15 @@ pub unsafe extern "C" fn ws2_setsockopt(
         set_wsa_error(WSAENOTSOCK);
         return SOCKET_ERROR;
     };
+    let linux_level = win_level_to_linux(level);
+    let Some(linux_opt) = win_optname_to_linux(linux_level, opt_name) else {
+        set_wsa_error(WSAENOPROTOOPT);
+        return SOCKET_ERROR;
+    };
     let result = libc::setsockopt(
         fd,
-        level,
-        opt_name,
+        linux_level,
+        linux_opt,
         opt_val.cast::<c_void>(),
         opt_len as libc::socklen_t,
     );
@@ -1221,6 +1303,31 @@ pub unsafe extern "C" fn ws2_WSADuplicateSocketW(
     SOCKET_ERROR
 }
 
+// ── __WSAFDIsSet ──────────────────────────────────────────────────────────────
+
+/// `__WSAFDIsSet` – the helper that backs the `FD_ISSET` macro on Windows.
+///
+/// The Windows `fd_set` is an array of socket handles prefixed by a count
+/// (unlike the POSIX bit-vector).  After `select()` returns, `translate_back`
+/// in `ws2_select` has already reduced the array to only the ready sockets,
+/// so we merely scan the array for `socket`.
+///
+/// # Safety
+/// `set` must be null or point to a valid Windows `fd_set` structure.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ws2___WSAFDIsSet(socket: usize, set: *const WinFdSet) -> i32 {
+    if set.is_null() {
+        return 0;
+    }
+    let count = (*set).fd_count as usize;
+    for i in 0..count.min(64) {
+        if (*set).fd_array[i] == socket {
+            return 1;
+        }
+    }
+    0
+}
+
 // ── Unit tests ────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1239,7 +1346,7 @@ mod tests {
             sz_description: [0u8; 257],
             sz_system_status: [0u8; 129],
         };
-        let result = unsafe { ws2_WSAStartup(0x0202, &raw mut wsa_data as *mut c_void) };
+        let result = unsafe { ws2_WSAStartup(0x0202, (&raw mut wsa_data).cast::<c_void>()) };
         assert_eq!(result, 0, "WSAStartup should succeed");
         assert_eq!(
             unsafe { ws2_WSAGetLastError() },
@@ -1337,12 +1444,13 @@ mod tests {
         let s = unsafe { ws2_socket(AF_INET, SOCK_STREAM, IPPROTO_TCP) };
         assert_ne!(s, INVALID_SOCKET);
         let optval: i32 = 1;
-        // SO_REUSEADDR = 4 on Linux, same numeric value on Windows
+        // Use Windows constants (SOL_SOCKET = 0xFFFF, SO_REUSEADDR = 4),
+        // which are translated to their Linux equivalents inside ws2_setsockopt.
         let result = unsafe {
             ws2_setsockopt(
                 s,
-                libc::SOL_SOCKET,
-                libc::SO_REUSEADDR,
+                WIN_SOL_SOCKET,
+                WIN_SO_REUSEADDR,
                 (&raw const optval).cast::<u8>(),
                 core::mem::size_of::<i32>() as i32,
             )

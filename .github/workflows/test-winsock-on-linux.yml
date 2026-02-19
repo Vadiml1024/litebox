@@ -1,0 +1,148 @@
+name: Test WinSock Programs on Linux
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'windows_test_programs/winsock_test/**'
+      - 'litebox_platform_linux_for_windows/**'
+      - 'litebox_shim_windows/**'
+      - 'litebox_runner_windows_on_linux_userland/**'
+      - '.github/workflows/test-winsock-on-linux.yml'
+  pull_request:
+    paths:
+      - 'windows_test_programs/winsock_test/**'
+      - 'litebox_platform_linux_for_windows/**'
+      - 'litebox_shim_windows/**'
+      - 'litebox_runner_windows_on_linux_userland/**'
+      - '.github/workflows/test-winsock-on-linux.yml'
+  merge_group:
+  workflow_dispatch:
+
+# Cancel in-progress runs for the same ref so duplicate pushes don't pile up.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref || github.run_id }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -Dwarnings
+
+jobs:
+  test_winsock:
+    name: Build and Run WinSock Tests on Linux
+    runs-on: ubuntu-latest
+
+    steps:
+      # ── Checkout ──────────────────────────────────────────────────────────
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      # ── Toolchain ─────────────────────────────────────────────────────────
+      - name: Set up Rust
+        run: |
+          rustup toolchain install \
+            $(awk -F'"' '/channel/{print $2}' rust-toolchain.toml) \
+            --profile minimal \
+            --no-self-update \
+            --target x86_64-unknown-linux-gnu
+
+      # ── MinGW cross-compiler ───────────────────────────────────────────────
+      - name: Install MinGW cross-compiler
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y mingw-w64
+
+      # ── Cargo cache ───────────────────────────────────────────────────────
+      - uses: Swatinem/rust-cache@v2
+
+      # ── Build the WinSock C++ test programs ───────────────────────────────
+      - name: Build WinSock test programs
+        run: |
+          make -C windows_test_programs/winsock_test
+          echo "Built executables:"
+          ls -lh windows_test_programs/winsock_test/*.exe
+          file windows_test_programs/winsock_test/*.exe
+
+      # ── Build the Windows-on-Linux runner ─────────────────────────────────
+      - name: Build Windows-on-Linux runner
+        run: |
+          cargo build --locked -p litebox_runner_windows_on_linux_userland
+
+      # ── Run WinSock basic API tests ───────────────────────────────────────
+      - name: Run winsock_basic_test
+        run: |
+          echo "=== winsock_basic_test.exe ==="
+          ./target/debug/litebox_runner_windows_on_linux_userland \
+            windows_test_programs/winsock_test/winsock_basic_test.exe \
+            2>&1 | tee /tmp/winsock_basic_out.txt
+
+          echo ""
+          echo "--- Verifying test output ---"
+          grep -q "WinSock Basic API Tests PASSED" /tmp/winsock_basic_out.txt \
+            || { echo "✗ winsock_basic_test FAILED"; exit 1; }
+          echo "✓ winsock_basic_test PASSED"
+
+      # ── Run WinSock TCP tests ─────────────────────────────────────────────
+      - name: Run winsock_tcp_test
+        run: |
+          echo "=== winsock_tcp_test.exe ==="
+          ./target/debug/litebox_runner_windows_on_linux_userland \
+            windows_test_programs/winsock_test/winsock_tcp_test.exe \
+            2>&1 | tee /tmp/winsock_tcp_out.txt
+
+          echo ""
+          echo "--- Verifying test output ---"
+          grep -q "WinSock TCP Socket Tests PASSED" /tmp/winsock_tcp_out.txt \
+            || { echo "✗ winsock_tcp_test FAILED"; exit 1; }
+          echo "✓ winsock_tcp_test PASSED"
+
+      # ── Run WinSock UDP tests ─────────────────────────────────────────────
+      - name: Run winsock_udp_test
+        run: |
+          echo "=== winsock_udp_test.exe ==="
+          ./target/debug/litebox_runner_windows_on_linux_userland \
+            windows_test_programs/winsock_test/winsock_udp_test.exe \
+            2>&1 | tee /tmp/winsock_udp_out.txt
+
+          echo ""
+          echo "--- Verifying test output ---"
+          grep -q "WinSock UDP Socket Tests PASSED" /tmp/winsock_udp_out.txt \
+            || { echo "✗ winsock_udp_test FAILED"; exit 1; }
+          echo "✓ winsock_udp_test PASSED"
+
+      # ── Upload test output on failure ─────────────────────────────────────
+      - name: Upload test output on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: winsock-test-output
+          path: /tmp/winsock_*.txt
+          retention-days: 7
+
+      # ── Summary ───────────────────────────────────────────────────────────
+      - name: Summary
+        if: always()
+        run: |
+          echo ""
+          echo "================================================"
+          echo " WinSock Tests on Linux – Summary"
+          echo "================================================"
+          for f in /tmp/winsock_basic_out.txt \
+                   /tmp/winsock_tcp_out.txt \
+                   /tmp/winsock_udp_out.txt; do
+            [ -f "$f" ] || continue
+            name=$(basename "$f" _out.txt)
+            pass=$(grep -c "\[PASS\]" "$f" || true)
+            fail=$(grep -c "\[FAIL\]" "$f" || true)
+            if grep -q "PASSED (0 failures)" "$f"; then
+              echo "  ✓ ${name}: ${pass} passed, ${fail} failed"
+            else
+              echo "  ✗ ${name}: ${pass} passed, ${fail} failed"
+            fi
+          done
+          echo "================================================"
