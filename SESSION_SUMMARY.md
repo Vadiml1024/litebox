@@ -1,4 +1,71 @@
-# Windows-on-Linux Support - Session Summary (2026-02-19 Session 13)
+# Windows-on-Linux Support - Session Summary (2026-02-19 Session 14)
+
+## Work Completed ✅
+
+### Phase 15 — GUI Stubs (USER32.dll)
+
+**Goal:** Allow programs that link against USER32 GUI APIs to run headlessly on Linux without crashing.
+
+#### New module: `litebox_platform_linux_for_windows/src/user32.rs`
+
+Nine stub implementations:
+
+| API | Headless behaviour |
+|---|---|
+| `MessageBoxW` | Prints caption/text to stderr, returns `IDOK` (1) |
+| `RegisterClassExW` | Returns fake non-zero ATOM |
+| `CreateWindowExW` | Returns fake non-null HWND (`0xBEEF`) |
+| `ShowWindow` / `UpdateWindow` / `DestroyWindow` | Return 1 (success) |
+| `GetMessageW` | Returns 0 (immediate WM_QUIT — terminates message loops) |
+| `TranslateMessage` / `DispatchMessageW` | Return 0 (no-op) |
+
+#### Code quality improvements in `user32.rs`
+
+- `wide_to_string` made `unsafe fn` (was a safe fn that dereferences `*const u16`)
+- 32 768-char upper bound added to the scanning loop (matches `kernel32::wide_str_to_string`)
+- Removed unnecessary `#![allow(clippy::cast_sign_loss/truncation)]` (no casts in file)
+
+#### Plumbing
+
+- `USER32_BASE = 0x8000` stub address range in `litebox_shim_windows/src/loader/dll.rs`
+- `load_stub_user32()` registered in `DllManager::new()`
+- 9 entries in `litebox_platform_linux_for_windows/src/function_table.rs`
+- `pub mod user32` in `litebox_platform_linux_for_windows/src/lib.rs`
+
+#### Test results
+
+- Platform tests: 188 → 198 (+10 new user32 tests)
+- Ratchet tests: all 3 passing (no new globals)
+
+### Boilerplate / CI fixes
+
+- **`scripts/setup-workspace.sh`**: corrected shebang from `#!/bin/bash` to `#! /bin/bash` and added copyright block
+- **`dev_tests/src/boilerplate.rs`**: added `cpp` extension to `HEADERS_REQUIRED_PREFIX`; added `windows_test_programs/winsock_test/Makefile` to `SKIP_FILES`
+- **`litebox_shim_windows/src/loader/dispatch.rs`**: used `ADD_RSP_8` constant in a test assertion to eliminate dead-constant clippy error (`RUSTFLAGS: -Dwarnings` was promoting it to a build failure)
+
+## Test Results
+
+```
+cargo test -p litebox_platform_linux_for_windows -p litebox_shim_windows
+           -p litebox_runner_windows_on_linux_userland -p dev_tests
+Platform:  198 passed  (+10 from session 13)
+Shim:       47 passed  (unchanged)
+Runner:     16 passed  (unchanged)
+dev_tests:   4 passed  (all boilerplate + ratchet tests pass)
+```
+
+## Files Modified This Session
+
+- `litebox_platform_linux_for_windows/src/user32.rs` (**new file**)
+- `litebox_platform_linux_for_windows/src/lib.rs` — added `pub mod user32`
+- `litebox_platform_linux_for_windows/src/function_table.rs` — added 9 USER32 entries
+- `litebox_shim_windows/src/loader/dll.rs` — `USER32_BASE`, `load_stub_user32`, DLL count 7→8
+- `litebox_shim_windows/src/loader/dispatch.rs` — used `ADD_RSP_8` in test assertion
+- `dev_tests/src/boilerplate.rs` — cpp extension + Makefile skip
+- `scripts/setup-workspace.sh` — correct shebang + copyright header
+
+---
+
 
 ## Work Completed ✅
 
