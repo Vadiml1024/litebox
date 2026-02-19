@@ -209,15 +209,19 @@ fn win_proto_to_linux(proto: i32) -> i32 {
 // ── WSAStartup / WSACleanup ───────────────────────────────────────────────────
 
 /// Windows WSADATA layout (simplified; callers only check the return value)
+///
+/// Field order matches the 64-bit Windows ABI:
+/// wVersion, wHighVersion, iMaxSockets, iMaxUdpDg, lpVendorInfo,
+/// szDescription, szSystemStatus.
 #[repr(C)]
 struct WsaData {
     w_version: u16,
     w_high_version: u16,
-    sz_description: [u8; 257],
-    sz_system_status: [u8; 129],
     i_max_sockets: u16,
     i_max_udp_dg: u16,
     lp_vendor_info: *mut u8,
+    sz_description: [u8; 257],
+    sz_system_status: [u8; 129],
 }
 
 /// Initialize Windows Sockets.
@@ -581,7 +585,7 @@ pub struct WsaBuf {
 ///
 /// # Safety
 /// `lp_buffers` must point to an array of `dw_buffer_count` valid `WSABUF` structures.
-/// `lp_number_of_bytes_sent` must be non-null.
+/// `lp_number_of_bytes_sent` may be null; if non-null it receives the total byte count.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ws2_WSASend(
     s: usize,
@@ -625,7 +629,8 @@ pub unsafe extern "C" fn ws2_WSASend(
 ///
 /// # Safety
 /// `lp_buffers` must point to an array of `dw_buffer_count` valid `WSABUF` structures.
-/// `lp_number_of_bytes_recvd` and `lp_flags` must be non-null.
+/// `lp_number_of_bytes_recvd` may be null; if non-null it receives the total byte count.
+/// `lp_flags` may be null (treated as 0).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ws2_WSARecv(
     s: usize,
@@ -1116,11 +1121,11 @@ mod tests {
         let mut wsa_data = WsaData {
             w_version: 0,
             w_high_version: 0,
-            sz_description: [0u8; 257],
-            sz_system_status: [0u8; 129],
             i_max_sockets: 0,
             i_max_udp_dg: 0,
             lp_vendor_info: core::ptr::null_mut(),
+            sz_description: [0u8; 257],
+            sz_system_status: [0u8; 129],
         };
         let result = unsafe { ws2_WSAStartup(0x0202, &raw mut wsa_data as *mut c_void) };
         assert_eq!(result, 0, "WSAStartup should succeed");
