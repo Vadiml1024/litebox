@@ -399,6 +399,11 @@ mod tests {
             !code.windows(2).any(|w| w == [0xFF, 0xE0]),
             "Must NOT use 'jmp rax'"
         );
+        // epilogue must contain 'add rsp, 8' to undo the prologue's 'sub rsp, 8'
+        assert!(
+            code.windows(ADD_RSP_8.len()).any(|w| w == ADD_RSP_8),
+            "Epilogue must contain 'add rsp, 8'"
+        );
     }
 
     #[test]

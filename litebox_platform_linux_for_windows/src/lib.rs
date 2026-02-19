@@ -12,6 +12,7 @@ pub mod kernel32;
 pub mod msvcrt;
 pub mod ntdll_impl;
 pub mod trampoline;
+pub mod user32;
 pub mod ws2_32;
 
 pub use kernel32::set_process_command_line;

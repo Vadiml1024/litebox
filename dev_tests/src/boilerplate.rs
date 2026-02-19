@@ -87,6 +87,10 @@ const HEADERS_REQUIRED_PREFIX: &[(&str, &str)] = &[
         "// Copyright (c) Microsoft Corporation.\n// Licensed under the MIT license.\n\n",
     ),
     (
+        "cpp",
+        "// Copyright (c) Microsoft Corporation.\n// Licensed under the MIT license.\n\n",
+    ),
+    (
         "sh",
         "#! /bin/bash\n\n# Copyright (c) Microsoft Corporation.\n# Licensed under the MIT license.\n\n",
     ),
@@ -134,6 +138,7 @@ const SKIP_FILES: &[&str] = &[
     "litebox/src/sync/mutex.rs",
     "litebox/src/sync/rwlock.rs",
     "litebox_rtld_audit/Makefile",
+    "windows_test_programs/winsock_test/Makefile",
     "litebox_runner_linux_on_windows_userland/tests/test-bins/hello_exec_nolibc",
     "litebox_runner_linux_on_windows_userland/tests/test-bins/hello_thread",
     "litebox_runner_linux_on_windows_userland/tests/test-bins/hello_thread_static",
