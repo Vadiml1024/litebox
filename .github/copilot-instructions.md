@@ -1,3 +1,6 @@
+---
+model: capi-prod-claude-sonnet-4.6
+---
 This repository contains a Rust-based, security-focused sandboxing library OS. To maintain high code quality and consistency, please adhere to the following guidelines when contributing.
 
 ## Code Standards
