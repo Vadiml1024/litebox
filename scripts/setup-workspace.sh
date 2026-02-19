@@ -1,4 +1,8 @@
-#!/bin/bash
+#! /bin/bash
+
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT license.
+
 # Quick setup script for LiteBox workspace optimization
 # This script helps configure your development environment for faster builds
 
