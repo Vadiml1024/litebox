@@ -482,10 +482,22 @@ pub fn get_function_table() -> Vec<FunctionImpl> {
             impl_address: crate::kernel32::kernel32_CopyFileExW as *const () as usize,
         },
         FunctionImpl {
+            name: "CopyFileW",
+            dll_name: "KERNEL32.dll",
+            num_params: 3,
+            impl_address: crate::kernel32::kernel32_CopyFileW as *const () as usize,
+        },
+        FunctionImpl {
             name: "CreateDirectoryW",
             dll_name: "KERNEL32.dll",
             num_params: 2,
             impl_address: crate::kernel32::kernel32_CreateDirectoryW as *const () as usize,
+        },
+        FunctionImpl {
+            name: "CreateDirectoryExW",
+            dll_name: "KERNEL32.dll",
+            num_params: 3,
+            impl_address: crate::kernel32::kernel32_CreateDirectoryExW as *const () as usize,
         },
         FunctionImpl {
             name: "CreateEventW",
@@ -983,6 +995,12 @@ pub fn get_function_table() -> Vec<FunctionImpl> {
             dll_name: "KERNEL32.dll",
             num_params: 1,
             impl_address: crate::kernel32::kernel32_FreeLibrary as *const () as usize,
+        },
+        FunctionImpl {
+            name: "FindFirstFileW",
+            dll_name: "KERNEL32.dll",
+            num_params: 2,
+            impl_address: crate::kernel32::kernel32_FindFirstFileW as *const () as usize,
         },
         FunctionImpl {
             name: "FindFirstFileExW",

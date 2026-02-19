@@ -415,6 +415,10 @@ impl DllManager {
             ("GetTickCount64", KERNEL32_BASE + 0x94),
             ("SetEvent", KERNEL32_BASE + 0x95),
             ("ResetEvent", KERNEL32_BASE + 0x96),
+            // Phase 12: Extended file system APIs
+            ("FindFirstFileW", KERNEL32_BASE + 0x97),
+            ("CopyFileW", KERNEL32_BASE + 0x98),
+            ("CreateDirectoryExW", KERNEL32_BASE + 0x99),
         ];
 
         self.register_stub_dll("KERNEL32.dll", exports);

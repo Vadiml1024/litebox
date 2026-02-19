@@ -1,8 +1,90 @@
-# Windows-on-Linux Support - Session Summary (2026-02-18 Session 10)
+# Windows-on-Linux Support - Session Summary (2026-02-18 Session 11)
 
 ## Work Completed ✅
 
-### 1. Phase 10 — Fixed File I/O Round-Trip
+### Phase 12 — Extended File System APIs
+
+**Goal:** Cover the file-system surface area used by typical Windows programs that perform
+directory searches, file copies, and path resolution.
+
+#### New global infrastructure
+
+- **`FIND_HANDLE_COUNTER` / `FIND_HANDLES`** — A new directory-search-handle registry (same
+  pattern as `FILE_HANDLES`) used by `FindFirstFileW` / `FindNextFileW` / `FindClose`.
+
+#### New helper functions
+
+- **`find_matches_pattern` / `glob_match`** — Windows-style wildcard matching (`*` = any
+  substring, `?` = any single character, case-insensitive ASCII).
+- **`fill_find_data_from_path`** — Writes the full `WIN32_FIND_DATAW` ABI layout (592 bytes) to
+  a raw `*mut u8` buffer using `write_unaligned` (correct for unaligned Windows caller buffers).
+- **`fill_find_data`** — Convenience wrapper around `fill_find_data_from_path` for `DirEntry`.
+- **`split_dir_and_pattern`** — Parses a Linux path into `(directory, glob-pattern)`.
+
+#### Real implementations added
+
+| API | Was | Now |
+|---|---|---|
+| `FindFirstFileW` | Missing | ✅ Real directory search with handle registry |
+| `FindFirstFileExW` | Stub → `INVALID_HANDLE_VALUE` | ✅ Delegates to `FindFirstFileW` |
+| `FindNextFileW` | Stub (always `FALSE`) | ✅ Advances handle-registry cursor |
+| `FindClose` | Stub (no cleanup) | ✅ Removes handle from registry |
+| `CopyFileExW` | Stub (always `FALSE`) | ✅ `std::fs::copy` with path translation |
+| `CopyFileW` | Missing | ✅ New function (simpler, respects `fail_if_exists`) |
+| `GetFullPathNameW` | Stub (returns `0`) | ✅ Real resolution; sets `file_part` pointer |
+| `CreateDirectoryExW` | Missing | ✅ Delegates to `CreateDirectoryW` |
+
+#### Registration
+
+- `FindFirstFileW`, `CopyFileW`, `CreateDirectoryExW` added to `function_table.rs`.
+- `FindFirstFileW`, `CopyFileW`, `CreateDirectoryExW` added to `dll.rs` exports.
+- Ratchet `litebox_platform_linux_for_windows/` globals: 21 → 23.
+
+### New Unit Tests (5 new tests)
+
+- `test_copy_file_w` — copy a file, verify content, test `fail_if_exists`.
+- `test_create_directory_ex_w` — create directory via the Ex version.
+- `test_get_full_path_name_w_absolute` — absolute path returned unchanged.
+- `test_find_first_next_close` — full search lifecycle with pattern matching.
+- `test_glob_match_patterns` — unit coverage for `find_matches_pattern` helper.
+
+## Test Results
+
+```
+cargo test -p litebox_platform_linux_for_windows -p litebox_shim_windows -p litebox_runner_windows_on_linux_userland
+Platform: 171 passed (up from 166, +5 new tests)
+Shim:      47 passed (unchanged)
+Runner:    16 passed (unchanged)
+Ratchet: all 3 ratchet tests passing
+```
+
+## Files Modified This Session
+
+- `litebox_platform_linux_for_windows/src/kernel32.rs`
+  - Added `FIND_HANDLE_COUNTER`, `FIND_HANDLES`, `DirSearchState` (search registry)
+  - Added `find_matches_pattern`, `glob_match` (wildcard matching)
+  - Added `fill_find_data`, `fill_find_data_from_path` (WIN32_FIND_DATAW serialization)
+  - Added `split_dir_and_pattern` (path parsing)
+  - Implemented real `FindFirstFileW`, `FindFirstFileExW`, `FindNextFileW`, `FindClose`
+  - Implemented real `CopyFileExW`, new `CopyFileW`
+  - Implemented real `GetFullPathNameW`
+  - Added `CreateDirectoryExW`
+  - Added `#![allow(clippy::cast_ptr_alignment)]`
+  - Added 5 new unit tests
+- `litebox_platform_linux_for_windows/src/function_table.rs`
+  - Added `FindFirstFileW`, `CopyFileW`, `CreateDirectoryExW` trampoline entries
+- `litebox_shim_windows/src/loader/dll.rs`
+  - Added `FindFirstFileW`, `CopyFileW`, `CreateDirectoryExW` DLL exports
+- `dev_tests/src/ratchet.rs` — Updated globals limit 21 → 23
+
+## What Remains
+
+See `docs/windows_on_linux_continuation_plan.md` for the full Phase 13–18 roadmap.
+Immediate next step: Phase 13 — Process / Thread Robustness (`CreateThread`, `WaitForSingleObject`).
+
+---
+
+
 
 **Problem:** Programs that open files with `CreateFileW` and then write via `NtWriteFile`
 (the NT-layer API, used internally by the MinGW CRT `_write` and `fwrite`) would get

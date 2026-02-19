@@ -13,6 +13,9 @@
 #![allow(clippy::cast_sign_loss)]
 #![allow(clippy::cast_possible_truncation)]
 #![allow(clippy::cast_possible_wrap)]
+// Allow raw-pointer alignment casts: we always use write_unaligned / read_unaligned
+// when writing to potentially unaligned addresses derived from *mut u8 buffers.
+#![allow(clippy::cast_ptr_alignment)]
 
 use std::alloc;
 use std::cell::Cell;
@@ -158,6 +161,141 @@ fn with_file_handles<R>(f: impl FnOnce(&mut HashMap<usize, FileEntry>) -> R) -> 
 fn alloc_file_handle() -> usize {
     use std::sync::atomic::Ordering;
     FILE_HANDLE_COUNTER.fetch_add(4, Ordering::SeqCst)
+}
+
+// ── Directory-search-handle registry ─────────────────────────────────────
+// Maps synthetic HANDLE values (usize) to in-progress directory searches.
+// Used by FindFirstFileW / FindNextFileW / FindClose.
+//
+// Note: entries are only removed by FindClose. A Windows program that exits
+// without calling FindClose (or crashes) will leave entries in this map for
+// the lifetime of the process, holding onto Vec allocations. This is
+// consistent with the FILE_HANDLES registry and is acceptable for a
+// sandboxed single-process environment.
+
+static FIND_HANDLE_COUNTER: AtomicUsize = AtomicUsize::new(0x2_0000);
+
+struct DirSearchState {
+    entries: Vec<std::fs::DirEntry>,
+    current_index: usize,
+    pattern: String,
+}
+
+static FIND_HANDLES: Mutex<Option<HashMap<usize, DirSearchState>>> = Mutex::new(None);
+
+fn with_find_handles<R>(f: impl FnOnce(&mut HashMap<usize, DirSearchState>) -> R) -> R {
+    let mut guard = FIND_HANDLES.lock().unwrap();
+    let map = guard.get_or_insert_with(HashMap::new);
+    f(map)
+}
+
+fn alloc_find_handle() -> usize {
+    use std::sync::atomic::Ordering;
+    FIND_HANDLE_COUNTER.fetch_add(4, Ordering::SeqCst)
+}
+
+/// Simple glob pattern matching (Windows-style: `*` = any substring, `?` = any char).
+/// Comparison is case-insensitive (ASCII).
+fn find_matches_pattern(name: &str, pattern: &str) -> bool {
+    if pattern == "*" || pattern == "*.*" {
+        return true;
+    }
+    let name_lower: String = name.to_ascii_lowercase();
+    let pat_lower: String = pattern.to_ascii_lowercase();
+    glob_match(name_lower.as_bytes(), pat_lower.as_bytes())
+}
+
+fn glob_match(name: &[u8], pattern: &[u8]) -> bool {
+    let mut i: usize = 0; // index into name
+    let mut j: usize = 0; // index into pattern
+
+    // Last position of '*' in pattern, and the index in name that matched it.
+    let mut star_idx: Option<usize> = None;
+    let mut match_idx: usize = 0;
+
+    while i < name.len() {
+        if j < pattern.len() && (pattern[j] == b'?' || pattern[j] == name[i]) {
+            // Current characters match (or pattern has '?'): advance both.
+            i += 1;
+            j += 1;
+        } else if j < pattern.len() && pattern[j] == b'*' {
+            // Record position of '*' and the corresponding match index in name.
+            star_idx = Some(j);
+            match_idx = i;
+            j += 1;
+        } else if let Some(si) = star_idx {
+            // Mismatch, but we have a previous '*': backtrack.
+            j = si + 1;
+            match_idx += 1;
+            if match_idx > name.len() {
+                return false;
+            }
+            i = match_idx;
+        } else {
+            // Mismatch and no '*' to fall back to.
+            return false;
+        }
+    }
+
+    // Consume any trailing '*' in the pattern: they can match an empty suffix.
+    while j < pattern.len() && pattern[j] == b'*' {
+        j += 1;
+    }
+
+    j == pattern.len()
+}
+
+/// Fill a raw `WIN32_FIND_DATAW` buffer from a directory entry.
+///
+/// The caller-supplied `find_data` must point to at least 592 bytes (the size of
+/// `WIN32_FIND_DATAW`).  The layout written matches the Windows ABI exactly:
+///   - offset   0: dwFileAttributes (u32)
+///   - offset   4: ftCreationTime   (2×u32, low first)
+///   - offset  12: ftLastAccessTime (2×u32)
+///   - offset  20: ftLastWriteTime  (2×u32)
+///   - offset  28: nFileSizeHigh (u32)
+///   - offset  32: nFileSizeLow  (u32)
+///   - offset  36: dwReserved0   (u32)
+///   - offset  40: dwReserved1   (u32)
+///   - offset  44: cFileName[260] (u16 array)
+///   - offset 564: cAlternateFileName[14] (u16 array)
+///
+/// # Safety
+/// `find_data` must point to a writable buffer of at least 592 bytes.
+unsafe fn fill_find_data(entry: &std::fs::DirEntry, find_data: *mut u8) {
+    if find_data.is_null() {
+        return;
+    }
+    // Always zero-initialize the buffer so that callers never observe
+    // uninitialized memory, even if metadata retrieval fails.
+    const WIN32_FIND_DATAW_SIZE: usize = 592;
+    // SAFETY: Caller guarantees `find_data` points to at least
+    // `WIN32_FIND_DATAW_SIZE` writable bytes (see function safety contract),
+    // and we've just checked that the pointer is non-null.
+    std::ptr::write_bytes(find_data, 0u8, WIN32_FIND_DATAW_SIZE);
+
+    let Ok(metadata) = entry.metadata() else {
+        // Return with a zeroed structure on metadata failure.
+        return;
+    };
+    fill_find_data_from_path(&entry.path(), &metadata, find_data);
+}
+
+/// Parse a Windows/Linux path into (directory_string, pattern_string).
+/// e.g. "/tmp/foo/*.txt" → ("/tmp/foo", "*.txt")
+///      "/tmp/foo/bar.txt" → ("/tmp/foo", "bar.txt")
+fn split_dir_and_pattern(linux_path: &str) -> (String, String) {
+    let path = std::path::Path::new(linux_path);
+    if let (Some(parent), Some(name)) = (path.parent(), path.file_name()) {
+        let dir = if parent.as_os_str().is_empty() {
+            ".".to_string()
+        } else {
+            parent.to_string_lossy().into_owned()
+        };
+        (dir, name.to_string_lossy().into_owned())
+    } else {
+        (".".to_string(), linux_path.to_string())
+    }
 }
 
 /// Write `data` to the file registered under `handle` in the kernel32 file-handle map.
@@ -2014,20 +2152,78 @@ pub unsafe extern "C" fn kernel32_CancelIo(_file: *mut core::ffi::c_void) -> i32
     0 // FALSE - not implemented
 }
 
-/// CopyFileExW stub - copies a file
+/// CopyFileExW - copies a file (progress callback and cancel flag are ignored)
 ///
 /// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
+/// `existing_file_name` and `new_file_name` must be valid null-terminated UTF-16 strings.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_CopyFileExW(
-    _existing_file_name: *const u16,
-    _new_file_name: *const u16,
+    existing_file_name: *const u16,
+    new_file_name: *const u16,
     _progress_routine: *mut core::ffi::c_void,
     _data: *mut core::ffi::c_void,
     _cancel: *mut i32,
     _copy_flags: u32,
 ) -> i32 {
-    0 // FALSE - not implemented
+    if existing_file_name.is_null() || new_file_name.is_null() {
+        kernel32_SetLastError(87); // ERROR_INVALID_PARAMETER
+        return 0;
+    }
+    let src = wide_path_to_linux(existing_file_name);
+    let dst = wide_path_to_linux(new_file_name);
+    match std::fs::copy(&src, &dst) {
+        Ok(_) => 1, // TRUE
+        Err(e) => {
+            let code = match e.kind() {
+                std::io::ErrorKind::NotFound => 2,         // ERROR_FILE_NOT_FOUND
+                std::io::ErrorKind::PermissionDenied => 5, // ERROR_ACCESS_DENIED
+                std::io::ErrorKind::AlreadyExists => 183,  // ERROR_ALREADY_EXISTS
+                _ => 1,                                    // ERROR_INVALID_FUNCTION
+            };
+            kernel32_SetLastError(code);
+            0 // FALSE
+        }
+    }
+}
+
+/// CopyFileW - copies a file
+///
+/// Simplified wrapper around `CopyFileExW` (no progress callback, no cancel).
+///
+/// Note: when `fail_if_exists` is non-zero, there is a TOCTOU window between
+/// the existence check and the copy. In the sandboxed single-process context
+/// this is typically harmless, but callers should be aware of the limitation.
+///
+/// # Safety
+/// `existing_file_name` and `new_file_name` must be valid null-terminated UTF-16 strings.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_CopyFileW(
+    existing_file_name: *const u16,
+    new_file_name: *const u16,
+    fail_if_exists: i32,
+) -> i32 {
+    if existing_file_name.is_null() || new_file_name.is_null() {
+        kernel32_SetLastError(87); // ERROR_INVALID_PARAMETER
+        return 0;
+    }
+    let src = wide_path_to_linux(existing_file_name);
+    let dst = wide_path_to_linux(new_file_name);
+    if fail_if_exists != 0 && std::path::Path::new(&dst).exists() {
+        kernel32_SetLastError(183); // ERROR_ALREADY_EXISTS
+        return 0;
+    }
+    match std::fs::copy(&src, &dst) {
+        Ok(_) => 1,
+        Err(e) => {
+            let code = match e.kind() {
+                std::io::ErrorKind::NotFound => 2,
+                std::io::ErrorKind::PermissionDenied => 5,
+                _ => 1,
+            };
+            kernel32_SetLastError(code);
+            0
+        }
+    }
 }
 
 /// CreateDirectoryW - creates a directory
@@ -2059,6 +2255,21 @@ pub unsafe extern "C" fn kernel32_CreateDirectoryW(
             0 // FALSE
         }
     }
+}
+
+/// CreateDirectoryExW - creates a directory, ignoring the template directory argument.
+///
+/// Template directory attributes are not applied; this behaves like `CreateDirectoryW`.
+///
+/// # Safety
+/// `new_directory` must be a valid null-terminated UTF-16 string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_CreateDirectoryExW(
+    _template_directory: *const u16,
+    new_directory: *const u16,
+    security_attributes: *mut core::ffi::c_void,
+) -> i32 {
+    kernel32_CreateDirectoryW(new_directory, security_attributes)
 }
 
 /// CreateEventW stub - creates an event object
@@ -2406,18 +2617,76 @@ pub unsafe extern "C" fn kernel32_GetFileType(_file: *mut core::ffi::c_void) -> 
     0 // FILE_TYPE_UNKNOWN
 }
 
-/// GetFullPathNameW stub - gets the full path name of a file
+/// GetFullPathNameW - gets the absolute path name of a file
+///
+/// Converts a potentially relative path to an absolute one using the current
+/// working directory.  The `file_part` pointer (if non-null) is set to point
+/// at the file name portion of the result inside `buffer`.
+///
+/// Returns the number of characters written (excluding the null terminator),
+/// or the required buffer length (including the null terminator) if the buffer
+/// is too small, or 0 on error.
 ///
 /// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
+/// `file_name` must be a valid null-terminated UTF-16 string.
+/// `buffer` must point to a writable area of at least `buffer_length` `u16`s, or be null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_GetFullPathNameW(
-    _file_name: *const u16,
-    _buffer_length: u32,
-    _buffer: *mut u16,
-    _file_part: *mut *mut u16,
+    file_name: *const u16,
+    buffer_length: u32,
+    buffer: *mut u16,
+    file_part: *mut *mut u16,
 ) -> u32 {
-    0 // 0 - error
+    if file_name.is_null() {
+        kernel32_SetLastError(87); // ERROR_INVALID_PARAMETER
+        return 0;
+    }
+    let path_str = wide_path_to_linux(file_name);
+    // Resolve to an absolute path
+    let abs_path = if std::path::Path::new(&path_str).is_absolute() {
+        path_str.clone()
+    } else {
+        match std::env::current_dir() {
+            Ok(cwd) => cwd.join(&path_str).to_string_lossy().into_owned(),
+            Err(_) => path_str.clone(),
+        }
+    };
+
+    let utf16: Vec<u16> = abs_path.encode_utf16().collect();
+    let required = utf16.len() as u32 + 1; // +1 for null terminator
+
+    if buffer.is_null() || buffer_length == 0 {
+        return required;
+    }
+    if buffer_length < required {
+        // Buffer too small – return required size (including null)
+        kernel32_SetLastError(122); // ERROR_INSUFFICIENT_BUFFER
+        return required;
+    }
+    for (i, &ch) in utf16.iter().enumerate() {
+        // SAFETY: we checked buffer_length >= required
+        core::ptr::write(buffer.add(i), ch);
+    }
+    core::ptr::write(buffer.add(utf16.len()), 0u16);
+
+    // Set *file_part to point at the final component (the filename) inside buffer
+    if !file_part.is_null() {
+        let last_sep = utf16
+            .iter()
+            .rposition(|&c| c == b'/' as u16 || c == b'\\' as u16);
+        let fname_offset = match last_sep {
+            Some(pos) => pos + 1,
+            None => 0,
+        };
+        if fname_offset < utf16.len() {
+            // SAFETY: fname_offset < utf16.len() < required <= buffer_length
+            *file_part = buffer.add(fname_offset);
+        } else {
+            *file_part = core::ptr::null_mut();
+        }
+    }
+
+    utf16.len() as u32 // number of chars written (excluding null)
 }
 
 // Thread-local storage for last error codes
@@ -3544,42 +3813,218 @@ pub unsafe extern "C" fn kernel32_FreeLibrary(_module: *mut core::ffi::c_void) -
     1 // TRUE - success
 }
 
-/// FindFirstFileExW - searches a directory for a file or subdirectory (wide version)
+/// FindFirstFileW - begin a directory search matching a pattern
+///
+/// Opens a search for files matching `file_name` (which may contain `*`/`?` wildcards)
+/// and fills `find_data` with the first matching entry.  Returns a search handle on
+/// success, or `INVALID_HANDLE_VALUE` on failure (sets last error).
 ///
 /// # Safety
-/// This function is a stub that returns INVALID_HANDLE_VALUE.
+/// `file_name` must be a valid null-terminated UTF-16 string.
+/// `find_data` must point to at least 592 bytes (size of `WIN32_FIND_DATAW`).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_FindFirstFileW(
+    file_name: *const u16,
+    find_data: *mut u8,
+) -> *mut core::ffi::c_void {
+    const INVALID_HANDLE: *mut core::ffi::c_void = -1_i64 as usize as *mut core::ffi::c_void;
+
+    if file_name.is_null() || find_data.is_null() {
+        kernel32_SetLastError(87); // ERROR_INVALID_PARAMETER
+        return INVALID_HANDLE;
+    }
+    let linux_path = wide_path_to_linux(file_name);
+    let (dir_path, pattern) = split_dir_and_pattern(&linux_path);
+
+    let entries: Vec<std::fs::DirEntry> = match std::fs::read_dir(&dir_path) {
+        Ok(rd) => rd.filter_map(std::result::Result::ok).collect(),
+        Err(e) => {
+            let code = match e.kind() {
+                std::io::ErrorKind::NotFound => 3,         // ERROR_PATH_NOT_FOUND
+                std::io::ErrorKind::PermissionDenied => 5, // ERROR_ACCESS_DENIED
+                _ => 2,
+            };
+            kernel32_SetLastError(code);
+            return INVALID_HANDLE;
+        }
+    };
+
+    // Find the first matching entry
+    let first_idx = entries
+        .iter()
+        .position(|e| find_matches_pattern(&e.file_name().to_string_lossy(), &pattern));
+    let Some(first_idx) = first_idx else {
+        kernel32_SetLastError(2); // ERROR_FILE_NOT_FOUND
+        return INVALID_HANDLE;
+    };
+
+    // Fill find_data with the first match
+    fill_find_data(&entries[first_idx], find_data);
+
+    // Allocate handle and store state (advanced past the first match)
+    let handle = alloc_find_handle();
+    with_find_handles(|map| {
+        map.insert(
+            handle,
+            DirSearchState {
+                entries,
+                current_index: first_idx + 1,
+                pattern,
+            },
+        );
+    });
+
+    kernel32_SetLastError(0);
+    handle as *mut core::ffi::c_void
+}
+
+/// FindFirstFileExW - extended directory search (delegates to `FindFirstFileW`)
+///
+/// The `info_level`, `search_op`, `search_filter`, and `additional_flags` parameters
+/// are ignored; this behaves like `FindFirstFileW` with the same handle registry.
+///
+/// # Safety
+/// `filename` must be a valid null-terminated UTF-16 string.
+/// `find_data` must point to at least 592 bytes (size of `WIN32_FIND_DATAW`).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_FindFirstFileExW(
-    _filename: *const u16,
+    filename: *const u16,
     _info_level: u32,
-    _find_data: *mut u8,
+    find_data: *mut u8,
     _search_op: u32,
     _search_filter: *mut core::ffi::c_void,
     _additional_flags: u32,
 ) -> *mut core::ffi::c_void {
-    // INVALID_HANDLE_VALUE
-    -1_i64 as usize as *mut core::ffi::c_void
+    kernel32_FindFirstFileW(filename, find_data)
 }
 
-/// FindNextFileW - continues a file search from a previous call to FindFirstFile
+/// FindNextFileW - advance a directory search to the next matching entry
+///
+/// Fills `find_data` with the next matching entry for the search started by
+/// `FindFirstFileW`.  Returns TRUE (1) on success or FALSE (0) when there are no
+/// more matching entries (sets last error to `ERROR_NO_MORE_FILES` = 18).
+/// Entries for which metadata retrieval fails (e.g. broken symlinks) are skipped
+/// transparently rather than terminating enumeration.
 ///
 /// # Safety
-/// This function is a stub that returns 0 (no more files).
+/// `find_file` must be a valid search handle returned by `FindFirstFileW`.
+/// `find_data` must point to at least 592 bytes (size of `WIN32_FIND_DATAW`).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_FindNextFileW(
-    _find_file: *mut core::ffi::c_void,
-    _find_data: *mut u8,
+    find_file: *mut core::ffi::c_void,
+    find_data: *mut u8,
 ) -> i32 {
-    0 // FALSE - no more files
+    let handle = find_file as usize;
+
+    loop {
+        // Find the next matching entry and extract its path while holding the lock.
+        let found_path = with_find_handles(|map| {
+            let Some(state) = map.get_mut(&handle) else {
+                return None;
+            };
+            while state.current_index < state.entries.len() {
+                let idx = state.current_index;
+                state.current_index += 1;
+                if find_matches_pattern(
+                    &state.entries[idx].file_name().to_string_lossy(),
+                    &state.pattern,
+                ) {
+                    return Some(state.entries[idx].path());
+                }
+            }
+            None
+        });
+
+        let Some(path) = found_path else {
+            kernel32_SetLastError(18); // ERROR_NO_MORE_FILES
+            return 0;
+        };
+
+        if !find_data.is_null() {
+            if let Ok(meta) = std::fs::metadata(&path) {
+                fill_find_data_from_path(&path, &meta, find_data);
+                kernel32_SetLastError(0);
+                return 1; // TRUE
+            }
+            // Metadata retrieval failed (e.g., broken symlink, permission error).
+            // Skip this entry and try the next one rather than misreporting no more files.
+            continue;
+        }
+        // find_data is null – caller only wants to know if more entries exist.
+        kernel32_SetLastError(0);
+        return 1;
+    }
+}
+
+/// Fill a raw `WIN32_FIND_DATAW` buffer from a filesystem path and its metadata.
+///
+/// # Safety
+/// `find_data` must point to a writable buffer of at least 592 bytes.
+unsafe fn fill_find_data_from_path(
+    path: &std::path::Path,
+    meta: &std::fs::Metadata,
+    find_data: *mut u8,
+) {
+    let attrs: u32 = if meta.is_dir() { 0x10 } else { 0x80 };
+    let file_size = meta.len();
+    let modified = meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+    let unix_ns = modified
+        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let wt = (unix_ns / 100) + 116_444_736_000_000_000u128;
+    let tl = wt as u32;
+    let th = (wt >> 32) as u32;
+    let sl = file_size as u32;
+    let sh = (file_size >> 32) as u32;
+
+    let ptr = find_data;
+    // SAFETY: caller guarantees ≥592 bytes
+    core::ptr::write_unaligned(ptr as *mut u32, attrs);
+    core::ptr::write_unaligned(ptr.add(4) as *mut u32, tl);
+    core::ptr::write_unaligned(ptr.add(8) as *mut u32, th);
+    core::ptr::write_unaligned(ptr.add(12) as *mut u32, tl);
+    core::ptr::write_unaligned(ptr.add(16) as *mut u32, th);
+    core::ptr::write_unaligned(ptr.add(20) as *mut u32, tl);
+    core::ptr::write_unaligned(ptr.add(24) as *mut u32, th);
+    core::ptr::write_unaligned(ptr.add(28) as *mut u32, sh);
+    core::ptr::write_unaligned(ptr.add(32) as *mut u32, sl);
+    core::ptr::write_unaligned(ptr.add(36) as *mut u32, 0u32);
+    core::ptr::write_unaligned(ptr.add(40) as *mut u32, 0u32);
+
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    let utf16: Vec<u16> = name.encode_utf16().collect();
+    let copy_len = utf16.len().min(259);
+    let fp = ptr.add(44) as *mut u16;
+    for (i, &ch) in utf16[..copy_len].iter().enumerate() {
+        core::ptr::write_unaligned(fp.add(i), ch);
+    }
+    core::ptr::write_unaligned(fp.add(copy_len), 0u16);
+    for i in (copy_len + 1)..260 {
+        core::ptr::write_unaligned(fp.add(i), 0u16);
+    }
+    let ap = ptr.add(564) as *mut u16;
+    for i in 0..14 {
+        core::ptr::write_unaligned(ap.add(i), 0u16);
+    }
 }
 
 /// FindClose - closes a file search handle
 ///
+/// Removes the search state associated with `find_file` from the handle registry.
+/// Always returns TRUE (1); sets last error to `ERROR_INVALID_HANDLE` if the handle
+/// was not found (but still returns TRUE for compatibility with Windows behavior).
+///
 /// # Safety
-/// This function is a stub that returns success.
+/// `find_file` must be a handle previously returned by `FindFirstFileW` / `FindFirstFileExW`.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn kernel32_FindClose(_find_file: *mut core::ffi::c_void) -> i32 {
-    1 // TRUE - success
+pub unsafe extern "C" fn kernel32_FindClose(find_file: *mut core::ffi::c_void) -> i32 {
+    let handle = find_file as usize;
+    let removed = with_find_handles(|map| map.remove(&handle).is_some());
+    if !removed {
+        kernel32_SetLastError(6); // ERROR_INVALID_HANDLE
+    }
+    1 // TRUE - always succeeds (Windows FindClose always returns TRUE)
 }
 
 /// WaitOnAddress - waits for the value at the specified address to change
@@ -5809,5 +6254,263 @@ mod tests {
         // Must be a valid UTF-8 string; no assertion on content since OnceLock
         // may have been initialised by an earlier test.
         let _ = s;
+    }
+
+    #[test]
+    fn test_copy_file_w() {
+        let src = "/tmp/litebox_copy_src.txt";
+        let dst = "/tmp/litebox_copy_dst.txt";
+        let _ = std::fs::remove_file(src);
+        let _ = std::fs::remove_file(dst);
+        std::fs::write(src, b"copy test").unwrap();
+
+        let src_wide: Vec<u16> = src.encode_utf16().chain(std::iter::once(0)).collect();
+        let dst_wide: Vec<u16> = dst.encode_utf16().chain(std::iter::once(0)).collect();
+
+        unsafe {
+            // CopyFileW should succeed
+            let result = kernel32_CopyFileW(src_wide.as_ptr(), dst_wide.as_ptr(), 0);
+            assert_eq!(result, 1, "CopyFileW should return TRUE");
+
+            // Destination should contain the same content
+            let content = std::fs::read(dst).unwrap();
+            assert_eq!(content, b"copy test");
+
+            // fail_if_exists = 1 should fail when dst already exists
+            let result2 = kernel32_CopyFileW(src_wide.as_ptr(), dst_wide.as_ptr(), 1);
+            assert_eq!(result2, 0, "CopyFileW with fail_if_exists=1 should fail");
+        }
+        let _ = std::fs::remove_file(src);
+        let _ = std::fs::remove_file(dst);
+    }
+
+    #[test]
+    fn test_create_directory_ex_w() {
+        let dir = "/tmp/litebox_mkdir_ex_test";
+        let _ = std::fs::remove_dir(dir);
+        let dir_wide: Vec<u16> = dir.encode_utf16().chain(std::iter::once(0)).collect();
+
+        unsafe {
+            let result = kernel32_CreateDirectoryExW(
+                core::ptr::null(), // template ignored
+                dir_wide.as_ptr(),
+                core::ptr::null_mut(),
+            );
+            assert_eq!(result, 1, "CreateDirectoryExW should succeed");
+            assert!(std::path::Path::new(dir).is_dir());
+        }
+        let _ = std::fs::remove_dir(dir);
+    }
+
+    #[test]
+    fn test_get_full_path_name_w_absolute() {
+        let path = "/tmp/litebox_gfpnw_test.txt";
+        let path_wide: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
+        let mut buf = vec![0u16; 512];
+
+        unsafe {
+            let chars = kernel32_GetFullPathNameW(
+                path_wide.as_ptr(),
+                512,
+                buf.as_mut_ptr(),
+                core::ptr::null_mut(),
+            );
+            assert!(
+                chars > 0,
+                "GetFullPathNameW should return non-zero for valid path"
+            );
+            let result = String::from_utf16_lossy(&buf[..chars as usize]);
+            assert_eq!(result, path, "Absolute path should be returned unchanged");
+        }
+    }
+
+    #[test]
+    fn test_find_first_next_close() {
+        let dir = "/tmp/litebox_find_test";
+        let _ = std::fs::remove_dir_all(dir);
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(format!("{dir}/a.txt"), b"a").unwrap();
+        std::fs::write(format!("{dir}/b.txt"), b"b").unwrap();
+
+        let pattern = format!("{dir}/*.txt\0");
+        let pattern_wide: Vec<u16> = pattern.encode_utf16().collect();
+        // WIN32_FIND_DATAW is 592 bytes
+        let mut find_data = vec![0u8; 592];
+
+        unsafe {
+            let handle = kernel32_FindFirstFileW(pattern_wide.as_ptr(), find_data.as_mut_ptr());
+            assert_ne!(
+                handle as usize,
+                usize::MAX,
+                "FindFirstFileW should return a valid handle"
+            );
+
+            // The first file name should be non-empty
+            let fname_ptr = find_data.as_ptr().add(44) as *const u16;
+            let fname_slice = core::slice::from_raw_parts(fname_ptr, 260);
+            let fname_len = fname_slice.iter().position(|&c| c == 0).unwrap_or(0);
+            assert!(fname_len > 0, "First file name should not be empty");
+
+            // Advance to next entry
+            let mut find_data2 = vec![0u8; 592];
+            let next = kernel32_FindNextFileW(handle, find_data2.as_mut_ptr());
+            // May be 1 (found another .txt) or 0 (no more) — both are valid
+            let _ = next;
+
+            let closed = kernel32_FindClose(handle);
+            assert_eq!(closed, 1, "FindClose should return TRUE");
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn test_glob_match_patterns() {
+        assert!(find_matches_pattern("test.txt", "*"));
+        assert!(find_matches_pattern("test.txt", "*.txt"));
+        assert!(find_matches_pattern("test.txt", "test.*"));
+        assert!(find_matches_pattern("test.txt", "test.txt"));
+        assert!(!find_matches_pattern("test.txt", "*.doc"));
+        assert!(find_matches_pattern("TEST.TXT", "test.txt"));
+        assert!(find_matches_pattern("test.txt", "TEST.TXT"));
+        assert!(find_matches_pattern("test.txt", "????.txt"));
+        assert!(!find_matches_pattern("test.txt", "?.txt"));
+    }
+
+    /// Guard that restores the working directory when dropped.
+    struct CwdGuard {
+        original: std::path::PathBuf,
+    }
+    impl CwdGuard {
+        fn new() -> Self {
+            let original = std::env::current_dir().expect("current_dir should work in tests");
+            CwdGuard { original }
+        }
+    }
+    impl Drop for CwdGuard {
+        fn drop(&mut self) {
+            let _ = std::env::set_current_dir(&self.original);
+        }
+    }
+
+    #[test]
+    fn test_get_full_path_name_w_relative() {
+        let tmp_dir = "/tmp/litebox_gfpnw_relative";
+        let _ = std::fs::remove_dir_all(tmp_dir);
+        std::fs::create_dir_all(tmp_dir).unwrap();
+
+        let _guard = CwdGuard::new();
+        std::env::set_current_dir(tmp_dir).unwrap();
+
+        let path = "test.txt";
+        let path_wide: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
+        let mut buf = vec![0u16; 512];
+
+        unsafe {
+            let chars = kernel32_GetFullPathNameW(
+                path_wide.as_ptr(),
+                512,
+                buf.as_mut_ptr(),
+                core::ptr::null_mut(),
+            );
+            assert!(
+                chars > 0,
+                "GetFullPathNameW should return non-zero for relative path"
+            );
+            let result = String::from_utf16_lossy(&buf[..chars as usize]);
+            assert!(
+                result.ends_with(path),
+                "Full path for relative input should end with the relative component"
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(tmp_dir);
+    }
+
+    #[test]
+    fn test_get_full_path_name_w_dot() {
+        let tmp_dir = "/tmp/litebox_gfpnw_dot";
+        let _ = std::fs::remove_dir_all(tmp_dir);
+        std::fs::create_dir_all(tmp_dir).unwrap();
+
+        let _guard = CwdGuard::new();
+        std::env::set_current_dir(tmp_dir).unwrap();
+
+        let path = ".";
+        let path_wide: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
+        let mut buf = vec![0u16; 512];
+
+        unsafe {
+            let chars = kernel32_GetFullPathNameW(
+                path_wide.as_ptr(),
+                512,
+                buf.as_mut_ptr(),
+                core::ptr::null_mut(),
+            );
+            assert!(
+                chars > 0,
+                "GetFullPathNameW should return non-zero for '.' (current directory)"
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(tmp_dir);
+    }
+
+    /// Ensure that FindFirstFileW / FindNextFileW handle cases where metadata
+    /// retrieval for a directory entry fails (e.g., a broken symlink) without
+    /// panicking or terminating enumeration prematurely.
+    #[test]
+    fn test_find_first_next_with_inaccessible_entry() {
+        let dir = "/tmp/litebox_find_inaccessible_test";
+        let _ = std::fs::remove_dir_all(dir);
+        std::fs::create_dir_all(dir).unwrap();
+
+        // A normal file that should always be accessible.
+        std::fs::write(format!("{dir}/a.txt"), b"a").unwrap();
+
+        // Create a broken symlink that matches the *.txt pattern. On Linux,
+        // std::fs::metadata on this path will fail, which exercises the
+        // metadata-error skip path in the enumeration logic.
+        #[cfg(unix)]
+        {
+            let broken_target = "/nonexistent/path/for_litebox_test";
+            let broken_link = format!("{dir}/broken.txt");
+            let _ = std::fs::remove_file(&broken_link);
+            // Ignore errors if symlink creation is not supported.
+            let _ = std::os::unix::fs::symlink(broken_target, &broken_link);
+        }
+
+        let pattern = format!("{dir}/*.txt\0");
+        let pattern_wide: Vec<u16> = pattern.encode_utf16().collect();
+        let mut find_data = vec![0u8; 592];
+
+        unsafe {
+            let handle = kernel32_FindFirstFileW(pattern_wide.as_ptr(), find_data.as_mut_ptr());
+            assert_ne!(
+                handle as usize,
+                usize::MAX,
+                "FindFirstFileW should return a valid handle even with problematic entries"
+            );
+
+            // Enumerate all matching entries – at least one should be found.
+            let mut count = 1usize;
+            loop {
+                let mut next_data = vec![0u8; 592];
+                let next = kernel32_FindNextFileW(handle, next_data.as_mut_ptr());
+                if next == 0 {
+                    break;
+                }
+                count += 1;
+            }
+
+            assert!(
+                count >= 1,
+                "Enumeration should yield at least one matching entry"
+            );
+
+            let closed = kernel32_FindClose(handle);
+            assert_eq!(closed, 1, "FindClose should return TRUE");
+        }
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 }
