@@ -544,6 +544,7 @@ impl DllManager {
             ("WSAStartup", WS2_32_BASE),
             ("WSACleanup", WS2_32_BASE + 1),
             ("WSAGetLastError", WS2_32_BASE + 2),
+            ("WSASetLastError", WS2_32_BASE + 0x1B),
             // Socket operations
             ("WSASocketW", WS2_32_BASE + 3),
             ("socket", WS2_32_BASE + 4),
@@ -574,6 +575,11 @@ impl DllManager {
             ("select", WS2_32_BASE + 0x18),
             ("shutdown", WS2_32_BASE + 0x19),
             ("WSADuplicateSocketW", WS2_32_BASE + 0x1A),
+            // Byte-order conversion
+            ("htons", WS2_32_BASE + 0x1C),
+            ("htonl", WS2_32_BASE + 0x1D),
+            ("ntohs", WS2_32_BASE + 0x1E),
+            ("ntohl", WS2_32_BASE + 0x1F),
         ];
 
         self.register_stub_dll("WS2_32.dll", exports);

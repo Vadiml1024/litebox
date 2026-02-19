@@ -1,3 +1,102 @@
+# Windows-on-Linux Support - Session Summary (2026-02-19 Session 13)
+
+## Work Completed ✅
+
+### Phase 14 — Networking (WinSock2)
+
+**Goal:** Enable simple WinSock2 programs by implementing real POSIX-backed socket operations.
+
+#### New global infrastructure
+
+- **`WSA_LAST_ERROR`** — A `Mutex<i32>` tracking the last WinSock error code (analogous to
+  `GetLastError` in kernel32, but specific to WS2_32).
+- **`SOCKET_HANDLE_COUNTER` / `SOCKET_HANDLES`** — A new socket-handle registry (same pattern
+  as `FILE_HANDLES` / `FIND_HANDLES` / `THREAD_HANDLES`) that maps Windows `SOCKET` values
+  (opaque `usize` handles) to real Linux file descriptors.
+
+#### New module: `litebox_platform_linux_for_windows/src/ws2_32.rs`
+
+All WinSock2 APIs are backed directly by POSIX socket calls via `libc`.
+
+#### Real implementations added
+
+| API | Notes |
+|---|---|
+| `WSAStartup` | Accepts version ≤ 2.2, fills `WSADATA` struct |
+| `WSACleanup` | No-op (sockets closed via `closesocket`) |
+| `WSAGetLastError` / `WSASetLastError` | Global WSA error code |
+| `socket` / `WSASocketW` | Creates Linux socket, registers in handle map |
+| `closesocket` | Closes Linux fd, removes from handle map |
+| `bind` / `listen` / `accept` / `connect` | Direct POSIX delegates |
+| `send` / `recv` / `sendto` / `recvfrom` | Direct POSIX delegates |
+| `WSASend` / `WSARecv` | Scatter/gather buffers via sequential POSIX calls |
+| `getsockname` / `getpeername` | Direct POSIX delegates |
+| `getsockopt` / `setsockopt` | Direct POSIX delegates |
+| `ioctlsocket` | `FIONBIO` via `fcntl(F_GETFL/F_SETFL)`, `FIONREAD` via `ioctl` |
+| `shutdown` | Maps `SD_RECEIVE/SEND/BOTH` to `SHUT_RD/WR/RDWR` |
+| `select` | Translates Windows `fd_set` (count+array) ↔ POSIX bit-mask |
+| `getaddrinfo` / `freeaddrinfo` | Direct POSIX delegates |
+| `GetHostNameW` | `gethostname` → UTF-16 wide string |
+| `htons` / `htonl` / `ntohs` / `ntohl` | Rust `to_be()` / `from_be()` |
+| `WSADuplicateSocketW` | Stub → `WSAEOPNOTSUPP` (cross-process, not needed) |
+
+#### Registration
+
+- All 27 WS2_32.dll functions added to `function_table.rs`.
+- `WSASetLastError`, `htons`, `htonl`, `ntohs`, `ntohl` added to the stub DLL in `dll.rs`.
+- Module added to `lib.rs`.
+
+#### Ratchet updates
+
+- `litebox_platform_linux_for_windows/` globals: 25 → 28 (three new statics:
+  `WSA_LAST_ERROR`, `SOCKET_HANDLE_COUNTER`, `SOCKET_HANDLES`)
+
+### New Unit Tests (11 new tests)
+
+- `test_wsa_startup_cleanup` — `WSAStartup(2.2)` succeeds, `WSACleanup` succeeds.
+- `test_wsa_set_get_last_error` — round-trip via `WSASetLastError`/`WSAGetLastError`.
+- `test_byte_order_htons_ntohs` — byte swap on little-endian, identity on big-endian.
+- `test_byte_order_htonl_ntohl` — byte swap on little-endian, identity on big-endian.
+- `test_socket_create_close` — `socket(AF_INET, SOCK_STREAM)` + `closesocket`.
+- `test_invalid_socket_operations` — operations on bad handle return `WSAENOTSOCK`.
+- `test_socket_udp_create_close` — UDP socket creation.
+- `test_ioctlsocket_nonblocking` — `FIONBIO` enable/disable non-blocking mode.
+- `test_setsockopt_reuseaddr` — `SO_REUSEADDR` setsockopt round-trip.
+- `test_shutdown_invalid_socket` — shutdown on bad handle returns `WSAENOTSOCK`.
+- `test_wsa_startup_version_too_high` — version 3.0 rejected with `WSAVERNOTSUPPORTED`.
+
+## Test Results
+
+```
+cargo test -p litebox_platform_linux_for_windows -p litebox_shim_windows \
+           -p litebox_runner_windows_on_linux_userland
+Platform: 188 passed (up from 177, +11 new tests)
+Shim:      47 passed (unchanged)
+Runner:    16 passed (unchanged)
+Ratchet: all 3 ratchet tests passing
+```
+
+## Files Modified This Session
+
+- `litebox_platform_linux_for_windows/src/ws2_32.rs` (**new file**)
+  - Socket-handle registry (`SOCKET_HANDLE_COUNTER`, `SOCKET_HANDLES`, `SocketEntry`)
+  - WSA error state (`WSA_LAST_ERROR`, `set_wsa_error`, `get_wsa_error`, `errno_to_wsa`)
+  - Helper structs: `WsaData`, `WsaBuf`, `WinFdSet`
+  - 27 WS2_32 function implementations (see table above)
+  - 11 unit tests
+- `litebox_platform_linux_for_windows/src/lib.rs` — Added `pub mod ws2_32`
+- `litebox_platform_linux_for_windows/src/function_table.rs` — Added 27 WS2_32 entries
+- `litebox_shim_windows/src/loader/dll.rs` — Added `WSASetLastError`, `htons`, `htonl`,
+  `ntohs`, `ntohl` to the WS2_32.dll stub exports
+- `dev_tests/src/ratchet.rs` — Updated globals limit 25 → 28
+
+## What Remains
+
+See `docs/windows_on_linux_continuation_plan.md` for the full Phase 15–18 roadmap.
+Immediate next step: Phase 15 — GUI Stubs (USER32.dll).
+
+---
+
 # Windows-on-Linux Support - Session Summary (2026-02-19 Session 12)
 
 ## Work Completed ✅
