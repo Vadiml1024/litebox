@@ -286,8 +286,8 @@ fn glob_match(name: &[u8], pattern: &[u8]) -> bool {
 ///   - offset  32: nFileSizeLow  (u32)
 ///   - offset  36: dwReserved0   (u32)
 ///   - offset  40: dwReserved1   (u32)
-///   - offset  44: cFileName[260] (u16 array)
-///   - offset 564: cAlternateFileName[14] (u16 array)
+///   - offset  44: cFileName\[260\] (u16 array)
+///   - offset 564: cAlternateFileName\[14\] (u16 array)
 ///
 /// # Safety
 /// `find_data` must point to a writable buffer of at least 592 bytes.
