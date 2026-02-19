@@ -23,6 +23,7 @@ use std::collections::HashMap;
 use std::ffi::CString;
 use std::fs::File;
 use std::io::{Read, Seek, Write};
+use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
@@ -453,6 +454,9 @@ pub fn set_process_command_line(args: &[String]) {
 ///
 /// May be called multiple times to change or clear the sandbox root
 /// (`None` disables sandboxing).
+///
+/// # Panics
+/// Panics if the internal sandbox-root mutex is poisoned.
 pub fn set_sandbox_root(root: &str) {
     *SANDBOX_ROOT.lock().unwrap() = Some(root.to_owned());
 }
@@ -472,7 +476,6 @@ fn sandbox_guard(path: String) -> String {
     // exist yet, e.g. a file about to be created).
     // `PathBuf::pop()` never removes the root component (`/`), so traversal
     // cannot escape below the filesystem root.
-    use std::path::{Component, Path, PathBuf};
     let mut normalised = PathBuf::new();
     for component in Path::new(&path).components() {
         match component {
