@@ -518,6 +518,7 @@ impl DllManager {
             // Additional CRT functions needed by C++ MinGW programs
             ("strerror", MSVCRT_BASE + 0x34),
             ("wcslen", MSVCRT_BASE + 0x35),
+            ("wcscmp", MSVCRT_BASE + 0x3A),
             ("fputc", MSVCRT_BASE + 0x36),
             ("localeconv", MSVCRT_BASE + 0x37),
             ("___lc_codepage_func", MSVCRT_BASE + 0x38),

@@ -55,17 +55,23 @@ const REG_DWORD: u32 = 4;
 const REG_QWORD: u32 = 11;
 
 // ── Pre-defined HKEY values ───────────────────────────────────────────────────
+//
+// Windows defines predefined HKEYs via sign-extension from 32-bit LONG values:
+//   #define HKEY_CURRENT_USER ((HKEY)(ULONG_PTR)((LONG)0x80000001))
+// On 64-bit Windows, (LONG)0x80000001 sign-extends to 0xFFFF_FFFF_8000_0001.
+// We must use these 64-bit forms so that values received from Windows PE code
+// (which passes the sign-extended pointer-sized constant) match our checks.
 
 /// HKEY_CLASSES_ROOT
-const HKEY_CLASSES_ROOT: usize = 0x8000_0000;
+const HKEY_CLASSES_ROOT: usize = 0xFFFF_FFFF_8000_0000;
 /// HKEY_CURRENT_USER
-const HKEY_CURRENT_USER: usize = 0x8000_0001;
+const HKEY_CURRENT_USER: usize = 0xFFFF_FFFF_8000_0001;
 /// HKEY_LOCAL_MACHINE
-const HKEY_LOCAL_MACHINE: usize = 0x8000_0002;
+const HKEY_LOCAL_MACHINE: usize = 0xFFFF_FFFF_8000_0002;
 /// HKEY_USERS
-const HKEY_USERS: usize = 0x8000_0003;
+const HKEY_USERS: usize = 0xFFFF_FFFF_8000_0003;
 /// HKEY_CURRENT_CONFIG
-const HKEY_CURRENT_CONFIG: usize = 0x8000_0005;
+const HKEY_CURRENT_CONFIG: usize = 0xFFFF_FFFF_8000_0005;
 
 // Base offset for dynamically allocated HKEY handles
 const HKEY_HANDLE_BASE: usize = 0x0100_0000;
@@ -155,23 +161,15 @@ static HKEY_HANDLES: Mutex<Option<HashMap<usize, String>>> = Mutex::new(None);
 // ── Helper functions ──────────────────────────────────────────────────────────
 
 fn with_registry<R>(f: impl FnOnce(&mut HashMap<String, RegKey>) -> R) -> R {
-    let mut guard = REGISTRY
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if guard.is_none() {
-        *guard = Some(HashMap::new());
-    }
-    f(guard.as_mut().unwrap())
+    let mut guard = REGISTRY.lock().unwrap();
+    let registry = guard.get_or_insert_with(HashMap::new);
+    f(registry)
 }
 
 fn with_hkey_handles<R>(f: impl FnOnce(&mut HashMap<usize, String>) -> R) -> R {
-    let mut guard = HKEY_HANDLES
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if guard.is_none() {
-        *guard = Some(HashMap::new());
-    }
-    f(guard.as_mut().unwrap())
+    let mut guard = HKEY_HANDLES.lock().unwrap();
+    let handles = guard.get_or_insert_with(HashMap::new);
+    f(handles)
 }
 
 /// Allocate a new HKEY handle value (not backed by a key yet)
@@ -179,14 +177,17 @@ fn alloc_hkey() -> usize {
     HKEY_COUNTER.fetch_add(1, Ordering::Relaxed)
 }
 
-/// Convert a pre-defined root HKEY constant to a canonical root-key string
+/// Convert a pre-defined root HKEY constant to a canonical root-key string.
+///
+/// The returned strings are lower-case to match the case-insensitive storage
+/// convention used throughout the registry implementation.
 fn root_hkey_to_path(hkey: usize) -> Option<String> {
     match hkey {
-        HKEY_CLASSES_ROOT => Some("HKCR".to_string()),
-        HKEY_CURRENT_USER => Some("HKCU".to_string()),
-        HKEY_LOCAL_MACHINE => Some("HKLM".to_string()),
-        HKEY_USERS => Some("HKU".to_string()),
-        HKEY_CURRENT_CONFIG => Some("HKCC".to_string()),
+        HKEY_CLASSES_ROOT => Some("hkcr".to_string()),
+        HKEY_CURRENT_USER => Some("hkcu".to_string()),
+        HKEY_LOCAL_MACHINE => Some("hklm".to_string()),
+        HKEY_USERS => Some("hku".to_string()),
+        HKEY_CURRENT_CONFIG => Some("hkcc".to_string()),
         _ => None,
     }
 }
@@ -204,11 +205,14 @@ fn hkey_to_path(hkey: usize) -> Option<String> {
 }
 
 /// Build the full registry path by joining parent path and sub-key name.
+///
+/// Both the parent and sub-key are lower-cased so that all look-ups are
+/// case-insensitive, matching Windows Registry semantics.
 fn join_path(parent: &str, subkey: &str) -> String {
     if subkey.is_empty() {
-        parent.to_string()
+        parent.to_lowercase()
     } else {
-        format!("{parent}\\{subkey}")
+        format!("{}\\{}", parent.to_lowercase(), subkey.to_lowercase())
     }
 }
 
@@ -303,7 +307,9 @@ pub unsafe extern "C" fn advapi32_RegOpenKeyExW(
     let subkey = wide_to_string(lp_sub_key);
     let full_path = join_path(&parent_path, &subkey);
 
-    let exists = with_registry(|reg| reg.contains_key(&full_path));
+    // A root HKEY with no sub-key is always considered to exist.
+    let is_root = root_hkey_to_path(h_key).is_some() && subkey.is_empty();
+    let exists = is_root || with_registry(|reg| reg.contains_key(&full_path));
     if !exists {
         return ERROR_FILE_NOT_FOUND;
     }
@@ -319,8 +325,9 @@ pub unsafe extern "C" fn advapi32_RegOpenKeyExW(
 
 /// `RegCreateKeyExW` — open or create a registry key.
 ///
-/// Opens `lp_sub_key` under `h_key`, creating the key (and any missing
-/// ancestors) if it does not already exist. Always succeeds.
+/// Opens `lp_sub_key` under `h_key`, creating the key if it does not already
+/// exist. When a new key is created, the immediate parent's `child_names` list
+/// is updated so that `RegEnumKeyExW` can enumerate it. Always succeeds.
 ///
 /// # Safety
 /// `lp_sub_key` must be a valid null-terminated UTF-16 string or null.
@@ -352,6 +359,19 @@ pub unsafe extern "C" fn advapi32_RegCreateKeyExW(
             true
         } else {
             reg.insert(full_path.clone(), RegKey::new());
+            // Update the immediate parent's child_names so RegEnumKeyExW can
+            // enumerate the new key.  The immediate parent is derived from
+            // full_path by stripping the last path component (not from `h_key`,
+            // which may be several levels above when multi-component subkeys are
+            // used).  If the immediate parent is not yet in the registry (e.g. the
+            // caller skipped intermediate keys) we skip the update silently.
+            if let Some(sep) = full_path.rfind('\\') {
+                let imm_parent = &full_path[..sep];
+                let child_name = &full_path[sep + 1..];
+                if let Some(parent_key) = reg.get_mut(imm_parent) {
+                    parent_key.child_names.push(child_name.to_string());
+                }
+            }
             false
         }
     });
@@ -1153,5 +1173,156 @@ mod tests {
             )
         };
         assert_eq!(rc_query, ERROR_INVALID_HANDLE);
+    }
+
+    #[test]
+    fn test_enum_sub_keys() {
+        // Create a parent key and two child keys, then enumerate the children.
+        let parent_subkey = to_wide("Software\\LiteBoxTest\\enum_subkeys_parent");
+        let mut hk_parent: usize = 0;
+        // SAFETY: valid local pointers
+        unsafe {
+            advapi32_RegCreateKeyExW(
+                HKEY_CURRENT_USER,
+                parent_subkey.as_ptr(),
+                0,
+                std::ptr::null_mut(),
+                0,
+                0,
+                std::ptr::null(),
+                &mut hk_parent,
+                std::ptr::null_mut(),
+            );
+        }
+
+        // Create two children under the parent
+        for child in ["ChildA", "ChildB"] {
+            let full = format!("Software\\LiteBoxTest\\enum_subkeys_parent\\{child}");
+            let wide_full = to_wide(&full);
+            let mut hk_child: usize = 0;
+            // SAFETY: valid pointers
+            unsafe {
+                advapi32_RegCreateKeyExW(
+                    HKEY_CURRENT_USER,
+                    wide_full.as_ptr(),
+                    0,
+                    std::ptr::null_mut(),
+                    0,
+                    0,
+                    std::ptr::null(),
+                    &mut hk_child,
+                    std::ptr::null_mut(),
+                );
+                advapi32_RegCloseKey(hk_child);
+            }
+        }
+
+        // Enumerate index 0 — should succeed and return a non-empty name
+        let mut name_buf = vec![0u16; 64];
+        let mut name_len: u32 = name_buf.len() as u32;
+        // SAFETY: hk_parent and buffers are valid
+        let rc0 = unsafe {
+            advapi32_RegEnumKeyExW(
+                hk_parent,
+                0,
+                name_buf.as_mut_ptr(),
+                &mut name_len,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            )
+        };
+        assert_eq!(rc0, ERROR_SUCCESS);
+        assert!(name_len > 0);
+
+        // Enumerate index 1 — should also succeed
+        let mut name_buf1 = vec![0u16; 64];
+        let mut name_len1: u32 = name_buf1.len() as u32;
+        // SAFETY: hk_parent and buffers are valid
+        let rc1 = unsafe {
+            advapi32_RegEnumKeyExW(
+                hk_parent,
+                1,
+                name_buf1.as_mut_ptr(),
+                &mut name_len1,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            )
+        };
+        assert_eq!(rc1, ERROR_SUCCESS);
+
+        // Enumerate index 2 — should return ERROR_NO_MORE_ITEMS
+        let mut name_buf2 = vec![0u16; 64];
+        let mut name_len2: u32 = name_buf2.len() as u32;
+        // SAFETY: hk_parent and buffers are valid
+        let rc2 = unsafe {
+            advapi32_RegEnumKeyExW(
+                hk_parent,
+                2,
+                name_buf2.as_mut_ptr(),
+                &mut name_len2,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            )
+        };
+        assert_eq!(rc2, ERROR_NO_MORE_ITEMS);
+
+        // SAFETY: hk_parent is a valid open handle
+        unsafe { advapi32_RegCloseKey(hk_parent) };
+    }
+
+    #[test]
+    fn test_open_root_hkey_with_empty_subkey_succeeds() {
+        // Opening a pre-defined root HKEY with an empty sub-key should always succeed.
+        let empty: Vec<u16> = vec![0u16]; // null-terminated empty string
+        let mut hk: usize = 0;
+        // SAFETY: valid pointers
+        let rc =
+            unsafe { advapi32_RegOpenKeyExW(HKEY_LOCAL_MACHINE, empty.as_ptr(), 0, 0, &mut hk) };
+        assert_eq!(rc, ERROR_SUCCESS);
+        assert_ne!(hk, 0);
+
+        // SAFETY: hk is a valid handle
+        unsafe { advapi32_RegCloseKey(hk) };
+    }
+
+    #[test]
+    fn test_key_lookup_case_insensitive() {
+        // Create a key with mixed case; opening it with different case should succeed.
+        let create_subkey = to_wide("Software\\LiteBoxTest\\CaseSensitivityTest");
+        let mut hk_create: usize = 0;
+        // SAFETY: valid pointers
+        unsafe {
+            advapi32_RegCreateKeyExW(
+                HKEY_CURRENT_USER,
+                create_subkey.as_ptr(),
+                0,
+                std::ptr::null_mut(),
+                0,
+                0,
+                std::ptr::null(),
+                &mut hk_create,
+                std::ptr::null_mut(),
+            );
+            advapi32_RegCloseKey(hk_create);
+        }
+
+        // Open using all-uppercase — should find the same key because both are
+        // lowercased to "hkcu\\software\\liteboxtest\\casesensitivitytest".
+        let open_subkey = to_wide("SOFTWARE\\LITEBOXTEST\\CASESENSITIVITYTEST");
+        let mut hk_open: usize = 0;
+        // SAFETY: valid pointers
+        let rc = unsafe {
+            advapi32_RegOpenKeyExW(HKEY_CURRENT_USER, open_subkey.as_ptr(), 0, 0, &mut hk_open)
+        };
+        assert_eq!(rc, ERROR_SUCCESS);
+
+        // SAFETY: hk_open is a valid handle
+        unsafe { advapi32_RegCloseKey(hk_open) };
     }
 }

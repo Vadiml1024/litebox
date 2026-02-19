@@ -1115,6 +1115,38 @@ pub unsafe extern "C" fn msvcrt_wcslen(s: *const u16) -> usize {
     len
 }
 
+/// `wcscmp` – compare two null-terminated wide strings lexicographically.
+///
+/// Returns a negative value if `s1 < s2`, 0 if equal, positive if `s1 > s2`.
+///
+/// # Safety
+/// Both `s1` and `s2` must be valid, null-terminated wide character strings.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_wcscmp(s1: *const u16, s2: *const u16) -> i32 {
+    if s1.is_null() && s2.is_null() {
+        return 0;
+    }
+    if s1.is_null() {
+        return -1;
+    }
+    if s2.is_null() {
+        return 1;
+    }
+    let mut i = 0usize;
+    // SAFETY: caller guarantees both pointers are valid null-terminated strings.
+    loop {
+        let c1 = unsafe { *s1.add(i) };
+        let c2 = unsafe { *s2.add(i) };
+        if c1 != c2 {
+            return i32::from(c1) - i32::from(c2);
+        }
+        if c1 == 0 {
+            return 0;
+        }
+        i += 1;
+    }
+}
+
 /// `fputc` – write character `c` to the stream `stream`.
 ///
 /// For simplicity this stub forwards to the host file descriptor: fd 1 for
