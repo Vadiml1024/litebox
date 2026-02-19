@@ -1084,6 +1084,100 @@ pub unsafe extern "C" fn msvcrt__controlfp(new_val: u32, mask: u32) -> u32 {
     }
 }
 
+/// `strerror` – return a pointer to the error message string for `errnum`.
+///
+/// Delegates to the host libc `strerror` so the returned string has valid
+/// static-ish lifetime (it may be overwritten by the next call, just like on
+/// real Windows/Linux).
+///
+/// # Safety
+/// The returned pointer is only valid until the next call to `strerror`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_strerror(errnum: i32) -> *mut i8 {
+    libc::strerror(errnum)
+}
+
+/// `wcslen` – return the number of wide characters in `s`, not including the
+/// terminating null character.
+///
+/// # Safety
+/// `s` must be a valid, null-terminated wide character string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_wcslen(s: *const u16) -> usize {
+    if s.is_null() {
+        return 0;
+    }
+    let mut len = 0usize;
+    // SAFETY: caller guarantees s is null-terminated.
+    while unsafe { *s.add(len) } != 0 {
+        len += 1;
+    }
+    len
+}
+
+/// `fputc` – write character `c` to the stream `stream`.
+///
+/// For simplicity this stub forwards to the host file descriptor: fd 1 for
+/// stdout (FILE* index 1 in Windows __iob_func) and fd 2 for stderr (index
+/// 2); everything else is treated as stdout.
+///
+/// # Safety
+/// `stream` is used only as a discriminator; it is not dereferenced.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_fputc(c: i32, stream: *mut core::ffi::c_void) -> i32 {
+    // Windows FILE* values from __iob_func: stdin=0, stdout=1, stderr=2.
+    // Treat pointer values 0/1 as stdout, 2 as stderr.
+    let fd: libc::c_int = if stream as usize == 2 { 2 } else { 1 };
+    let byte = (c & 0xFF) as u8;
+    // SAFETY: `byte` is a valid single-byte buffer.
+    let written = unsafe { libc::write(fd, std::ptr::addr_of!(byte).cast(), 1) };
+    if written == 1 {
+        c & 0xFF
+    } else {
+        // EOF
+        -1
+    }
+}
+
+/// `localeconv` – return locale-specific numeric formatting information.
+///
+/// Returns a pointer to a static `lconv`-compatible structure initialised
+/// for the "C" locale (decimal point = '.', everything else empty or CHAR_MAX).
+///
+/// # Safety
+/// The returned pointer is valid for the lifetime of the process.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_localeconv() -> *mut libc::lconv {
+    // Delegate to the host libc which always has a valid C-locale lconv.
+    // SAFETY: libc::localeconv() always returns a non-null pointer.
+    unsafe { libc::localeconv() }
+}
+
+/// `___lc_codepage_func` – internal MinGW/MSVCRT helper that returns the
+/// current locale's ANSI code page.
+///
+/// Returns 0, which corresponds to the "C" / UTF-8 locale and causes the CRT
+/// to treat strings as single-byte ASCII.
+///
+/// # Safety
+/// Always safe to call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt____lc_codepage_func() -> u32 {
+    0
+}
+
+/// `___mb_cur_max_func` – internal MinGW/MSVCRT helper that returns the
+/// maximum number of bytes per multibyte character for the current locale.
+///
+/// Returns 1 (single-byte C locale).
+///
+/// # Safety
+/// Always safe to call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt____mb_cur_max_func() -> i32 {
+    1
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

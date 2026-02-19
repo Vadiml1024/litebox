@@ -419,6 +419,7 @@ impl DllManager {
             ("FindFirstFileW", KERNEL32_BASE + 0x97),
             ("CopyFileW", KERNEL32_BASE + 0x98),
             ("CreateDirectoryExW", KERNEL32_BASE + 0x99),
+            ("IsDBCSLeadByteEx", KERNEL32_BASE + 0x9A),
         ];
 
         self.register_stub_dll("KERNEL32.dll", exports);
@@ -506,6 +507,13 @@ impl DllManager {
             ("__lconv_init", MSVCRT_BASE + 0x31),
             ("_XcptFilter", MSVCRT_BASE + 0x32),
             ("_controlfp", MSVCRT_BASE + 0x33),
+            // Additional CRT functions needed by C++ MinGW programs
+            ("strerror", MSVCRT_BASE + 0x34),
+            ("wcslen", MSVCRT_BASE + 0x35),
+            ("fputc", MSVCRT_BASE + 0x36),
+            ("localeconv", MSVCRT_BASE + 0x37),
+            ("___lc_codepage_func", MSVCRT_BASE + 0x38),
+            ("___mb_cur_max_func", MSVCRT_BASE + 0x39),
         ];
 
         self.register_stub_dll("MSVCRT.dll", exports);
@@ -580,6 +588,8 @@ impl DllManager {
             ("htonl", WS2_32_BASE + 0x1D),
             ("ntohs", WS2_32_BASE + 0x1E),
             ("ntohl", WS2_32_BASE + 0x1F),
+            // FD_ISSET helper (called by the FD_ISSET macro on Windows)
+            ("__WSAFDIsSet", WS2_32_BASE + 0x20),
         ];
 
         self.register_stub_dll("WS2_32.dll", exports);

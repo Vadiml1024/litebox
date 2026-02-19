@@ -185,6 +185,43 @@ pub fn get_function_table() -> Vec<FunctionImpl> {
             num_params: 1,
             impl_address: crate::msvcrt::msvcrt___setusermatherr as *const () as usize,
         },
+        // Additional CRT functions needed by C++ MinGW programs (winsock_test, etc.)
+        FunctionImpl {
+            name: "strerror",
+            dll_name: "MSVCRT.dll",
+            num_params: 1,
+            impl_address: crate::msvcrt::msvcrt_strerror as *const () as usize,
+        },
+        FunctionImpl {
+            name: "wcslen",
+            dll_name: "MSVCRT.dll",
+            num_params: 1,
+            impl_address: crate::msvcrt::msvcrt_wcslen as *const () as usize,
+        },
+        FunctionImpl {
+            name: "fputc",
+            dll_name: "MSVCRT.dll",
+            num_params: 2,
+            impl_address: crate::msvcrt::msvcrt_fputc as *const () as usize,
+        },
+        FunctionImpl {
+            name: "localeconv",
+            dll_name: "MSVCRT.dll",
+            num_params: 0,
+            impl_address: crate::msvcrt::msvcrt_localeconv as *const () as usize,
+        },
+        FunctionImpl {
+            name: "___lc_codepage_func",
+            dll_name: "MSVCRT.dll",
+            num_params: 0,
+            impl_address: crate::msvcrt::msvcrt____lc_codepage_func as *const () as usize,
+        },
+        FunctionImpl {
+            name: "___mb_cur_max_func",
+            dll_name: "MSVCRT.dll",
+            num_params: 0,
+            impl_address: crate::msvcrt::msvcrt____mb_cur_max_func as *const () as usize,
+        },
         // KERNEL32.dll functions - these are defined in kernel32.rs
         FunctionImpl {
             name: "Sleep",
@@ -1276,6 +1313,12 @@ pub fn get_function_table() -> Vec<FunctionImpl> {
             num_params: 1,
             impl_address: crate::kernel32::kernel32_ResetEvent as *const () as usize,
         },
+        FunctionImpl {
+            name: "IsDBCSLeadByteEx",
+            dll_name: "KERNEL32.dll",
+            num_params: 2,
+            impl_address: crate::kernel32::kernel32_IsDBCSLeadByteEx as *const () as usize,
+        },
         // NTDLL.dll functions
         FunctionImpl {
             name: "NtWriteFile",
@@ -1523,6 +1566,12 @@ pub fn get_function_table() -> Vec<FunctionImpl> {
             dll_name: "WS2_32.dll",
             num_params: 1,
             impl_address: crate::ws2_32::ws2_ntohl as *const () as usize,
+        },
+        FunctionImpl {
+            name: "__WSAFDIsSet",
+            dll_name: "WS2_32.dll",
+            num_params: 2,
+            impl_address: crate::ws2_32::ws2___WSAFDIsSet as *const () as usize,
         },
     ]
 }
