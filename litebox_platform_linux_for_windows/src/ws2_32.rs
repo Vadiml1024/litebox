@@ -1346,7 +1346,7 @@ mod tests {
             sz_description: [0u8; 257],
             sz_system_status: [0u8; 129],
         };
-        let result = unsafe { ws2_WSAStartup(0x0202, &raw mut wsa_data as *mut c_void) };
+        let result = unsafe { ws2_WSAStartup(0x0202, (&raw mut wsa_data).cast::<c_void>()) };
         assert_eq!(result, 0, "WSAStartup should succeed");
         assert_eq!(
             unsafe { ws2_WSAGetLastError() },

@@ -1128,7 +1128,7 @@ pub unsafe extern "C" fn msvcrt_fputc(c: i32, stream: *mut core::ffi::c_void) ->
     // Windows FILE* values from __iob_func: stdin=0, stdout=1, stderr=2.
     // Treat pointer values 0/1 as stdout, 2 as stderr.
     let fd: libc::c_int = if stream as usize == 2 { 2 } else { 1 };
-    let byte = (c & 0xFF) as u8;
+    let byte = c.to_le_bytes()[0];
     // SAFETY: `byte` is a valid single-byte buffer.
     let written = unsafe { libc::write(fd, std::ptr::addr_of!(byte).cast(), 1) };
     if written == 1 {
