@@ -37,6 +37,9 @@ mod stub_addresses {
 
     /// api-ms-win-core-synch-l1-2-0.dll function address range: 0x7000-0x7FFF
     pub const APIMS_SYNCH_BASE: usize = 0x7000;
+
+    /// USER32.dll function address range: 0x8000-0x8FFF
+    pub const USER32_BASE: usize = 0x8000;
 }
 
 /// Type for a DLL function pointer
@@ -111,6 +114,7 @@ impl DllManager {
         manager.load_stub_userenv();
         manager.load_stub_ws2_32();
         manager.load_stub_apims_synch();
+        manager.load_stub_user32();
 
         manager
     }
@@ -608,6 +612,30 @@ impl DllManager {
 
         self.register_stub_dll("api-ms-win-core-synch-l1-2-0.dll", exports);
     }
+
+    /// Load stub USER32.dll (Windows GUI)
+    fn load_stub_user32(&mut self) {
+        use stub_addresses::USER32_BASE;
+
+        let exports = vec![
+            // Message box
+            ("MessageBoxW", USER32_BASE),
+            // Window class / creation
+            ("RegisterClassExW", USER32_BASE + 1),
+            ("CreateWindowExW", USER32_BASE + 2),
+            // Window visibility / updates
+            ("ShowWindow", USER32_BASE + 3),
+            ("UpdateWindow", USER32_BASE + 4),
+            // Message loop
+            ("GetMessageW", USER32_BASE + 5),
+            ("TranslateMessage", USER32_BASE + 6),
+            ("DispatchMessageW", USER32_BASE + 7),
+            // Window destruction
+            ("DestroyWindow", USER32_BASE + 8),
+        ];
+
+        self.register_stub_dll("USER32.dll", exports);
+    }
 }
 
 /// Map Windows API Set DLL names to their real implementation DLLs
@@ -683,8 +711,8 @@ mod tests {
     #[test]
     fn test_dll_manager_creation() {
         let manager = DllManager::new();
-        // Should have 7 pre-loaded stub DLLs (KERNEL32, NTDLL, MSVCRT, bcryptprimitives, USERENV, WS2_32, api-ms-win-core-synch-l1-2-0)
-        assert_eq!(manager.dlls.len(), 7);
+        // Should have 8 pre-loaded stub DLLs (KERNEL32, NTDLL, MSVCRT, bcryptprimitives, USERENV, WS2_32, api-ms-win-core-synch-l1-2-0, USER32)
+        assert_eq!(manager.dlls.len(), 8);
     }
 
     #[test]

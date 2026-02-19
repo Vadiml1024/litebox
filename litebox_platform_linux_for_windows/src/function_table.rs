@@ -1573,6 +1573,61 @@ pub fn get_function_table() -> Vec<FunctionImpl> {
             num_params: 2,
             impl_address: crate::ws2_32::ws2___WSAFDIsSet as *const () as usize,
         },
+        // USER32.dll — Windows GUI (headless stubs)
+        FunctionImpl {
+            name: "MessageBoxW",
+            dll_name: "USER32.dll",
+            num_params: 4,
+            impl_address: crate::user32::user32_MessageBoxW as *const () as usize,
+        },
+        FunctionImpl {
+            name: "RegisterClassExW",
+            dll_name: "USER32.dll",
+            num_params: 1,
+            impl_address: crate::user32::user32_RegisterClassExW as *const () as usize,
+        },
+        FunctionImpl {
+            name: "CreateWindowExW",
+            dll_name: "USER32.dll",
+            num_params: 12,
+            impl_address: crate::user32::user32_CreateWindowExW as *const () as usize,
+        },
+        FunctionImpl {
+            name: "ShowWindow",
+            dll_name: "USER32.dll",
+            num_params: 2,
+            impl_address: crate::user32::user32_ShowWindow as *const () as usize,
+        },
+        FunctionImpl {
+            name: "UpdateWindow",
+            dll_name: "USER32.dll",
+            num_params: 1,
+            impl_address: crate::user32::user32_UpdateWindow as *const () as usize,
+        },
+        FunctionImpl {
+            name: "GetMessageW",
+            dll_name: "USER32.dll",
+            num_params: 4,
+            impl_address: crate::user32::user32_GetMessageW as *const () as usize,
+        },
+        FunctionImpl {
+            name: "TranslateMessage",
+            dll_name: "USER32.dll",
+            num_params: 1,
+            impl_address: crate::user32::user32_TranslateMessage as *const () as usize,
+        },
+        FunctionImpl {
+            name: "DispatchMessageW",
+            dll_name: "USER32.dll",
+            num_params: 1,
+            impl_address: crate::user32::user32_DispatchMessageW as *const () as usize,
+        },
+        FunctionImpl {
+            name: "DestroyWindow",
+            dll_name: "USER32.dll",
+            num_params: 1,
+            impl_address: crate::user32::user32_DestroyWindow as *const () as usize,
+        },
     ]
 }
 
