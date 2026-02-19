@@ -40,6 +40,9 @@ mod stub_addresses {
 
     /// USER32.dll function address range: 0x8000-0x8FFF
     pub const USER32_BASE: usize = 0x8000;
+
+    /// ADVAPI32.dll function address range: 0x9000-0x9FFF
+    pub const ADVAPI32_BASE: usize = 0x9000;
 }
 
 /// Type for a DLL function pointer
@@ -115,6 +118,7 @@ impl DllManager {
         manager.load_stub_ws2_32();
         manager.load_stub_apims_synch();
         manager.load_stub_user32();
+        manager.load_stub_advapi32();
 
         manager
     }
@@ -514,6 +518,7 @@ impl DllManager {
             // Additional CRT functions needed by C++ MinGW programs
             ("strerror", MSVCRT_BASE + 0x34),
             ("wcslen", MSVCRT_BASE + 0x35),
+            ("wcscmp", MSVCRT_BASE + 0x3A),
             ("fputc", MSVCRT_BASE + 0x36),
             ("localeconv", MSVCRT_BASE + 0x37),
             ("___lc_codepage_func", MSVCRT_BASE + 0x38),
@@ -636,6 +641,26 @@ impl DllManager {
 
         self.register_stub_dll("USER32.dll", exports);
     }
+    /// Load stub ADVAPI32.dll (Windows Registry and security APIs)
+    fn load_stub_advapi32(&mut self) {
+        use stub_addresses::ADVAPI32_BASE;
+
+        let exports = vec![
+            // Registry key operations
+            ("RegOpenKeyExW", ADVAPI32_BASE),
+            ("RegCreateKeyExW", ADVAPI32_BASE + 1),
+            ("RegCloseKey", ADVAPI32_BASE + 2),
+            // Registry value operations
+            ("RegQueryValueExW", ADVAPI32_BASE + 3),
+            ("RegSetValueExW", ADVAPI32_BASE + 4),
+            ("RegDeleteValueW", ADVAPI32_BASE + 5),
+            // Registry enumeration
+            ("RegEnumKeyExW", ADVAPI32_BASE + 6),
+            ("RegEnumValueW", ADVAPI32_BASE + 7),
+        ];
+
+        self.register_stub_dll("ADVAPI32.dll", exports);
+    }
 }
 
 /// Map Windows API Set DLL names to their real implementation DLLs
@@ -711,8 +736,8 @@ mod tests {
     #[test]
     fn test_dll_manager_creation() {
         let manager = DllManager::new();
-        // Should have 8 pre-loaded stub DLLs (KERNEL32, NTDLL, MSVCRT, bcryptprimitives, USERENV, WS2_32, api-ms-win-core-synch-l1-2-0, USER32)
-        assert_eq!(manager.dlls.len(), 8);
+        // Should have 9 pre-loaded stub DLLs
+        assert_eq!(manager.dlls.len(), 9);
     }
 
     #[test]

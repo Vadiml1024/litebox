@@ -199,6 +199,12 @@ pub fn get_function_table() -> Vec<FunctionImpl> {
             impl_address: crate::msvcrt::msvcrt_wcslen as *const () as usize,
         },
         FunctionImpl {
+            name: "wcscmp",
+            dll_name: "MSVCRT.dll",
+            num_params: 2,
+            impl_address: crate::msvcrt::msvcrt_wcscmp as *const () as usize,
+        },
+        FunctionImpl {
             name: "fputc",
             dll_name: "MSVCRT.dll",
             num_params: 2,
@@ -1627,6 +1633,55 @@ pub fn get_function_table() -> Vec<FunctionImpl> {
             dll_name: "USER32.dll",
             num_params: 1,
             impl_address: crate::user32::user32_DestroyWindow as *const () as usize,
+        },
+        // ADVAPI32.dll — Windows Registry (in-memory implementation)
+        FunctionImpl {
+            name: "RegOpenKeyExW",
+            dll_name: "ADVAPI32.dll",
+            num_params: 5,
+            impl_address: crate::advapi32::advapi32_RegOpenKeyExW as *const () as usize,
+        },
+        FunctionImpl {
+            name: "RegCreateKeyExW",
+            dll_name: "ADVAPI32.dll",
+            num_params: 9,
+            impl_address: crate::advapi32::advapi32_RegCreateKeyExW as *const () as usize,
+        },
+        FunctionImpl {
+            name: "RegCloseKey",
+            dll_name: "ADVAPI32.dll",
+            num_params: 1,
+            impl_address: crate::advapi32::advapi32_RegCloseKey as *const () as usize,
+        },
+        FunctionImpl {
+            name: "RegQueryValueExW",
+            dll_name: "ADVAPI32.dll",
+            num_params: 6,
+            impl_address: crate::advapi32::advapi32_RegQueryValueExW as *const () as usize,
+        },
+        FunctionImpl {
+            name: "RegSetValueExW",
+            dll_name: "ADVAPI32.dll",
+            num_params: 6,
+            impl_address: crate::advapi32::advapi32_RegSetValueExW as *const () as usize,
+        },
+        FunctionImpl {
+            name: "RegDeleteValueW",
+            dll_name: "ADVAPI32.dll",
+            num_params: 2,
+            impl_address: crate::advapi32::advapi32_RegDeleteValueW as *const () as usize,
+        },
+        FunctionImpl {
+            name: "RegEnumKeyExW",
+            dll_name: "ADVAPI32.dll",
+            num_params: 8,
+            impl_address: crate::advapi32::advapi32_RegEnumKeyExW as *const () as usize,
+        },
+        FunctionImpl {
+            name: "RegEnumValueW",
+            dll_name: "ADVAPI32.dll",
+            num_params: 8,
+            impl_address: crate::advapi32::advapi32_RegEnumValueW as *const () as usize,
         },
     ]
 }

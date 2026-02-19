@@ -1,8 +1,73 @@
-# Windows-on-Linux Support - Session Summary (2026-02-19 Session 14)
+# Windows-on-Linux Support - Session Summary (2026-02-19 Session 15)
 
 ## Work Completed ✅
 
-### Phase 15 — GUI Stubs (USER32.dll)
+### Phase 16 — Registry (ADVAPI32.dll)
+
+**Goal:** Allow programs that use Windows Registry APIs to run on Linux with an in-process
+in-memory registry store backed by a `HashMap`.
+
+#### New module: `litebox_platform_linux_for_windows/src/advapi32.rs`
+
+Eight implementations:
+
+| API | Behaviour |
+|---|---|
+| `RegOpenKeyExW` | Opens an existing key (or pre-defined root HKEY); returns `ERROR_FILE_NOT_FOUND` if absent |
+| `RegCreateKeyExW` | Opens or creates a key; sets `REG_CREATED_NEW_KEY`/`REG_OPENED_EXISTING_KEY` disposition |
+| `RegCloseKey` | Removes the handle from the handle table; silently no-ops on pre-defined root HKEYs |
+| `RegQueryValueExW` | Returns the type and bytes for a named value; respects `ERROR_MORE_DATA` semantics |
+| `RegSetValueExW` | Stores a typed value (REG_SZ, REG_EXPAND_SZ, REG_DWORD, REG_QWORD, REG_BINARY, REG_NONE) |
+| `RegDeleteValueW` | Removes a named value; returns `ERROR_FILE_NOT_FOUND` if absent |
+| `RegEnumKeyExW` | Returns the sub-key name at a given zero-based index |
+| `RegEnumValueW` | Returns the value name, type, and data at a given zero-based index |
+
+#### Registry architecture
+
+- **`REGISTRY`** — A `Mutex<Option<HashMap<String, RegKey>>>` keyed by fully-qualified path
+  strings (e.g. `"HKCU\\Software\\Example"`).
+- **`HKEY_COUNTER`** — `AtomicUsize` for allocating opaque `HKEY` handle values.
+- **`HKEY_HANDLES`** — `Mutex<Option<HashMap<usize, String>>>` mapping handle → full key path.
+- Pre-defined root HKEYs (`HKEY_CURRENT_USER`, `HKEY_LOCAL_MACHINE`, etc.) are resolved
+  directly to path strings without a registry entry.
+
+#### Plumbing
+
+- `ADVAPI32_BASE = 0x9000` stub address range in `litebox_shim_windows/src/loader/dll.rs`
+- `load_stub_advapi32()` registered in `DllManager::new()`
+- DLL count updated 8 → 9 in `test_dll_manager_creation`
+- 8 entries in `litebox_platform_linux_for_windows/src/function_table.rs`
+- `pub mod advapi32` in `litebox_platform_linux_for_windows/src/lib.rs`
+
+#### Test results
+
+- Platform tests: 198 → 209 (+11 new advapi32 tests)
+- Ratchet globals: 28 → 31 (three new statics: `REGISTRY`, `HKEY_COUNTER`, `HKEY_HANDLES`)
+- Ratchet tests: all 3 passing
+- All 4 dev_tests passing (boilerplate + ratchet)
+
+## Test Results
+
+```
+cargo test -p litebox_platform_linux_for_windows -p litebox_shim_windows
+           -p litebox_runner_windows_on_linux_userland -p dev_tests
+Platform:  209 passed  (+11 from session 14)
+Shim:       47 passed  (unchanged)
+Runner:     16 passed  (unchanged)
+dev_tests:   4 passed  (all boilerplate + ratchet tests pass)
+```
+
+## Files Modified This Session
+
+- `litebox_platform_linux_for_windows/src/advapi32.rs` (**new file**)
+- `litebox_platform_linux_for_windows/src/lib.rs` — added `pub mod advapi32`
+- `litebox_platform_linux_for_windows/src/function_table.rs` — added 8 ADVAPI32 entries
+- `litebox_shim_windows/src/loader/dll.rs` — `ADVAPI32_BASE`, `load_stub_advapi32`, DLL count 8→9
+- `dev_tests/src/ratchet.rs` — Updated globals limit 28 → 31
+
+---
+
+
 
 **Goal:** Allow programs that link against USER32 GUI APIs to run headlessly on Linux without crashing.
 

@@ -41,8 +41,8 @@ const STDOUT_HANDLE: u64 = 0x11;
 const STDERR_HANDLE: u64 = 0x12;
 
 /// IO_STATUS_BLOCK layout (two consecutive u64 fields):
-///   [0] = Status  (u64 to match alignment)
-///   [1] = Information (bytes transferred)
+///   \[0\] = Status  (u64 to match alignment)
+///   \[1\] = Information (bytes transferred)
 unsafe fn set_io_status(io_sb: *mut u64, status: u32, information: u64) {
     if !io_sb.is_null() {
         *io_sb = u64::from(status);
