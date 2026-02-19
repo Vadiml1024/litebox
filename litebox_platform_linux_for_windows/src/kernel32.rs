@@ -157,6 +157,19 @@ fn with_file_handles<R>(f: impl FnOnce(&mut HashMap<usize, FileEntry>) -> R) -> 
     f(map)
 }
 
+/// Windows error code returned when no more handles can be opened.
+const ERROR_TOO_MANY_OPEN_FILES: u32 = 4;
+
+/// Maximum number of concurrently open file handles.
+/// `CreateFileW` returns `ERROR_TOO_MANY_OPEN_FILES` (4) once this limit is
+/// reached.  1024 matches a common Windows per-process soft limit.
+#[cfg(not(test))]
+const MAX_OPEN_FILE_HANDLES: usize = 1024;
+/// Use a smaller limit in tests to avoid exhausting the process fd table and
+/// to keep the test fast.
+#[cfg(test)]
+const MAX_OPEN_FILE_HANDLES: usize = 8;
+
 /// Allocate a new Win32-style file handle value (non-null, not INVALID_HANDLE_VALUE).
 fn alloc_file_handle() -> usize {
     use std::sync::atomic::Ordering;
@@ -188,6 +201,13 @@ fn with_find_handles<R>(f: impl FnOnce(&mut HashMap<usize, DirSearchState>) -> R
     let map = guard.get_or_insert_with(HashMap::new);
     f(map)
 }
+
+/// Maximum number of concurrently open directory-search handles.
+#[cfg(not(test))]
+const MAX_OPEN_FIND_HANDLES: usize = 1024;
+/// Smaller limit during tests.
+#[cfg(test)]
+const MAX_OPEN_FIND_HANDLES: usize = 8;
 
 fn alloc_find_handle() -> usize {
     use std::sync::atomic::Ordering;
@@ -390,6 +410,12 @@ static ENV_STRINGS_BLOCKS: Mutex<Option<Vec<SendablePtr>>> = Mutex::new(None);
 /// Process command line (UTF-16, null-terminated) set by the runner before entry point execution
 static PROCESS_COMMAND_LINE: OnceLock<Vec<u16>> = OnceLock::new();
 
+/// Optional sandbox root directory. When set, all file paths resolved by
+/// `wide_path_to_linux` are restricted to this prefix. Paths that escape the
+/// sandbox (e.g. via `..` traversal) are replaced with an empty string so that
+/// the subsequent file operation fails safely.
+static SANDBOX_ROOT: Mutex<Option<String>> = Mutex::new(None);
+
 /// Set the process command line from runner-provided arguments.
 ///
 /// Call this before executing the entry point to ensure Windows programs receive
@@ -414,6 +440,57 @@ pub fn set_process_command_line(args: &[String]) {
     utf16.push(0);
     // Ignore errors if already set (idempotent in tests)
     let _ = PROCESS_COMMAND_LINE.set(utf16);
+}
+
+/// Restrict all file-path operations to the given directory root.
+///
+/// When a sandbox root is configured, `wide_path_to_linux` will normalise
+/// every path (resolving all `..` and `.` components) and verify that the
+/// result still starts with `root`.  Paths that escape the sandbox are
+/// replaced with an empty string so that the corresponding file operation
+/// fails with `ERROR_ACCESS_DENIED` (or similar) rather than accessing an
+/// unexpected location.
+///
+/// May be called multiple times to change or clear the sandbox root
+/// (`None` disables sandboxing).
+pub fn set_sandbox_root(root: &str) {
+    *SANDBOX_ROOT.lock().unwrap() = Some(root.to_owned());
+}
+
+/// Apply the sandbox restriction to an already-translated Linux path.
+///
+/// If no sandbox root is configured the path is returned unchanged.
+/// If a root is configured the path is normalised (all `..`/`.` resolved)
+/// and returned only if it is a descendant of the root; otherwise an empty
+/// string is returned so that callers treat the access as failed.
+fn sandbox_guard(path: String) -> String {
+    let guard = SANDBOX_ROOT.lock().unwrap();
+    let Some(root) = guard.as_deref() else {
+        return path;
+    };
+    // Normalise without hitting the filesystem (works for paths that do not
+    // exist yet, e.g. a file about to be created).
+    // `PathBuf::pop()` never removes the root component (`/`), so traversal
+    // cannot escape below the filesystem root.
+    use std::path::{Component, Path, PathBuf};
+    let mut normalised = PathBuf::new();
+    for component in Path::new(&path).components() {
+        match component {
+            Component::ParentDir => {
+                normalised.pop();
+            }
+            Component::CurDir => {}
+            _ => normalised.push(component),
+        }
+    }
+    let normalised_str = normalised.to_string_lossy();
+    if normalised_str.starts_with(root) {
+        normalised_str.into_owned()
+    } else {
+        // Path escapes sandbox: return empty string so that the caller's file
+        // operation fails with a benign error (e.g. ENOENT / ERROR_ACCESS_DENIED).
+        String::new()
+    }
 }
 
 /// Convert a null-terminated UTF-16 wide string pointer to a Rust `String`.
@@ -491,11 +568,13 @@ unsafe fn wide_path_to_linux(wide: *const u16) -> String {
         path_str.as_str()
     };
     let with_slashes = without_drive.replace('\\', "/");
-    if with_slashes.is_empty() || !with_slashes.starts_with('/') {
+    let absolute = if with_slashes.is_empty() || !with_slashes.starts_with('/') {
         format!("/{with_slashes}")
     } else {
         with_slashes
-    }
+    };
+    // Apply sandbox restriction (no-op when no sandbox root is configured).
+    sandbox_guard(absolute)
 }
 
 /// Write a UTF-8 string into a caller-supplied UTF-16 buffer.
@@ -1627,11 +1706,22 @@ pub unsafe extern "C" fn kernel32_CreateFileW(
 
     match result {
         Ok(file) => {
+            // Enforce the open-handle limit atomically inside the mutex so
+            // that the check and insert cannot race with other threads.
             let handle_val = alloc_file_handle();
-            with_file_handles(|map| {
+            let inserted = with_file_handles(|map| {
+                if map.len() >= MAX_OPEN_FILE_HANDLES {
+                    return false;
+                }
                 map.insert(handle_val, FileEntry { file });
+                true
             });
-            handle_val as *mut core::ffi::c_void
+            if inserted {
+                handle_val as *mut core::ffi::c_void
+            } else {
+                kernel32_SetLastError(ERROR_TOO_MANY_OPEN_FILES);
+                INVALID_HANDLE_VALUE
+            }
         }
         Err(e) => {
             let code = match e.kind() {
@@ -4087,9 +4177,13 @@ pub unsafe extern "C" fn kernel32_FindFirstFileW(
     // Fill find_data with the first match
     fill_find_data(&entries[first_idx], find_data);
 
-    // Allocate handle and store state (advanced past the first match)
+    // Allocate handle and store state atomically, enforcing the search-handle
+    // limit inside the mutex to prevent a TOCTOU race.
     let handle = alloc_find_handle();
-    with_find_handles(|map| {
+    let inserted = with_find_handles(|map| {
+        if map.len() >= MAX_OPEN_FIND_HANDLES {
+            return false;
+        }
         map.insert(
             handle,
             DirSearchState {
@@ -4098,7 +4192,12 @@ pub unsafe extern "C" fn kernel32_FindFirstFileW(
                 pattern,
             },
         );
+        true
     });
+    if !inserted {
+        kernel32_SetLastError(ERROR_TOO_MANY_OPEN_FILES);
+        return INVALID_HANDLE;
+    }
 
     kernel32_SetLastError(0);
     handle as *mut core::ffi::c_void
@@ -6837,5 +6936,128 @@ mod tests {
         );
         assert_eq!(v1, 0xBEEF);
         assert_eq!(v2, 0xBEEF);
+    }
+
+    // ── Phase 17: Robustness and Security Tests ─────────────────────────────
+
+    /// Helper: set the sandbox root and return a guard that clears it on drop.
+    /// Needed because `SANDBOX_ROOT` is a process-wide `Mutex<Option<String>>`
+    /// that must be reset between tests to avoid cross-test interference.
+    struct SandboxGuard;
+    impl Drop for SandboxGuard {
+        fn drop(&mut self) {
+            *SANDBOX_ROOT.lock().unwrap() = None;
+        }
+    }
+    fn with_sandbox(root: &str) -> SandboxGuard {
+        *SANDBOX_ROOT.lock().unwrap() = Some(root.to_owned());
+        SandboxGuard
+    }
+
+    /// `sandbox_guard` should leave paths unchanged when no sandbox root is set.
+    #[test]
+    fn test_sandbox_guard_no_root_passthrough() {
+        // Ensure no sandbox is active.
+        *SANDBOX_ROOT.lock().unwrap() = None;
+        let result = sandbox_guard("/tmp/test/file.txt".to_owned());
+        assert_eq!(result, "/tmp/test/file.txt");
+    }
+
+    /// `sandbox_guard` should normalise `..` traversals and reject escapes.
+    #[test]
+    fn test_sandbox_guard_escape_rejected() {
+        let _guard = with_sandbox("/sandbox");
+        // "/sandbox/../../etc/passwd" normalises to "/etc/passwd" → escapes.
+        let result = sandbox_guard("/sandbox/../../etc/passwd".to_owned());
+        assert!(
+            result.is_empty(),
+            "Expected empty string for sandbox escape, got: {result}"
+        );
+    }
+
+    /// Paths within the sandbox root pass through after normalisation.
+    #[test]
+    fn test_sandbox_guard_inside_root_passes() {
+        let _guard = with_sandbox("/sandbox");
+        let result = sandbox_guard("/sandbox/subdir/../file.txt".to_owned());
+        assert_eq!(result, "/sandbox/file.txt");
+    }
+
+    /// `wide_path_to_linux` returns an empty string when a path escapes the
+    /// configured sandbox root.
+    #[test]
+    fn test_wide_path_to_linux_sandbox_escape_blocked() {
+        let _guard = with_sandbox("/sandbox");
+
+        // "C:\..\..\etc\passwd" → "/etc/passwd" which escapes "/sandbox".
+        let wide: Vec<u16> = "C:\\..\\..\\etc\\passwd\0".encode_utf16().collect();
+        let result = unsafe { wide_path_to_linux(wide.as_ptr()) };
+        assert!(
+            result.is_empty(),
+            "Expected empty string for sandbox escape, got: {result}"
+        );
+    }
+
+    /// `wide_path_to_linux` returns the normalised path when it stays within
+    /// the sandbox root.
+    #[test]
+    fn test_wide_path_to_linux_sandbox_inside_passes() {
+        let _guard = with_sandbox("/sandbox");
+
+        let wide: Vec<u16> = "/sandbox/data/file.txt\0".encode_utf16().collect();
+        let result = unsafe { wide_path_to_linux(wide.as_ptr()) };
+        assert_eq!(result, "/sandbox/data/file.txt");
+    }
+
+    /// `CreateFileW` returns `INVALID_HANDLE_VALUE` with error 4 once
+    /// `MAX_OPEN_FILE_HANDLES` handles are open.
+    #[test]
+    fn test_create_file_handle_limit() {
+        // Ensure no sandbox is active so /dev/null is accessible.
+        *SANDBOX_ROOT.lock().unwrap() = None;
+
+        // Use a file that exists on every Linux system.
+        let path = "/dev/null\0";
+        let wide: Vec<u16> = path.encode_utf16().collect();
+
+        const OPEN_EXISTING: u32 = 3;
+        const GENERIC_READ: u32 = 0x8000_0000;
+        let invalid = usize::MAX as *mut core::ffi::c_void;
+
+        // Open handles until we hit the limit (test limit is 8).
+        // We collect them so we can close them afterwards.
+        let mut opened: Vec<*mut core::ffi::c_void> = Vec::new();
+        let hit_limit = 'fill: {
+            for _ in 0..MAX_OPEN_FILE_HANDLES + 1 {
+                let h = unsafe {
+                    kernel32_CreateFileW(
+                        wide.as_ptr(),
+                        GENERIC_READ,
+                        0,
+                        core::ptr::null_mut(),
+                        OPEN_EXISTING,
+                        0,
+                        core::ptr::null_mut(),
+                    )
+                };
+                if h == invalid {
+                    break 'fill true;
+                }
+                opened.push(h);
+            }
+            false
+        };
+
+        // Clean up all handles we opened.
+        for h in &opened {
+            unsafe { kernel32_CloseHandle(*h) };
+        }
+
+        assert!(hit_limit, "Expected the handle limit to be enforced");
+        assert_eq!(
+            unsafe { kernel32_GetLastError() },
+            ERROR_TOO_MANY_OPEN_FILES,
+            "Expected ERROR_TOO_MANY_OPEN_FILES"
+        );
     }
 }

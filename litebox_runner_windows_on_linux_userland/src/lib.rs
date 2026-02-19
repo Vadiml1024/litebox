@@ -12,6 +12,7 @@ use anyhow::{Result, anyhow};
 use clap::Parser;
 use litebox_platform_linux_for_windows::LinuxPlatformForWindows;
 use litebox_platform_linux_for_windows::set_process_command_line;
+use litebox_platform_linux_for_windows::set_sandbox_root;
 use litebox_shim_windows::loader::{ExecutionContext, PeLoader, call_entry_point};
 use litebox_shim_windows::syscalls::ntdll::{NtdllApi, memory_protection};
 use litebox_shim_windows::tracing::{
@@ -51,6 +52,11 @@ pub struct CliArgs {
     /// Filter traces by category (file_io, console_io, memory)
     #[arg(long = "trace-category")]
     pub trace_category: Option<String>,
+
+    /// Restrict all file-path operations to this directory (sandbox root).
+    /// Paths that would escape the root via `..` traversal are rejected.
+    #[arg(long = "root", value_hint = clap::ValueHint::DirPath)]
+    pub root: Option<String>,
 }
 
 /// Run Windows programs with LiteBox on unmodified Linux
@@ -386,6 +392,12 @@ pub fn run(cli_args: CliArgs) -> Result<()> {
     let mut cmd_args = vec![cli_args.program.clone()];
     cmd_args.extend(cli_args.arguments.iter().cloned());
     set_process_command_line(&cmd_args);
+
+    // If a sandbox root was requested, configure it now (before any file I/O).
+    if let Some(root) = &cli_args.root {
+        set_sandbox_root(root);
+        println!("Sandbox root: {root}");
+    }
 
     // Attempt to call the entry point
     // NOTE: This will likely fail in practice because:
