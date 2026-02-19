@@ -68,7 +68,51 @@ Mathematical operations test that validates:
 - Rounding operations (floor, ceil, round, trunc)
 - Bitwise operations (AND, OR, XOR, NOT, shifts)
 
+### winsock_test (C++)
+
+C++ programs that test the Windows Sockets 2 (WinSock2) API implementation
+provided by the Windows-on-Linux platform.  Located in the `winsock_test/`
+subdirectory and built with the MinGW cross-compiler (not Cargo).
+
+#### winsock_basic_test
+
+Validates the fundamental WinSock2 building blocks:
+- `WSAStartup` / `WSACleanup`
+- Byte-order helpers: `htons`, `htonl`, `ntohs`, `ntohl`
+- `WSAGetLastError` / `WSASetLastError`
+- TCP and UDP `socket()` creation and `closesocket()`
+- `setsockopt` / `getsockopt` (SO_REUSEADDR, SO_SNDBUF, SO_RCVBUF, SO_KEEPALIVE)
+- `ioctlsocket` – FIONBIO non-blocking mode toggle
+- `bind` to `127.0.0.1:0` + `getsockname` to retrieve the assigned port
+- `getaddrinfo` / `freeaddrinfo`
+
+#### winsock_tcp_test
+
+Exercises a full TCP client-server exchange over loopback in a single thread
+using non-blocking sockets and `select`:
+- Server: `socket`, `setsockopt`, `bind`, `listen`, `getsockname`, `accept`
+- Client: `socket`, non-blocking `connect` (expects WSAEWOULDBLOCK)
+- `select` to wait for server readability (incoming connection)
+- `select` to wait for client writability (connect completed)
+- Bidirectional `send` / `recv` data exchange
+- `getpeername` on accepted socket
+- `shutdown` (SD_BOTH) and `closesocket`
+
+#### winsock_udp_test
+
+Exercises UDP datagram exchange over loopback in a single thread:
+- Server: `socket`, `bind`, `getsockname`
+- Client: `socket`, `bind` (to obtain a reply address), `sendto`
+- `select` to wait for server readability
+- Server `recvfrom` – verifies payload and sender address
+- Server `sendto` reply back to client address
+- `select` to wait for client readability
+- Client `recvfrom` – verifies reply payload
+- `closesocket` both sockets
+
 ## Building
+
+### Rust programs (hello_cli, hello_gui, file_io_test, args_test, env_test, string_test, math_test)
 
 These programs are automatically built for Windows (x86_64-pc-windows-gnu) by the GitHub Actions workflow.
 
@@ -95,6 +139,22 @@ The resulting executables will be in:
 - `target/x86_64-pc-windows-gnu/release/string_test.exe`
 - `target/x86_64-pc-windows-gnu/release/math_test.exe`
 
+### C++ WinSock programs (winsock_test/)
+
+```bash
+# Install MinGW cross-compiler (if not already installed)
+sudo apt install -y mingw-w64
+
+# Build all three WinSock test programs
+cd windows_test_programs/winsock_test
+make
+```
+
+The resulting executables will be in `windows_test_programs/winsock_test/`:
+- `winsock_basic_test.exe`
+- `winsock_tcp_test.exe`
+- `winsock_udp_test.exe`
+
 ## Testing
 
 These programs can be used to test the Windows-on-Linux runner:
@@ -103,13 +163,18 @@ These programs can be used to test the Windows-on-Linux runner:
 # Build the runner
 cargo build -p litebox_runner_windows_on_linux_userland
 
-# Run the test programs
+# Run the Rust test programs
 ./target/debug/litebox_runner_windows_on_linux_userland ./windows_test_programs/target/x86_64-pc-windows-gnu/release/hello_cli.exe
 ./target/debug/litebox_runner_windows_on_linux_userland ./windows_test_programs/target/x86_64-pc-windows-gnu/release/file_io_test.exe
 ./target/debug/litebox_runner_windows_on_linux_userland ./windows_test_programs/target/x86_64-pc-windows-gnu/release/args_test.exe arg1 arg2
 ./target/debug/litebox_runner_windows_on_linux_userland ./windows_test_programs/target/x86_64-pc-windows-gnu/release/env_test.exe
 ./target/debug/litebox_runner_windows_on_linux_userland ./windows_test_programs/target/x86_64-pc-windows-gnu/release/string_test.exe
 ./target/debug/litebox_runner_windows_on_linux_userland ./windows_test_programs/target/x86_64-pc-windows-gnu/release/math_test.exe
+
+# Run the C++ WinSock test programs
+./target/debug/litebox_runner_windows_on_linux_userland ./windows_test_programs/winsock_test/winsock_basic_test.exe
+./target/debug/litebox_runner_windows_on_linux_userland ./windows_test_programs/winsock_test/winsock_tcp_test.exe
+./target/debug/litebox_runner_windows_on_linux_userland ./windows_test_programs/winsock_test/winsock_udp_test.exe
 ```
 
 ### Current Status
@@ -141,5 +206,6 @@ These test programs serve as a comprehensive test suite to verify that:
 7. Console I/O works correctly
 8. Memory allocation and management are functional
 9. The Windows-on-Linux platform is working as expected
+10. WinSock2 APIs function correctly (socket creation, TCP/UDP data exchange)
 
-Most test programs validate their operations and report success (✓) or failure (✗) for each check, exiting with non-zero status on any failure. Programs like `file_io_test`, `string_test`, and `math_test` perform actual validation. Programs like `args_test` and `hello_cli` primarily demonstrate functionality by displaying output.
+Most test programs validate their operations and report success (✓) or failure (✗) for each check, exiting with non-zero status on any failure. Programs like `file_io_test`, `string_test`, and `math_test` perform actual validation. Programs like `args_test` and `hello_cli` primarily demonstrate functionality by displaying output. The C++ WinSock programs (`winsock_basic_test`, `winsock_tcp_test`, `winsock_udp_test`) all perform end-to-end validation and exit with non-zero status on any failure.
