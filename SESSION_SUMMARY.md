@@ -1,11 +1,75 @@
-# Windows-on-Linux Support - Session Summary (2026-02-19 Session 15)
+# Windows-on-Linux Support - Session Summary (2026-02-19 Session 16)
 
 ## Work Completed ✅
 
-### Phase 16 — Registry (ADVAPI32.dll)
+### Phase 17 — Robustness and Security
 
-**Goal:** Allow programs that use Windows Registry APIs to run on Linux with an in-process
-in-memory registry store backed by a `HashMap`.
+**Goal:** Harden the Windows-on-Linux platform against path-traversal attacks and resource
+exhaustion.
+
+#### 17.1 Path traversal prevention
+
+- **New static** `SANDBOX_ROOT: Mutex<Option<String>>` in `kernel32.rs` — stores an optional
+  sandbox root directory. Using `Mutex<Option<String>>` (rather than `OnceLock`) allows the root
+  to be changed or cleared, which is needed for test isolation.
+- **`pub fn set_sandbox_root(root: &str)`** — exported from both `kernel32.rs` and `lib.rs`.
+  Callers (e.g. the runner) set this once before executing the PE entry point.
+- **`fn sandbox_guard(path: String) -> String`** — normalises a path by resolving all `..` and `.`
+  components *without* touching the filesystem (so it works for paths that do not yet exist).
+  `PathBuf::pop()` never removes the root `/` component, so traversal cannot escape below the
+  filesystem root. If the normalised path does not start with the sandbox root, an empty string
+  is returned so that the downstream `CreateFileW` / `FindFirstFileW` call fails safely.
+- **`wide_path_to_linux`** now calls `sandbox_guard` on every translated path.
+- **`--root <dir>` CLI flag** added to `litebox_runner_windows_on_linux_userland`; calls
+  `set_sandbox_root` before the entry point is executed.
+
+#### 17.2 Handle limit enforcement
+
+- **`const ERROR_TOO_MANY_OPEN_FILES: u32 = 4`** — named constant (previously a magic number).
+- **`const MAX_OPEN_FILE_HANDLES: usize = 1024`** (8 in `#[cfg(test)]`) — cap for `FILE_HANDLES`.
+- **`const MAX_OPEN_FIND_HANDLES: usize = 1024`** (8 in `#[cfg(test)]`) — cap for `FIND_HANDLES`.
+- The check **and** insertion happen inside the same `with_file_handles` / `with_find_handles`
+  closure, eliminating the TOCTOU race that a two-step check+insert would have.
+- When the limit is hit, `CreateFileW` and `FindFirstFileW` set
+  `GetLastError() = ERROR_TOO_MANY_OPEN_FILES` and return `INVALID_HANDLE_VALUE`.
+
+#### New unit tests (6 new)
+
+| Test | What it verifies |
+|---|---|
+| `test_sandbox_guard_no_root_passthrough` | Path unchanged when no sandbox root |
+| `test_sandbox_guard_escape_rejected` | `..`-escaping path returns empty string |
+| `test_sandbox_guard_inside_root_passes` | Path within root is normalised and returned |
+| `test_wide_path_to_linux_sandbox_escape_blocked` | Wide-string Windows path escape blocked |
+| `test_wide_path_to_linux_sandbox_inside_passes` | Wide-string Windows path inside root passes |
+| `test_create_file_handle_limit` | `CreateFileW` fails with error 4 at limit |
+
+#### Ratchet update
+
+- `litebox_platform_linux_for_windows/` globals: 31 → 32 (one new static: `SANDBOX_ROOT`)
+
+## Test Results
+
+```
+cargo test -p litebox_platform_linux_for_windows -p litebox_shim_windows
+           -p litebox_runner_windows_on_linux_userland -p dev_tests
+Platform:  218 passed  (+6 from session 15)
+Shim:       47 passed  (unchanged)
+Runner:     16 passed  (unchanged)
+dev_tests:   4 passed  (all boilerplate + ratchet tests pass)
+```
+
+## Files Modified This Session
+
+- `litebox_platform_linux_for_windows/src/kernel32.rs` — `SANDBOX_ROOT`, `set_sandbox_root`,
+  `sandbox_guard`, `ERROR_TOO_MANY_OPEN_FILES`, `MAX_OPEN_FILE_HANDLES`,
+  `MAX_OPEN_FIND_HANDLES`, handle limit in `CreateFileW` + `FindFirstFileW`, 6 new tests
+- `litebox_platform_linux_for_windows/src/lib.rs` — `pub use kernel32::set_sandbox_root`
+- `litebox_runner_windows_on_linux_userland/src/lib.rs` — `--root` CLI flag + `set_sandbox_root`
+  call in `run()`
+- `dev_tests/src/ratchet.rs` — globals limit 31 → 32
+
+---
 
 #### New module: `litebox_platform_linux_for_windows/src/advapi32.rs`
 
