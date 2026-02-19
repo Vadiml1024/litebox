@@ -367,7 +367,7 @@ pub fn get_command_line_utf8() -> String {
         .map(|v| {
             // strip trailing null terminator(s) before converting
             let end = v.iter().position(|&c| c == 0).unwrap_or(v.len());
-            String::from_utf16_lossy(&v[..end]).clone()
+            String::from_utf16_lossy(&v[..end])
         })
         .unwrap_or_default()
 }
@@ -435,7 +435,7 @@ unsafe fn wide_str_to_string(wide: *const u16) -> String {
         }
     }
     let slice = core::slice::from_raw_parts(wide, len);
-    String::from_utf16_lossy(slice).clone()
+    String::from_utf16_lossy(slice)
 }
 
 /// Convert a null-terminated UTF-16 Windows path pointer to a Linux absolute path string.
@@ -475,7 +475,7 @@ unsafe fn wide_path_to_linux(wide: *const u16) -> String {
                 len += 1;
             }
             let slice = core::slice::from_raw_parts(wide.add(1), len);
-            String::from_utf16_lossy(slice).clone()
+            String::from_utf16_lossy(slice)
         }
     } else {
         wide_str_to_string(wide)
