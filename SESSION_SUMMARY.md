@@ -11,7 +11,7 @@ reduction in stub implementations.
 
 Added a new `build_and_test_windows_on_linux` job to `.github/workflows/ci.yml`:
 
-- Runs on `ubuntu-latest` (MinGW cross-compiler is pre-installed)
+- Runs on `ubuntu-latest` and installs the MinGW cross-compiler (`gcc-mingw-w64-x86-64`)
 - Installs the `x86_64-pc-windows-gnu` Rust target
 - Builds all programs in `windows_test_programs/` with `cargo build --release`
 - Builds the runner (`litebox_runner_windows_on_linux_userland`)

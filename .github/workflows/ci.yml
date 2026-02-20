@@ -180,27 +180,30 @@ jobs:
         run: cargo build -p litebox_runner_windows_on_linux_userland
       - name: Run hello_cli.exe and verify output
         run: |
+          stderr_file=$(mktemp)
           output=$(./target/debug/litebox_runner_windows_on_linux_userland \
             windows_test_programs/target/x86_64-pc-windows-gnu/release/hello_cli.exe \
-            2>/dev/null)
+            2>"$stderr_file") || { echo "ERROR: hello_cli.exe runner failed"; cat "$stderr_file"; exit 1; }
           echo "$output"
-          echo "$output" | grep -q "Hello World from LiteBox!" || \
-            (echo "ERROR: hello_cli.exe did not produce expected output" && exit 1)
+          echo "$output" | grep -q "Hello World from LiteBox!" || { echo "ERROR: hello_cli.exe did not produce expected output"; cat "$stderr_file"; exit 1; }
       - name: Run math_test.exe and verify exit code
         run: |
+          stderr_file=$(mktemp)
           ./target/debug/litebox_runner_windows_on_linux_userland \
             windows_test_programs/target/x86_64-pc-windows-gnu/release/math_test.exe \
-            2>/dev/null
+            2>"$stderr_file" || { echo "ERROR: math_test.exe failed"; cat "$stderr_file"; exit 1; }
       - name: Run env_test.exe and verify exit code
         run: |
+          stderr_file=$(mktemp)
           ./target/debug/litebox_runner_windows_on_linux_userland \
             windows_test_programs/target/x86_64-pc-windows-gnu/release/env_test.exe \
-            2>/dev/null
+            2>"$stderr_file" || { echo "ERROR: env_test.exe failed"; cat "$stderr_file"; exit 1; }
       - name: Run args_test.exe and verify exit code
         run: |
+          stderr_file=$(mktemp)
           ./target/debug/litebox_runner_windows_on_linux_userland \
             windows_test_programs/target/x86_64-pc-windows-gnu/release/args_test.exe \
-            2>/dev/null
+            2>"$stderr_file" || { echo "ERROR: args_test.exe failed"; cat "$stderr_file"; exit 1; }
 
   build_and_test_snp:
     name: Build and Test SNP
