@@ -2794,13 +2794,16 @@ pub unsafe extern "C" fn kernel32_GetFileInformationByHandle(
     const TICKS_PER_SEC: u64 = 10_000_000;
     // Fake volume serial number — Linux has no direct equivalent.
     const FAKE_VOLUME_SERIAL: u32 = 0x1234_5678;
-    let to_filetime = |secs: i64| -> u64 {
+    let to_filetime = |secs: i64, nsecs: i64| -> u64 {
         if secs < 0 {
             return 0;
         }
-        (secs as u64)
+        let ticks_secs = (secs as u64)
             .saturating_add(UNIX_EPOCH_OFFSET)
-            .saturating_mul(TICKS_PER_SEC)
+            .saturating_mul(TICKS_PER_SEC);
+        // Add the sub-second nanosecond component (1 tick = 100 ns).
+        let ticks_nsecs = (nsecs.max(0) as u64) / 100;
+        ticks_secs.saturating_add(ticks_nsecs)
     };
 
     let attrs: u32 = if meta.is_dir() { 0x10 } else { 0x80 }
@@ -2810,10 +2813,10 @@ pub unsafe extern "C" fn kernel32_GetFileInformationByHandle(
             0
         };
     let file_size = meta.len();
-    let mtime = to_filetime(meta.mtime());
-    let atime = to_filetime(meta.atime());
+    let mtime = to_filetime(meta.mtime(), meta.mtime_nsec());
+    let atime = to_filetime(meta.atime(), meta.atime_nsec());
     // Linux has no "creation time"; use ctime (metadata-change time) as approximation.
-    let ctime = to_filetime(meta.ctime());
+    let ctime = to_filetime(meta.ctime(), meta.ctime_nsec());
     let ino = meta.ino();
     let nlink = meta.nlink();
 
