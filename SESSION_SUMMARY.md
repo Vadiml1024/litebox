@@ -1,11 +1,54 @@
-# Windows-on-Linux Support - Session Summary (2026-02-19 Session 16)
+# Windows-on-Linux Support - Session Summary (2026-02-20 Session 17)
 
 ## Work Completed ✅
 
-### Phase 17 — Robustness and Security
+### Phase 18 — Test Coverage and CI Integration
 
-**Goal:** Harden the Windows-on-Linux platform against path-traversal attacks and resource
-exhaustion.
+**Goal:** Integrate the Windows-on-Linux test programs into CI and add a ratchet to track
+reduction in stub implementations.
+
+#### 18.1 CI integration for Windows test programs
+
+Added a new `build_and_test_windows_on_linux` job to `.github/workflows/ci.yml`:
+
+- Runs on `ubuntu-latest` and installs the MinGW cross-compiler (`gcc-mingw-w64-x86-64`)
+- Installs the `x86_64-pc-windows-gnu` Rust target
+- Builds all programs in `windows_test_programs/` with `cargo build --release`
+- Builds the runner (`litebox_runner_windows_on_linux_userland`)
+- Runs and validates four test programs:
+  - `hello_cli.exe` — checks stdout contains `"Hello World from LiteBox!"`
+  - `math_test.exe` — checks exit code 0
+  - `env_test.exe` — checks exit code 0
+  - `args_test.exe` — checks exit code 0
+- `string_test.exe` and `file_io_test.exe` are excluded (known failing tests from Phase 12)
+
+#### 18.2 Ratchet for stub implementations
+
+Added a `ratchet_stubs` test to `dev_tests/src/ratchet.rs`:
+
+- Counts lines containing `"This function is a stub"` in the
+  `litebox_platform_linux_for_windows/` crate
+- Current baseline: **58 stubs** (57 in `kernel32.rs`, 1 in `ntdll_impl.rs`)
+- As stub implementations are replaced with real ones, this count must not increase
+- The ratchet enforces a hard upper bound: any PR that adds new stubs will fail CI
+
+## Test Results
+
+```
+cargo test -p litebox_platform_linux_for_windows -p litebox_shim_windows
+           -p litebox_runner_windows_on_linux_userland -p dev_tests
+dev_tests:   5 passed  (+1 from session 16: new ratchet_stubs test)
+Platform:  218 passed  (unchanged)
+Shim:       47 passed  (unchanged)
+Runner:     16 passed  (7 unit + 9 tracing, 6 ignored pending MinGW build)
+```
+
+## Files Modified This Session
+
+- `.github/workflows/ci.yml` — Added `build_and_test_windows_on_linux` CI job
+- `dev_tests/src/ratchet.rs` — Added `ratchet_stubs` test (baseline: 58)
+
+---
 
 #### 17.1 Path traversal prevention
 
