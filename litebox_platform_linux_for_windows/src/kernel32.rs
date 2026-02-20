@@ -7310,6 +7310,9 @@ mod tests {
     /// `MAX_OPEN_FILE_HANDLES` handles are open.
     #[test]
     fn test_create_file_handle_limit() {
+        const OPEN_EXISTING: u32 = 3;
+        const GENERIC_READ: u32 = 0x8000_0000;
+
         // Ensure no sandbox is active so /dev/null is accessible.
         *SANDBOX_ROOT.lock().unwrap() = None;
 
@@ -7317,15 +7320,13 @@ mod tests {
         let path = "/dev/null\0";
         let wide: Vec<u16> = path.encode_utf16().collect();
 
-        const OPEN_EXISTING: u32 = 3;
-        const GENERIC_READ: u32 = 0x8000_0000;
         let invalid = usize::MAX as *mut core::ffi::c_void;
 
         // Open handles until we hit the limit (test limit is 8).
         // We collect them so we can close them afterwards.
         let mut opened: Vec<*mut core::ffi::c_void> = Vec::new();
         let hit_limit = 'fill: {
-            for _ in 0..MAX_OPEN_FILE_HANDLES + 1 {
+            for _ in 0..=MAX_OPEN_FILE_HANDLES {
                 let h = unsafe {
                     kernel32_CreateFileW(
                         wide.as_ptr(),
@@ -7362,12 +7363,13 @@ mod tests {
     /// must succeed for an existing file and return a valid handle.
     #[test]
     fn test_create_file_metadata_query_desired_access_zero() {
+        const OPEN_EXISTING: u32 = 3;
+        const INVALID_HANDLE_VALUE: usize = usize::MAX;
+
         let path = "/tmp/litebox_metadata_query_test.txt";
         let _ = std::fs::write(path, b"hello");
 
         let wide: Vec<u16> = path.encode_utf16().chain(std::iter::once(0u16)).collect();
-        const OPEN_EXISTING: u32 = 3;
-        const INVALID_HANDLE_VALUE: usize = usize::MAX;
 
         let h = unsafe {
             kernel32_CreateFileW(
@@ -7392,14 +7394,15 @@ mod tests {
     /// (52 bytes / 13 × u32) with valid metadata after opening a file via `CreateFileW`.
     #[test]
     fn test_get_file_information_by_handle() {
+        const GENERIC_READ: u32 = 0x8000_0000;
+        const OPEN_EXISTING: u32 = 3;
+        const INVALID_HANDLE_VALUE: usize = usize::MAX;
+
         let path = "/tmp/litebox_gfibh_test.txt";
         let content = b"GetFileInformationByHandle test content";
         let _ = std::fs::write(path, content);
 
         let wide: Vec<u16> = path.encode_utf16().chain(std::iter::once(0u16)).collect();
-        const GENERIC_READ: u32 = 0x8000_0000;
-        const OPEN_EXISTING: u32 = 3;
-        const INVALID_HANDLE_VALUE: usize = usize::MAX;
 
         let h = unsafe {
             kernel32_CreateFileW(
@@ -7440,11 +7443,11 @@ mod tests {
 
     #[test]
     fn test_get_file_type_stdio() {
+        const FILE_TYPE_CHAR: u32 = 2;
         // GetStdHandle pseudo-handles should be reported as FILE_TYPE_CHAR (2).
         let stdin_h = unsafe { kernel32_GetStdHandle(u32::MAX - 9) }; // -10 as u32
         let stdout_h = unsafe { kernel32_GetStdHandle(u32::MAX - 10) }; // -11 as u32
         let stderr_h = unsafe { kernel32_GetStdHandle(u32::MAX - 11) }; // -12 as u32
-        const FILE_TYPE_CHAR: u32 = 2;
         assert_eq!(unsafe { kernel32_GetFileType(stdin_h) }, FILE_TYPE_CHAR);
         assert_eq!(unsafe { kernel32_GetFileType(stdout_h) }, FILE_TYPE_CHAR);
         assert_eq!(unsafe { kernel32_GetFileType(stderr_h) }, FILE_TYPE_CHAR);
