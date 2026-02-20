@@ -304,6 +304,101 @@ jobs:
 
           echo "✓ GUI PE binary loading working (exit code: $EXIT_CODE)"
 
+      # ── File I/O Test ────────────────────────────────────────────────────
+      - name: Test file_io_test - PE Loading
+        run: |
+          echo "=== Testing file_io_test.exe PE Loading ==="
+          set +e
+          ./target/debug/litebox_runner_windows_on_linux_userland \
+            ./windows_test_programs/target/x86_64-pc-windows-gnu/release/file_io_test.exe \
+            > /tmp/file_io_test_output.txt 2>&1
+          EXIT_CODE=$?
+          set -e
+
+          head -60 /tmp/file_io_test_output.txt
+          echo ""
+
+          grep -q "Loaded PE binary:" /tmp/file_io_test_output.txt || { echo "✗ Failed to load file_io_test PE binary"; exit 1; }
+          grep -q "Resolving imports" /tmp/file_io_test_output.txt || { echo "✗ Failed to resolve imports for file_io_test"; exit 1; }
+
+          echo "✓ file_io_test PE loading working (exit code: $EXIT_CODE)"
+
+      # ── Args Test ────────────────────────────────────────────────────────
+      - name: Test args_test - PE Loading
+        run: |
+          echo "=== Testing args_test.exe PE Loading ==="
+          set +e
+          ./target/debug/litebox_runner_windows_on_linux_userland \
+            ./windows_test_programs/target/x86_64-pc-windows-gnu/release/args_test.exe \
+            > /tmp/args_test_output.txt 2>&1
+          EXIT_CODE=$?
+          set -e
+
+          head -60 /tmp/args_test_output.txt
+          echo ""
+
+          grep -q "Loaded PE binary:" /tmp/args_test_output.txt || { echo "✗ Failed to load args_test PE binary"; exit 1; }
+          grep -q "Resolving imports" /tmp/args_test_output.txt || { echo "✗ Failed to resolve imports for args_test"; exit 1; }
+
+          echo "✓ args_test PE loading working (exit code: $EXIT_CODE)"
+
+      # ── Env Test ─────────────────────────────────────────────────────────
+      - name: Test env_test - PE Loading
+        run: |
+          echo "=== Testing env_test.exe PE Loading ==="
+          set +e
+          ./target/debug/litebox_runner_windows_on_linux_userland \
+            ./windows_test_programs/target/x86_64-pc-windows-gnu/release/env_test.exe \
+            > /tmp/env_test_output.txt 2>&1
+          EXIT_CODE=$?
+          set -e
+
+          head -60 /tmp/env_test_output.txt
+          echo ""
+
+          grep -q "Loaded PE binary:" /tmp/env_test_output.txt || { echo "✗ Failed to load env_test PE binary"; exit 1; }
+          grep -q "Resolving imports" /tmp/env_test_output.txt || { echo "✗ Failed to resolve imports for env_test"; exit 1; }
+
+          echo "✓ env_test PE loading working (exit code: $EXIT_CODE)"
+
+      # ── String Test ───────────────────────────────────────────────────────
+      - name: Test string_test - PE Loading
+        run: |
+          echo "=== Testing string_test.exe PE Loading ==="
+          set +e
+          ./target/debug/litebox_runner_windows_on_linux_userland \
+            ./windows_test_programs/target/x86_64-pc-windows-gnu/release/string_test.exe \
+            > /tmp/string_test_output.txt 2>&1
+          EXIT_CODE=$?
+          set -e
+
+          head -60 /tmp/string_test_output.txt
+          echo ""
+
+          grep -q "Loaded PE binary:" /tmp/string_test_output.txt || { echo "✗ Failed to load string_test PE binary"; exit 1; }
+          grep -q "Resolving imports" /tmp/string_test_output.txt || { echo "✗ Failed to resolve imports for string_test"; exit 1; }
+
+          echo "✓ string_test PE loading working (exit code: $EXIT_CODE)"
+
+      # ── Math Test ─────────────────────────────────────────────────────────
+      - name: Test math_test - PE Loading
+        run: |
+          echo "=== Testing math_test.exe PE Loading ==="
+          set +e
+          ./target/debug/litebox_runner_windows_on_linux_userland \
+            ./windows_test_programs/target/x86_64-pc-windows-gnu/release/math_test.exe \
+            > /tmp/math_test_output.txt 2>&1
+          EXIT_CODE=$?
+          set -e
+
+          head -60 /tmp/math_test_output.txt
+          echo ""
+
+          grep -q "Loaded PE binary:" /tmp/math_test_output.txt || { echo "✗ Failed to load math_test PE binary"; exit 1; }
+          grep -q "Resolving imports" /tmp/math_test_output.txt || { echo "✗ Failed to resolve imports for math_test"; exit 1; }
+
+          echo "✓ math_test PE loading working (exit code: $EXIT_CODE)"
+
       # ── JSON Trace Output ─────────────────────────────────────────────────
       - name: Test JSON Trace Output
         run: |
@@ -356,7 +451,14 @@ jobs:
           echo "Windows-on-Linux Test Summary"
           echo "================================================"
           echo "✓ Windows test programs built successfully"
-          echo "✓ Windows PE binaries load on Linux"
+          echo "✓ Windows PE binaries load on Linux (all 7 programs)"
+          echo "  - hello_cli.exe  : PE loading + API tracing"
+          echo "  - hello_gui.exe  : PE loading (GUI subsystem)"
+          echo "  - file_io_test.exe : PE loading"
+          echo "  - args_test.exe  : PE loading"
+          echo "  - env_test.exe   : PE loading"
+          echo "  - string_test.exe: PE loading"
+          echo "  - math_test.exe  : PE loading"
           echo "✓ Sections parsed and loaded into memory"
           echo "✓ Import resolution working"
           echo "✓ Relocation processing working"
