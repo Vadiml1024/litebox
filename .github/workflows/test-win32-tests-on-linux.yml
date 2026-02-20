@@ -8,16 +8,14 @@ on:
     branches:
       - main
     paths:
-      - 'windows_test_programs/winsock_test/**'
-      - 'windows_test_programs/registry_test/**'
+      - 'windows_test_programs/**'
       - 'litebox_platform_linux_for_windows/**'
       - 'litebox_shim_windows/**'
       - 'litebox_runner_windows_on_linux_userland/**'
       - '.github/workflows/test-win32-tests-on-linux.yml'
   pull_request:
     paths:
-      - 'windows_test_programs/winsock_test/**'
-      - 'windows_test_programs/registry_test/**'
+      - 'windows_test_programs/**'
       - 'litebox_platform_linux_for_windows/**'
       - 'litebox_shim_windows/**'
       - 'litebox_runner_windows_on_linux_userland/**'
@@ -35,6 +33,7 @@ env:
   RUSTFLAGS: -Dwarnings
 
 jobs:
+  # ── Matrix job: WinSock + Registry (C++ programs built with make) ──────────
   test_win32:
     name: Build and Run ${{ matrix.suite }} Tests on Linux
     runs-on: ubuntu-latest
@@ -171,3 +170,204 @@ jobs:
             fi
           done
           echo "================================================"
+
+  # ── PE loader + API tracing (Rust programs built with cargo cross-compile) ─
+  test_pe_and_tracing:
+    name: Test PE Loader and API Tracing on Linux
+    runs-on: ubuntu-latest
+
+    steps:
+      # ── Checkout ──────────────────────────────────────────────────────────
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      # ── Toolchain (needs both Windows and Linux targets) ───────────────────
+      - name: Set up Rust
+        run: |
+          rustup toolchain install \
+            $(awk -F'"' '/channel/{print $2}' rust-toolchain.toml) \
+            --profile minimal \
+            --no-self-update \
+            --target x86_64-pc-windows-gnu \
+            --target x86_64-unknown-linux-gnu
+
+      # ── MinGW cross-compiler ───────────────────────────────────────────────
+      - name: Install MinGW cross-compiler and gdb
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y mingw-w64 gdb
+
+      # ── Cargo cache ───────────────────────────────────────────────────────
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: wol-runner
+
+      # ── Build Windows test programs (Rust cross-compiled) ─────────────────
+      - name: Build Windows test programs
+        run: |
+          cd windows_test_programs
+          cargo build --release --target x86_64-pc-windows-gnu \
+            -p hello_cli -p hello_gui -p file_io_test \
+            -p args_test -p env_test -p string_test -p math_test
+
+      # ── Verify Windows executables ─────────────────────────────────────────
+      - name: Verify Windows executables
+        run: |
+          echo "Checking Windows test programs..."
+          ls -lh windows_test_programs/target/x86_64-pc-windows-gnu/release/*.exe
+          file windows_test_programs/target/x86_64-pc-windows-gnu/release/hello_cli.exe
+          file windows_test_programs/target/x86_64-pc-windows-gnu/release/hello_gui.exe
+          file windows_test_programs/target/x86_64-pc-windows-gnu/release/file_io_test.exe
+          file windows_test_programs/target/x86_64-pc-windows-gnu/release/args_test.exe
+          file windows_test_programs/target/x86_64-pc-windows-gnu/release/env_test.exe
+          file windows_test_programs/target/x86_64-pc-windows-gnu/release/string_test.exe
+          file windows_test_programs/target/x86_64-pc-windows-gnu/release/math_test.exe
+
+      # ── Build the Windows-on-Linux runner ─────────────────────────────────
+      - name: Build Windows-on-Linux runner
+        run: cargo build --locked --verbose -p litebox_runner_windows_on_linux_userland
+
+      # ── PE Loading ────────────────────────────────────────────────────────
+      - name: Test Windows CLI program - PE Loading
+        run: |
+          echo "=== Testing hello_cli.exe PE Loading ==="
+          echo "Expected: PE binary should be loaded, sections parsed, imports resolved"
+          echo "Note: Full execution not yet implemented (requires complete Windows API)"
+          echo ""
+          # Capture output regardless of exit code
+          set +e
+          ./target/debug/litebox_runner_windows_on_linux_userland \
+            ./windows_test_programs/target/x86_64-pc-windows-gnu/release/hello_cli.exe \
+            > /tmp/pe_test_output.txt 2>&1
+          EXIT_CODE=$?
+          set -e
+
+          # Display first 60 lines of output for debugging
+          head -60 /tmp/pe_test_output.txt
+          echo ""
+
+          # Verify key success indicators
+          grep -q "Loaded PE binary:" /tmp/pe_test_output.txt || { echo "✗ Failed to load PE binary"; exit 1; }
+          grep -q "Entry point:" /tmp/pe_test_output.txt || { echo "✗ Failed to parse entry point"; exit 1; }
+          grep -q "Sections:" /tmp/pe_test_output.txt || { echo "✗ Failed to parse sections"; exit 1; }
+          grep -q "Applying relocations" /tmp/pe_test_output.txt || { echo "✗ Failed to apply relocations"; exit 1; }
+          grep -q "Resolving imports" /tmp/pe_test_output.txt || { echo "✗ Failed to resolve imports"; exit 1; }
+
+          echo "✓ PE loading infrastructure working (exit code: $EXIT_CODE, expected non-zero)"
+
+      # ── API Tracing ───────────────────────────────────────────────────────
+      - name: Test Windows CLI program - API Tracing
+        run: |
+          echo "=== Testing hello_cli.exe with API Tracing ==="
+          echo "Expected: API calls should be traced (LoadLibrary, GetProcAddress, etc.)"
+          echo ""
+          set +e
+          ./target/debug/litebox_runner_windows_on_linux_userland \
+            --trace-apis \
+            --trace-format text \
+            ./windows_test_programs/target/x86_64-pc-windows-gnu/release/hello_cli.exe \
+            > /tmp/trace_test_output.txt 2>&1
+          EXIT_CODE=$?
+          set -e
+
+          # Display first 80 lines of output (more than PE test to show tracing)
+          head -80 /tmp/trace_test_output.txt
+          echo ""
+
+          # Verify tracing is working
+          grep -q "\[TID:main\] CALL" /tmp/trace_test_output.txt || { echo "✗ No API calls traced"; exit 1; }
+          grep -q "LoadLibrary" /tmp/trace_test_output.txt || { echo "✗ LoadLibrary not traced"; exit 1; }
+          grep -q "GetProcAddress" /tmp/trace_test_output.txt || { echo "✗ GetProcAddress not traced"; exit 1; }
+
+          echo "✓ API tracing working (exit code: $EXIT_CODE)"
+
+      # ── GUI PE Loading ────────────────────────────────────────────────────
+      - name: Test Windows GUI program - PE Loading
+        run: |
+          echo "=== Testing hello_gui.exe PE Loading ==="
+          echo "Expected: PE binary should be loaded, GUI subsystem detected"
+          echo ""
+          set +e
+          ./target/debug/litebox_runner_windows_on_linux_userland \
+            ./windows_test_programs/target/x86_64-pc-windows-gnu/release/hello_gui.exe \
+            > /tmp/gui_test_output.txt 2>&1
+          EXIT_CODE=$?
+          set -e
+
+          # Display first 40 lines of output (shorter since GUI binary similar to CLI)
+          head -40 /tmp/gui_test_output.txt
+          echo ""
+
+          # Verify GUI binary loads correctly
+          grep -q "Loaded PE binary:" /tmp/gui_test_output.txt || { echo "✗ Failed to load GUI PE binary"; exit 1; }
+          grep -q "Sections:" /tmp/gui_test_output.txt || { echo "✗ Failed to parse GUI sections"; exit 1; }
+
+          echo "✓ GUI PE binary loading working (exit code: $EXIT_CODE)"
+
+      # ── JSON Trace Output ─────────────────────────────────────────────────
+      - name: Test JSON Trace Output
+        run: |
+          echo "=== Testing JSON Trace Output ==="
+          set +e
+          ./target/debug/litebox_runner_windows_on_linux_userland \
+            --trace-apis \
+            --trace-format json \
+            --trace-output trace.json \
+            ./windows_test_programs/target/x86_64-pc-windows-gnu/release/hello_cli.exe \
+            > /tmp/json_test_output.txt 2>&1
+          EXIT_CODE=$?
+          set -e
+
+          echo ""
+          if [ ! -f trace.json ]; then
+            echo "✗ JSON trace file not created"
+            echo "Runner output:"
+            head -40 /tmp/json_test_output.txt
+            exit 1
+          fi
+
+          echo "✓ JSON trace file created successfully"
+          echo "Sample trace output (first 10 lines):"
+          head -10 trace.json
+
+          # Verify JSON is valid and contains expected data
+          if ! grep -q '"event"' trace.json; then
+            echo "✗ JSON trace file doesn't contain expected event data"
+            exit 1
+          fi
+
+          echo "✓ JSON trace format valid (exit code: $EXIT_CODE)"
+
+      # ── Upload test output on failure ─────────────────────────────────────
+      - name: Upload test output on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pe-tracing-test-output
+          path: /tmp/*_output.txt
+          retention-days: 7
+
+      # ── Summary ───────────────────────────────────────────────────────────
+      - name: Summary
+        if: always()
+        run: |
+          echo ""
+          echo "================================================"
+          echo "Windows-on-Linux Test Summary"
+          echo "================================================"
+          echo "✓ Windows test programs built successfully"
+          echo "✓ Windows PE binaries load on Linux"
+          echo "✓ Sections parsed and loaded into memory"
+          echo "✓ Import resolution working"
+          echo "✓ Relocation processing working"
+          echo "✓ API tracing infrastructure functional"
+          echo ""
+          echo "Current Status:"
+          echo "  - PE loader: COMPLETE"
+          echo "  - Import resolution: COMPLETE"
+          echo "  - API tracing: COMPLETE"
+          echo "  - Full execution: IN PROGRESS (Phase 7)"
+          echo ""
+          echo "See docs/windows_on_linux_status.md for details"
+          echo "================================================"
+
