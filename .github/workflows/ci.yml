@@ -209,6 +209,12 @@ jobs:
           ./target/debug/litebox_runner_windows_on_linux_userland \
             windows_test_programs/target/x86_64-pc-windows-gnu/release/file_io_test.exe \
             2>"$stderr_file" || { echo "ERROR: file_io_test.exe failed"; cat "$stderr_file"; exit 1; }
+      - name: Run string_test.exe and verify exit code
+        run: |
+          stderr_file=$(mktemp)
+          ./target/debug/litebox_runner_windows_on_linux_userland \
+            windows_test_programs/target/x86_64-pc-windows-gnu/release/string_test.exe \
+            2>"$stderr_file" || { echo "ERROR: string_test.exe failed"; cat "$stderr_file"; exit 1; }
 
   build_and_test_snp:
     name: Build and Test SNP
