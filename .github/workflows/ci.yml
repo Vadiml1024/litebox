@@ -159,6 +159,49 @@ jobs:
       - name: Build documentation (fail on warnings)
         run: cargo doc --locked --verbose --no-deps --all-features --document-private-items -p litebox_runner_linux_on_windows_userland
 
+  build_and_test_windows_on_linux:
+    name: Build and Test Windows-on-Linux
+    runs-on: ubuntu-latest
+    env:
+      RUSTFLAGS: -Dwarnings
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+      - name: Set up Rust
+        run: |
+          rustup toolchain install $(awk -F'"' '/channel/{print $2}' rust-toolchain.toml) --profile minimal --no-self-update --target x86_64-pc-windows-gnu
+      - uses: Swatinem/rust-cache@v2
+      - name: Install MinGW cross-compiler
+        run: sudo apt-get install -y gcc-mingw-w64-x86-64
+      - name: Build Windows test programs
+        working-directory: windows_test_programs
+        run: cargo build --release --target x86_64-pc-windows-gnu
+      - name: Build Windows-on-Linux runner
+        run: cargo build -p litebox_runner_windows_on_linux_userland
+      - name: Run hello_cli.exe and verify output
+        run: |
+          output=$(./target/debug/litebox_runner_windows_on_linux_userland \
+            windows_test_programs/target/x86_64-pc-windows-gnu/release/hello_cli.exe \
+            2>/dev/null)
+          echo "$output"
+          echo "$output" | grep -q "Hello World from LiteBox!" || \
+            (echo "ERROR: hello_cli.exe did not produce expected output" && exit 1)
+      - name: Run math_test.exe and verify exit code
+        run: |
+          ./target/debug/litebox_runner_windows_on_linux_userland \
+            windows_test_programs/target/x86_64-pc-windows-gnu/release/math_test.exe \
+            2>/dev/null
+      - name: Run env_test.exe and verify exit code
+        run: |
+          ./target/debug/litebox_runner_windows_on_linux_userland \
+            windows_test_programs/target/x86_64-pc-windows-gnu/release/env_test.exe \
+            2>/dev/null
+      - name: Run args_test.exe and verify exit code
+        run: |
+          ./target/debug/litebox_runner_windows_on_linux_userland \
+            windows_test_programs/target/x86_64-pc-windows-gnu/release/args_test.exe \
+            2>/dev/null
+
   build_and_test_snp:
     name: Build and Test SNP
     runs-on: ubuntu-latest

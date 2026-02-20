@@ -87,6 +87,25 @@ fn ratchet_maybe_uninit() -> Result<()> {
     )
 }
 
+#[test]
+fn ratchet_stubs() -> Result<()> {
+    // Track the number of stub implementations in the Windows-on-Linux platform crate.
+    // Stub functions carry a specific doc phrase in their doc-comments. As real
+    // implementations replace stubs, this count should decrease. Lower is better.
+    //
+    // The phrase is split via concat! so the test file itself is not counted.
+    let stub_phrase = concat!("This function", " is a stub");
+    ratchet(
+        &[("litebox_platform_linux_for_windows/", 58)],
+        |file| {
+            Ok(file
+                .lines()
+                .filter(|line| line.as_ref().unwrap().contains(stub_phrase))
+                .count())
+        },
+    )
+}
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 /// Convenience function to set up a ratchet test, see below for examples.
