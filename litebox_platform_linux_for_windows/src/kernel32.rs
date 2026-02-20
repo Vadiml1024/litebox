@@ -2645,21 +2645,104 @@ pub unsafe extern "C" fn kernel32_FlushFileBuffers(_file: *mut core::ffi::c_void
     1 // TRUE - pretend success
 }
 
-/// FormatMessageW stub - formats a message string
+/// FormatMessageW - formats a system error message or a custom message string
+///
+/// Supports `FORMAT_MESSAGE_FROM_SYSTEM` (0x1000): looks up the text for the
+/// Windows error code given in `message_id` and writes it (as a null-terminated
+/// UTF-16 string) into `buffer`.  When `FORMAT_MESSAGE_ALLOCATE_BUFFER`
+/// (0x100) is also set, `buffer` is treated as a `*mut *mut u16`: a heap
+/// buffer is allocated with `HeapAlloc` and its address is stored at
+/// `*buffer`; the caller must free it with `HeapFree` / `LocalFree`.
+///
+/// Returns the number of UTF-16 code units written, excluding the null
+/// terminator, or 0 on failure (sets last-error to
+/// `ERROR_INSUFFICIENT_BUFFER` / `ERROR_INVALID_PARAMETER` as appropriate).
 ///
 /// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
+/// * When `FORMAT_MESSAGE_ALLOCATE_BUFFER` is clear: `buffer` must be a
+///   writable array of at least `size` UTF-16 code units.
+/// * When `FORMAT_MESSAGE_ALLOCATE_BUFFER` is set: `buffer` must be a valid
+///   `*mut *mut u16`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_FormatMessageW(
-    _flags: u32,
+    flags: u32,
     _source: *const core::ffi::c_void,
-    _message_id: u32,
+    message_id: u32,
     _language_id: u32,
-    _buffer: *mut u16,
-    _size: u32,
+    buffer: *mut u16,
+    size: u32,
     _arguments: *mut *mut core::ffi::c_void,
 ) -> u32 {
-    0 // 0 - error/not implemented
+    const FORMAT_MESSAGE_ALLOCATE_BUFFER: u32 = 0x0100;
+    const FORMAT_MESSAGE_FROM_SYSTEM: u32 = 0x1000;
+
+    if flags & FORMAT_MESSAGE_FROM_SYSTEM == 0 {
+        // We only support FORMAT_MESSAGE_FROM_SYSTEM for now.
+        kernel32_SetLastError(87); // ERROR_INVALID_PARAMETER
+        return 0;
+    }
+
+    let msg = windows_error_message(message_id);
+    let utf16: Vec<u16> = msg.encode_utf16().chain(core::iter::once(0u16)).collect();
+    let char_count = (utf16.len() - 1) as u32; // without null terminator
+
+    if flags & FORMAT_MESSAGE_ALLOCATE_BUFFER != 0 {
+        // buffer is actually a *mut *mut u16 — allocate heap memory and store pointer.
+        if buffer.is_null() {
+            kernel32_SetLastError(87); // ERROR_INVALID_PARAMETER
+            return 0;
+        }
+        let heap = kernel32_GetProcessHeap();
+        let byte_len = utf16.len() * 2;
+        let ptr = kernel32_HeapAlloc(heap, 0, byte_len).cast::<u16>();
+        if ptr.is_null() {
+            kernel32_SetLastError(14); // ERROR_OUTOFMEMORY
+            return 0;
+        }
+        core::ptr::copy_nonoverlapping(utf16.as_ptr(), ptr, utf16.len());
+        *buffer.cast::<*mut u16>() = ptr;
+        return char_count;
+    }
+
+    // Write to caller-supplied buffer.
+    if buffer.is_null() || size == 0 {
+        kernel32_SetLastError(87); // ERROR_INVALID_PARAMETER
+        return 0;
+    }
+    let to_write = utf16.len().min(size as usize); // includes null terminator if it fits
+    core::ptr::copy_nonoverlapping(utf16.as_ptr(), buffer, to_write);
+    // Ensure null termination even if we had to truncate.
+    *buffer.add(to_write - 1) = 0;
+    char_count.min(size - 1)
+}
+
+/// Returns the human-readable message for a Windows system error code.
+fn windows_error_message(code: u32) -> String {
+    let msg = match code {
+        0 => "The operation completed successfully.",
+        1 => "Incorrect function.",
+        2 => "The system cannot find the file specified.",
+        3 => "The system cannot find the path specified.",
+        4 => "The system cannot open the file.",
+        5 => "Access is denied.",
+        6 => "The handle is invalid.",
+        8 => "Not enough storage is available to process this command.",
+        14 => "Not enough storage is available to complete this operation.",
+        15 => "The system cannot find the drive specified.",
+        16 => "The directory cannot be removed.",
+        18 => "There are no more files.",
+        32 => "The process cannot access the file because it is being used by another process.",
+        87 => "The parameter is incorrect.",
+        112 => "There is not enough space on the disk.",
+        122 => "The data area passed to a system call is too small.",
+        123 => "The filename, directory name, or volume label syntax is incorrect.",
+        183 => "Cannot create a file when that file already exists.",
+        206 => "The filename or extension is too long.",
+        998 => "Invalid access to memory location.",
+        1168 => "Element not found.",
+        _ => return format!("Unknown error ({code})."),
+    };
+    msg.to_string()
 }
 
 /// GetCurrentDirectoryW - gets the current working directory
@@ -2769,6 +2852,13 @@ pub unsafe extern "C" fn kernel32_GetFileInformationByHandle(
 ) -> i32 {
     use std::os::unix::fs::MetadataExt;
 
+    // Windows FILETIME: 100-nanosecond intervals since 1601-01-01 UTC.
+    // Unix time: seconds since 1970-01-01 UTC.  Difference: 11 644 473 600 s.
+    // Fake volume serial number — Linux has no direct equivalent.
+    const UNIX_EPOCH_OFFSET: u64 = 11_644_473_600;
+    const TICKS_PER_SEC: u64 = 10_000_000;
+    const FAKE_VOLUME_SERIAL: u32 = 0x1234_5678;
+
     if file_information.is_null() {
         kernel32_SetLastError(87); // ERROR_INVALID_PARAMETER
         return 0;
@@ -2788,30 +2878,20 @@ pub unsafe extern "C" fn kernel32_GetFileInformationByHandle(
         return 0;
     };
 
-    // Windows FILETIME: 100-nanosecond intervals since 1601-01-01 UTC.
-    // Unix time: seconds since 1970-01-01 UTC.  Difference: 11 644 473 600 s.
-    const UNIX_EPOCH_OFFSET: u64 = 11_644_473_600;
-    const TICKS_PER_SEC: u64 = 10_000_000;
-    // Fake volume serial number — Linux has no direct equivalent.
-    const FAKE_VOLUME_SERIAL: u32 = 0x1234_5678;
     let to_filetime = |secs: i64, nsecs: i64| -> u64 {
         if secs < 0 {
             return 0;
         }
-        let ticks_secs = (secs as u64)
+        let whole = (secs as u64)
             .saturating_add(UNIX_EPOCH_OFFSET)
             .saturating_mul(TICKS_PER_SEC);
         // Add the sub-second nanosecond component (1 tick = 100 ns).
-        let ticks_nsecs = (nsecs.max(0) as u64) / 100;
-        ticks_secs.saturating_add(ticks_nsecs)
+        let sub_sec = (nsecs.max(0) as u64) / 100;
+        whole.saturating_add(sub_sec)
     };
 
     let attrs: u32 = if meta.is_dir() { 0x10 } else { 0x80 }
-        | if meta.permissions().readonly() {
-            0x01
-        } else {
-            0
-        };
+        | u32::from(meta.permissions().readonly());
     let file_size = meta.len();
     let mtime = to_filetime(meta.mtime(), meta.mtime_nsec());
     let atime = to_filetime(meta.atime(), meta.atime_nsec());
@@ -2851,13 +2931,28 @@ pub unsafe extern "C" fn kernel32_GetFileInformationByHandle(
     1 // TRUE
 }
 
-/// GetFileType stub - gets the type of a file
+/// GetFileType - gets the type of a file
+///
+/// Returns FILE_TYPE_CHAR (2) for the standard console handles, FILE_TYPE_DISK (1)
+/// for handles opened with CreateFileW, and FILE_TYPE_UNKNOWN (0) otherwise.
 ///
 /// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
+/// This function is safe to call; `file` is treated as an opaque handle value.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn kernel32_GetFileType(_file: *mut core::ffi::c_void) -> u32 {
-    0 // FILE_TYPE_UNKNOWN
+pub unsafe extern "C" fn kernel32_GetFileType(file: *mut core::ffi::c_void) -> u32 {
+    const FILE_TYPE_DISK: u32 = 1;
+    const FILE_TYPE_CHAR: u32 = 2;
+    const FILE_TYPE_UNKNOWN: u32 = 0;
+
+    let handle_val = file as usize;
+    // 0x10 = stdin, 0x11 = stdout, 0x12 = stderr (see GetStdHandle)
+    if handle_val == 0x10 || handle_val == 0x11 || handle_val == 0x12 {
+        return FILE_TYPE_CHAR;
+    }
+    if with_file_handles(|map| map.contains_key(&handle_val)) {
+        return FILE_TYPE_DISK;
+    }
+    FILE_TYPE_UNKNOWN
 }
 
 /// GetFullPathNameW - gets the absolute path name of a file
@@ -3374,13 +3469,32 @@ pub unsafe extern "C" fn kernel32_GetProcessId(_process: *mut core::ffi::c_void)
     1 // Return a fake process ID
 }
 
-/// GetSystemDirectoryW stub
+/// GetSystemDirectoryW - returns the Windows system directory path
+///
+/// Returns `C:\Windows\System32` as the system directory.  When `buffer` is
+/// null or too small, the required size (including the null terminator) is
+/// returned so callers can retry with the correct buffer size.
 ///
 /// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
+/// When `buffer` is non-null, it must be a valid writable buffer of at least
+/// `size` UTF-16 code units.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn kernel32_GetSystemDirectoryW(_buffer: *mut u16, _size: u32) -> u32 {
-    0 // 0 = error
+pub unsafe extern "C" fn kernel32_GetSystemDirectoryW(buffer: *mut u16, size: u32) -> u32 {
+    // "C:\Windows\System32" encoded as UTF-16 (null-terminated)
+    let path: &[u16] = &[
+        u16::from(b'C'), u16::from(b':'), u16::from(b'\\'), u16::from(b'W'), u16::from(b'i'),
+        u16::from(b'n'), u16::from(b'd'), u16::from(b'o'), u16::from(b'w'), u16::from(b's'),
+        u16::from(b'\\'), u16::from(b'S'), u16::from(b'y'), u16::from(b's'), u16::from(b't'),
+        u16::from(b'e'), u16::from(b'm'), u16::from(b'3'), u16::from(b'2'), 0u16,
+    ];
+    let required = path.len() as u32; // includes null terminator
+    if buffer.is_null() || size < required {
+        return required;
+    }
+    for (i, &ch) in path.iter().enumerate() {
+        *buffer.add(i) = ch;
+    }
+    (path.len() - 1) as u32 // characters written, excluding null terminator
 }
 
 /// GetTempPathW stub - gets the temporary directory path
@@ -3415,13 +3529,30 @@ pub unsafe extern "C" fn kernel32_GetTempPathW(buffer_length: u32, buffer: *mut 
     (temp_path.len() - 1) as u32 // Length without null terminator
 }
 
-/// GetWindowsDirectoryW stub
+/// GetWindowsDirectoryW - returns the Windows directory path
+///
+/// Returns `C:\Windows` as the Windows directory.  When `buffer` is null or
+/// too small, the required size (including the null terminator) is returned.
 ///
 /// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
+/// When `buffer` is non-null, it must be a valid writable buffer of at least
+/// `size` UTF-16 code units.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn kernel32_GetWindowsDirectoryW(_buffer: *mut u16, _size: u32) -> u32 {
-    0 // 0 = error
+pub unsafe extern "C" fn kernel32_GetWindowsDirectoryW(buffer: *mut u16, size: u32) -> u32 {
+    // "C:\Windows" encoded as UTF-16 (null-terminated)
+    let path: &[u16] = &[
+        u16::from(b'C'), u16::from(b':'), u16::from(b'\\'), u16::from(b'W'), u16::from(b'i'),
+        u16::from(b'n'), u16::from(b'd'), u16::from(b'o'), u16::from(b'w'), u16::from(b's'),
+        0u16,
+    ];
+    let required = path.len() as u32; // includes null terminator
+    if buffer.is_null() || size < required {
+        return required;
+    }
+    for (i, &ch) in path.iter().enumerate() {
+        *buffer.add(i) = ch;
+    }
+    (path.len() - 1) as u32 // characters written, excluding null terminator
 }
 
 /// InitOnceBeginInitialize stub
@@ -7232,5 +7363,118 @@ mod tests {
 
         unsafe { kernel32_CloseHandle(h) };
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_get_file_type_stdio() {
+        // GetStdHandle pseudo-handles should be reported as FILE_TYPE_CHAR (2).
+        let stdin_h = unsafe { kernel32_GetStdHandle(u32::MAX - 9) }; // -10 as u32
+        let stdout_h = unsafe { kernel32_GetStdHandle(u32::MAX - 10) }; // -11 as u32
+        let stderr_h = unsafe { kernel32_GetStdHandle(u32::MAX - 11) }; // -12 as u32
+        const FILE_TYPE_CHAR: u32 = 2;
+        assert_eq!(unsafe { kernel32_GetFileType(stdin_h) }, FILE_TYPE_CHAR);
+        assert_eq!(unsafe { kernel32_GetFileType(stdout_h) }, FILE_TYPE_CHAR);
+        assert_eq!(unsafe { kernel32_GetFileType(stderr_h) }, FILE_TYPE_CHAR);
+    }
+
+    #[test]
+    fn test_get_file_type_unknown_handle() {
+        // An unrecognized handle should be FILE_TYPE_UNKNOWN (0).
+        const FILE_TYPE_UNKNOWN: u32 = 0;
+        let fake_handle = 0x9999_usize as *mut core::ffi::c_void;
+        assert_eq!(unsafe { kernel32_GetFileType(fake_handle) }, FILE_TYPE_UNKNOWN);
+    }
+
+    #[test]
+    fn test_get_system_directory_w() {
+        let mut buf = [0u16; 64];
+        let len = unsafe {
+            kernel32_GetSystemDirectoryW(buf.as_mut_ptr(), buf.len() as u32)
+        };
+        assert!(len > 0, "Should return non-zero length");
+        let s = String::from_utf16_lossy(&buf[..len as usize]);
+        assert!(s.starts_with("C:\\Windows"), "Should start with C:\\Windows");
+        assert!(s.contains("System32"), "Should contain System32");
+    }
+
+    #[test]
+    fn test_get_system_directory_w_small_buffer() {
+        // A buffer that's too small: should return the required size.
+        let mut tiny = [0u16; 3];
+        let required = unsafe {
+            kernel32_GetSystemDirectoryW(tiny.as_mut_ptr(), tiny.len() as u32)
+        };
+        assert!(required > tiny.len() as u32, "Should return required size when buffer is too small");
+    }
+
+    #[test]
+    fn test_get_windows_directory_w() {
+        let mut buf = [0u16; 32];
+        let len = unsafe {
+            kernel32_GetWindowsDirectoryW(buf.as_mut_ptr(), buf.len() as u32)
+        };
+        assert!(len > 0, "Should return non-zero length");
+        let s = String::from_utf16_lossy(&buf[..len as usize]);
+        assert_eq!(s, "C:\\Windows", "Should return C:\\Windows");
+    }
+
+    #[test]
+    fn test_format_message_w_known_error() {
+        const FORMAT_MESSAGE_FROM_SYSTEM: u32 = 0x1000;
+        let mut buf = [0u16; 256];
+        // Error 2 = "The system cannot find the file specified."
+        let len = unsafe {
+            kernel32_FormatMessageW(
+                FORMAT_MESSAGE_FROM_SYSTEM,
+                core::ptr::null(),
+                2,
+                0,
+                buf.as_mut_ptr(),
+                buf.len() as u32,
+                core::ptr::null_mut(),
+            )
+        };
+        assert!(len > 0, "Should format error 2");
+        let s = String::from_utf16_lossy(&buf[..len as usize]);
+        assert!(s.contains("file"), "Error 2 message should mention 'file'");
+    }
+
+    #[test]
+    fn test_format_message_w_unknown_error() {
+        const FORMAT_MESSAGE_FROM_SYSTEM: u32 = 0x1000;
+        let mut buf = [0u16; 256];
+        // Error 99999 = not in our table → "Unknown error (...)"
+        let len = unsafe {
+            kernel32_FormatMessageW(
+                FORMAT_MESSAGE_FROM_SYSTEM,
+                core::ptr::null(),
+                99999,
+                0,
+                buf.as_mut_ptr(),
+                buf.len() as u32,
+                core::ptr::null_mut(),
+            )
+        };
+        assert!(len > 0, "Should return something for unknown error");
+        let s = String::from_utf16_lossy(&buf[..len as usize]);
+        assert!(s.contains("Unknown"), "Unknown error should say 'Unknown'");
+    }
+
+    #[test]
+    fn test_format_message_w_unsupported_flags() {
+        // Without FORMAT_MESSAGE_FROM_SYSTEM the function should fail (return 0).
+        let mut buf = [0u16; 64];
+        let len = unsafe {
+            kernel32_FormatMessageW(
+                0,
+                core::ptr::null(),
+                2,
+                0,
+                buf.as_mut_ptr(),
+                buf.len() as u32,
+                core::ptr::null_mut(),
+            )
+        };
+        assert_eq!(len, 0, "Should return 0 for unsupported flags");
     }
 }

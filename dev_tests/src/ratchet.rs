@@ -95,7 +95,7 @@ fn ratchet_stubs() -> Result<()> {
     //
     // The phrase is split via concat! so the test file itself is not counted.
     let stub_phrase = concat!("This function", " is a stub");
-    ratchet(&[("litebox_platform_linux_for_windows/", 57)], |file| {
+    ratchet(&[("litebox_platform_linux_for_windows/", 53)], |file| {
         Ok(file
             .lines()
             .filter(|line| line.as_ref().unwrap().contains(stub_phrase))

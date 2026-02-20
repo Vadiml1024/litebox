@@ -105,11 +105,11 @@ fn main() {
     let unicode = "Hello 世界 🦀";
     let byte_len = unicode.len();
     let char_count = unicode.chars().count();
-    if byte_len == 18 && char_count == 10 {
+    if byte_len == 17 && char_count == 10 {
         println!("  ✓ Unicode string: {} bytes, {} chars", byte_len, char_count);
         passed += 1;
     } else {
-        println!("  ✗ Unicode handling issue: {} bytes (expected 18), {} chars (expected 10)", 
+        println!("  ✗ Unicode handling issue: {} bytes (expected 17), {} chars (expected 10)", 
                  byte_len, char_count);
         failed += 1;
     }
