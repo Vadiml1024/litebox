@@ -1,4 +1,4 @@
-name: Test WinSock Programs on Linux
+name: Test Win32 Programs on Linux
 
 permissions:
   contents: read
@@ -9,17 +9,19 @@ on:
       - main
     paths:
       - 'windows_test_programs/winsock_test/**'
+      - 'windows_test_programs/registry_test/**'
       - 'litebox_platform_linux_for_windows/**'
       - 'litebox_shim_windows/**'
       - 'litebox_runner_windows_on_linux_userland/**'
-      - '.github/workflows/test-winsock-on-linux.yml'
+      - '.github/workflows/test-win32-tests-on-linux.yml'
   pull_request:
     paths:
       - 'windows_test_programs/winsock_test/**'
+      - 'windows_test_programs/registry_test/**'
       - 'litebox_platform_linux_for_windows/**'
       - 'litebox_shim_windows/**'
       - 'litebox_runner_windows_on_linux_userland/**'
-      - '.github/workflows/test-winsock-on-linux.yml'
+      - '.github/workflows/test-win32-tests-on-linux.yml'
   merge_group:
   workflow_dispatch:
 
@@ -33,9 +35,17 @@ env:
   RUSTFLAGS: -Dwarnings
 
 jobs:
-  test_winsock:
-    name: Build and Run WinSock Tests on Linux
+  test_win32:
+    name: Build and Run ${{ matrix.suite }} Tests on Linux
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - suite: winsock
+            test_dir: windows_test_programs/winsock_test
+          - suite: registry
+            test_dir: windows_test_programs/registry_test
 
     steps:
       # ── Checkout ──────────────────────────────────────────────────────────
@@ -57,24 +67,26 @@ jobs:
           sudo apt-get update -y
           sudo apt-get install -y mingw-w64
 
-      # ── Cargo cache ───────────────────────────────────────────────────────
+      # ── Cargo cache (shared key so both matrix jobs can reuse runner build) ─
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: wol-runner
 
-      # ── Build the WinSock C++ test programs ───────────────────────────────
-      - name: Build WinSock test programs
+      # ── Build the test programs for this suite ────────────────────────────
+      - name: Build ${{ matrix.suite }} test programs
         run: |
-          make -C windows_test_programs/winsock_test
+          make -C ${{ matrix.test_dir }}
           echo "Built executables:"
-          ls -lh windows_test_programs/winsock_test/*.exe
-          file windows_test_programs/winsock_test/*.exe
+          ls -lh ${{ matrix.test_dir }}/*.exe
+          file ${{ matrix.test_dir }}/*.exe
 
       # ── Build the Windows-on-Linux runner ─────────────────────────────────
       - name: Build Windows-on-Linux runner
-        run: |
-          cargo build --locked -p litebox_runner_windows_on_linux_userland
+        run: cargo build --locked -p litebox_runner_windows_on_linux_userland
 
-      # ── Run WinSock basic API tests ───────────────────────────────────────
+      # ── Winsock-specific test steps ───────────────────────────────────────
       - name: Run winsock_basic_test
+        if: matrix.suite == 'winsock'
         run: |
           echo "=== winsock_basic_test.exe ==="
           ./target/debug/litebox_runner_windows_on_linux_userland \
@@ -87,8 +99,8 @@ jobs:
             || { echo "✗ winsock_basic_test FAILED"; exit 1; }
           echo "✓ winsock_basic_test PASSED"
 
-      # ── Run WinSock TCP tests ─────────────────────────────────────────────
       - name: Run winsock_tcp_test
+        if: matrix.suite == 'winsock'
         run: |
           echo "=== winsock_tcp_test.exe ==="
           ./target/debug/litebox_runner_windows_on_linux_userland \
@@ -101,8 +113,8 @@ jobs:
             || { echo "✗ winsock_tcp_test FAILED"; exit 1; }
           echo "✓ winsock_tcp_test PASSED"
 
-      # ── Run WinSock UDP tests ─────────────────────────────────────────────
       - name: Run winsock_udp_test
+        if: matrix.suite == 'winsock'
         run: |
           echo "=== winsock_udp_test.exe ==="
           ./target/debug/litebox_runner_windows_on_linux_userland \
@@ -115,13 +127,28 @@ jobs:
             || { echo "✗ winsock_udp_test FAILED"; exit 1; }
           echo "✓ winsock_udp_test PASSED"
 
+      # ── Registry-specific test steps ──────────────────────────────────────
+      - name: Run registry_test
+        if: matrix.suite == 'registry'
+        run: |
+          echo "=== registry_test.exe ==="
+          ./target/debug/litebox_runner_windows_on_linux_userland \
+            windows_test_programs/registry_test/registry_test.exe \
+            2>&1 | tee /tmp/registry_test_out.txt
+
+          echo ""
+          echo "--- Verifying test output ---"
+          grep -q "Windows Registry API Tests PASSED" /tmp/registry_test_out.txt \
+            || { echo "✗ registry_test FAILED"; exit 1; }
+          echo "✓ registry_test PASSED"
+
       # ── Upload test output on failure ─────────────────────────────────────
       - name: Upload test output on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: winsock-test-output
-          path: /tmp/winsock_*.txt
+          name: ${{ matrix.suite }}-test-output
+          path: /tmp/${{ matrix.suite }}_*.txt
           retention-days: 7
 
       # ── Summary ───────────────────────────────────────────────────────────
@@ -130,16 +157,14 @@ jobs:
         run: |
           echo ""
           echo "================================================"
-          echo " WinSock Tests on Linux – Summary"
+          echo " ${{ matrix.suite }} Tests on Linux – Summary"
           echo "================================================"
-          for f in /tmp/winsock_basic_out.txt \
-                   /tmp/winsock_tcp_out.txt \
-                   /tmp/winsock_udp_out.txt; do
+          for f in /tmp/${{ matrix.suite }}_*.txt; do
             [ -f "$f" ] || continue
             name=$(basename "$f" _out.txt)
             pass=$(grep -c "\[PASS\]" "$f" || true)
             fail=$(grep -c "\[FAIL\]" "$f" || true)
-            if grep -q "PASSED (0 failures)" "$f"; then
+            if grep -qE "PASSED \(0 failures\)|Tests PASSED" "$f"; then
               echo "  ✓ ${name}: ${pass} passed, ${fail} failed"
             else
               echo "  ✗ ${name}: ${pass} passed, ${fail} failed"

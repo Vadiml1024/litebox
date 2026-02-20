@@ -7,7 +7,19 @@ on:
   push:
     branches:
       - main
+    paths:
+      - 'windows_test_programs/**'
+      - 'litebox_platform_linux_for_windows/**'
+      - 'litebox_shim_windows/**'
+      - 'litebox_runner_windows_on_linux_userland/**'
+      - '.github/workflows/test-windows-on-linux.yml'
   pull_request:
+    paths:
+      - 'windows_test_programs/**'
+      - 'litebox_platform_linux_for_windows/**'
+      - 'litebox_shim_windows/**'
+      - 'litebox_runner_windows_on_linux_userland/**'
+      - '.github/workflows/test-windows-on-linux.yml'
   merge_group:
   workflow_dispatch:
 
@@ -31,16 +43,20 @@ jobs:
 
       - name: Set up Rust
         run: |
-          rustup toolchain install $(awk -F'"' '/channel/{print $2}' rust-toolchain.toml) --profile minimal --no-self-update --target x86_64-pc-windows-gnu
-          rustup target add x86_64-unknown-linux-gnu
+          rustup toolchain install \
+            $(awk -F'"' '/channel/{print $2}' rust-toolchain.toml) \
+            --profile minimal \
+            --no-self-update \
+            --target x86_64-pc-windows-gnu \
+            --target x86_64-unknown-linux-gnu
 
       - name: Install MinGW cross-compiler
         run: |
-          sudo apt update
-          sudo apt install -y mingw-w64
+          sudo apt-get update -y
+          sudo apt-get install -y mingw-w64
 
       - name: Install gdb for debugging
-        run: sudo apt install -y gdb
+        run: sudo apt-get install -y gdb
 
       - uses: Swatinem/rust-cache@v2
 
