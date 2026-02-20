@@ -19,19 +19,21 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   NEXTEST_VERSION: 0.9.114
+  RUSTFLAGS: -Dwarnings
 
 jobs:
   build_and_test:
     name: Build and Test
     runs-on: ubuntu-latest
     env:
-      RUSTFLAGS: -Dwarnings
       RUSTDOCFLAGS: -Dwarnings
     steps:
       - name: Check out repo
         uses: actions/checkout@v4
       - name: Use Node.js
         uses: actions/setup-node@v4
+        with:
+          node-version: '20'
       - name: Set up Rust
         run: |
           rustup toolchain install $(awk -F'"' '/channel/{print $2}' rust-toolchain.toml) --profile minimal --no-self-update --component rustfmt,clippy --target x86_64-unknown-linux-gnu
@@ -77,8 +79,6 @@ jobs:
   build_and_test_lvbs:
     name: Build and Test LVBS
     runs-on: ubuntu-latest
-    env:
-      RUSTFLAGS: -Dwarnings
     steps:
       - name: Check out repo
         uses: actions/checkout@v4
@@ -134,7 +134,6 @@ jobs:
     name: Build and Test Windows
     runs-on: windows-latest
     env:
-      RUSTFLAGS: -Dwarnings
       RUSTDOCFLAGS: -Dwarnings
     steps:
       - name: Check out repo
@@ -208,8 +207,6 @@ jobs:
   build_and_test_snp:
     name: Build and Test SNP
     runs-on: ubuntu-latest
-    env:
-      RUSTFLAGS: -Dwarnings
     steps:
       - name: Check out repo
         uses: actions/checkout@v4

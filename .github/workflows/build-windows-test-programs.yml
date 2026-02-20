@@ -15,6 +15,7 @@ on:
       - 'windows_test_programs/**'
       - '.github/workflows/build-windows-test-programs.yml'
   workflow_dispatch:
+  merge_group:
 
 # If a new commit is pushed to the branch before ongoing runs finish, cancel the ongoing runs
 concurrency:
@@ -39,47 +40,19 @@ jobs:
 
       - name: Install MinGW cross-compiler
         run: |
-          sudo apt update
-          sudo apt install -y mingw-w64
+          sudo apt-get update -y
+          sudo apt-get install -y mingw-w64
 
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: windows_test_programs
 
-      - name: Build CLI hello world
+      - name: Build Windows test programs
         run: |
           cd windows_test_programs
-          cargo build --release --target x86_64-pc-windows-gnu -p hello_cli
-
-      - name: Build GUI hello world
-        run: |
-          cd windows_test_programs
-          cargo build --release --target x86_64-pc-windows-gnu -p hello_gui
-
-      - name: Build file I/O test
-        run: |
-          cd windows_test_programs
-          cargo build --release --target x86_64-pc-windows-gnu -p file_io_test
-
-      - name: Build args test
-        run: |
-          cd windows_test_programs
-          cargo build --release --target x86_64-pc-windows-gnu -p args_test
-
-      - name: Build env test
-        run: |
-          cd windows_test_programs
-          cargo build --release --target x86_64-pc-windows-gnu -p env_test
-
-      - name: Build string test
-        run: |
-          cd windows_test_programs
-          cargo build --release --target x86_64-pc-windows-gnu -p string_test
-
-      - name: Build math test
-        run: |
-          cd windows_test_programs
-          cargo build --release --target x86_64-pc-windows-gnu -p math_test
+          cargo build --release --target x86_64-pc-windows-gnu \
+            -p hello_cli -p hello_gui -p file_io_test \
+            -p args_test -p env_test -p string_test -p math_test
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
