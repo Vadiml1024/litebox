@@ -1674,25 +1674,29 @@ pub unsafe extern "C" fn kernel32_CreateFileW(
     let path_str = wide_path_to_linux(file_name);
     let can_read = desired_access & GENERIC_READ != 0;
     let can_write = desired_access & GENERIC_WRITE != 0;
+    // When desired_access=0 (Windows attribute/metadata query), neither read nor write
+    // is requested.  Linux requires at least one access mode; open read-only so that
+    // fstat and similar metadata operations work.
+    let need_read = can_read || (!can_read && !can_write);
 
     let result = match creation_disposition {
         CREATE_NEW => std::fs::OpenOptions::new()
-            .read(can_read)
+            .read(need_read)
             .write(can_write)
             .create_new(true)
             .open(&path_str),
         CREATE_ALWAYS => std::fs::OpenOptions::new()
-            .read(can_read)
+            .read(need_read)
             .write(true)
             .create(true)
             .truncate(true)
             .open(&path_str),
         OPEN_EXISTING => std::fs::OpenOptions::new()
-            .read(can_read)
+            .read(need_read)
             .write(can_write)
             .open(&path_str),
         OPEN_ALWAYS => std::fs::OpenOptions::new()
-            .read(can_read)
+            .read(need_read)
             .write(true)
             .create(true)
             .truncate(false)
@@ -1730,7 +1734,8 @@ pub unsafe extern "C" fn kernel32_CreateFileW(
             let code = match e.kind() {
                 std::io::ErrorKind::AlreadyExists => 80, // ERROR_FILE_EXISTS
                 std::io::ErrorKind::PermissionDenied => 5, // ERROR_ACCESS_DENIED
-                _ => 2,
+                std::io::ErrorKind::NotFound => 2,       // ERROR_FILE_NOT_FOUND
+                _ => 87,                                 // ERROR_INVALID_PARAMETER
             };
             kernel32_SetLastError(code);
             INVALID_HANDLE_VALUE
@@ -2749,16 +2754,96 @@ pub unsafe extern "C" fn kernel32_GetFileAttributesW(file_name: *const u16) -> u
     }
 }
 
-/// GetFileInformationByHandle stub - gets file information by handle
+/// GetFileInformationByHandle — retrieves file information for the specified file.
+///
+/// Fills the caller-supplied `BY_HANDLE_FILE_INFORMATION` structure (52 bytes,
+/// 13 consecutive `u32` fields) using `fstat` on the underlying Linux file descriptor.
 ///
 /// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
+/// `file` must be a handle previously returned by `CreateFileW`.
+/// `file_information` must point to a writable 52-byte `BY_HANDLE_FILE_INFORMATION` struct.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_GetFileInformationByHandle(
-    _file: *mut core::ffi::c_void,
-    _file_information: *mut core::ffi::c_void,
+    file: *mut core::ffi::c_void,
+    file_information: *mut core::ffi::c_void,
 ) -> i32 {
-    0 // FALSE - not implemented
+    use std::os::unix::fs::MetadataExt;
+
+    if file_information.is_null() {
+        kernel32_SetLastError(87); // ERROR_INVALID_PARAMETER
+        return 0;
+    }
+
+    let handle_val = file as usize;
+
+    // Retrieve metadata from the registered file handle (calls fstat internally).
+    let result = with_file_handles(|map| map.get(&handle_val).map(|e| e.file.metadata()));
+
+    let Some(meta_result) = result else {
+        kernel32_SetLastError(6); // ERROR_INVALID_HANDLE
+        return 0;
+    };
+    let Ok(meta) = meta_result else {
+        kernel32_SetLastError(5); // ERROR_ACCESS_DENIED
+        return 0;
+    };
+
+    // Windows FILETIME: 100-nanosecond intervals since 1601-01-01 UTC.
+    // Unix time: seconds since 1970-01-01 UTC.  Difference: 11 644 473 600 s.
+    const UNIX_EPOCH_OFFSET: u64 = 11_644_473_600;
+    const TICKS_PER_SEC: u64 = 10_000_000;
+    let to_filetime = |secs: i64| -> u64 {
+        if secs < 0 {
+            return 0;
+        }
+        (secs as u64)
+            .saturating_add(UNIX_EPOCH_OFFSET)
+            .saturating_mul(TICKS_PER_SEC)
+    };
+
+    let attrs: u32 = if meta.is_dir() { 0x10 } else { 0x80 }
+        | if meta.permissions().readonly() {
+            0x01
+        } else {
+            0
+        };
+    let file_size = meta.len();
+    let mtime = to_filetime(meta.mtime());
+    let atime = to_filetime(meta.atime());
+    // Linux has no "creation time"; use ctime (metadata-change time) as approximation.
+    let ctime = to_filetime(meta.ctime());
+    let ino = meta.ino();
+    let nlink = meta.nlink();
+
+    // BY_HANDLE_FILE_INFORMATION layout (13 × u32 = 52 bytes):
+    //  [0]     dwFileAttributes
+    //  [1,2]   ftCreationTime    (low32, high32)
+    //  [3,4]   ftLastAccessTime  (low32, high32)
+    //  [5,6]   ftLastWriteTime   (low32, high32)
+    //  [7]     dwVolumeSerialNumber
+    //  [8]     nFileSizeHigh
+    //  [9]     nFileSizeLow
+    //  [10]    nNumberOfLinks
+    //  [11]    nFileIndexHigh
+    //  [12]    nFileIndexLow
+    // SAFETY: Caller guarantees file_information points to a valid 52-byte struct.
+    let p = file_information.cast::<u32>();
+    *p.add(0) = attrs;
+    *p.add(1) = ctime as u32;
+    *p.add(2) = (ctime >> 32) as u32;
+    *p.add(3) = atime as u32;
+    *p.add(4) = (atime >> 32) as u32;
+    *p.add(5) = mtime as u32;
+    *p.add(6) = (mtime >> 32) as u32;
+    *p.add(7) = 0x1234_5678; // fake volume serial number
+    *p.add(8) = (file_size >> 32) as u32;
+    *p.add(9) = file_size as u32;
+    *p.add(10) = nlink as u32;
+    *p.add(11) = (ino >> 32) as u32;
+    *p.add(12) = ino as u32;
+
+    kernel32_SetLastError(0); // SUCCESS
+    1 // TRUE
 }
 
 /// GetFileType stub - gets the type of a file
@@ -7062,5 +7147,85 @@ mod tests {
             ERROR_TOO_MANY_OPEN_FILES,
             "Expected ERROR_TOO_MANY_OPEN_FILES"
         );
+    }
+
+    /// `CreateFileW` with `desired_access=0` (Windows attribute/metadata query pattern)
+    /// must succeed for an existing file and return a valid handle.
+    #[test]
+    fn test_create_file_metadata_query_desired_access_zero() {
+        let path = "/tmp/litebox_metadata_query_test.txt";
+        let _ = std::fs::write(path, b"hello");
+
+        let wide: Vec<u16> = path.encode_utf16().chain(std::iter::once(0u16)).collect();
+        const OPEN_EXISTING: u32 = 3;
+        const INVALID_HANDLE_VALUE: usize = usize::MAX;
+
+        let h = unsafe {
+            kernel32_CreateFileW(
+                wide.as_ptr(),
+                0, // desired_access=0: attribute/metadata query
+                7, // share all
+                core::ptr::null_mut(),
+                OPEN_EXISTING,
+                0x0200_0000, // FILE_FLAG_BACKUP_SEMANTICS
+                core::ptr::null_mut(),
+            )
+        };
+        assert_ne!(
+            h as usize, INVALID_HANDLE_VALUE,
+            "CreateFileW with desired_access=0 should succeed for existing file"
+        );
+        unsafe { kernel32_CloseHandle(h) };
+        let _ = std::fs::remove_file(path);
+    }
+
+    /// `GetFileInformationByHandle` must fill the `BY_HANDLE_FILE_INFORMATION` struct
+    /// (52 bytes / 13 × u32) with valid metadata after opening a file via `CreateFileW`.
+    #[test]
+    fn test_get_file_information_by_handle() {
+        let path = "/tmp/litebox_gfibh_test.txt";
+        let content = b"GetFileInformationByHandle test content";
+        let _ = std::fs::write(path, content);
+
+        let wide: Vec<u16> = path.encode_utf16().chain(std::iter::once(0u16)).collect();
+        const GENERIC_READ: u32 = 0x8000_0000;
+        const OPEN_EXISTING: u32 = 3;
+        const INVALID_HANDLE_VALUE: usize = usize::MAX;
+
+        let h = unsafe {
+            kernel32_CreateFileW(
+                wide.as_ptr(),
+                GENERIC_READ,
+                7,
+                core::ptr::null_mut(),
+                OPEN_EXISTING,
+                0,
+                core::ptr::null_mut(),
+            )
+        };
+        assert_ne!(h as usize, INVALID_HANDLE_VALUE, "CreateFileW failed");
+
+        // Allocate a zeroed 52-byte BY_HANDLE_FILE_INFORMATION struct.
+        let mut info = [0u32; 13];
+        let ret = unsafe {
+            kernel32_GetFileInformationByHandle(h, info.as_mut_ptr().cast::<core::ffi::c_void>())
+        };
+        assert_eq!(ret, 1, "GetFileInformationByHandle should return TRUE");
+
+        // dwFileAttributes should be FILE_ATTRIBUTE_NORMAL (0x80) for a regular file.
+        assert_eq!(info[0], 0x80, "Expected FILE_ATTRIBUTE_NORMAL");
+        // nFileSizeHigh (info[8]) should be 0 for a small file.
+        assert_eq!(info[8], 0, "nFileSizeHigh should be 0");
+        // nFileSizeLow (info[9]) should equal the content length.
+        assert_eq!(
+            info[9] as usize,
+            content.len(),
+            "nFileSizeLow should equal the file size"
+        );
+        // nNumberOfLinks (info[10]) should be at least 1.
+        assert!(info[10] >= 1, "nNumberOfLinks should be >= 1");
+
+        unsafe { kernel32_CloseHandle(h) };
+        let _ = std::fs::remove_file(path);
     }
 }
