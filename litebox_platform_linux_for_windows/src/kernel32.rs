@@ -1677,7 +1677,7 @@ pub unsafe extern "C" fn kernel32_CreateFileW(
     // When desired_access=0 (Windows attribute/metadata query), neither read nor write
     // is requested.  Linux requires at least one access mode; open read-only so that
     // fstat and similar metadata operations work.
-    let need_read = can_read || (!can_read && !can_write);
+    let need_read = can_read || !can_write;
 
     let result = match creation_disposition {
         CREATE_NEW => std::fs::OpenOptions::new()
@@ -2792,6 +2792,8 @@ pub unsafe extern "C" fn kernel32_GetFileInformationByHandle(
     // Unix time: seconds since 1970-01-01 UTC.  Difference: 11 644 473 600 s.
     const UNIX_EPOCH_OFFSET: u64 = 11_644_473_600;
     const TICKS_PER_SEC: u64 = 10_000_000;
+    // Fake volume serial number — Linux has no direct equivalent.
+    const FAKE_VOLUME_SERIAL: u32 = 0x1234_5678;
     let to_filetime = |secs: i64| -> u64 {
         if secs < 0 {
             return 0;
@@ -2835,7 +2837,7 @@ pub unsafe extern "C" fn kernel32_GetFileInformationByHandle(
     *p.add(4) = (atime >> 32) as u32;
     *p.add(5) = mtime as u32;
     *p.add(6) = (mtime >> 32) as u32;
-    *p.add(7) = 0x1234_5678; // fake volume serial number
+    *p.add(7) = FAKE_VOLUME_SERIAL;
     *p.add(8) = (file_size >> 32) as u32;
     *p.add(9) = file_size as u32;
     *p.add(10) = nlink as u32;
