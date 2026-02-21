@@ -1941,8 +1941,9 @@ pub unsafe extern "C" fn kernel32_WriteFile(
 
 /// Close a handle (CloseHandle)
 ///
-/// Closes file handles opened by `CreateFileW`, event handles opened by
-/// `CreateEventW`, and directory-search handles opened by `FindFirstFileW`.
+/// Closes file handles opened by `CreateFileW` and event handles opened by
+/// `CreateEventW`. Directory-search handles opened by `FindFirstFileW` /
+/// `FindNextFileW` must be closed using `FindClose`, not `CloseHandle`.
 /// Thread handles are also accepted; for them we just return TRUE.
 ///
 /// # Safety
@@ -2462,21 +2463,19 @@ pub unsafe extern "C" fn kernel32_CreateDirectoryExW(
     kernel32_CreateDirectoryW(new_directory, security_attributes)
 }
 
-/// CreateEventW stub - creates an event object
+/// CreateEventW - creates an event object
 ///
-/// CreateEventW - creates a named or unnamed event object
-///
-/// Creates a Condvar-backed event that can be signaled with `SetEvent` and
-/// waited on with `WaitForSingleObject`.
+/// Creates a named or unnamed event object backed by a `Condvar` that can be
+/// signaled with `SetEvent` and waited on with `WaitForSingleObject`.
 ///
 /// `manual_reset` (non-zero) means the event stays signaled until explicitly
-/// reset with `ResetEvent`; zero means the event auto-resets after one waiter
-/// is released.  `initial_state` (non-zero) starts the event already
-/// signaled.  Named events (`name` non-null) are treated as anonymous; a
-/// unique handle is still returned.
+/// reset with `ResetEvent`; zero means the event auto-resets after one
+/// waiter is released.  `initial_state` (non-zero) starts the event already
+/// signaled.  Named events (`name` non-null) are currently treated as
+/// anonymous; a unique synthetic handle is still returned.
 ///
-/// Returns a non-null handle on success, or NULL if no handle could be
-/// allocated (sets `GetLastError()` to `ERROR_NOT_ENOUGH_MEMORY`).
+/// This implementation always returns a non-null synthetic handle and does
+/// not currently report allocation failures via `GetLastError()`.
 ///
 /// # Safety
 /// If `name` is non-null it must be a valid null-terminated UTF-16 string
@@ -3402,15 +3401,22 @@ pub unsafe extern "C" fn kernel32_SetLastError(error_code: u32) {
 /// WaitForSingleObject - waits until the specified object is in the signaled state or the
 /// time-out interval elapses.
 ///
-/// For thread handles (created by CreateThread), this joins the thread.
-/// For other handles (events, mutexes, etc.) that are not in the thread registry, it
-/// returns WAIT_OBJECT_0 immediately (optimistic stub).
+/// For event handles (created by `CreateEventW`), this waits with correct
+/// manual/auto-reset semantics. `INFINITE` (0xFFFFFFFF) blocks until the event
+/// is signaled; finite timeouts use a deadline loop that handles spurious
+/// wakeups and returns immediately when the event is already signaled.
+///
+/// For thread handles (created by `CreateThread`), this joins the thread.
+///
+/// For unrecognised handles (neither event nor thread), `WAIT_OBJECT_0` is
+/// returned immediately as an optimistic default.
 ///
 /// # Panics
-/// Panics if a thread's exit-code mutex is poisoned.
+/// Panics if a mutex protecting event or thread state is poisoned.
 ///
 /// # Safety
-/// `handle` must be a valid handle returned by CreateThread or another handle-producing API.
+/// `handle` must be a valid handle returned by `CreateEventW`, `CreateThread`,
+/// or another handle-producing API.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_WaitForSingleObject(
     handle: *mut core::ffi::c_void,
@@ -3439,16 +3445,48 @@ pub unsafe extern "C" fn kernel32_WaitForSingleObject(
             }
             return WAIT_OBJECT_0;
         }
-        let timeout = Duration::from_millis(u64::from(milliseconds));
-        let (mut signaled, _) = cvar.wait_timeout(signaled, timeout).unwrap();
-        return if *signaled {
+
+        // Finite-timeout wait.
+        //
+        // Return immediately if the event is already signaled.
+        if *signaled {
             if !manual_reset {
                 *signaled = false; // auto-reset
             }
-            WAIT_OBJECT_0
-        } else {
-            WAIT_TIMEOUT
-        };
+            return WAIT_OBJECT_0;
+        }
+
+        // Zero-timeout: check-and-return without blocking.
+        if milliseconds == 0 {
+            return WAIT_TIMEOUT;
+        }
+
+        // Loop to handle spurious wakeups and recompute remaining time.
+        let timeout = Duration::from_millis(u64::from(milliseconds));
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            if *signaled {
+                if !manual_reset {
+                    *signaled = false; // auto-reset
+                }
+                return WAIT_OBJECT_0;
+            }
+
+            let now = std::time::Instant::now();
+            if now >= deadline {
+                return WAIT_TIMEOUT;
+            }
+
+            let remaining = deadline - now;
+            let (guard, result) = cvar.wait_timeout(signaled, remaining).unwrap();
+            signaled = guard;
+
+            // If the Condvar reported a genuine timeout and the event is still not
+            // signaled, report WAIT_TIMEOUT.  Otherwise loop to recheck *signaled.
+            if result.timed_out() && !*signaled {
+                return WAIT_TIMEOUT;
+            }
+        }
     }
 
     // Take ownership of the join handle (if this is a thread handle).
@@ -5238,7 +5276,9 @@ pub unsafe extern "C" fn kernel32_GetTickCount64() -> u64 {
 
 /// SetEvent - sets the specified event object to the signaled state
 ///
-/// Signals the event, waking all threads waiting on it.  Returns TRUE (1) on
+/// Signals the event and wakes waiters.  For manual-reset events, all waiters
+/// are notified (`notify_all`); for auto-reset events only one waiter is
+/// released (`notify_one`) to match Win32 semantics.  Returns TRUE (1) on
 /// success, or FALSE (0) with `GetLastError() == ERROR_INVALID_HANDLE` if
 /// `event` is not a handle created by `CreateEventW`.
 ///
@@ -5248,14 +5288,21 @@ pub unsafe extern "C" fn kernel32_GetTickCount64() -> u64 {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_SetEvent(event: *mut core::ffi::c_void) -> i32 {
     let handle = event as usize;
-    let state_arc = with_event_handles(|map| map.get(&handle).map(|e| Arc::clone(&e.state)));
-    let Some(state) = state_arc else {
+    let state_and_flag = with_event_handles(|map| {
+        map.get(&handle)
+            .map(|e| (Arc::clone(&e.state), e.manual_reset))
+    });
+    let Some((state, manual_reset)) = state_and_flag else {
         kernel32_SetLastError(6); // ERROR_INVALID_HANDLE
         return 0;
     };
     let (lock, cvar) = &*state;
     *lock.lock().unwrap() = true;
-    cvar.notify_all();
+    if manual_reset {
+        cvar.notify_all();
+    } else {
+        cvar.notify_one();
+    }
     1 // TRUE
 }
 
