@@ -25,7 +25,7 @@ use std::fs::File;
 use std::io::{Read, Seek, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU32, AtomicUsize};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
 
@@ -238,6 +238,30 @@ fn with_thread_handles<R>(f: impl FnOnce(&mut HashMap<usize, ThreadEntry>) -> R)
 fn alloc_thread_handle() -> usize {
     use std::sync::atomic::Ordering;
     THREAD_HANDLE_COUNTER.fetch_add(4, Ordering::SeqCst)
+}
+
+// ── Event-handle registry ─────────────────────────────────────────────────
+// Maps synthetic HANDLE values (usize) to Condvar-backed event objects.
+// Used by CreateEventW / SetEvent / ResetEvent / WaitForSingleObject.
+
+static EVENT_HANDLE_COUNTER: AtomicUsize = AtomicUsize::new(0x4_0000);
+
+struct EventEntry {
+    manual_reset: bool,
+    state: Arc<(Mutex<bool>, Condvar)>,
+}
+
+static EVENT_HANDLES: Mutex<Option<HashMap<usize, EventEntry>>> = Mutex::new(None);
+
+fn with_event_handles<R>(f: impl FnOnce(&mut HashMap<usize, EventEntry>) -> R) -> R {
+    let mut guard = EVENT_HANDLES.lock().unwrap();
+    let map = guard.get_or_insert_with(HashMap::new);
+    f(map)
+}
+
+fn alloc_event_handle() -> usize {
+    use std::sync::atomic::Ordering;
+    EVENT_HANDLE_COUNTER.fetch_add(4, Ordering::SeqCst)
 }
 
 /// Windows thread start function pointer type (MS-x64 ABI).
@@ -1917,9 +1941,10 @@ pub unsafe extern "C" fn kernel32_WriteFile(
 
 /// Close a handle (CloseHandle)
 ///
-/// Closes file handles opened by `CreateFileW`.  Other handle types (threads,
-/// events, etc.) are cleaned up in the platform layer; for those we just return
-/// TRUE.
+/// Closes file handles opened by `CreateFileW` and event handles opened by
+/// `CreateEventW`. Directory-search handles opened by `FindFirstFileW` /
+/// `FindNextFileW` must be closed using `FindClose`, not `CloseHandle`.
+/// Thread handles are also accepted; for them we just return TRUE.
 ///
 /// # Safety
 /// This function is safe to call with any argument.
@@ -1930,7 +1955,11 @@ pub unsafe extern "C" fn kernel32_CloseHandle(handle: *mut core::ffi::c_void) ->
     with_file_handles(|map| {
         map.remove(&handle_val);
     });
-    1 // TRUE - success (or was not a registered file handle)
+    // Remove from event-handle map if present (drops the Arc-backed event state)
+    with_event_handles(|map| {
+        map.remove(&handle_val);
+    });
+    1 // TRUE - success (or was not a registered handle)
 }
 
 //
@@ -2434,18 +2463,37 @@ pub unsafe extern "C" fn kernel32_CreateDirectoryExW(
     kernel32_CreateDirectoryW(new_directory, security_attributes)
 }
 
-/// CreateEventW stub - creates an event object
+/// CreateEventW - creates an event object
+///
+/// Creates a named or unnamed event object backed by a `Condvar` that can be
+/// signaled with `SetEvent` and waited on with `WaitForSingleObject`.
+///
+/// `manual_reset` (non-zero) means the event stays signaled until explicitly
+/// reset with `ResetEvent`; zero means the event auto-resets after one
+/// waiter is released.  `initial_state` (non-zero) starts the event already
+/// signaled.  Named events (`name` non-null) are currently treated as
+/// anonymous; a unique synthetic handle is still returned.
+///
+/// This implementation always returns a non-null synthetic handle and does
+/// not currently report allocation failures via `GetLastError()`.
 ///
 /// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
+/// If `name` is non-null it must be a valid null-terminated UTF-16 string
+/// (it is accepted but ignored).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_CreateEventW(
     _security_attributes: *mut core::ffi::c_void,
-    _manual_reset: i32,
-    _initial_state: i32,
+    manual_reset: i32,
+    initial_state: i32,
     _name: *const u16,
 ) -> *mut core::ffi::c_void {
-    core::ptr::null_mut() // NULL - not implemented
+    let handle = alloc_event_handle();
+    let entry = EventEntry {
+        manual_reset: manual_reset != 0,
+        state: Arc::new((Mutex::new(initial_state != 0), Condvar::new())),
+    };
+    with_event_handles(|map| map.insert(handle, entry));
+    handle as *mut core::ffi::c_void
 }
 
 /// CreateFileMappingA stub - creates a file mapping object
@@ -2680,13 +2728,17 @@ pub unsafe extern "C" fn kernel32_DuplicateHandle(
     0 // FALSE - not implemented
 }
 
-/// FlushFileBuffers stub - flushes file buffers
+/// FlushFileBuffers - flushes the write buffers of the specified file
+///
+/// In this implementation all writes are synchronous (backed directly by Linux
+/// `write` syscalls), so there are no pending buffers to flush.  Always
+/// returns TRUE.
 ///
 /// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
+/// `file` is accepted as an opaque handle and is not dereferenced.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_FlushFileBuffers(_file: *mut core::ffi::c_void) -> i32 {
-    1 // TRUE - pretend success
+    1 // TRUE
 }
 
 /// FormatMessageW - formats a system error message or a custom message string
@@ -3125,14 +3177,22 @@ pub unsafe extern "C" fn kernel32_GetProcAddress(
     core::ptr::null_mut() // NULL - not found
 }
 
-/// GetStdHandle stub - gets a standard device handle
+/// GetStdHandle - retrieves a handle to the specified standard device
+///
+/// Returns:
+/// - `0x10` for `STD_INPUT_HANDLE`  (-10 / 0xFFFFFFF6)
+/// - `0x11` for `STD_OUTPUT_HANDLE` (-11 / 0xFFFFFFF5)
+/// - `0x12` for `STD_ERROR_HANDLE`  (-12 / 0xFFFFFFF4)
+/// - `NULL` for any other value
+///
+/// These sentinel values are recognised by `WriteFile`, `ReadFile`, and
+/// `GetFileType` as the console handles.
 ///
 /// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
+/// This function is safe to call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_GetStdHandle(std_handle: u32) -> *mut core::ffi::c_void {
     // STD_INPUT_HANDLE = -10, STD_OUTPUT_HANDLE = -11, STD_ERROR_HANDLE = -12
-    // Return non-null handles
     #[allow(clippy::cast_possible_wrap)]
     match std_handle as i32 {
         -10 => 0x10 as *mut core::ffi::c_void, // stdin
@@ -3341,15 +3401,22 @@ pub unsafe extern "C" fn kernel32_SetLastError(error_code: u32) {
 /// WaitForSingleObject - waits until the specified object is in the signaled state or the
 /// time-out interval elapses.
 ///
-/// For thread handles (created by CreateThread), this joins the thread.
-/// For other handles (events, mutexes, etc.) that are not in the thread registry, it
-/// returns WAIT_OBJECT_0 immediately (optimistic stub).
+/// For event handles (created by `CreateEventW`), this waits with correct
+/// manual/auto-reset semantics. `INFINITE` (0xFFFFFFFF) blocks until the event
+/// is signaled; finite timeouts use a deadline loop that handles spurious
+/// wakeups and returns immediately when the event is already signaled.
+///
+/// For thread handles (created by `CreateThread`), this joins the thread.
+///
+/// For unrecognised handles (neither event nor thread), `WAIT_OBJECT_0` is
+/// returned immediately as an optimistic default.
 ///
 /// # Panics
-/// Panics if a thread's exit-code mutex is poisoned.
+/// Panics if a mutex protecting event or thread state is poisoned.
 ///
 /// # Safety
-/// `handle` must be a valid handle returned by CreateThread or another handle-producing API.
+/// `handle` must be a valid handle returned by `CreateEventW`, `CreateThread`,
+/// or another handle-producing API.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_WaitForSingleObject(
     handle: *mut core::ffi::c_void,
@@ -3359,6 +3426,68 @@ pub unsafe extern "C" fn kernel32_WaitForSingleObject(
     const WAIT_TIMEOUT: u32 = 0x0000_0102;
 
     let handle_val = handle as usize;
+
+    // Check if this is an event handle first.
+    let event_entry = with_event_handles(|map| {
+        map.get(&handle_val)
+            .map(|e| (Arc::clone(&e.state), e.manual_reset))
+    });
+    if let Some((state, manual_reset)) = event_entry {
+        let (lock, cvar) = &*state;
+        let mut signaled = lock.lock().unwrap();
+        if milliseconds == u32::MAX {
+            // Infinite wait until the event is signaled.
+            while !*signaled {
+                signaled = cvar.wait(signaled).unwrap();
+            }
+            if !manual_reset {
+                *signaled = false; // auto-reset
+            }
+            return WAIT_OBJECT_0;
+        }
+
+        // Finite-timeout wait.
+        //
+        // Return immediately if the event is already signaled.
+        if *signaled {
+            if !manual_reset {
+                *signaled = false; // auto-reset
+            }
+            return WAIT_OBJECT_0;
+        }
+
+        // Zero-timeout: check-and-return without blocking.
+        if milliseconds == 0 {
+            return WAIT_TIMEOUT;
+        }
+
+        // Loop to handle spurious wakeups and recompute remaining time.
+        let timeout = Duration::from_millis(u64::from(milliseconds));
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            if *signaled {
+                if !manual_reset {
+                    *signaled = false; // auto-reset
+                }
+                return WAIT_OBJECT_0;
+            }
+
+            let now = std::time::Instant::now();
+            if now >= deadline {
+                return WAIT_TIMEOUT;
+            }
+
+            let remaining = deadline - now;
+            let (guard, result) = cvar.wait_timeout(signaled, remaining).unwrap();
+            signaled = guard;
+
+            // If the Condvar reported a genuine timeout and the event is still not
+            // signaled, report WAIT_TIMEOUT.  Otherwise loop to recheck *signaled.
+            if result.timed_out() && !*signaled {
+                return WAIT_TIMEOUT;
+            }
+        }
+    }
 
     // Take ownership of the join handle (if this is a thread handle).
     let thread_entry = with_thread_handles(|map| {
@@ -3370,7 +3499,7 @@ pub unsafe extern "C" fn kernel32_WaitForSingleObject(
     });
 
     let Some((join_handle_opt, exit_code)) = thread_entry else {
-        // Not a thread handle — treat as already-signaled (covers event/mutex stubs).
+        // Not a thread or event handle — treat as already-signaled.
         return WAIT_OBJECT_0;
     };
 
@@ -3406,10 +3535,18 @@ pub unsafe extern "C" fn kernel32_WaitForSingleObject(
     }
 }
 
-/// WriteConsoleW stub - writes to the console (wide version)
+/// WriteConsoleW - writes a character string to a console screen buffer
+///
+/// Converts the wide (UTF-16) string to UTF-8 and writes it to `stdout`.
+/// The `console_output` handle is accepted but not used to distinguish between
+/// stdout and stderr; all output goes to stdout.  Returns FALSE if `buffer`
+/// is null, `number_of_chars_to_write` is zero, or the UTF-16 string is not
+/// valid.
 ///
 /// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
+/// `buffer` must point to at least `number_of_chars_to_write` valid UTF-16
+/// code units when non-null.  `number_of_chars_written`, if non-null, must
+/// point to a writable `u32`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_WriteConsoleW(
     _console_output: *mut core::ffi::c_void,
@@ -3509,13 +3646,17 @@ pub unsafe extern "C" fn kernel32_GetOverlappedResult(
     0 // FALSE
 }
 
-/// GetProcessId stub
+/// GetProcessId - retrieves the process identifier of the specified process
+///
+/// When `process` is the current-process pseudo-handle (`-1`) or any other
+/// handle, returns the actual PID of this (Linux) process via
+/// `std::process::id()`.
 ///
 /// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
+/// `process` is accepted as an opaque handle value and is not dereferenced.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_GetProcessId(_process: *mut core::ffi::c_void) -> u32 {
-    1 // Return a fake process ID
+    std::process::id()
 }
 
 /// GetSystemDirectoryW - returns the Windows system directory path
@@ -3562,36 +3703,39 @@ pub unsafe extern "C" fn kernel32_GetSystemDirectoryW(buffer: *mut u16, size: u3
     (path.len() - 1) as u32 // characters written, excluding null terminator
 }
 
-/// GetTempPathW stub - gets the temporary directory path
+/// GetTempPathW - retrieves the path of the directory designated for temporary files
+///
+/// Returns the path reported by `std::env::temp_dir()` (typically `/tmp` on
+/// Linux) as a null-terminated UTF-16 string with a trailing directory
+/// separator.
+///
+/// If `buffer` is null or `buffer_length` is too small, returns the required
+/// buffer size (in UTF-16 code units, including the null terminator); otherwise
+/// copies the path and returns the length excluding the null terminator.
 ///
 /// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
+/// `buffer`, if non-null, must point to a writable area of at least
+/// `buffer_length` UTF-16 code units.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_GetTempPathW(buffer_length: u32, buffer: *mut u16) -> u32 {
-    if buffer.is_null() || buffer_length == 0 {
-        return 0;
+    let temp_dir = std::env::temp_dir();
+    let mut dir_str = temp_dir.to_string_lossy().into_owned();
+    if !dir_str.ends_with('/') {
+        dir_str.push('/');
+    }
+    let mut utf16: Vec<u16> = dir_str.encode_utf16().collect();
+    utf16.push(0); // null terminator
+
+    let required = utf16.len() as u32;
+    if buffer.is_null() || buffer_length < required {
+        return required;
     }
 
-    // Return "/tmp/" as the temp path
-    let temp_path = [
-        u16::from(b'/'),
-        u16::from(b't'),
-        u16::from(b'm'),
-        u16::from(b'p'),
-        u16::from(b'/'),
-        0u16,
-    ];
-
-    if buffer_length < temp_path.len() as u32 {
-        return temp_path.len() as u32; // Required buffer size
-    }
-
-    // Copy the temp path
-    for (i, &ch) in temp_path.iter().enumerate() {
+    for (i, &ch) in utf16.iter().enumerate() {
         *buffer.add(i) = ch;
     }
 
-    (temp_path.len() - 1) as u32 // Length without null terminator
+    (utf16.len() - 1) as u32 // length without null terminator
 }
 
 /// GetWindowsDirectoryW - returns the Windows directory path
@@ -3878,10 +4022,15 @@ pub unsafe extern "C" fn kernel32_SetFileInformationByHandle(
     0 // FALSE
 }
 
-/// SetFileTime stub
+/// SetFileTime - sets the date and time that a file was created, accessed, or modified
+///
+/// On Linux we have limited ability to set all three timestamps accurately via
+/// `utimes`.  For simplicity this always returns TRUE (success) without
+/// actually updating timestamps; programs that inspect file timestamps may
+/// observe stale values.
 ///
 /// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
+/// All pointer arguments are accepted but not dereferenced.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_SetFileTime(
     _file: *mut core::ffi::c_void,
@@ -3889,26 +4038,32 @@ pub unsafe extern "C" fn kernel32_SetFileTime(
     _last_access_time: *const core::ffi::c_void,
     _last_write_time: *const core::ffi::c_void,
 ) -> i32 {
-    1 // TRUE - pretend success
+    1 // TRUE
 }
 
-/// SetHandleInformation stub
+/// SetHandleInformation - sets certain properties of an object handle
+///
+/// Handle inheritance and protections are not meaningful in our single-process
+/// emulation environment, so this always returns TRUE (success).
 ///
 /// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
+/// `object` is accepted as an opaque handle and is not dereferenced.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_SetHandleInformation(
     _object: *mut core::ffi::c_void,
     _mask: u32,
     _flags: u32,
 ) -> i32 {
-    1 // TRUE - pretend success
+    1 // TRUE
 }
 
-/// UnlockFile stub
+/// UnlockFile - unlocks a region of an open file
+///
+/// File-locking is not implemented; this always returns TRUE (success) since
+/// we do not implement `LockFile` either.
 ///
 /// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
+/// `file` is accepted as an opaque handle and is not dereferenced.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_UnlockFile(
     _file: *mut core::ffi::c_void,
@@ -3917,16 +4072,20 @@ pub unsafe extern "C" fn kernel32_UnlockFile(
     _number_of_bytes_to_unlock_low: u32,
     _number_of_bytes_to_unlock_high: u32,
 ) -> i32 {
-    1 // TRUE - pretend success
+    1 // TRUE
 }
 
-/// UnmapViewOfFile stub
+/// UnmapViewOfFile - unmaps a mapped view of a file from the address space
+///
+/// File mapping is not implemented; this always returns TRUE (success) since
+/// `MapViewOfFile` returns NULL and programs typically check for NULL before
+/// calling `UnmapViewOfFile`.
 ///
 /// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
+/// `base_address` is accepted as an opaque pointer and is not dereferenced.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_UnmapViewOfFile(_base_address: *const core::ffi::c_void) -> i32 {
-    1 // TRUE - pretend success
+    1 // TRUE
 }
 
 /// UpdateProcThreadAttribute stub
@@ -3961,13 +4120,16 @@ pub unsafe extern "C" fn kernel32_WriteFileEx(
     0 // FALSE
 }
 
-/// SetThreadStackGuarantee stub
+/// SetThreadStackGuarantee - sets the minimum stack size for the current thread
+///
+/// Stack size management is handled by the OS; this always returns TRUE
+/// (success) without modifying the actual stack.
 ///
 /// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
+/// `stack_size_in_bytes` is accepted as a pointer but not dereferenced.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_SetThreadStackGuarantee(_stack_size_in_bytes: *mut u32) -> i32 {
-    1 // TRUE - pretend success
+    1 // TRUE
 }
 
 /// SetWaitableTimer stub
@@ -3986,22 +4148,28 @@ pub unsafe extern "C" fn kernel32_SetWaitableTimer(
     1 // TRUE - pretend success
 }
 
-/// SleepEx stub - sleep with alertable wait
+/// SleepEx - suspends the current thread with optional alertable wait
+///
+/// Sleeps for `milliseconds` milliseconds.  The `alertable` flag is ignored
+/// (I/O completion callbacks are not supported), and this always returns 0.
 ///
 /// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
+/// This function is safe to call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_SleepEx(milliseconds: u32, _alertable: i32) -> u32 {
     if milliseconds > 0 {
         thread::sleep(Duration::from_millis(u64::from(milliseconds)));
     }
-    0 // Return 0 (not alertable)
+    0 // WAIT_IO_COMPLETION not supported; always return 0
 }
 
-/// SwitchToThread stub - yields execution to another thread
+/// SwitchToThread - yields execution to another runnable thread
+///
+/// Calls `std::thread::yield_now()` to give the scheduler an opportunity to
+/// run another thread.  Returns TRUE.
 ///
 /// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
+/// This function is safe to call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_SwitchToThread() -> i32 {
     thread::yield_now();
@@ -5108,20 +5276,64 @@ pub unsafe extern "C" fn kernel32_GetTickCount64() -> u64 {
 
 /// SetEvent - sets the specified event object to the signaled state
 ///
-/// # Safety
-/// This function is a stub.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn kernel32_SetEvent(_event: *mut core::ffi::c_void) -> i32 {
-    1 // TRUE (success stub)
-}
-
-/// ResetEvent - resets the specified event object to nonsignaled
+/// Signals the event and wakes waiters.  For manual-reset events, all waiters
+/// are notified (`notify_all`); for auto-reset events only one waiter is
+/// released (`notify_one`) to match Win32 semantics.  Returns TRUE (1) on
+/// success, or FALSE (0) with `GetLastError() == ERROR_INVALID_HANDLE` if
+/// `event` is not a handle created by `CreateEventW`.
+///
+/// # Panics
+/// Panics if the internal event-state mutex is poisoned (another thread
+/// panicked while holding the lock).
 ///
 /// # Safety
-/// This function is a stub.
+/// `event` must be a handle returned by `CreateEventW`, or NULL/invalid (in
+/// which case FALSE is returned).
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn kernel32_ResetEvent(_event: *mut core::ffi::c_void) -> i32 {
-    1 // TRUE (success stub)
+pub unsafe extern "C" fn kernel32_SetEvent(event: *mut core::ffi::c_void) -> i32 {
+    let handle = event as usize;
+    let state_and_flag = with_event_handles(|map| {
+        map.get(&handle)
+            .map(|e| (Arc::clone(&e.state), e.manual_reset))
+    });
+    let Some((state, manual_reset)) = state_and_flag else {
+        kernel32_SetLastError(6); // ERROR_INVALID_HANDLE
+        return 0;
+    };
+    let (lock, cvar) = &*state;
+    *lock.lock().unwrap() = true;
+    if manual_reset {
+        cvar.notify_all();
+    } else {
+        cvar.notify_one();
+    }
+    1 // TRUE
+}
+
+/// ResetEvent - resets the specified event object to the nonsignaled state
+///
+/// Clears the event so that threads waiting on it will block.  Returns TRUE
+/// (1) on success, or FALSE (0) with `GetLastError() == ERROR_INVALID_HANDLE`
+/// if `event` is not a handle created by `CreateEventW`.
+///
+/// # Panics
+/// Panics if the internal event-state mutex is poisoned (another thread
+/// panicked while holding the lock).
+///
+/// # Safety
+/// `event` must be a handle returned by `CreateEventW`, or NULL/invalid (in
+/// which case FALSE is returned).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_ResetEvent(event: *mut core::ffi::c_void) -> i32 {
+    let handle = event as usize;
+    let state_arc = with_event_handles(|map| map.get(&handle).map(|e| Arc::clone(&e.state)));
+    let Some(state) = state_arc else {
+        kernel32_SetLastError(6); // ERROR_INVALID_HANDLE
+        return 0;
+    };
+    let (lock, _cvar) = &*state;
+    *lock.lock().unwrap() = false;
+    1 // TRUE
 }
 
 /// `IsDBCSLeadByteEx` – test whether a byte is a DBCS lead byte in the given code page.
@@ -6312,12 +6524,8 @@ mod tests {
 
     #[test]
     fn test_set_current_directory() {
-        // Get original directory to restore later
-        let buffer_size = 1024u32;
-        let mut orig_buffer = vec![0u16; buffer_size as usize];
-        let orig_len =
-            unsafe { kernel32_GetCurrentDirectoryW(buffer_size, orig_buffer.as_mut_ptr()) };
-        assert!(orig_len > 0);
+        // Use CwdGuard for a safe, panic-proof restore of the original directory.
+        let _guard = CwdGuard::new();
 
         // Try to set to /tmp (which should exist on Linux)
         let tmp_path: Vec<u16> = "/tmp\0".encode_utf16().collect();
@@ -6325,6 +6533,7 @@ mod tests {
         assert_eq!(result, 1, "SetCurrentDirectoryW to /tmp should succeed");
 
         // Verify it changed
+        let buffer_size = 1024u32;
         let mut new_buffer = vec![0u16; buffer_size as usize];
         let new_len =
             unsafe { kernel32_GetCurrentDirectoryW(buffer_size, new_buffer.as_mut_ptr()) };
@@ -6334,10 +6543,7 @@ mod tests {
             new_dir.contains("tmp"),
             "Current directory should now be /tmp"
         );
-
-        // Restore original directory
-        let restore_result = unsafe { kernel32_SetCurrentDirectoryW(orig_buffer.as_ptr()) };
-        assert_eq!(restore_result, 1, "Should restore original directory");
+        // CwdGuard restores the original directory when it drops at end of test.
     }
 
     #[test]
@@ -7030,30 +7236,35 @@ mod tests {
         let _ = std::fs::remove_dir_all(tmp_dir);
         std::fs::create_dir_all(tmp_dir).unwrap();
 
-        let _guard = CwdGuard::new();
-        std::env::set_current_dir(tmp_dir).unwrap();
+        // Scope the guard so the CWD is restored before the directory is deleted.
+        // Without this, concurrent tests that call `current_dir()` may fail because
+        // the process CWD would point to a directory that has already been removed.
+        {
+            let _guard = CwdGuard::new();
+            std::env::set_current_dir(tmp_dir).unwrap();
 
-        let path = "test.txt";
-        let path_wide: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
-        let mut buf = vec![0u16; 512];
+            let path = "test.txt";
+            let path_wide: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
+            let mut buf = vec![0u16; 512];
 
-        unsafe {
-            let chars = kernel32_GetFullPathNameW(
-                path_wide.as_ptr(),
-                512,
-                buf.as_mut_ptr(),
-                core::ptr::null_mut(),
-            );
-            assert!(
-                chars > 0,
-                "GetFullPathNameW should return non-zero for relative path"
-            );
-            let result = String::from_utf16_lossy(&buf[..chars as usize]);
-            assert!(
-                result.ends_with(path),
-                "Full path for relative input should end with the relative component"
-            );
-        }
+            unsafe {
+                let chars = kernel32_GetFullPathNameW(
+                    path_wide.as_ptr(),
+                    512,
+                    buf.as_mut_ptr(),
+                    core::ptr::null_mut(),
+                );
+                assert!(
+                    chars > 0,
+                    "GetFullPathNameW should return non-zero for relative path"
+                );
+                let result = String::from_utf16_lossy(&buf[..chars as usize]);
+                assert!(
+                    result.ends_with(path),
+                    "Full path for relative input should end with the relative component"
+                );
+            }
+        } // _guard drops here, restoring the CWD before the directory is deleted
 
         let _ = std::fs::remove_dir_all(tmp_dir);
     }
@@ -7064,25 +7275,28 @@ mod tests {
         let _ = std::fs::remove_dir_all(tmp_dir);
         std::fs::create_dir_all(tmp_dir).unwrap();
 
-        let _guard = CwdGuard::new();
-        std::env::set_current_dir(tmp_dir).unwrap();
+        // Scope the guard so the CWD is restored before the directory is deleted.
+        {
+            let _guard = CwdGuard::new();
+            std::env::set_current_dir(tmp_dir).unwrap();
 
-        let path = ".";
-        let path_wide: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
-        let mut buf = vec![0u16; 512];
+            let path = ".";
+            let path_wide: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
+            let mut buf = vec![0u16; 512];
 
-        unsafe {
-            let chars = kernel32_GetFullPathNameW(
-                path_wide.as_ptr(),
-                512,
-                buf.as_mut_ptr(),
-                core::ptr::null_mut(),
-            );
-            assert!(
-                chars > 0,
-                "GetFullPathNameW should return non-zero for '.' (current directory)"
-            );
-        }
+            unsafe {
+                let chars = kernel32_GetFullPathNameW(
+                    path_wide.as_ptr(),
+                    512,
+                    buf.as_mut_ptr(),
+                    core::ptr::null_mut(),
+                );
+                assert!(
+                    chars > 0,
+                    "GetFullPathNameW should return non-zero for '.' (current directory)"
+                );
+            }
+        } // _guard drops here, restoring the CWD before the directory is deleted
 
         let _ = std::fs::remove_dir_all(tmp_dir);
     }
@@ -7583,5 +7797,86 @@ mod tests {
         let second = get_volume_serial();
         assert_eq!(first, second, "Serial must be stable within a process");
         set_volume_serial(0);
+    }
+
+    // ── CreateEventW / SetEvent / ResetEvent / WaitForSingleObject ──────────
+
+    #[test]
+    fn test_create_event_returns_nonnull() {
+        let handle = unsafe {
+            kernel32_CreateEventW(
+                core::ptr::null_mut(),
+                0, // auto-reset
+                0, // not signaled
+                core::ptr::null(),
+            )
+        };
+        assert!(
+            !handle.is_null(),
+            "CreateEventW should return a non-null handle"
+        );
+        unsafe { kernel32_CloseHandle(handle) };
+    }
+
+    #[test]
+    fn test_set_event_signals_waitforsingleobject() {
+        // Create an auto-reset event in nonsignaled state.
+        let handle =
+            unsafe { kernel32_CreateEventW(core::ptr::null_mut(), 0, 0, core::ptr::null()) };
+        assert!(!handle.is_null());
+
+        // Signal the event.
+        let set_result = unsafe { kernel32_SetEvent(handle) };
+        assert_eq!(set_result, 1, "SetEvent should return TRUE");
+
+        // WaitForSingleObject with timeout=0 should succeed immediately.
+        let wait_result = unsafe { kernel32_WaitForSingleObject(handle, 0) };
+        assert_eq!(wait_result, 0, "WAIT_OBJECT_0 expected after SetEvent");
+
+        // Auto-reset: a second wait with timeout=0 should now time out.
+        let wait2 = unsafe { kernel32_WaitForSingleObject(handle, 0) };
+        assert_eq!(wait2, 0x0000_0102, "WAIT_TIMEOUT expected (auto-reset)");
+
+        unsafe { kernel32_CloseHandle(handle) };
+    }
+
+    #[test]
+    fn test_manual_reset_event_stays_signaled() {
+        // Create a manual-reset event, initially signaled.
+        let handle =
+            unsafe { kernel32_CreateEventW(core::ptr::null_mut(), 1, 1, core::ptr::null()) };
+        assert!(!handle.is_null());
+
+        // Both waits should succeed without resetting.
+        let w1 = unsafe { kernel32_WaitForSingleObject(handle, 0) };
+        assert_eq!(w1, 0, "First wait should succeed");
+        let w2 = unsafe { kernel32_WaitForSingleObject(handle, 0) };
+        assert_eq!(
+            w2, 0,
+            "Second wait should succeed (manual-reset stays signaled)"
+        );
+
+        // After ResetEvent, wait should time out.
+        let reset = unsafe { kernel32_ResetEvent(handle) };
+        assert_eq!(reset, 1, "ResetEvent should return TRUE");
+        let w3 = unsafe { kernel32_WaitForSingleObject(handle, 0) };
+        assert_eq!(w3, 0x0000_0102, "WAIT_TIMEOUT expected after ResetEvent");
+
+        unsafe { kernel32_CloseHandle(handle) };
+    }
+
+    #[test]
+    fn test_set_reset_event_on_invalid_handle() {
+        let bad: *mut core::ffi::c_void = 0xDEAD_BEEF as *mut _;
+        let set_result = unsafe { kernel32_SetEvent(bad) };
+        assert_eq!(
+            set_result, 0,
+            "SetEvent on invalid handle should return FALSE"
+        );
+        let reset_result = unsafe { kernel32_ResetEvent(bad) };
+        assert_eq!(
+            reset_result, 0,
+            "ResetEvent on invalid handle should return FALSE"
+        );
     }
 }
