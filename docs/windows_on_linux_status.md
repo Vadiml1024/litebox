@@ -1,19 +1,12 @@
-# Windows on Linux: Current Implementation Status
+# Windows on Linux: Implementation Status
 
-**Last Updated:** 2026-02-21 (Session 8 / Phase 19)
-
-## Overview
-
-This document provides the current status of the Windows-on-Linux implementation in LiteBox, which enables running Windows PE binaries on Linux with comprehensive API tracing capabilities.
-
-**Current Phase:** Phase 19 - **COMPLETE** ✅  
+**Last Updated:** 2026-02-21  
 **Total Tests:** 298 passing (235 platform + 47 shim + 16 runner)  
-**Integration Tests:** 7 comprehensive tests  
-**Recent Session:** Phase 19 - Win32 Event Support, Stub Upgrades, Test Race-Condition Fix
+**Overall Status:** Core infrastructure complete. Windows PE binaries load and begin execution; full end-to-end execution of real-world programs is still a work in progress.
+
+---
 
 ## Architecture
-
-The implementation consists of three main components:
 
 ```
 ┌─────────────────────────────────────────────────────────┐
@@ -41,399 +34,146 @@ The implementation consists of three main components:
 └─────────────────────────────────────────────────────────┘
 ```
 
-## Implementation Status
-
-### ✅ Phase 1: Foundation & PE Loader (Complete)
-
-**Status:** Fully implemented and tested
-
-**Capabilities:**
-- Parse PE headers (DOS, NT, Optional headers)
-- Validate PE signatures and machine types (x64 only)
-- Extract entry point and image base addresses
-- Enumerate and parse section headers
-- Load sections into allocated memory with proper alignment
-- Handle unaligned structure reads safely
-
-**Code Quality:**
-- All clippy warnings resolved
-- Proper use of `read_unaligned` for PE structure parsing
-- Comprehensive safety comments for all `unsafe` blocks
-- 2 unit tests covering invalid PE binaries
-
-**Files:**
-- `litebox_shim_windows/src/loader/pe.rs` (338 lines)
-- `litebox_shim_windows/src/loader/mod.rs`
-
-### ✅ Phase 2: Core NTDLL APIs (Complete)
-
-**Status:** Fully implemented and tested
-
-**Implemented APIs:**
-
-#### File I/O
-- `NtCreateFile` → `open()` with Windows → Linux flag translation
-- `NtReadFile` → `read()`
-- `NtWriteFile` → `write()`
-- `NtClose` → `close()`
-
-#### Console I/O
-- `GetStdOutput` → Returns special stdout handle
-- `WriteConsole` → `print!()` with `stdout().flush()`
-
-#### Memory Management
-- `NtAllocateVirtualMemory` → `mmap()` with protection flag translation
-- `NtFreeVirtualMemory` → `munmap()`
-
-**Translation Features:**
-- Windows path → Linux path conversion (C:\path → /path)
-- Windows access flags → Linux open flags
-- Windows protection flags → Linux PROT_* flags
-- Windows handle → Linux file descriptor mapping
-
-**Code Quality:**
-- Thread-safe handle generation using `AtomicU64`
-- Mutex-protected state for concurrent access
-- 3 unit tests covering path translation and handle allocation
-
-**Files:**
-- `litebox_platform_linux_for_windows/src/lib.rs` (768 lines)
-- `litebox_shim_windows/src/syscalls/ntdll.rs`
-- `litebox_shim_windows/src/syscalls/mod.rs`
-
-### ✅ Phase 3: API Tracing Framework (Complete)
-
-**Status:** Fully implemented and tested
-
-**Capabilities:**
-
-#### Multiple Output Formats
-- **Text Format:** Human-readable with timestamps and thread IDs
-  ```
-  [timestamp] [TID:main] CALL   NtCreateFile(path="test.txt", access=0x80000000)
-  [timestamp] [TID:main] RETURN NtCreateFile() -> Ok(handle=0x1234)
-  ```
-- **JSON Format:** Machine-parseable for automated analysis
-  ```json
-  {"timestamp":123.456,"thread_id":null,"event":"call","category":"file_io",...}
-  ```
-
-#### Flexible Filtering
-- **By Pattern:** Wildcard matching (e.g., "Nt*File")
-- **By Category:** file_io, console_io, memory, threading, synchronization
-- **By Function:** Exact function name matching
-
-#### Output Destinations
-- Stdout (default)
-- File output with configurable path
-
-#### Performance
-- **Zero overhead when disabled** - No tracing code executed
-- **Low overhead when enabled** - Minimal impact on performance
-- Builder pattern for configuration with `#[must_use]` attributes
-
-**Code Quality:**
-- 16 unit tests covering all tracing features
-- Proper separation of concerns (config, events, filters, formatters)
-- Integration tests for file and JSON output
-
-**Files:**
-- `litebox_shim_windows/src/tracing/config.rs` (85 lines)
-- `litebox_shim_windows/src/tracing/event.rs` (120 lines)
-- `litebox_shim_windows/src/tracing/filter.rs` (190 lines)
-- `litebox_shim_windows/src/tracing/formatter.rs` (232 lines)
-- `litebox_shim_windows/src/tracing/tracer.rs` (112 lines)
-- `litebox_shim_windows/src/tracing/wrapper.rs` (598 lines)
-
-### ✅ Phase 4: Threading & Synchronization (Complete)
-
-**Status:** Fully implemented and tested
-
-**Implemented APIs:**
-
-#### Thread Management
-- `NtCreateThread` → `std::thread::spawn()`
-- `NtTerminateThread` → Set exit code (graceful termination)
-- `NtWaitForSingleObject` → `join_handle.join()` with timeout support
-- `NtCloseHandle` → Remove from thread/event maps
-
-#### Event Synchronization
-- `NtCreateEvent` → Manual/auto-reset events with `Condvar`
-- `NtSetEvent` → Signal event, wake waiting threads
-- `NtResetEvent` → Clear event state
-- `NtWaitForEvent` → Wait with optional timeout
-
-**Features:**
-- Proper thread-safe implementation using `Arc<Mutex<T>>`
-- Support for both manual-reset and auto-reset events
-- Timeout handling for all wait operations
-- Thread parameter passing via `*mut c_void`
-
-**Code Quality:**
-- 8 unit tests covering threading and synchronization
-- Tests for thread creation, parameter passing, event signaling
-- Tests for manual/auto-reset event behavior
-- Tests for timeout handling
-
-**Files:**
-- Threading implementation in `litebox_platform_linux_for_windows/src/lib.rs`
-- Thread handle types in `litebox_shim_windows/src/syscalls/ntdll.rs`
-
-### ✅ Phase 5: Extended API Support (Complete)
-
-**Status:** Fully implemented and tested
-
-**Implemented APIs:**
-
-#### Environment Variables
-- `GetEnvironmentVariable` → Returns environment variable value
-- `SetEnvironmentVariable` → Sets environment variable value
-
-#### Process Information
-- `GetCurrentProcessId` → Returns current process ID via `getpid()`
-- `GetCurrentThreadId` → Returns current thread ID via `gettid()`
-
-#### Registry Emulation
-- `RegOpenKeyEx` → Opens a registry key (in-memory emulation)
-- `RegQueryValueEx` → Queries a registry value
-- `RegCloseKey` → Closes a registry key handle
-
-**Features:**
-- Thread-safe environment variable storage
-- Default environment variables pre-populated (COMPUTERNAME, OS, PROCESSOR_ARCHITECTURE)
-- In-memory registry with common Windows values pre-populated
-- Registry keys include Windows version information
-- Full API tracing for all Phase 5 operations
-- Three new trace categories: Environment, Process, Registry
-
-**Code Quality:**
-- 6 unit tests covering all new functionality
-- Zero clippy warnings
-- Proper safety comments for all `unsafe` blocks
-- Comprehensive error handling
-
-**Files:**
-- API definitions in `litebox_shim_windows/src/syscalls/ntdll.rs`
-- Implementation in `litebox_platform_linux_for_windows/src/lib.rs`
-- Tracing in `litebox_shim_windows/src/tracing/wrapper.rs`
-- Categories in `litebox_shim_windows/src/tracing/event.rs`
-
-### ✅ Phase 8: Entry Point Execution & Additional API Support (Complete)
-
-**Status:** Fully implemented and tested (Session 7 - 2026-02-16)
-
-**Phase 8.7 Achievements:**
-
-#### Real Stack Allocation
-- Replaced placeholder stack address with actual `mmap`-based allocation
-- Default 1MB stack size, configurable via `ExecutionContext::new()`
-- Proper cleanup via `Drop` trait implementation using `munmap`
-- Stack grows downward from allocated region top
-
-#### Entry Point Execution
-- Implemented assembly trampoline in `call_entry_point` function
-- Proper stack switching: save RSP → switch to new stack → call entry point → restore RSP
-- Windows x64 ABI compliance:
-  - 16-byte stack alignment before call instruction
-  - 32-byte shadow space allocation (required by Windows calling convention)
-  - Correct handling of return value in RAX register
-- Full integration with GS register setup for TEB access
-
-#### Test Results with hello_cli.exe
-- Successfully loads 1.2MB MinGW-compiled Windows PE binary
-- All 10 sections loaded correctly (.text, .data, .rdata, pdata, .xdata, .bss, .idata, .CRT, .tls, .reloc)
-- Relocations applied successfully (rebased from 0x140000000 to runtime address)
-- Resolves 57 trampolined functions (18 MSVCRT + 39 KERNEL32)
-- TEB/PEB structures created and GS register configured
-- Entry point execution begins (crashes due to missing API implementations - expected)
-
-#### Phase 8.1-8.6 API Support (from previous sessions)
-- **Exception Handling (Phase 8.1):** 8 stub functions for SEH compatibility
-- **Critical Sections (Phase 8.2):** 5 synchronization functions
-- **String Operations (Phase 8.3):** 4 character conversion functions
-- **Performance Counters (Phase 8.4):** 3 timing APIs
-- **File I/O Trampolines (Phase 8.5):** Basic file operation wrappers
-- **Heap Management (Phase 8.6):** GetProcessHeap, HeapAlloc, HeapFree, HeapReAlloc
-
-**Code Quality:**
-- All 149 tests passing (94 platform + 39 shim + 16 runner)
-- Zero clippy warnings with strict `-D warnings` flag
-- Proper safety comments for all `unsafe` blocks
-- Clean code formatted with `cargo fmt`
-
-**New Error Handling:**
-- Added `MemoryAllocationFailed` variant to `WindowsShimError`
-- Proper error propagation from mmap failures
-
-**Dependencies:**
-- Added `libc` to `litebox_shim_windows` for mmap/munmap syscalls
-
-**Files:**
-- `litebox_shim_windows/src/loader/execution.rs` - Stack allocation and entry point calling
-- `litebox_shim_windows/src/lib.rs` - New error variant
-- `litebox_shim_windows/Cargo.toml` - libc dependency
-
-**Known Limitations:**
-- Entry point execution crashes due to incomplete Windows API implementations (expected behavior)
-- Many advanced KERNEL32 functions still unimplemented (59 functions showing as "NOT FOUND")
-- No GUI support (user32, gdi32)
-- No network API support beyond stubs (ws2_32)
-
-**Success Criteria:**
-✅ Real stack allocated and properly managed  
-✅ Entry point called with correct Windows x64 ABI  
-✅ TEB/PEB accessible via GS register  
-✅ All imports resolved (trampolines or stubs)  
-✅ All tests passing  
-✅ Zero quality warnings  
-
-**Phase 8 Status:** 💯 **100% COMPLETE!** 🎉
-
-### ✅ Phase 19: Win32 Event Support, Stub Upgrades, Test Race-Condition Fix (Complete)
-
-**Status:** Fully implemented and tested (Session 8 - 2026-02-21)
-
-#### Win32 Event Objects in KERNEL32
-- Added `EVENT_HANDLE_COUNTER` + `EVENT_HANDLES` global registry (Condvar-backed, same pattern as file/thread handles)
-- **`CreateEventW`**: creates events with manual/auto-reset and initial-signaled state; always returns a non-null synthetic handle
-- **`SetEvent`**: signals event; uses `notify_one()` for auto-reset and `notify_all()` for manual-reset events
-- **`ResetEvent`**: clears event state; returns `ERROR_INVALID_HANDLE` for unknown handles
-- **`WaitForSingleObject`**: dispatches on event handles before thread handles; correct timed-wait with deadline loop for spurious-wakeup handling and immediate return when already signaled; supports infinite waits
-- **`CloseHandle`**: removes event entries from the registry
-
-#### Stub Promotions (53 → 38)
-- `GetTempPathW` — now calls `std::env::temp_dir()` instead of hardcoded `/tmp/`
-- `GetProcessId` — now returns real PID via `std::process::id()`
-- `GetStdHandle`, `WriteConsoleW`, `FlushFileBuffers`, `SetFileTime`, `SetHandleInformation`, `UnlockFile`, `UnmapViewOfFile`, `SetThreadStackGuarantee`, `SleepEx`, `SwitchToThread` — promoted with accurate doc comments
-
-#### Bug Fixes
-- **Test race condition**: `test_get_full_path_name_w_relative` and `test_get_full_path_name_w_dot` were deleting temp directories while the process CWD pointed into them; scoping `CwdGuard` to drop before `remove_dir_all` eliminates the flake
-- **CI clippy fix**: added `# Panics` doc sections to `SetEvent` and `ResetEvent` (`clippy::missing_panics_doc` with `-D warnings`)
-
-**Ratchet updates:** globals 33 → 35, stubs 53 → 38
-
-**Code Quality:**
-- 4 new unit tests for the event system
-- All 298 tests passing (235 platform + 47 shim + 16 runner)
-- `RUSTFLAGS=-Dwarnings cargo clippy` clean
-- All code formatted with `cargo fmt`
-
-## Testing
-
-### Test Coverage
-
-**Total Tests:** 298 passing (updated 2026-02-21 Session 8) ✅
-- litebox_platform_linux_for_windows: 235 tests (includes kernel32, MSVCRT, WS2_32, advapi32, user32, and platform tests)
-- litebox_shim_windows: 47 tests (includes ABI translation, PE loader, and tracing tests)
-- litebox_runner_windows_on_linux_userland: 16 tests (9 tracing + 7 integration tests)
-
-**New Event Tests (Session 8 / Phase 19):** 🆕
-1. `test_create_event_returns_nonnull` - Validates CreateEventW returns a non-null handle
-2. `test_set_event_signals_waitforsingleobject` - SetEvent + WaitForSingleObject with auto-reset
-3. `test_manual_reset_event_stays_signaled` - Manual-reset event stays signaled across multiple waits
-4. `test_set_reset_event_on_invalid_handle` - SetEvent/ResetEvent return FALSE for invalid handles
-
-**New KERNEL32 Tests (Session 3):**
-1. `test_sleep` - Validates Sleep function timing accuracy
-2. `test_get_current_thread_id` - Verifies thread ID retrieval
-3. `test_get_current_process_id` - Verifies process ID retrieval
-
-**New TLS Tests (Session 4):** 🆕
-1. `test_tls_alloc_free` - Validates TLS slot allocation and deallocation
-2. `test_tls_get_set_value` - Verifies TLS value storage and retrieval
-3. `test_tls_multiple_slots` - Tests multiple independent TLS slots
-4. `test_tls_thread_isolation` - Ensures TLS values are thread-local
-
-### New Integration Tests (Session 2)
-
-**7 Comprehensive Integration Tests** (`tests/integration.rs`):
-1. **PE loader with minimal binary** - Platform creation and basic console I/O
-2. **DLL loading infrastructure** - DLL manager, case-insensitive loading, function resolution
-3. **Command-line APIs** - GetCommandLineW, CommandLineToArgvW parsing
-4. **File search APIs** - FindFirstFileW, FindNextFileW, FindClose with real filesystem
-5. **Memory protection APIs** - NtProtectVirtualMemory with protection changes
-6. **Error handling APIs** - GetLastError/SetLastError thread-local storage
-7. **DLL exports validation** - All critical KERNEL32 and WS2_32 exports verified
-
-### Test Categories
-
-1. **PE Loader Tests**
-   - Invalid DOS signature detection
-   - Too-small file rejection
-   - Import parsing (tested via DLL manager)
-   - Relocation parsing
-   
-2. **Platform API Tests**
-   - Path translation (Windows → Linux)
-   - Handle allocation and uniqueness
-   - Thread creation and parameter passing
-   - Event synchronization (manual/auto-reset)
-   - Handle cleanup
-   - Environment variable get/set
-   - Process and thread ID queries
-   - Registry key operations
-   - DLL loading (LoadLibrary/GetProcAddress/FreeLibrary)
-   - **Phase 7:** Memory protection (NtProtectVirtualMemory)
-   - **Phase 7:** Error handling (GetLastError/SetLastError thread-local storage)
-
-3. **Tracing Tests**
-   - Configuration (enabled/disabled, formats)
-   - Filtering (pattern, category, function)
-   - Output formats (text, JSON)
-   - File output
-   - Zero-overhead when disabled
-   - DLL operation tracing
-
-4. **Runner Integration Tests**
-   - Tracing pipeline integration
-   - Category filtering
-   - Pattern filtering
-   - Console and memory operation tracing
-
-## Code Quality Metrics
-
-### Clippy Status
-✅ **All warnings resolved** - Code passes `RUSTFLAGS=-Dwarnings cargo clippy --all-targets --all-features`
-
-### Resolved Warnings
-- `clippy::similar_names` - Renamed variables for clarity
-- `clippy::cast_ptr_alignment` - Using `read_unaligned()` for PE structures
-- `clippy::return_self_not_must_use` - Added `#[must_use]` to builder methods
-- `clippy::format_push_string` - Using `write!()` macro instead
-- `clippy::match_same_arms` - Merged duplicate match arms
-- `clippy::unused_self` - Added `#[allow]` where needed for API consistency
-- `clippy::unnecessary_wraps` - Added `#[allow]` for trait implementation consistency
-- `clippy::items_after_statements` - Moved imports to top of scope
-
-### Formatting
-✅ **All code formatted** - Passes `cargo fmt --check`
-
-### Safety
-- All `unsafe` blocks have detailed safety comments
-- Proper use of `read_unaligned()` to avoid alignment issues
-- Careful handling of raw pointers in thread creation
-- Memory safety maintained through platform abstractions
-
-## Usage Examples
+---
+
+## What Is Implemented ✅
+
+### PE Loading
+- Parse PE headers (DOS, NT, Optional headers) and validate signatures
+- Load all sections into memory with correct alignment
+- Apply base relocations (ASLR rebasing)
+- Parse and resolve the Import Address Table (IAT)
+- Patch IAT with resolved function addresses
+
+### DLL Emulation
+- `DllManager` with stub/trampoline support for KERNEL32, NTDLL, MSVCRT, WS2_32, advapi32, user32
+- Case-insensitive DLL name matching
+- `LoadLibrary` / `GetProcAddress` / `FreeLibrary` APIs
+- 57 trampolined functions with proper Windows x64 → System V AMD64 ABI translation (18 MSVCRT + 39 KERNEL32)
+- 38 remaining KERNEL32 stub exports (return plausible values / no-ops)
+
+### Execution Context
+- TEB (Thread Environment Block) and PEB (Process Environment Block) structures
+- GS segment register configured to point at TEB (`%gs:0x30` returns TEB pointer)
+- Real `mmap`-based stack allocation (1 MB default, grows downward)
+- Assembly trampoline calling Windows x64 entry points with correct ABI:
+  - 16-byte stack alignment before `call`
+  - 32-byte shadow space
+  - Return value in RAX
+
+### NTDLL / Core APIs
+| Category | Implemented Functions |
+|---|---|
+| File I/O | `NtCreateFile`, `NtReadFile`, `NtWriteFile`, `NtClose` |
+| Console I/O | `GetStdOutput`, `WriteConsole`, `GetStdHandle`, `WriteConsoleW` |
+| Memory | `NtAllocateVirtualMemory`, `NtFreeVirtualMemory`, `NtProtectVirtualMemory` |
+| Threads | `NtCreateThread`, `NtTerminateThread`, `NtWaitForSingleObject`, `NtCloseHandle` |
+| Events (NTDLL) | `NtCreateEvent`, `NtSetEvent`, `NtResetEvent`, `NtWaitForEvent` |
+| Environment | `GetEnvironmentVariable`, `SetEnvironmentVariable` |
+| Process info | `GetCurrentProcessId` (real PID), `GetCurrentThreadId` (real TID) |
+| Registry (emulated) | `RegOpenKeyEx`, `RegQueryValueEx`, `RegCloseKey` |
+| Error handling | `GetLastError` / `SetLastError` (thread-local) |
+
+### KERNEL32 Real Implementations
+| Function | Implementation |
+|---|---|
+| `Sleep` | `std::thread::sleep` |
+| `GetCurrentThreadId` | `SYS_gettid` syscall |
+| `GetCurrentProcessId` | `getpid()` syscall |
+| `GetProcessId` | `std::process::id()` |
+| `TlsAlloc` / `TlsFree` / `TlsGetValue` / `TlsSetValue` | Thread-local storage manager |
+| `CreateEventW` | Manual/auto-reset Condvar-backed events |
+| `SetEvent` | `notify_one()` (auto-reset) or `notify_all()` (manual-reset) |
+| `ResetEvent` | Clear event state |
+| `WaitForSingleObject` | Timed wait on threads or events |
+| `CloseHandle` | Removes event/thread entries |
+| `GetTempPathW` | `std::env::temp_dir()` |
+| `InitializeCriticalSection` / `EnterCriticalSection` / `LeaveCriticalSection` / `DeleteCriticalSection` | Mutex-backed |
+
+### MSVCRT Implementations (18 functions)
+`printf`, `fprintf`, `sprintf`, `snprintf`, `malloc`, `calloc`, `realloc`, `free`, `memcpy`, `memmove`, `memset`, `memcmp`, `strlen`, `strcpy`, `strncpy`, `strcmp`, `strncmp`, `exit`
+
+### Exception Handling Stubs (8 functions)
+`__C_specific_handler`, `SetUnhandledExceptionFilter`, `RaiseException`, `RtlCaptureContext`, `RtlLookupFunctionEntry`, `RtlUnwindEx`, `RtlVirtualUnwind`, `AddVectoredExceptionHandler`  
+*(These are minimal stubs sufficient to pass CRT initialization; full SEH is not implemented.)*
+
+### String / Wide-Char Operations
+`MultiByteToWideChar`, `WideCharToMultiByte`, `lstrlenW`, `CompareStringOrdinal`
+
+### Performance Counters
+`QueryPerformanceCounter`, `QueryPerformanceFrequency`, `GetSystemTimePreciseAsFileTime`
+
+### Heap Management
+`GetProcessHeap`, `HeapAlloc`, `HeapFree`, `HeapReAlloc`
+
+### Networking (WS2_32) — 34 functions backed by Linux POSIX sockets
+| Category | Implemented Functions |
+|---|---|
+| Lifecycle | `WSAStartup`, `WSACleanup`, `WSAGetLastError`, `WSASetLastError` |
+| Socket creation | `socket`, `WSASocketW`, `closesocket` |
+| Connection | `bind`, `listen`, `accept`, `connect`, `shutdown` |
+| Data transfer | `send`, `recv`, `sendto`, `recvfrom`, `WSASend`, `WSARecv` |
+| Socket info | `getsockname`, `getpeername`, `getsockopt`, `setsockopt`, `ioctlsocket` |
+| Multiplexing | `select`, `__WSAFDIsSet` |
+| Name resolution | `getaddrinfo`, `freeaddrinfo`, `GetHostNameW` |
+| Byte order | `htons`, `htonl`, `ntohs`, `ntohl` |
+| Misc | `WSADuplicateSocketW` |
+
+### API Tracing Framework
+- Text and JSON output formats with timestamps and thread IDs
+- Filtering by function name pattern (wildcards), category, or exact name
+- Output to stdout or file
+- Zero overhead when disabled
+- Categories: `file_io`, `console_io`, `memory`, `threading`, `synchronization`, `environment`, `process`, `registry`
+
+---
+
+## What Is NOT Implemented ❌
+
+| Feature | Status |
+|---|---|
+| Full SEH / C++ exception handling | Stubs only; stack unwinding not implemented |
+| GUI applications (USER32 / GDI32) | Not implemented |
+| Advanced networking (WS2_32) | Core socket API implemented (see above); overlapped/async I/O (`WSAEventSelect`, `WSAAsyncSelect`, completion ports) not implemented |
+| Process creation (`CreateProcessW`) | Not implemented |
+| Advanced file operations (memory mapping, overlapped I/O) | Not implemented |
+| Advanced registry operations (write, enumeration) | Not implemented |
+| 38 remaining KERNEL32 functions | Stub no-ops only |
+| Full end-to-end execution of MinGW binaries | Entry point reached; crashes during CRT global initialization (BSS / `.data` reliance on not-yet-initialized globals) |
+
+### Known Blocker: MinGW CRT Global Initialization
+Running a MinGW-compiled `hello_cli.exe` currently crashes during CRT startup at a low memory address (e.g., `0x3018`). The root cause is that BSS sections must be explicitly zero-initialized when loaded (they have `SizeOfRawData == 0` but `VirtualSize > 0`). Until this is fixed, real Windows binaries will not run to completion.
+
+---
+
+## Test Coverage
+
+**298 tests total (all passing):**
+
+| Package | Tests | Notes |
+|---|---|---|
+| `litebox_platform_linux_for_windows` | 235 | KERNEL32, MSVCRT, WS2_32, advapi32, user32, platform APIs |
+| `litebox_shim_windows` | 47 | ABI translation, PE loader, tracing |
+| `litebox_runner_windows_on_linux_userland` | 16 | 9 tracing + 7 integration tests |
+
+**Integration tests (7):**
+1. PE loader with minimal binary
+2. DLL loading infrastructure
+3. Command-line APIs (`GetCommandLineW`, `CommandLineToArgvW`)
+4. File search APIs (`FindFirstFileW`, `FindNextFileW`, `FindClose`)
+5. Memory protection APIs (`NtProtectVirtualMemory`)
+6. Error handling APIs (`GetLastError` / `SetLastError`)
+7. DLL exports validation (all critical KERNEL32 and WS2_32 exports)
+
+---
+
+## Usage
 
 ### Basic Usage
 
 ```bash
-# Load and analyze a PE binary (without execution)
+# Run a Windows PE binary
 litebox_runner_windows_on_linux_userland program.exe
-
-# Output:
-# Loaded PE binary: program.exe
-#   Entry point: 0x1400
-#   Image base: 0x140000000
-#   Sections: 4
-# 
-# Sections:
-#   .text - VA: 0x1000, Size: 8192 bytes, Characteristics: 0x60000020
-#   .data - VA: 0x3000, Size: 4096 bytes, Characteristics: 0xC0000040
-# ...
-# Hello from Windows on Linux!
-# Memory deallocated successfully.
 ```
 
 ### API Tracing
@@ -462,654 +202,30 @@ litebox_runner_windows_on_linux_userland \
   program.exe
 ```
 
-## Current Limitations
-
-### What Works
-- ✅ PE binary parsing and validation
-- ✅ Section loading into memory
-- ✅ Memory allocation and deallocation
-- ✅ Console I/O demonstration
-- ✅ API call tracing with filtering
-- ✅ Thread creation and synchronization primitives
-- ✅ Complete Windows NTDLL API surface (Phases 1-5)
-- ✅ Environment variable management
-- ✅ Process information queries
-- ✅ Basic registry emulation
-- ✅ **Import table parsing** (Phase 6)
-- ✅ **Import resolution** (Phase 6)
-- ✅ **DLL loading (LoadLibrary/GetProcAddress)** (Phase 6)
-- ✅ **Relocation processing** (Phase 6)
-- ✅ **IAT patching** (Phase 6)
-- ✅ **TEB/PEB structures** (Phase 6)
-- ✅ **Entry point execution framework** (Phase 6)
-- ✅ **GS Segment Register Setup** (Phase 7)
-- ✅ **Complete MSVCRT Implementation** — 18 functions (Phase 7)
-- ✅ **Enhanced ABI Translation** — 0-8 parameters (Phase 7)
-- ✅ **Trampoline Linking System** (Phase 7)
-- ✅ **TLS (Thread Local Storage)** — TlsAlloc/Free/Get/Set (Phase 7)
-- ✅ **Real stack allocation and Windows x64 ABI entry point calling** (Phase 8)
-- ✅ **Win32 event objects in KERNEL32** — CreateEventW/SetEvent/ResetEvent/WaitForSingleObject (Phase 19) 🆕
-- ✅ **GetTempPathW using real temp directory** (Phase 19) 🆕
-- ✅ **GetProcessId returns real PID** (Phase 19) 🆕
-
-### What's Not Yet Implemented
-- ✅ **GS Segment Register Setup** - Complete! (Phase 7)
-- ✅ **Complete MSVCRT Implementation** - Complete! 18 functions (Phase 7)
-- ✅ **Enhanced ABI Translation** - Complete! 0-8 parameters supported (Phase 7)
-- ✅ **Trampoline Linking System** - Complete! (Phase 7)
-- ✅ **TLS (Thread Local Storage)** - Complete! All 4 functions (Phase 7)
-- ✅ **Win32 Event Objects (KERNEL32)** - Complete! CreateEventW/SetEvent/ResetEvent (Phase 19) 🆕
-- ❌ **Exception handling** - SEH/C++ exceptions not fully implemented (basic stubs only)
-- ❌ **Advanced registry APIs** - Write operations, enumeration
-- ❌ **Advanced APIs** - Full process management, networking, GUI
-- ❌ **Real DLL implementations** - Currently mix of trampolines and stubs (38 remaining)
-
-### Phase 6 Progress (100% Complete)
-
-**Completed:**
-1. ✅ Import table parsing - Extract DLL and function names from PE
-2. ✅ Import resolution - Load DLLs and resolve function addresses
-3. ✅ IAT patching - Write resolved addresses to Import Address Table
-4. ✅ Relocation processing - Apply ASLR relocations when base differs
-5. ✅ DLL manager - Stub implementations for KERNEL32, NTDLL, MSVCRT
-6. ✅ TEB/PEB structures - Thread and Process Environment Blocks
-7. ✅ Entry point execution framework - Basic invocation infrastructure
-8. ✅ Test with real PE binaries - Framework validated and tested
-9. ✅ Complete ABI translation - Basic framework implemented
-10. ✅ Exception handling basics - Infrastructure in place for future SEH implementation
-
-### Phase 7 Progress (100% Complete) 🎉 - PHASE COMPLETE!
-
-**Completed:**
-1. ✅ Memory Protection API - NtProtectVirtualMemory with full flag translation
-2. ✅ Error Handling Infrastructure - GetLastError/SetLastError with thread-local storage
-3. ✅ API Tracing Integration - Full tracing support for new APIs
-4. ✅ Comprehensive Testing - 9 Phase 7 platform tests, all passing
-5. ✅ MSVCRT Runtime Implementation - 18 functions fully implemented and tested
-6. ✅ Enhanced File I/O - SetLastError integration and full flag support
-7. ✅ GS Segment Register Setup - Required for TEB access (100% complete)
-8. ✅ ABI Translation Enhancement - Stack alignment and floating-point support (100% complete)
-9. ✅ **DLL Export Expansion** - 72+ new exports across KERNEL32, WS2_32, api-ms-win-core-synch
-10. ✅ **Integration Test Suite** - 7 comprehensive tests validating all Phase 7 features
-11. ✅ **Windows Binary Validation** - Tested with real MinGW-compiled PE executables
-12. ✅ **Trampoline Linking System** - Complete infrastructure for calling convention translation
-13. ✅ **MSVCRT Function Linking** - All 18 MSVCRT functions mapped to trampolines
-14. ✅ **DLL Manager Integration** - Real addresses replace stubs for MSVCRT
-15. ✅ **Runner Integration** - Automatic trampoline initialization
-16. ✅ **Entry Point Execution Testing** - Validated with real Windows binaries (hello_cli.exe)
-17. ✅ **TEB/PEB Validation** - Confirmed GS register setup allows TEB access via %gs:0x30
-18. ✅ **Import Resolution Verification** - All 117 KERNEL32 + 27 MSVCRT + 26 WS2_32 function imports resolved
-19. ✅ **TLS Implementation** - Complete! 4 functions with comprehensive testing 🆕
-    - TlsAlloc, TlsFree, TlsGetValue, TlsSetValue
-    - Thread-safe global TLS manager
-    - Proper thread isolation
-    - Full trampoline integration
-20. ✅ **Documentation** - Status updated to reflect 100% completion
-    - Sleep (for startup lock mechanism)
-    - Thread attribute initialization
-    - Additional synchronization primitives
-20. ⏳ Documentation Updates - Usage examples and implementation guide (95%)
-
-See [Phase 7 Implementation Details](./PHASE7_IMPLEMENTATION.md) for complete status.
-
-### Current Capabilities (Phase 6)
-
-The Windows-on-Linux runner can now:
-1. Parse PE import table and extract all imported functions
-2. Load stub DLLs via LoadLibrary
-3. Resolve function addresses via GetProcAddress
-4. Write resolved addresses to Import Address Table
-5. Apply base relocations when loaded at different address
-6. Create TEB/PEB structures for execution context
-7. Invoke entry points with basic ABI handling
-6. All operations fully traced for debugging
-
-**Example Output:**
-```
-Loaded PE binary: test.exe
-  Entry point: 0x1400
-  Image base: 0x140000000
-  Sections: 4
-
-Sections:
-  .text - VA: 0x1000, Size: 8192 bytes
-  .data - VA: 0x3000, Size: 4096 bytes
-
-Applying relocations...
-  Rebasing from 0x140000000 to 0x7F0000000000
-  Relocations applied successfully
-
-Resolving imports...
-  DLL: KERNEL32.dll
-    Functions: 5
-      LoadLibraryA -> 0x1000
-      GetProcAddress -> 0x1002
-      WriteConsoleW -> 0x1005
-      ...
-  Import resolution complete
-
-[Phase 6 Progress]
-  ✓ PE loader
-  ✓ Section loading
-  ✓ Relocation processing
-  ✓ Import resolution
-  ✓ IAT patching
-  → Entry point at: 0x1400 (not yet called)
-```
-
-### Why Full Execution Isn't Working Yet
-
-The current Phase 6 implementation has completed most of the loading pipeline:
-1. ✅ PE parsing and section loading
-2. ✅ Base relocation processing
-3. ✅ Import resolution and IAT patching
-4. ⏳ TEB/PEB initialization (in progress)
-5. ⏳ Entry point invocation (in progress)
-
-**Remaining Challenges:**
-- **ABI Translation:** Windows x64 uses Microsoft fastcall, Linux uses System V AMD64
-- **TEB/PEB Setup:** Windows programs expect Thread and Process Environment Blocks
-- **Exception Handling:** Need to map Windows SEH to Linux signals
-- **Stack Setup:** Proper stack alignment and initialization
-
-**Estimated Completion:** 1-2 weeks for basic entry point execution
-
-## Next Steps (Phase 6: DLL Loading & Execution)
-
-### Currently Implemented ✅
-
-1. **Import Resolution** ✅
-   - Parse import lookup table (ILT)
-   - Extract DLL names and function names
-   - Support import by name and by ordinal
-   - Complete ImportedDll structures
-
-2. **DLL Loading** ✅
-   - LoadLibrary/GetProcAddress/FreeLibrary APIs
-   - DllManager with stub DLL support
-   - Case-insensitive DLL name matching
-   - Pre-loaded stub DLLs: KERNEL32, NTDLL, MSVCRT
-   - Full API tracing integration
-
-3. **IAT Patching** ✅
-   - Write resolved function addresses to IAT
-   - 64-bit address handling for x64 PEs
-   - Error handling for missing functions
-   - Integrated into runner pipeline
-
-4. **Relocation Processing** ✅
-   - Parse base relocation table
-   - Apply DIR64 and HIGHLOW relocations
-   - Calculate and apply delta corrections
-   - Support for ASLR
-
-### Remaining Work ⏳
-
-1. **Entry Point Execution** (In Progress)
-   - Set up initial thread context
-   - Initialize Windows environment (TEB, PEB stubs)
-   - Call PE entry point with proper ABI
-   - Handle entry point return
-
-2. **Exception Handling** (Planned)
-   - Basic SEH (Structured Exception Handling) support
-   - Exception dispatcher
-   - Unwind information processing
-
-3. **Testing** (Planned)
-   - Create simple test PE binaries
-   - Integration tests for full pipeline
-   - Validation with real Windows programs
-
-## Performance Characteristics
-
-### Memory Usage
-- Minimal overhead for PE loading (single allocation per binary)
-- Handle maps use `HashMap` for O(1) lookup
-- Event state uses `Arc<Mutex<T>>` for thread safety
-
-### Tracing Overhead
-- **Disabled:** Zero overhead (branch prediction optimized)
-- **Enabled:** ~10-20% overhead (based on test measurements)
-- **File I/O:** Buffered writes minimize disk impact
-
-### Thread Safety
-- Lock-free handle generation using `AtomicU64`
-- Coarse-grained locking for state mutations
-- Lock contention minimized through Arc cloning
-
-## Conclusion
-
-The Windows-on-Linux implementation has **completed all phases through Phase 19** successfully! 🎉
-
-- ✅ Phase 1: Robust PE loading foundation
-- ✅ Phase 2: Core NTDLL API translations
-- ✅ Phase 3: Comprehensive API tracing framework
-- ✅ Phase 4: Multi-threaded operation support
-- ✅ Phase 5: Environment variables and process information
-- ✅ Phase 6: Import resolution, DLL loading, TEB/PEB, and entry point framework
-- ✅ Phase 7: Windows API implementation and trampoline linking
-- ✅ Phase 8: Entry point execution with real stack allocation and ABI compliance
-- ✅ Phase 19: Win32 event support, stub upgrades, test race-condition fix
-
-**Current Status (Session 8 - 2026-02-21):**
-- All core infrastructure complete ✅
-- Import resolution and IAT patching working ✅
-- Relocation processing integrated ✅
-- TEB/PEB structures implemented with GS register setup ✅
-- Entry point execution with real stack and proper ABI ✅
-- Real mmap-based stack allocation (1MB default) ✅
-- Windows x64 calling convention compliance ✅
-- 57 trampolined functions (18 MSVCRT + 39 KERNEL32) ✅
-- 72+ DLL stub exports (KERNEL32, WS2_32, api-ms-win-core-synch, etc.)
-- 7 comprehensive integration tests validating all APIs
-- Real Windows PE binaries load and execute (file_io_test.exe, string_test.exe tested) ✅
-- Trampoline linking system complete — Windows x64 → System V AMD64 translation ✅
-- Executable memory management — mmap-based allocation ✅
-- TLS (Thread Local Storage) — complete with thread isolation ✅
-- DLL manager integration — real addresses replace stubs ✅
-- **Real Win32 event objects in KERNEL32** — CreateEventW/SetEvent/ResetEvent/WaitForSingleObject ✅ 🆕
-- **KERNEL32 stub count reduced: 53 → 38** ✅ 🆕
-- **GetTempPathW uses real std::env::temp_dir()** ✅ 🆕
-- **GetProcessId returns real PID** ✅ 🆕
-- All 298 tests passing (235 platform + 47 shim + 16 runner) ✅ 🆕
-
-All code passes strict quality checks (clippy with `-D warnings`, rustfmt) and has comprehensive test coverage.
-
-**Recent Sessions:**
-- **2026-02-15 Session 1:** Implemented complete trampoline linking infrastructure
-  - ✅ Created TrampolineManager for executable memory (mmap-based)
-  - ✅ Built function table mapping 18 MSVCRT functions
-  - ✅ Integrated trampolines into DLL manager
-  - ✅ Updated runner to initialize trampolines on startup
-  - ✅ All 103 tests passing with zero clippy warnings
-  
-- **2026-02-15 Session 2:** Entry point execution validation
-  - ✅ Fixed unused variable warning in function_table.rs
-  - ✅ Built Windows test programs (hello_cli.exe, hello_gui.exe) using MinGW
-  - ✅ Tested PE loading with real Windows binaries
-  - ✅ Validated import resolution (117 KERNEL32, 27 MSVCRT, 26 WS2_32 functions)
-  - ✅ Confirmed MSVCRT trampolines are active and properly linked
-  - ✅ Verified TEB/PEB setup and GS register configuration
-  - 🔍 **Discovery:** Entry point (mainCRTStartup) requires CRT initialization
-  - 🔍 **Finding:** MinGW CRT startup accesses TEB via %gs:0x30 (working as expected)
-  - 🔍 **Blocker:** CRT initialization needs additional KERNEL32/MSVCRT functions
-  
-- **2026-02-15 Session 3:** KERNEL32 function implementation
-  - ✅ Created new kernel32.rs module with Linux syscall implementations
-  - ✅ Implemented Sleep (std::thread::sleep wrapper)
-  - ✅ Implemented GetCurrentThreadId (SYS_gettid syscall)
-  - ✅ Implemented GetCurrentProcessId (getpid syscall)
-  - ✅ Added 3 comprehensive unit tests for KERNEL32 functions
-  - ✅ Integrated KERNEL32 functions into trampoline system
-  - ✅ Updated DLL stub exports to include Sleep
-  - ✅ Verified trampoline resolution (Sleep → 0x7F8E86A3515A)
-  - ✅ All 106 tests passing (+3 new tests)
-  - 🔍 **Finding:** TLS functions needed for full CRT initialization
-
-- **2026-02-15 Session 4:** TLS Implementation - Phase 7 Complete! 🎉
-  - ✅ Implemented TlsAlloc - Thread-local storage slot allocation
-  - ✅ Implemented TlsFree - TLS slot deallocation
-  - ✅ Implemented TlsGetValue - Retrieve thread-local values
-  - ✅ Implemented TlsSetValue - Store thread-local values
-  - ✅ Created global TLS manager with mutex protection
-  - ✅ Added 4 comprehensive TLS tests (alloc/free, get/set, multiple slots, thread isolation)
-  - ✅ Integrated TLS functions into trampoline system
-  - ✅ Updated DLL stub exports (4 new KERNEL32 exports)
-  - ✅ Zero clippy warnings, all code formatted
-  - ✅ All 110 tests passing (+4 new tests)
-  - 🎯 **Milestone:** Phase 7 100% complete - Ready for CRT initialization testing!
-
-- **2026-02-15 Session 5:** Phase 8 Planning and Exception Handling 🆕
-  - ✅ Built and tested hello_cli.exe (1.2MB MinGW executable)
-  - ✅ Analyzed import requirements (180 imports across 6 DLLs)
-  - ✅ Documented 86 missing KERNEL32 functions
-  - ✅ Created detailed Phase 8 implementation plan (7 sub-phases, 3-4 weeks)
-  - ✅ **Phase 8.1 Complete:** Exception Handling Stubs
-    - ✅ Implemented 8 exception handling functions
-    - ✅ __C_specific_handler, SetUnhandledExceptionFilter, RaiseException
-    - ✅ RtlCaptureContext, RtlLookupFunctionEntry, RtlUnwindEx, RtlVirtualUnwind
-    - ✅ AddVectoredExceptionHandler
-    - ✅ All functions integrated into trampoline system
-    - ✅ Added comprehensive unit test
-    - ✅ All 111 tests passing (+1 new test)
-  - 🔍 **Progress:** hello_cli.exe progresses further with exception stubs
-  - 🔍 **Next:** Need Critical Sections and more synchronization primitives
-
-- **2026-02-15 Session 6:** Phase 8.7 - Import Resolution Bug Fix 🆕
-  - ✅ **CRITICAL BUG IDENTIFIED AND FIXED:** Phase 8 functions missing from KERNEL32 exports
-  - ✅ Root cause: Functions implemented with trampolines but missing from DLL stub export table
-  - ✅ Fixed missing exports in `litebox_shim_windows/src/loader/dll.rs`:
-    - ✅ Phase 8.2: Critical Sections (5 functions)
-    - ✅ Phase 8.3: String Operations (4 functions)
-    - ✅ Phase 8.4: Performance Counters (3 functions)
-  - ✅ Impact: Reduced unresolved imports from 72+ to 59
-  - ✅ All 149 tests still passing (94 platform + 16 runner + 39 shim)
-  - ✅ Zero clippy warnings for changed files
-  - ✅ All code formatted with cargo fmt
-  - 🔍 **Progress:** Import resolution now working correctly for all Phase 8 functions
-  - 🔍 **Next:** Address entry point execution crash (stack/calling convention issues)
-
-- **2026-02-21 Session 8:** Phase 19 - Win32 Event Support, Stub Upgrades, Test Race-Condition Fix 🆕
-  - ✅ **Real Win32 event objects in KERNEL32 layer** — full `CreateEventW`/`SetEvent`/`ResetEvent`/`WaitForSingleObject` with Condvar-backed event registry
-    - Auto-reset and manual-reset semantics
-    - Correct timed-wait logic with deadline loop and spurious-wakeup handling
-    - `SetEvent` uses `notify_one()` for auto-reset, `notify_all()` for manual-reset
-    - `WaitForSingleObject` dispatches on event handles before thread handles
-    - `CloseHandle` frees event entries
-  - ✅ **Fixed test race condition:** `test_get_full_path_name_w_relative` and `test_get_full_path_name_w_dot` were deleting temp directories while the process CWD pointed into them; scoping `CwdGuard` to drop before `remove_dir_all` eliminates the flake
-  - ✅ **KERNEL32 stub count: 53 → 38** — 13 stubs promoted to documented real implementations:
-    - `GetTempPathW` — now uses `std::env::temp_dir()`
-    - `GetProcessId` — now returns real PID via `std::process::id()`
-    - `GetStdHandle`, `WriteConsoleW`, `FlushFileBuffers`, `SetFileTime`, `SetHandleInformation`, `UnlockFile`, `UnmapViewOfFile`, `SetThreadStackGuarantee`, `SleepEx`, `SwitchToThread` — improved docs
-  - ✅ **Added 4 new unit tests** for event system: create, set+wait (auto-reset), manual-reset, invalid-handle rejection
-  - ✅ **Ratchet updated:** globals 33 → 35, stubs 53 → 38
-  - ✅ **CI fix:** added `# Panics` doc sections to `SetEvent` and `ResetEvent` (`clippy::missing_panics_doc` with `-D warnings`)
-  - ✅ All 298 tests passing (235 platform + 47 shim + 16 runner) — up from 149
-  - ✅ `RUSTFLAGS=-Dwarnings cargo clippy` clean
-
-- **2026-02-16 Session 7:** Phase 8.7 - Entry Point Execution Complete 🎉
-  - ✅ **Implemented real stack allocation using mmap** (1MB default size)
-  - ✅ **Added stack cleanup via Drop trait** (munmap on ExecutionContext drop)
-  - ✅ **Created assembly trampoline** for Windows x64 calling convention
-  - ✅ **Proper stack setup:** save RSP → switch to new stack → call entry point → restore RSP
-  - ✅ **Windows x64 ABI compliance:** 16-byte alignment + 32-byte shadow space
-  - ✅ Added `libc` dependency to litebox_shim_windows
-  - ✅ Added `MemoryAllocationFailed` error variant
-  - ✅ All 149 tests passing (maintained)
-  - ✅ Zero clippy warnings with strict `-D warnings` flag
-  - ✅ **Tested with hello_cli.exe:** Loads successfully, enters entry point
-  - 🎯 **Milestone:** Phase 8 100% complete! All infrastructure ready for Windows binary execution
-  - 📝 **Note:** Entry point crashes due to missing API implementations (expected behavior)
-
-**Test Results (Session 6 - Phase 8.7 In Progress):**
-```
-$ cargo nextest run --package litebox_platform_linux_for_windows
-test result: ok. 94 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
-
-$ cargo nextest run --package litebox_runner_windows_on_linux_userland  
-test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
-
-$ cargo nextest run --package litebox_shim_windows
-test result: ok. 39 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
-
-Total: 149 tests passing ✅ (maintained)
-```
-
-**Import Resolution After Fix:**
-```
-Before fix:
-  72+ functions showing as "NOT FOUND" in KERNEL32.dll
-  Including: DeleteCriticalSection, EnterCriticalSection, MultiByteToWideChar, 
-             QueryPerformanceCounter, and others
-
-After fix:
-  59 functions "NOT FOUND" (reduced by 13)
-  All Phase 8 functions now resolve correctly:
-  ✅ DeleteCriticalSection -> 0x7FB94FA252EC
-  ✅ EnterCriticalSection -> 0x7FB94FA252BF
-  ✅ MultiByteToWideChar -> 0x7FB94FA252FB
-  ✅ QueryPerformanceCounter -> 0x7FB94FA253B3
-  [and 9 more Phase 8 functions...]
-```
-
-**Known Issues:**
-- ⚠️ Entry point execution still crashes (not a Phase 8 function issue)
-- ⚠️ Missing proper stack setup in call_entry_point function
-- ⚠️ 59 advanced KERNEL32 functions still unresolved (expected, not needed for basic execution)
-
-**Test Results (Session 5 - Phase 8.1 Complete):**
-```
-$ cargo test --package litebox_platform_linux_for_windows
-test result: ok. 56 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
-
-$ cargo test --package litebox_runner_windows_on_linux_userland  
-test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
-
-$ cargo test --package litebox_shim_windows
-test result: ok. 39 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
-
-Total: 111 tests passing ✅ (was 110)
-
-New Test:
-✅ test_exception_handling_stubs - All 8 exception handling functions validated
-
-KERNEL32 Functions with Trampolines (33 total):
-✅ Sleep → 0x7F8E86A3515A
-✅ GetCurrentThreadId, GetCurrentProcessId
-✅ TlsAlloc, TlsFree, TlsGetValue, TlsSetValue
-✅ __C_specific_handler, SetUnhandledExceptionFilter, RaiseException 🆕
-✅ RtlCaptureContext, RtlLookupFunctionEntry, RtlUnwindEx 🆕
-✅ RtlVirtualUnwind, AddVectoredExceptionHandler 🆕
-```
-
-**PE Binary Loading (hello_cli.exe) - Updated:**
-```
-$ ./litebox_runner_windows_on_linux_userland hello_cli.exe
-Loaded PE binary: hello_cli.exe
-  Entry point: 0x1410
-  Image base: 0x140000000
-  Sections: 10
-
-Resolving imports...
-  DLL: KERNEL32.dll - Functions: 117 
-    Exception Handling: 8 functions now resolved with trampolines ✅
-    Previously: 86 NOT FOUND → Now: 78 NOT FOUND (8 resolved)
-  DLL: MSVCRT.dll - Functions: 27 [18 with trampolines, 9 stubs]
-  DLL: WS2_32.dll - Functions: 26 [all stubs]
-  Import resolution complete
-
-Entry point execution: Progresses further than before, but still crashes
-Status: Phase 8.6 Complete - All core API implementations ready
-Next: Phase 8.7 - Final integration testing with hello_cli.exe
-```
-
-**Phase 8 Status: 6/7 Sub-Phases Complete (86%)**
-- ✅ Phase 8.1: Exception Handling Stubs (COMPLETE)
-- ✅ Phase 8.2: Critical Sections (COMPLETE)
-- ✅ Phase 8.3: String Operations (COMPLETE)
-- ✅ Phase 8.4: Performance Counters (COMPLETE)
-- ✅ Phase 8.5: File I/O Trampolines (COMPLETE)
-- ✅ Phase 8.6: Heap Management Trampolines (COMPLETE)
-- 🔧 Phase 8.7: Final Integration and Testing (IN PROGRESS)
-  - ✅ Fixed critical import resolution bug
-  - ⏳ Remaining: Entry point execution fixes
-
-**Test Results (Phase 8.6 Complete):**
-```
-$ cargo nextest run --package litebox_platform_linux_for_windows
-test result: ok. 94 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
-
-$ cargo nextest run --package litebox_runner_windows_on_linux_userland  
-test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
-
-$ cargo nextest run --package litebox_shim_windows
-test result: ok. 39 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
-
-Total: 149 tests passing ✅ (was 111 at start of Phase 8)
-
-$ cargo test --package litebox_shim_windows
-test result: ok. 39 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
-
-Total: 110 tests passing ✅
-
-TLS Tests (New):
-✅ test_tls_alloc_free - Slot allocation and deallocation
-✅ test_tls_get_set_value - Value storage and retrieval
-✅ test_tls_multiple_slots - Multiple independent slots
-✅ test_tls_thread_isolation - Thread-local isolation verified
-
-KERNEL32 Functions with Trampolines:
-✅ Sleep → 0x7F8E86A3515A
-✅ GetCurrentThreadId → 0x7FEF3021B169
-✅ GetCurrentProcessId → 0x7FEF3021B175
-✅ TlsAlloc → 0x7FEF3021B181
-✅ TlsFree → 0x7FEF3021B18D
-✅ TlsGetValue → 0x7FEF3021B199
-✅ TlsSetValue → 0x7FEF3021B1A5
-```
-
-**PE Binary Loading (hello_cli.exe):**
-```
-$ ./litebox_runner_windows_on_linux_userland hello_cli.exe
-Loaded PE binary: hello_cli.exe
-  Entry point: 0x1410
-  Image base: 0x140000000
-  Sections: 10
-
-Resolving imports...
-  DLL: KERNEL32.dll - Functions: 117 [all resolved]
-    Sleep -> 0x7F8E86A3515A [TRAMPOLINE]
-    GetCurrentThreadId -> 0x7FEF3021B169 [TRAMPOLINE]
-    GetCurrentProcessId -> 0x7FEF3021B175 [TRAMPOLINE]
-  DLL: MSVCRT.dll - Functions: 27 imported [18 with trampolines, 9 stubs]
-  DLL: WS2_32.dll - Functions: 26 [all resolved]
-  Import resolution complete
-
-Setting up execution context...
-  TEB created, GS register configured ✅
-  TLS functions available ✅
-  Entry point ready for execution
-  
-Status: Phase 7 Complete - All core infrastructure ready for Windows binary execution! 🎉
-```
-
-**Next Steps: Phase 8 - Additional Windows API Support**
-
-### Testing Results (Session 5 - 2026-02-15)
-
-Successfully built and tested hello_cli.exe with the Windows-on-Linux runner:
-- ✅ PE binary loads correctly (1.2MB MinGW-compiled executable)
-- ✅ All 10 sections loaded (text, data, rdata, pdata, xdata, bss, idata, CRT, tls, reloc)
-- ✅ Relocations applied successfully (rebased from 0x140000000 to 0x7F4E9B12A000)
-- ✅ Import resolution working for 180 total imports across 6 DLLs
-- ✅ TEB/PEB created and GS register configured
-- ⚠️ **Entry point execution crashes** - MinGW CRT needs additional APIs
-
-**Import Analysis (hello_cli.exe):**
-- KERNEL32.dll: 117 functions (31 resolved, 86 NOT FOUND)
-- msvcrt.dll: 27 functions (18 trampolines, 9 stubs)
-- ntdll.dll: 6 functions (all resolved)
-- WS2_32.dll: 26 functions (all stubs)
-- bcryptprimitives.dll: 1 function (stub)
-- api-ms-win-core-synch-l1-2-0.dll: 3 functions (stubs)
-
-**Critical Missing APIs for MinGW CRT:**
-
-**Priority 1 - Exception Handling (Blocking CRT startup):**
-- `__C_specific_handler` - Required for SEH (Structured Exception Handling)
-- `RtlCaptureContext` - Capture CPU context for exception handling
-- `RtlLookupFunctionEntry` - Lookup unwind info for function
-- `RtlUnwindEx` - Perform stack unwinding
-- `RtlVirtualUnwind` - Virtual unwind for exception handling
-- `SetUnhandledExceptionFilter` - Register unhandled exception handler
-- `RaiseException` - Raise a software exception
-
-**Priority 2 - Synchronization (Used by CRT):**
-- `InitializeCriticalSection` - Create critical section
-- `EnterCriticalSection` - Acquire lock
-- `LeaveCriticalSection` - Release lock
-- `DeleteCriticalSection` - Destroy critical section
-
-**Priority 3 - File Operations:**
-- `ReadFile` / `WriteFile` - File I/O (already have stubs, need trampolines)
-- `CreateFileW` - File creation (already have stub, need trampoline)
-- `CloseHandle` - Handle cleanup (already have stub, need trampoline)
-
-**Priority 4 - String Operations:**
-- `MultiByteToWideChar` - Convert multibyte to Unicode
-- `WideCharToMultiByte` - Convert Unicode to multibyte
-- `lstrlenW` - Wide string length
-- `CompareStringOrdinal` - String comparison
-
-**Priority 5 - Additional APIs:**
-- `QueryPerformanceCounter` / `QueryPerformanceFrequency` - High-resolution timing
-- `GetSystemTimePreciseAsFileTime` - System time
-- `GetModuleHandleA` / `GetModuleHandleW` - Already have stubs, need implementation
-- `GetModuleFileNameW` - Get module path
-- `GetProcessHeap` - Get process heap handle (already have stub, need trampoline)
-- `HeapAlloc` / `HeapFree` / `HeapReAlloc` - Already have stubs, need trampolines
-
-### Phase 8 Implementation Plan
-
-**Goal:** Enable hello_cli.exe to execute successfully and print "Hello World from LiteBox!"
-
-**Approach:** Implement missing APIs incrementally, testing after each batch
-
-#### Phase 8.1: Exception Handling Stubs (Week 1)
-1. Implement `__C_specific_handler` as a minimal stub that returns to caller
-2. Implement `SetUnhandledExceptionFilter` as a no-op
-3. Implement `RaiseException` as abort() for now
-4. Add basic `RtlCaptureContext`, `RtlLookupFunctionEntry`, `RtlUnwindEx` stubs
-5. **Test:** Verify CRT initialization progresses further
-
-#### Phase 8.2: Critical Sections (Week 1)
-1. Implement `InitializeCriticalSection` using pthread_mutex
-2. Implement `EnterCriticalSection` / `LeaveCriticalSection`
-3. Implement `DeleteCriticalSection`
-4. Add unit tests for synchronization
-5. **Test:** Verify multi-threaded CRT features work
-
-#### Phase 8.3: String Operations (Week 2)
-1. Implement `MultiByteToWideChar` using UTF-8 conversion
-2. Implement `WideCharToMultiByte` 
-3. Implement `lstrlenW` as wrapper around wcslen
-4. Implement `CompareStringOrdinal`
-5. Add unit tests for string operations
-6. **Test:** Verify string handling in CRT works
-
-#### Phase 8.4: Performance Counters (Week 2)
-1. Implement `QueryPerformanceCounter` using clock_gettime
-2. Implement `QueryPerformanceFrequency`
-3. Implement `GetSystemTimePreciseAsFileTime`
-4. Add unit tests
-5. **Test:** Verify timing operations work
-
-#### Phase 8.5: File I/O Trampolines (Week 2)
-1. Create trampolines for ReadFile, WriteFile, CreateFileW, CloseHandle
-2. Link to existing platform implementations
-3. Update DLL manager with new exports
-4. **Test:** Verify file operations work end-to-end
-
-#### Phase 8.6: Heap Management Trampolines (Week 2)
-1. Create trampolines for HeapAlloc, HeapFree, HeapReAlloc, GetProcessHeap
-2. Link to existing platform implementations
-3. Update DLL manager with new exports
-4. **Test:** Verify heap operations work end-to-end
-
-#### Phase 8.7: Final Integration (Week 3)
-1. Run hello_cli.exe end-to-end
-2. Debug any remaining issues
-3. Validate output: "Hello World from LiteBox!"
-4. Run full test suite (should be 140+ tests)
-5. Document successful execution
-6. Update status to "Phase 8 Complete"
-
-### Success Criteria for Phase 8
-
-- ✅ hello_cli.exe executes without crashing
-- ✅ Output: "Hello World from LiteBox!" printed to console
-- ✅ All 140+ tests passing
-- ✅ Zero clippy warnings
-- ✅ Code formatted with cargo fmt
-- ✅ Documentation updated with successful execution example
-
-### Estimated Timeline
-
-- **Phase 8.1-8.2:** 1 week (exception handling + critical sections)
-- **Phase 8.3-8.4:** 1 week (string ops + performance counters)
-- **Phase 8.5-8.6:** 1 week (file + heap trampolines)
-- **Phase 8.7:** 3-5 days (integration and testing)
-- **Total:** 3-4 weeks to Phase 8 completion
-
-### Known Limitations (After Phase 8)
-
-Even after Phase 8 completion, the following will still not work:
-- ❌ GUI applications (no USER32/GDI32 support)
-- ❌ Networking (WS2_32 stubs only)
-- ❌ Advanced file operations (memory mapping, overlapped I/O)
-- ❌ Full exception handling (only basic stubs)
-- ❌ Process creation (CreateProcessW not implemented)
-- ❌ Advanced threading (some synchronization primitives missing)
-
-These would be addressed in future phases (Phase 9+) as needed.
+---
+
+## Code Quality
+
+- **All 298 tests passing**
+- `RUSTFLAGS=-Dwarnings cargo clippy --all-targets --all-features` — clean
+- `cargo fmt --check` — clean
+- All `unsafe` blocks have detailed safety comments
+- Ratchet limits: globals ≤ 35, transmutes ≤ current, MaybeUninit ≤ current
+
+---
+
+## Development History Summary
+
+| Phase | Description | Status |
+|---|---|---|
+| 1 | PE loader foundation | ✅ Complete |
+| 2 | Core NTDLL APIs (file, console, memory) | ✅ Complete |
+| 3 | API tracing framework | ✅ Complete |
+| 4 | Threading & synchronization (NTDLL) | ✅ Complete |
+| 5 | Environment variables, process info, registry emulation | ✅ Complete |
+| 6 | Import resolution, IAT patching, relocations, DLL manager, TEB/PEB | ✅ Complete |
+| 7 | MSVCRT, GS register, ABI trampolines, TLS, memory protection, error handling | ✅ Complete |
+| 8 | Real stack allocation, Windows x64 ABI entry-point calling, exception/heap/critical-section stubs | ✅ Complete |
+| 19 | Win32 event objects (KERNEL32), stub promotions (53→38), test race-condition fix | ✅ Complete |
+
+**Next:** Fix BSS zero-initialization in `load_sections()` to unblock MinGW CRT global initialization.
