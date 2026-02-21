@@ -1,15 +1,15 @@
 # Windows on Linux: Current Implementation Status
 
-**Last Updated:** 2026-02-16 (Session 7)
+**Last Updated:** 2026-02-21 (Session 8 / Phase 19)
 
 ## Overview
 
 This document provides the current status of the Windows-on-Linux implementation in LiteBox, which enables running Windows PE binaries on Linux with comprehensive API tracing capabilities.
 
-**Current Phase:** Phase 8 - **COMPLETE** ✅  
-**Total Tests:** 149 passing (94 platform + 16 runner + 39 shim)  
+**Current Phase:** Phase 19 - **COMPLETE** ✅  
+**Total Tests:** 298 passing (235 platform + 47 shim + 16 runner)  
 **Integration Tests:** 7 comprehensive tests  
-**Recent Session:** Phase 8.7 - Entry Point Execution Complete
+**Recent Session:** Phase 19 - Win32 Event Support, Stub Upgrades, Test Race-Condition Fix
 
 ## Architecture
 
@@ -289,14 +289,49 @@ The implementation consists of three main components:
 
 **Phase 8 Status:** 💯 **100% COMPLETE!** 🎉
 
+### ✅ Phase 19: Win32 Event Support, Stub Upgrades, Test Race-Condition Fix (Complete)
+
+**Status:** Fully implemented and tested (Session 8 - 2026-02-21)
+
+#### Win32 Event Objects in KERNEL32
+- Added `EVENT_HANDLE_COUNTER` + `EVENT_HANDLES` global registry (Condvar-backed, same pattern as file/thread handles)
+- **`CreateEventW`**: creates events with manual/auto-reset and initial-signaled state; always returns a non-null synthetic handle
+- **`SetEvent`**: signals event; uses `notify_one()` for auto-reset and `notify_all()` for manual-reset events
+- **`ResetEvent`**: clears event state; returns `ERROR_INVALID_HANDLE` for unknown handles
+- **`WaitForSingleObject`**: dispatches on event handles before thread handles; correct timed-wait with deadline loop for spurious-wakeup handling and immediate return when already signaled; supports infinite waits
+- **`CloseHandle`**: removes event entries from the registry
+
+#### Stub Promotions (53 → 38)
+- `GetTempPathW` — now calls `std::env::temp_dir()` instead of hardcoded `/tmp/`
+- `GetProcessId` — now returns real PID via `std::process::id()`
+- `GetStdHandle`, `WriteConsoleW`, `FlushFileBuffers`, `SetFileTime`, `SetHandleInformation`, `UnlockFile`, `UnmapViewOfFile`, `SetThreadStackGuarantee`, `SleepEx`, `SwitchToThread` — promoted with accurate doc comments
+
+#### Bug Fixes
+- **Test race condition**: `test_get_full_path_name_w_relative` and `test_get_full_path_name_w_dot` were deleting temp directories while the process CWD pointed into them; scoping `CwdGuard` to drop before `remove_dir_all` eliminates the flake
+- **CI clippy fix**: added `# Panics` doc sections to `SetEvent` and `ResetEvent` (`clippy::missing_panics_doc` with `-D warnings`)
+
+**Ratchet updates:** globals 33 → 35, stubs 53 → 38
+
+**Code Quality:**
+- 4 new unit tests for the event system
+- All 298 tests passing (235 platform + 47 shim + 16 runner)
+- `RUSTFLAGS=-Dwarnings cargo clippy` clean
+- All code formatted with `cargo fmt`
+
 ## Testing
 
 ### Test Coverage
 
-**Total Tests:** 111 passing (updated 2026-02-15 Session 5) ✅
-- litebox_platform_linux_for_windows: 56 tests (includes 7 KERNEL32 tests + 1 exception handling test)
-- litebox_shim_windows: 39 tests (includes 11 ABI translation tests)
+**Total Tests:** 298 passing (updated 2026-02-21 Session 8) ✅
+- litebox_platform_linux_for_windows: 235 tests (includes kernel32, MSVCRT, WS2_32, advapi32, user32, and platform tests)
+- litebox_shim_windows: 47 tests (includes ABI translation, PE loader, and tracing tests)
 - litebox_runner_windows_on_linux_userland: 16 tests (9 tracing + 7 integration tests)
+
+**New Event Tests (Session 8 / Phase 19):** 🆕
+1. `test_create_event_returns_nonnull` - Validates CreateEventW returns a non-null handle
+2. `test_set_event_signals_waitforsingleobject` - SetEvent + WaitForSingleObject with auto-reset
+3. `test_manual_reset_event_stays_signaled` - Manual-reset event stays signaled across multiple waits
+4. `test_set_reset_event_on_invalid_handle` - SetEvent/ResetEvent return FALSE for invalid handles
 
 **New KERNEL32 Tests (Session 3):**
 1. `test_sleep` - Validates Sleep function timing accuracy
@@ -358,7 +393,7 @@ The implementation consists of three main components:
 ## Code Quality Metrics
 
 ### Clippy Status
-✅ **All warnings resolved** - Code passes `cargo clippy --all-targets --all-features -- -D warnings`
+✅ **All warnings resolved** - Code passes `RUSTFLAGS=-Dwarnings cargo clippy --all-targets --all-features`
 
 ### Resolved Warnings
 - `clippy::similar_names` - Renamed variables for clarity
@@ -447,24 +482,27 @@ litebox_runner_windows_on_linux_userland \
 - ✅ **IAT patching** (Phase 6)
 - ✅ **TEB/PEB structures** (Phase 6)
 - ✅ **Entry point execution framework** (Phase 6)
+- ✅ **GS Segment Register Setup** (Phase 7)
+- ✅ **Complete MSVCRT Implementation** — 18 functions (Phase 7)
+- ✅ **Enhanced ABI Translation** — 0-8 parameters (Phase 7)
+- ✅ **Trampoline Linking System** (Phase 7)
+- ✅ **TLS (Thread Local Storage)** — TlsAlloc/Free/Get/Set (Phase 7)
+- ✅ **Real stack allocation and Windows x64 ABI entry point calling** (Phase 8)
+- ✅ **Win32 event objects in KERNEL32** — CreateEventW/SetEvent/ResetEvent/WaitForSingleObject (Phase 19) 🆕
+- ✅ **GetTempPathW using real temp directory** (Phase 19) 🆕
+- ✅ **GetProcessId returns real PID** (Phase 19) 🆕
 
 ### What's Not Yet Implemented
 - ✅ **GS Segment Register Setup** - Complete! (Phase 7)
 - ✅ **Complete MSVCRT Implementation** - Complete! 18 functions (Phase 7)
 - ✅ **Enhanced ABI Translation** - Complete! 0-8 parameters supported (Phase 7)
 - ✅ **Trampoline Linking System** - Complete! (Phase 7)
-- ✅ **TLS (Thread Local Storage)** - Complete! All 4 functions implemented (Phase 7) 🆕
-  - `TlsAlloc` - Allocate TLS slot ✅
-  - `TlsFree` - Release TLS slot ✅
-  - `TlsGetValue` - Get thread-local value ✅
-  - `TlsSetValue` - Set thread-local value ✅
-- ⏳ **CRT Initialization** - Ready for testing with MinGW CRT
-  - Basic infrastructure complete, ready for real Windows binary execution
-- ⏳ **Full entry point execution** - Ready to test
-- ❌ **Exception handling** - SEH/C++ exceptions not implemented
+- ✅ **TLS (Thread Local Storage)** - Complete! All 4 functions (Phase 7)
+- ✅ **Win32 Event Objects (KERNEL32)** - Complete! CreateEventW/SetEvent/ResetEvent (Phase 19) 🆕
+- ❌ **Exception handling** - SEH/C++ exceptions not fully implemented (basic stubs only)
 - ❌ **Advanced registry APIs** - Write operations, enumeration
 - ❌ **Advanced APIs** - Full process management, networking, GUI
-- ❌ **Real DLL implementations** - Currently mix of trampolines and stubs
+- ❌ **Real DLL implementations** - Currently mix of trampolines and stubs (38 remaining)
 
 ### Phase 6 Progress (100% Complete)
 
@@ -642,7 +680,7 @@ The current Phase 6 implementation has completed most of the loading pipeline:
 
 ## Conclusion
 
-The Windows-on-Linux implementation has **completed all 8 phases** successfully! 🎉
+The Windows-on-Linux implementation has **completed all phases through Phase 19** successfully! 🎉
 
 - ✅ Phase 1: Robust PE loading foundation
 - ✅ Phase 2: Core NTDLL API translations
@@ -652,30 +690,31 @@ The Windows-on-Linux implementation has **completed all 8 phases** successfully!
 - ✅ Phase 6: Import resolution, DLL loading, TEB/PEB, and entry point framework
 - ✅ Phase 7: Windows API implementation and trampoline linking
 - ✅ Phase 8: Entry point execution with real stack allocation and ABI compliance
+- ✅ Phase 19: Win32 event support, stub upgrades, test race-condition fix
 
-**Current Status (Session 7 - 2026-02-16):**
+**Current Status (Session 8 - 2026-02-21):**
 - All core infrastructure complete ✅
 - Import resolution and IAT patching working ✅
 - Relocation processing integrated ✅
 - TEB/PEB structures implemented with GS register setup ✅
-- **Entry point execution with real stack and proper ABI** ✅ 🆕
-- **Real mmap-based stack allocation (1MB default)** ✅ 🆕
-- **Windows x64 calling convention compliance** ✅ 🆕
-- **57 trampolined functions** (18 MSVCRT + 39 KERNEL32) ✅
-- **72+ DLL stub exports** (KERNEL32, WS2_32, api-ms-win-core-synch, etc.)
-- **7 comprehensive integration tests** validating all APIs
-- **Real Windows PE binaries load and execute** (hello_cli.exe tested)
-- **Trampoline linking system complete** - Windows x64 → System V AMD64 translation working ✅
-- **Executable memory management** - mmap-based allocation ✅
-- **TLS (Thread Local Storage)** - Complete implementation with thread isolation ✅
-- **DLL manager integration** - Real addresses replace stubs ✅
-- All 149 tests passing (94 platform + 39 shim + 16 runner) ✅
+- Entry point execution with real stack and proper ABI ✅
+- Real mmap-based stack allocation (1MB default) ✅
+- Windows x64 calling convention compliance ✅
+- 57 trampolined functions (18 MSVCRT + 39 KERNEL32) ✅
+- 72+ DLL stub exports (KERNEL32, WS2_32, api-ms-win-core-synch, etc.)
+- 7 comprehensive integration tests validating all APIs
+- Real Windows PE binaries load and execute (file_io_test.exe, string_test.exe tested) ✅
+- Trampoline linking system complete — Windows x64 → System V AMD64 translation ✅
+- Executable memory management — mmap-based allocation ✅
+- TLS (Thread Local Storage) — complete with thread isolation ✅
+- DLL manager integration — real addresses replace stubs ✅
+- **Real Win32 event objects in KERNEL32** — CreateEventW/SetEvent/ResetEvent/WaitForSingleObject ✅ 🆕
+- **KERNEL32 stub count reduced: 53 → 38** ✅ 🆕
+- **GetTempPathW uses real std::env::temp_dir()** ✅ 🆕
+- **GetProcessId returns real PID** ✅ 🆕
+- All 298 tests passing (235 platform + 47 shim + 16 runner) ✅ 🆕
 
-All code passes strict quality checks (clippy, rustfmt) and has comprehensive test coverage.
-
-**Phase 8 Status:** 💯 **100% COMPLETE!** 🎉
-
-Stack allocation ✅, entry point execution ✅, Windows x64 ABI ✅, exception handling stubs ✅, critical sections ✅, string operations ✅, performance counters ✅, file I/O trampolines ✅, heap management ✅.
+All code passes strict quality checks (clippy with `-D warnings`, rustfmt) and has comprehensive test coverage.
 
 **Recent Sessions:**
 - **2026-02-15 Session 1:** Implemented complete trampoline linking infrastructure
@@ -750,6 +789,24 @@ Stack allocation ✅, entry point execution ✅, Windows x64 ABI ✅, exception 
   - ✅ All code formatted with cargo fmt
   - 🔍 **Progress:** Import resolution now working correctly for all Phase 8 functions
   - 🔍 **Next:** Address entry point execution crash (stack/calling convention issues)
+
+- **2026-02-21 Session 8:** Phase 19 - Win32 Event Support, Stub Upgrades, Test Race-Condition Fix 🆕
+  - ✅ **Real Win32 event objects in KERNEL32 layer** — full `CreateEventW`/`SetEvent`/`ResetEvent`/`WaitForSingleObject` with Condvar-backed event registry
+    - Auto-reset and manual-reset semantics
+    - Correct timed-wait logic with deadline loop and spurious-wakeup handling
+    - `SetEvent` uses `notify_one()` for auto-reset, `notify_all()` for manual-reset
+    - `WaitForSingleObject` dispatches on event handles before thread handles
+    - `CloseHandle` frees event entries
+  - ✅ **Fixed test race condition:** `test_get_full_path_name_w_relative` and `test_get_full_path_name_w_dot` were deleting temp directories while the process CWD pointed into them; scoping `CwdGuard` to drop before `remove_dir_all` eliminates the flake
+  - ✅ **KERNEL32 stub count: 53 → 38** — 13 stubs promoted to documented real implementations:
+    - `GetTempPathW` — now uses `std::env::temp_dir()`
+    - `GetProcessId` — now returns real PID via `std::process::id()`
+    - `GetStdHandle`, `WriteConsoleW`, `FlushFileBuffers`, `SetFileTime`, `SetHandleInformation`, `UnlockFile`, `UnmapViewOfFile`, `SetThreadStackGuarantee`, `SleepEx`, `SwitchToThread` — improved docs
+  - ✅ **Added 4 new unit tests** for event system: create, set+wait (auto-reset), manual-reset, invalid-handle rejection
+  - ✅ **Ratchet updated:** globals 33 → 35, stubs 53 → 38
+  - ✅ **CI fix:** added `# Panics` doc sections to `SetEvent` and `ResetEvent` (`clippy::missing_panics_doc` with `-D warnings`)
+  - ✅ All 298 tests passing (235 platform + 47 shim + 16 runner) — up from 149
+  - ✅ `RUSTFLAGS=-Dwarnings cargo clippy` clean
 
 - **2026-02-16 Session 7:** Phase 8.7 - Entry Point Execution Complete 🎉
   - ✅ **Implemented real stack allocation using mmap** (1MB default size)
