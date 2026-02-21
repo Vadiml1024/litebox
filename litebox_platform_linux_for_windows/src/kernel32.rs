@@ -5282,6 +5282,10 @@ pub unsafe extern "C" fn kernel32_GetTickCount64() -> u64 {
 /// success, or FALSE (0) with `GetLastError() == ERROR_INVALID_HANDLE` if
 /// `event` is not a handle created by `CreateEventW`.
 ///
+/// # Panics
+/// Panics if the internal event-state mutex is poisoned (another thread
+/// panicked while holding the lock).
+///
 /// # Safety
 /// `event` must be a handle returned by `CreateEventW`, or NULL/invalid (in
 /// which case FALSE is returned).
@@ -5311,6 +5315,10 @@ pub unsafe extern "C" fn kernel32_SetEvent(event: *mut core::ffi::c_void) -> i32
 /// Clears the event so that threads waiting on it will block.  Returns TRUE
 /// (1) on success, or FALSE (0) with `GetLastError() == ERROR_INVALID_HANDLE`
 /// if `event` is not a handle created by `CreateEventW`.
+///
+/// # Panics
+/// Panics if the internal event-state mutex is poisoned (another thread
+/// panicked while holding the lock).
 ///
 /// # Safety
 /// `event` must be a handle returned by `CreateEventW`, or NULL/invalid (in
