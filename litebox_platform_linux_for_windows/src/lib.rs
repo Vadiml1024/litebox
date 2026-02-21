@@ -18,6 +18,7 @@ pub mod ws2_32;
 
 pub use kernel32::set_process_command_line;
 pub use kernel32::set_sandbox_root;
+pub use kernel32::set_volume_serial;
 
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};

@@ -13,6 +13,7 @@ use clap::Parser;
 use litebox_platform_linux_for_windows::LinuxPlatformForWindows;
 use litebox_platform_linux_for_windows::set_process_command_line;
 use litebox_platform_linux_for_windows::set_sandbox_root;
+use litebox_platform_linux_for_windows::set_volume_serial;
 use litebox_shim_windows::loader::{ExecutionContext, PeLoader, call_entry_point};
 use litebox_shim_windows::syscalls::ntdll::{NtdllApi, memory_protection};
 use litebox_shim_windows::tracing::{
@@ -57,6 +58,22 @@ pub struct CliArgs {
     /// Paths that would escape the root via `..` traversal are rejected.
     #[arg(long = "root", value_hint = clap::ValueHint::DirPath)]
     pub root: Option<String>,
+
+    /// Volume serial number reported by GetFileInformationByHandle.
+    /// Accepts decimal (e.g. 305419896) or hex with 0x prefix (e.g. 0x12345678).
+    /// When omitted a value is generated randomly from the process ID and time.
+    #[arg(long = "volume-serial", value_parser = parse_volume_serial)]
+    pub volume_serial: Option<u32>,
+}
+
+/// Parse a u32 from either a decimal string or a `0x`-prefixed hex string.
+fn parse_volume_serial(s: &str) -> Result<u32, String> {
+    if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+        u32::from_str_radix(hex, 16).map_err(|e| format!("invalid hex value: {e}"))
+    } else {
+        s.parse::<u32>()
+            .map_err(|e| format!("invalid decimal value: {e}"))
+    }
 }
 
 /// Run Windows programs with LiteBox on unmodified Linux
@@ -397,6 +414,13 @@ pub fn run(cli_args: CliArgs) -> Result<()> {
     if let Some(root) = &cli_args.root {
         set_sandbox_root(root);
         println!("Sandbox root: {root}");
+    }
+
+    // Configure the volume serial number.  When the user supplies --volume-serial
+    // we pin that value; otherwise get_volume_serial() will generate one lazily.
+    if let Some(serial) = cli_args.volume_serial {
+        set_volume_serial(serial);
+        println!("Volume serial: 0x{serial:08X}");
     }
 
     // Attempt to call the entry point
