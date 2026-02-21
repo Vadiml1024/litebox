@@ -106,6 +106,19 @@
 ### Heap Management
 `GetProcessHeap`, `HeapAlloc`, `HeapFree`, `HeapReAlloc`
 
+### Networking (WS2_32) — 34 functions backed by Linux POSIX sockets
+| Category | Implemented Functions |
+|---|---|
+| Lifecycle | `WSAStartup`, `WSACleanup`, `WSAGetLastError`, `WSASetLastError` |
+| Socket creation | `socket`, `WSASocketW`, `closesocket` |
+| Connection | `bind`, `listen`, `accept`, `connect`, `shutdown` |
+| Data transfer | `send`, `recv`, `sendto`, `recvfrom`, `WSASend`, `WSARecv` |
+| Socket info | `getsockname`, `getpeername`, `getsockopt`, `setsockopt`, `ioctlsocket` |
+| Multiplexing | `select`, `__WSAFDIsSet` |
+| Name resolution | `getaddrinfo`, `freeaddrinfo`, `GetHostNameW` |
+| Byte order | `htons`, `htonl`, `ntohs`, `ntohl` |
+| Misc | `WSADuplicateSocketW` |
+
 ### API Tracing Framework
 - Text and JSON output formats with timestamps and thread IDs
 - Filtering by function name pattern (wildcards), category, or exact name
@@ -121,7 +134,7 @@
 |---|---|
 | Full SEH / C++ exception handling | Stubs only; stack unwinding not implemented |
 | GUI applications (USER32 / GDI32) | Not implemented |
-| Networking (WS2_32) | Stub exports only (functions return `WSAENOTSOCK` / similar) |
+| Advanced networking (WS2_32) | Core socket API implemented (see above); overlapped/async I/O (`WSAEventSelect`, `WSAAsyncSelect`, completion ports) not implemented |
 | Process creation (`CreateProcessW`) | Not implemented |
 | Advanced file operations (memory mapping, overlapped I/O) | Not implemented |
 | Advanced registry operations (write, enumeration) | Not implemented |
