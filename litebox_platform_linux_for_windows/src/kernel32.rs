@@ -2494,7 +2494,6 @@ pub unsafe extern "C" fn kernel32_CreateEventW(
         state: Arc::new((Mutex::new(initial_state != 0), Condvar::new())),
     };
     with_event_handles(|map| map.insert(handle, entry));
-    kernel32_SetLastError(0);
     handle as *mut core::ffi::c_void
 }
 
@@ -3441,8 +3440,7 @@ pub unsafe extern "C" fn kernel32_WaitForSingleObject(
             return WAIT_OBJECT_0;
         }
         let timeout = Duration::from_millis(u64::from(milliseconds));
-        let result = cvar.wait_timeout(signaled, timeout).unwrap();
-        signaled = result.0;
+        let (mut signaled, _) = cvar.wait_timeout(signaled, timeout).unwrap();
         return if *signaled {
             if !manual_reset {
                 *signaled = false; // auto-reset
