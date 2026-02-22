@@ -9,6 +9,7 @@
 
 pub mod advapi32;
 pub mod function_table;
+pub mod gdi32;
 pub mod kernel32;
 pub mod msvcrt;
 pub mod ntdll_impl;

@@ -43,6 +43,9 @@ mod stub_addresses {
 
     /// ADVAPI32.dll function address range: 0x9000-0x9FFF
     pub const ADVAPI32_BASE: usize = 0x9000;
+
+    /// GDI32.dll function address range: 0xA000-0xAFFF
+    pub const GDI32_BASE: usize = 0xA000;
 }
 
 /// Type for a DLL function pointer
@@ -119,6 +122,7 @@ impl DllManager {
         manager.load_stub_apims_synch();
         manager.load_stub_user32();
         manager.load_stub_advapi32();
+        manager.load_stub_gdi32();
 
         manager
     }
@@ -637,6 +641,28 @@ impl DllManager {
             ("DispatchMessageW", USER32_BASE + 7),
             // Window destruction
             ("DestroyWindow", USER32_BASE + 8),
+            // Extended window management
+            ("PostQuitMessage", USER32_BASE + 9),
+            ("DefWindowProcW", USER32_BASE + 10),
+            ("LoadCursorW", USER32_BASE + 11),
+            ("LoadIconW", USER32_BASE + 12),
+            ("GetSystemMetrics", USER32_BASE + 13),
+            ("SetWindowLongPtrW", USER32_BASE + 14),
+            ("GetWindowLongPtrW", USER32_BASE + 15),
+            ("SendMessageW", USER32_BASE + 16),
+            ("PostMessageW", USER32_BASE + 17),
+            ("PeekMessageW", USER32_BASE + 18),
+            // Painting
+            ("BeginPaint", USER32_BASE + 19),
+            ("EndPaint", USER32_BASE + 20),
+            ("GetClientRect", USER32_BASE + 21),
+            ("InvalidateRect", USER32_BASE + 22),
+            // Timer
+            ("SetTimer", USER32_BASE + 23),
+            ("KillTimer", USER32_BASE + 24),
+            // Device context
+            ("GetDC", USER32_BASE + 25),
+            ("ReleaseDC", USER32_BASE + 26),
         ];
 
         self.register_stub_dll("USER32.dll", exports);
@@ -660,6 +686,34 @@ impl DllManager {
         ];
 
         self.register_stub_dll("ADVAPI32.dll", exports);
+    }
+
+    /// Load stub GDI32.dll (Windows GDI graphics APIs)
+    fn load_stub_gdi32(&mut self) {
+        use stub_addresses::GDI32_BASE;
+
+        let exports = vec![
+            // Stock objects and brushes
+            ("GetStockObject", GDI32_BASE),
+            ("CreateSolidBrush", GDI32_BASE + 1),
+            ("DeleteObject", GDI32_BASE + 2),
+            // Device context
+            ("SelectObject", GDI32_BASE + 3),
+            ("CreateCompatibleDC", GDI32_BASE + 4),
+            ("DeleteDC", GDI32_BASE + 5),
+            // Color
+            ("SetBkColor", GDI32_BASE + 6),
+            ("SetTextColor", GDI32_BASE + 7),
+            // Drawing
+            ("TextOutW", GDI32_BASE + 8),
+            ("Rectangle", GDI32_BASE + 9),
+            ("FillRect", GDI32_BASE + 10),
+            // Font
+            ("CreateFontW", GDI32_BASE + 11),
+            ("GetTextExtentPoint32W", GDI32_BASE + 12),
+        ];
+
+        self.register_stub_dll("GDI32.dll", exports);
     }
 }
 
@@ -736,8 +790,9 @@ mod tests {
     #[test]
     fn test_dll_manager_creation() {
         let manager = DllManager::new();
-        // Should have 9 pre-loaded stub DLLs
-        assert_eq!(manager.dlls.len(), 9);
+        // Should have 10 pre-loaded stub DLLs (KERNEL32, NTDLL, MSVCRT, bcrypt, USERENV,
+        // WS2_32, api-ms-win-core-synch, USER32, ADVAPI32, GDI32)
+        assert_eq!(manager.dlls.len(), 10);
     }
 
     #[test]

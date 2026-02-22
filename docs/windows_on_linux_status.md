@@ -1,8 +1,8 @@
 # Windows on Linux: Implementation Status
 
 **Last Updated:** 2026-02-22  
-**Total Tests:** 332 passing (269 platform + 47 shim + 16 runner + 5 dev_tests — includes 2 new file-locking tests added in Phase 23)  
-**Overall Status:** Core infrastructure complete. Seven Rust-based test programs (hello_cli, math_test, env_test, args_test, file_io_test, string_test, getprocaddress_test) run successfully end-to-end through the runner on Linux. **All API stub functions have been fully replaced — stub count is now 0.**
+**Total Tests:** 367 passing (304 platform + 47 shim + 16 runner + 5 dev_tests — +35 new USER32/GDI32 tests added in Phase 24)  
+**Overall Status:** Core infrastructure complete. Seven Rust-based test programs (hello_cli, math_test, env_test, args_test, file_io_test, string_test, getprocaddress_test) run successfully end-to-end through the runner on Linux. **All API stub functions have been fully replaced — stub count is now 0.** Phase 24 adds GDI32 support and extended USER32 APIs for GUI program compatibility.
 
 ---
 
@@ -149,6 +149,33 @@
 | Byte order | `htons`, `htonl`, `ntohs`, `ntohl` |
 | Misc | `WSADuplicateSocketW` |
 
+### USER32 — Extended GUI Support (Phase 24, 27 functions)
+| Category | Implemented Functions |
+|---|---|
+| Basic | `MessageBoxW`, `RegisterClassExW`, `CreateWindowExW`, `ShowWindow`, `UpdateWindow`, `DestroyWindow` |
+| Message loop | `GetMessageW`, `TranslateMessage`, `DispatchMessageW`, `PeekMessageW`, `PostQuitMessage` |
+| Window proc | `DefWindowProcW` |
+| Resources | `LoadCursorW`, `LoadIconW` |
+| Window info | `GetSystemMetrics`, `SetWindowLongPtrW`, `GetWindowLongPtrW` |
+| Messaging | `SendMessageW`, `PostMessageW` |
+| Painting | `BeginPaint`, `EndPaint`, `GetClientRect`, `InvalidateRect` |
+| Timer | `SetTimer`, `KillTimer` |
+| Device context | `GetDC`, `ReleaseDC` |
+
+All USER32 functions operate in headless mode: no real windows are created, no messages
+are dispatched, and drawing operations are silently discarded.
+
+### GDI32 — Graphics Device Interface (Phase 24, 13 functions)
+| Category | Implemented Functions |
+|---|---|
+| Objects | `GetStockObject`, `CreateSolidBrush`, `DeleteObject`, `SelectObject` |
+| Device context | `CreateCompatibleDC`, `DeleteDC` |
+| Color | `SetBkColor`, `SetTextColor` |
+| Drawing | `TextOutW`, `Rectangle`, `FillRect` |
+| Font | `CreateFontW`, `GetTextExtentPoint32W` |
+
+All GDI32 functions operate in headless mode: drawing is silently discarded.
+
 ### API Tracing Framework
 - Text and JSON output formats with timestamps and thread IDs
 - Filtering by function name pattern (wildcards), category, or exact name
@@ -163,7 +190,7 @@
 | Feature | Status |
 |---|---|
 | Full SEH / C++ exception handling | Stubs only; stack unwinding not implemented |
-| GUI applications (USER32 / GDI32) | Not implemented |
+| Full GUI rendering | USER32/GDI32 are headless stubs; no real window/drawing output |
 | Overlapped (async) I/O | `ReadFileEx`, `WriteFileEx`, `GetOverlappedResult` return `ERROR_NOT_SUPPORTED` |
 | Process creation (`CreateProcessW`) | Returns `ERROR_NOT_SUPPORTED`; sandboxed environment |
 | Toolhelp32 enumeration | `CreateToolhelp32Snapshot`, `Module32FirstW/NextW` return `ERROR_NOT_SUPPORTED` |
@@ -175,11 +202,11 @@
 
 ## Test Coverage
 
-**332 tests total (all passing):**
+**367 tests total (all passing):**
 
 | Package | Tests | Notes |
 |---|---|---|
-| `litebox_platform_linux_for_windows` | 269 | KERNEL32, MSVCRT, WS2_32, advapi32, user32, platform APIs |
+| `litebox_platform_linux_for_windows` | 304 | KERNEL32, MSVCRT, WS2_32, advapi32, user32, gdi32, platform APIs |
 | `litebox_shim_windows` | 47 | ABI translation, PE loader, tracing |
 | `litebox_runner_windows_on_linux_userland` | 16 | 9 tracing + 7 integration tests |
 | `dev_tests` | 5 | Ratchet constraints (globals, transmutes, MaybeUninit, stubs, copyright) |
@@ -191,9 +218,9 @@
 4. File search APIs (`FindFirstFileW`, `FindNextFileW`, `FindClose`)
 5. Memory protection APIs (`NtProtectVirtualMemory`)
 6. Error handling APIs (`GetLastError` / `SetLastError`)
-7. DLL exports validation (all critical KERNEL32 and WS2_32 exports)
+7. DLL exports validation (all critical KERNEL32, WS2_32, USER32, and GDI32 exports)
 
-**MinGW-gated integration tests (7, require `--include-ignored`):**
+**MinGW-gated integration tests (8, require `--include-ignored`):**
 - `test_hello_cli_program_exists` — checks hello_cli.exe is present
 - `test_math_test_program_exists` — checks math_test.exe is present
 - `test_env_test_program_exists` — checks env_test.exe is present
@@ -201,6 +228,7 @@
 - `test_file_io_test_program_exists` — **runs** file_io_test.exe end-to-end; verifies exit 0 and test header/completion output
 - `test_string_test_program_exists` — **runs** string_test.exe end-to-end; verifies exit 0, test header, and 0 failures
 - `test_getprocaddress_c_program` — **runs** getprocaddress_test.exe end-to-end; verifies exit 0 and 0 failures
+- `test_hello_gui_program` — **runs** hello_gui.exe end-to-end; verifies exit 0 (MessageBoxW prints headless message to stderr)
 
 **CI-validated test programs (7):**
 
@@ -284,4 +312,5 @@ litebox_runner_windows_on_linux_userland \
 | 21 | `CreateFileMappingA`, `MapViewOfFile`, `UnmapViewOfFile` (real mmap/munmap); `CreatePipe` (Linux pipe()); `DuplicateHandle`; `GetFinalPathNameByHandleW`; `GetFileInformationByHandleEx`; `InitializeProcThreadAttributeList`; stub count 29→22 | ✅ Complete |
 | 22 | `VirtualQuery` (parses `/proc/self/maps`), `CancelIo`, `UpdateProcThreadAttribute`, `NtClose`; stub count 22→14 | ✅ Complete |
 | 23 | `LockFileEx` / `UnlockFile` (real `flock(2)`); appropriate error codes for all permanently-unsupported APIs; **stub count 14→0** | ✅ Complete |
+| 24 | Extended USER32 (18 new functions: `PostQuitMessage`, `DefWindowProcW`, `LoadCursorW`, `LoadIconW`, `GetSystemMetrics`, `SetWindowLongPtrW`, `GetWindowLongPtrW`, `SendMessageW`, `PostMessageW`, `PeekMessageW`, `BeginPaint`, `EndPaint`, `GetClientRect`, `InvalidateRect`, `SetTimer`, `KillTimer`, `GetDC`, `ReleaseDC`); new GDI32.dll (13 functions: `GetStockObject`, `CreateSolidBrush`, `DeleteObject`, `SelectObject`, `CreateCompatibleDC`, `DeleteDC`, `SetBkColor`, `SetTextColor`, `TextOutW`, `Rectangle`, `FillRect`, `CreateFontW`, `GetTextExtentPoint32W`); `hello_gui` integration test; +35 new tests | ✅ Complete |
 
