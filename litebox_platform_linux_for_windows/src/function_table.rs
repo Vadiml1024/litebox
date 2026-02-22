@@ -1820,6 +1820,29 @@ impl LinuxPlatformForWindows {
             .trampoline_manager
             .get_trampoline(&format!("{dll_name}::{function_name}"))
     }
+
+    /// Returns all trampoline addresses for registered DLL functions.
+    ///
+    /// Each element is `(dll_name, function_name, trampoline_address)`.
+    /// Must be called after [`initialize_trampolines`](Self::initialize_trampolines).
+    /// The returned addresses bridge Windows x64 → System V AMD64 ABI.
+    ///
+    /// Used by the runner to populate the dynamic-export registry so that
+    /// Windows programs can call `LoadLibraryW`/`GetProcAddress` at runtime.
+    ///
+    /// # Panics
+    /// Panics if the internal mutex is poisoned.
+    pub fn export_dll_addresses(&self) -> Vec<(String, String, usize)> {
+        let state = self.state.lock().unwrap();
+        get_function_table()
+            .into_iter()
+            .filter_map(|f| {
+                let key = format!("{}::{}", f.dll_name, f.name);
+                let addr = state.trampoline_manager.get_trampoline(&key)?;
+                Some((f.dll_name.to_string(), f.name.to_string(), addr))
+            })
+            .collect()
+    }
 }
 
 #[cfg(test)]

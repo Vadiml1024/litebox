@@ -11,6 +11,7 @@
 use anyhow::{Result, anyhow};
 use clap::Parser;
 use litebox_platform_linux_for_windows::LinuxPlatformForWindows;
+use litebox_platform_linux_for_windows::register_dynamic_exports;
 use litebox_platform_linux_for_windows::set_process_command_line;
 use litebox_platform_linux_for_windows::set_sandbox_root;
 use litebox_platform_linux_for_windows::set_volume_serial;
@@ -180,6 +181,10 @@ pub fn run(cli_args: CliArgs) -> Result<()> {
             .link_data_exports_to_dll_manager()
             .map_err(|e| anyhow!("Failed to link data exports: {e}"))?;
     }
+
+    // Populate the dynamic-export registry used by LoadLibraryW/GetProcAddress.
+    // This must be done after trampolines are linked so the addresses are valid.
+    register_dynamic_exports(&platform.export_dll_addresses());
 
     println!("Initialized function trampolines for MSVCRT");
 

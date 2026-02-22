@@ -36,7 +36,7 @@ fn ratchet_globals() -> Result<()> {
         &[
             ("dev_bench/", 1),
             ("litebox/", 9),
-            ("litebox_platform_linux_for_windows/", 35),
+            ("litebox_platform_linux_for_windows/", 36),
             ("litebox_platform_linux_kernel/", 5),
             ("litebox_platform_linux_userland/", 5),
             ("litebox_platform_lvbs/", 20),
@@ -95,7 +95,7 @@ fn ratchet_stubs() -> Result<()> {
     //
     // The phrase is split via concat! so the test file itself is not counted.
     let stub_phrase = concat!("This function", " is a stub");
-    ratchet(&[("litebox_platform_linux_for_windows/", 36)], |file| {
+    ratchet(&[("litebox_platform_linux_for_windows/", 29)], |file| {
         Ok(file
             .lines()
             .filter(|line| line.as_ref().unwrap().contains(stub_phrase))

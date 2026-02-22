@@ -264,6 +264,88 @@ fn alloc_event_handle() -> usize {
     EVENT_HANDLE_COUNTER.fetch_add(4, Ordering::SeqCst)
 }
 
+// ── DLL-load-handle registry ──────────────────────────────────────────────
+// Maps synthetic HMODULE values (usize) to loaded-DLL information.
+// Used by LoadLibraryA/W, GetModuleHandleA/W, GetProcAddress, and FreeLibrary.
+
+/// A single entry in the DLL-load registry.
+struct DllLoadEntry {
+    /// Canonical DLL name (mixed-case, as supplied at registration time).
+    #[allow(dead_code)]
+    name: String,
+    /// Exported function name → trampoline address.
+    exports: HashMap<String, usize>,
+}
+
+/// Registry state protected by `DLL_HANDLES`.
+struct DllLoadRegistry {
+    /// Next handle value to assign.  Starts at 0x5_0000, increments by 4.
+    next_handle: usize,
+    /// Normalised (upper-case) DLL name → synthetic HMODULE.
+    by_name: HashMap<String, usize>,
+    /// Synthetic HMODULE → `DllLoadEntry`.
+    by_handle: HashMap<usize, DllLoadEntry>,
+}
+
+impl DllLoadRegistry {
+    fn new() -> Self {
+        Self {
+            // Start at 0x5_0000 to stay consistent with other handle-counter ranges:
+            // FILE_HANDLE_COUNTER = 0x1_0000, FIND = 0x2_0000, THREAD = 0x3_0000, EVENT = 0x4_0000.
+            next_handle: 0x5_0000,
+            by_name: HashMap::new(),
+            by_handle: HashMap::new(),
+        }
+    }
+
+    /// Returns the existing handle for `dll_name` (case-insensitive), or
+    /// allocates a new one and creates an empty entry.
+    fn get_or_create_handle(&mut self, dll_name: &str) -> usize {
+        let upper = dll_name.to_uppercase();
+        if let Some(&h) = self.by_name.get(&upper) {
+            return h;
+        }
+        let h = self.next_handle;
+        // Increment by 4 to match the alignment convention used by the other
+        // synthetic-handle ranges in this module.
+        self.next_handle += 4;
+        self.by_name.insert(upper, h);
+        self.by_handle.insert(
+            h,
+            DllLoadEntry {
+                name: dll_name.to_string(),
+                exports: HashMap::new(),
+            },
+        );
+        h
+    }
+}
+
+/// Global DLL-handle registry: HMODULE handle → `DllLoadEntry`.
+static DLL_HANDLES: Mutex<Option<DllLoadRegistry>> = Mutex::new(None);
+
+fn with_dll_handles<R>(f: impl FnOnce(&mut DllLoadRegistry) -> R) -> R {
+    let mut guard = DLL_HANDLES.lock().unwrap();
+    let reg = guard.get_or_insert_with(DllLoadRegistry::new);
+    f(reg)
+}
+
+/// Register Windows DLL function addresses for use by `LoadLibraryA/W` and `GetProcAddress`.
+///
+/// Each entry is `(dll_name, function_name, function_address)` where
+/// `function_address` is the trampoline address that handles Windows x64 → System V AMD64 ABI
+/// translation.  Called by the runner after trampolines have been initialised.
+pub fn register_dynamic_exports(exports: &[(String, String, usize)]) {
+    with_dll_handles(|reg| {
+        for (dll_name, func_name, addr) in exports {
+            let h = reg.get_or_create_handle(dll_name);
+            if let Some(entry) = reg.by_handle.get_mut(&h) {
+                entry.exports.insert(func_name.clone(), *addr);
+            }
+        }
+    });
+}
+
 /// Windows thread start function pointer type (MS-x64 ABI).
 /// LPTHREAD_START_ROUTINE = DWORD (WINAPI *)(LPVOID lpThreadParameter)
 type WindowsThreadStart = unsafe extern "win64" fn(*mut core::ffi::c_void) -> u32;
@@ -2512,17 +2594,38 @@ pub unsafe extern "C" fn kernel32_CreateFileMappingA(
     core::ptr::null_mut() // NULL - not implemented
 }
 
-/// CreateHardLinkW stub - creates a hard link
+/// CreateHardLinkW - creates a hard link to an existing file
+///
+/// Creates a hard link at `file_name` pointing to `existing_file_name`.
+/// Security attributes are ignored.
 ///
 /// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
+/// `file_name` and `existing_file_name` must be valid null-terminated UTF-16 strings.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_CreateHardLinkW(
-    _file_name: *const u16,
-    _existing_file_name: *const u16,
+    file_name: *const u16,
+    existing_file_name: *const u16,
     _security_attributes: *mut core::ffi::c_void,
 ) -> i32 {
-    0 // FALSE - not implemented
+    if file_name.is_null() || existing_file_name.is_null() {
+        kernel32_SetLastError(87); // ERROR_INVALID_PARAMETER
+        return 0;
+    }
+    let new_path = wide_path_to_linux(file_name);
+    let existing_path = wide_path_to_linux(existing_file_name);
+    match std::fs::hard_link(&existing_path, &new_path) {
+        Ok(()) => 1, // TRUE
+        Err(e) => {
+            let code = match e.kind() {
+                std::io::ErrorKind::NotFound => 2,         // ERROR_FILE_NOT_FOUND
+                std::io::ErrorKind::PermissionDenied => 5, // ERROR_ACCESS_DENIED
+                std::io::ErrorKind::AlreadyExists => 183,  // ERROR_ALREADY_EXISTS
+                _ => 1,                                    // ERROR_INVALID_FUNCTION
+            };
+            kernel32_SetLastError(code);
+            0 // FALSE
+        }
+    }
 }
 
 /// CreatePipe stub - creates a pipe
@@ -2559,17 +2662,39 @@ pub unsafe extern "C" fn kernel32_CreateProcessW(
     0 // FALSE - not implemented
 }
 
-/// CreateSymbolicLinkW stub - creates a symbolic link
+/// CreateSymbolicLinkW - creates a symbolic link
+///
+/// Creates a symbolic link at `symlink_file_name` pointing to `target_file_name`.
+/// `flags`: 0 = file link, 1 = directory link; the unprivileged-create flag (2)
+/// is accepted but ignored on Linux (symlinks never require elevated privileges).
 ///
 /// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
+/// `symlink_file_name` and `target_file_name` must be valid null-terminated UTF-16 strings.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_CreateSymbolicLinkW(
-    _symlink_file_name: *const u16,
-    _target_file_name: *const u16,
+    symlink_file_name: *const u16,
+    target_file_name: *const u16,
     _flags: u32,
 ) -> i32 {
-    0 // FALSE - not implemented
+    if symlink_file_name.is_null() || target_file_name.is_null() {
+        kernel32_SetLastError(87); // ERROR_INVALID_PARAMETER
+        return 0;
+    }
+    let link_path = wide_path_to_linux(symlink_file_name);
+    let target_path = wide_path_to_linux(target_file_name);
+    match std::os::unix::fs::symlink(&target_path, &link_path) {
+        Ok(()) => 1, // TRUE
+        Err(e) => {
+            let code = match e.kind() {
+                std::io::ErrorKind::NotFound => 2,         // ERROR_FILE_NOT_FOUND
+                std::io::ErrorKind::PermissionDenied => 5, // ERROR_ACCESS_DENIED
+                std::io::ErrorKind::AlreadyExists => 183,  // ERROR_ALREADY_EXISTS
+                _ => 1,                                    // ERROR_INVALID_FUNCTION
+            };
+            kernel32_SetLastError(code);
+            0 // FALSE
+        }
+    }
 }
 
 /// CreateThread - creates a thread to execute within the virtual address space of the process
@@ -3169,31 +3294,77 @@ pub unsafe extern "C" fn kernel32_GetLastError() -> u32 {
     LAST_ERROR.with(Cell::get)
 }
 
-/// GetModuleHandleW stub - gets a module handle
+/// GetModuleHandleW - retrieves the module handle for the specified module
+///
+/// When `module_name` is null, returns the base address of the main executable
+/// (`0x400000`).  For named DLLs, looks up the handle in the dynamic-export
+/// registry populated by `register_dynamic_exports`.  Returns NULL with
+/// `ERROR_MOD_NOT_FOUND` (126) if the named DLL is not registered.
 ///
 /// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
+/// `module_name` must be a valid null-terminated UTF-16 string or null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_GetModuleHandleW(
-    _module_name: *const u16,
+    module_name: *const u16,
 ) -> *mut core::ffi::c_void {
-    // Return a fake non-null handle for the main module (NULL parameter)
-    0x400000 as *mut core::ffi::c_void
+    if module_name.is_null() {
+        // Return a fake non-null handle for the main module
+        return 0x400000 as *mut core::ffi::c_void;
+    }
+    let name = wide_str_to_string(module_name);
+    let basename_opt = std::path::Path::new(&name)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned());
+    let upper = basename_opt.unwrap_or(name).to_uppercase();
+    let handle = with_dll_handles(|reg| reg.by_name.get(&upper).copied());
+    if let Some(h) = handle {
+        h as *mut core::ffi::c_void
+    } else {
+        kernel32_SetLastError(126); // ERROR_MOD_NOT_FOUND
+        core::ptr::null_mut()
+    }
 }
 
-/// GetProcAddress stub - gets a procedure address
+/// GetProcAddress - retrieves the address of an exported function or variable
 ///
-/// Note: This is already handled by the DLL manager, but we provide
-/// a stub in case it's called directly.
+/// Looks up `proc_name` in the dynamic-export registry for the DLL identified
+/// by `module`.  When `proc_name as usize < 0x10000` it is treated as an
+/// ordinal (not supported; returns NULL with `ERROR_PROC_NOT_FOUND`).
+///
+/// Returns the trampoline function address on success, or NULL with
+/// `ERROR_PROC_NOT_FOUND` (127) on failure.
 ///
 /// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
+/// `module` must be a handle returned by `LoadLibraryA/W` or `GetModuleHandleA/W`.
+/// `proc_name` must be either a valid null-terminated ANSI string (when ≥ 0x10000)
+/// or an ordinal value.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_GetProcAddress(
-    _module: *mut core::ffi::c_void,
-    _proc_name: *const u8,
+    module: *mut core::ffi::c_void,
+    proc_name: *const u8,
 ) -> *mut core::ffi::c_void {
-    core::ptr::null_mut() // NULL - not found
+    let handle = module as usize;
+    // Ordinal check: Windows encodes ordinals as values below 0x10000 (64 KB).
+    // Any pointer above that boundary is a valid user-space address on all
+    // supported Windows/Linux platforms.  See MAKEINTRESOURCE / HIWORD(proc_name).
+    if (proc_name as usize) < 0x10000 {
+        kernel32_SetLastError(127); // ERROR_PROC_NOT_FOUND
+        return core::ptr::null_mut();
+    }
+    // SAFETY: caller guarantees proc_name is a valid null-terminated ANSI string.
+    let name = std::ffi::CStr::from_ptr(proc_name.cast::<i8>()).to_string_lossy();
+    let addr = with_dll_handles(|reg| {
+        reg.by_handle
+            .get(&handle)
+            .and_then(|entry| entry.exports.get(name.as_ref()).copied())
+    });
+    match addr {
+        Some(a) if a != 0 => a as *mut core::ffi::c_void,
+        _ => {
+            kernel32_SetLastError(127); // ERROR_PROC_NOT_FOUND
+            core::ptr::null_mut()
+        }
+    }
 }
 
 /// GetStdHandle - retrieves a handle to the specified standard device
@@ -3318,29 +3489,73 @@ pub unsafe extern "C" fn kernel32_FreeEnvironmentStringsW(env_strings: *mut u16)
     1 // TRUE
 }
 
-/// LoadLibraryA stub - loads a library (ANSI version)
+/// LoadLibraryA - loads a dynamic-link library (ANSI version)
+///
+/// Looks up the DLL in the dynamic-export registry populated by
+/// `register_dynamic_exports`.  The path is stripped to its file-name
+/// component before the case-insensitive lookup, so both bare names
+/// (`"kernel32.dll"`) and full paths (`"C:\\Windows\\system32\\kernel32.dll"`)
+/// are accepted.
+///
+/// Returns a non-null synthetic HMODULE on success, or NULL with
+/// `ERROR_MOD_NOT_FOUND` (126) if the DLL is not registered.
 ///
 /// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
+/// `lib_file_name` must be a valid null-terminated ANSI string or null.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn kernel32_LoadLibraryA(
-    _lib_file_name: *const u8,
-) -> *mut core::ffi::c_void {
-    core::ptr::null_mut() // NULL - not found
+pub unsafe extern "C" fn kernel32_LoadLibraryA(lib_file_name: *const u8) -> *mut core::ffi::c_void {
+    if lib_file_name.is_null() {
+        kernel32_SetLastError(87); // ERROR_INVALID_PARAMETER
+        return core::ptr::null_mut();
+    }
+    // SAFETY: caller guarantees lib_file_name is a valid null-terminated C string.
+    let name = std::ffi::CStr::from_ptr(lib_file_name.cast::<i8>()).to_string_lossy();
+    let basename_opt = std::path::Path::new(name.as_ref())
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned());
+    let upper = basename_opt
+        .unwrap_or_else(|| name.into_owned())
+        .to_uppercase();
+    let handle = with_dll_handles(|reg| reg.by_name.get(&upper).copied());
+    if let Some(h) = handle {
+        h as *mut core::ffi::c_void
+    } else {
+        kernel32_SetLastError(126); // ERROR_MOD_NOT_FOUND
+        core::ptr::null_mut()
+    }
 }
 
-/// LoadLibraryW stub - loads a library (wide version)
+/// LoadLibraryW - loads a dynamic-link library (wide-string version)
 ///
-/// Note: This is already handled by the DLL manager, but we provide
-/// a stub in case it's called directly.
+/// Looks up the DLL in the dynamic-export registry populated by
+/// `register_dynamic_exports`.  The path is stripped to its file-name
+/// component before the case-insensitive lookup.
+///
+/// Returns a non-null synthetic HMODULE on success, or NULL with
+/// `ERROR_MOD_NOT_FOUND` (126) if the DLL is not registered.
 ///
 /// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
+/// `lib_file_name` must be a valid null-terminated UTF-16 string or null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_LoadLibraryW(
-    _lib_file_name: *const u16,
+    lib_file_name: *const u16,
 ) -> *mut core::ffi::c_void {
-    core::ptr::null_mut() // NULL - not found
+    if lib_file_name.is_null() {
+        kernel32_SetLastError(87); // ERROR_INVALID_PARAMETER
+        return core::ptr::null_mut();
+    }
+    let name = wide_str_to_string(lib_file_name);
+    let basename_opt = std::path::Path::new(&name)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned());
+    let upper = basename_opt.unwrap_or(name).to_uppercase();
+    let handle = with_dll_handles(|reg| reg.by_name.get(&upper).copied());
+    if let Some(h) = handle {
+        h as *mut core::ffi::c_void
+    } else {
+        kernel32_SetLastError(126); // ERROR_MOD_NOT_FOUND
+        core::ptr::null_mut()
+    }
 }
 
 /// SetConsoleCtrlHandler stub - sets a console control handler
@@ -4060,12 +4275,11 @@ pub unsafe extern "C" fn kernel32_SetFileAttributesW(
                 // beyond what the original mode allowed for group/other.
                 perms.set_mode(current_mode | 0o200);
             }
-            match std::fs::set_permissions(path, perms) {
-                Ok(()) => 1, // TRUE
-                Err(_) => {
-                    kernel32_SetLastError(5); // ERROR_ACCESS_DENIED
-                    0
-                }
+            if let Ok(()) = std::fs::set_permissions(path, perms) {
+                1 // TRUE
+            } else {
+                kernel32_SetLastError(5); // ERROR_ACCESS_DENIED
+                0
             }
         }
         Err(e) => {
@@ -4423,16 +4637,36 @@ pub unsafe extern "C" fn kernel32_GetCurrentThread() -> *mut core::ffi::c_void {
     -2_i64 as usize as *mut core::ffi::c_void
 }
 
-/// GetModuleHandleA - returns the module handle for a named module (ANSI version)
+/// GetModuleHandleA - retrieves the module handle for the specified module (ANSI version)
+///
+/// When `module_name` is null, returns the base address of the main executable
+/// (`0x400000`).  For named DLLs, looks up the handle in the dynamic-export
+/// registry populated by `register_dynamic_exports`.
 ///
 /// # Safety
-/// This function is a stub that returns a default base address.
+/// `module_name` must be a valid null-terminated ANSI string or null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_GetModuleHandleA(
-    _module_name: *const u8,
+    module_name: *const u8,
 ) -> *mut core::ffi::c_void {
-    // Return default image base address
-    0x400000_usize as *mut core::ffi::c_void
+    if module_name.is_null() {
+        return 0x400000_usize as *mut core::ffi::c_void;
+    }
+    // SAFETY: caller guarantees module_name is a valid null-terminated C string.
+    let name = std::ffi::CStr::from_ptr(module_name.cast::<i8>()).to_string_lossy();
+    let basename_opt = std::path::Path::new(name.as_ref())
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned());
+    let upper = basename_opt
+        .unwrap_or_else(|| name.into_owned())
+        .to_uppercase();
+    let handle = with_dll_handles(|reg| reg.by_name.get(&upper).copied());
+    if let Some(h) = handle {
+        h as *mut core::ffi::c_void
+    } else {
+        kernel32_SetLastError(126); // ERROR_MOD_NOT_FOUND
+        core::ptr::null_mut()
+    }
 }
 
 /// GetModuleFileNameW — retrieves the fully qualified path for the executable
@@ -8119,5 +8353,142 @@ mod tests {
             result > 0,
             "In this shim, GetModuleFileNameW with size=0 returns the required buffer length (> 0)"
         );
+    }
+
+    #[test]
+    fn test_load_library_and_get_proc_address() {
+        // Register a fake DLL with one export
+        let exports = vec![(
+            "TESTDLL.DLL".to_string(),
+            "TestFunc".to_string(),
+            0xDEAD_BEEF_usize,
+        )];
+        register_dynamic_exports(&exports);
+
+        // LoadLibraryA should find the registered DLL (case-insensitive)
+        let name = b"testdll.dll\0";
+        let handle = unsafe { kernel32_LoadLibraryA(name.as_ptr()) } as usize;
+        assert_ne!(handle, 0, "LoadLibraryA should return a non-null handle");
+
+        // GetProcAddress should find the exported function
+        let func_name = b"TestFunc\0";
+        let addr =
+            unsafe { kernel32_GetProcAddress(handle as *mut _, func_name.as_ptr()) } as usize;
+        assert_eq!(
+            addr, 0xDEAD_BEEF_usize,
+            "GetProcAddress should return the registered address"
+        );
+
+        // GetProcAddress for an unknown function should return NULL
+        let bad_name = b"NoSuchFunc\0";
+        let bad_addr = unsafe { kernel32_GetProcAddress(handle as *mut _, bad_name.as_ptr()) };
+        assert!(
+            bad_addr.is_null(),
+            "GetProcAddress for unknown function should return NULL"
+        );
+        let err = unsafe { kernel32_GetLastError() };
+        assert_eq!(err, 127, "GetLastError should be ERROR_PROC_NOT_FOUND");
+    }
+
+    #[test]
+    fn test_load_library_unknown_dll_returns_null() {
+        let name = b"NOTREGISTERED_XYZ.DLL\0";
+        let handle = unsafe { kernel32_LoadLibraryA(name.as_ptr()) };
+        assert!(
+            handle.is_null(),
+            "LoadLibraryA for unknown DLL should return NULL"
+        );
+        let err = unsafe { kernel32_GetLastError() };
+        assert_eq!(err, 126, "GetLastError should be ERROR_MOD_NOT_FOUND");
+    }
+
+    #[test]
+    fn test_load_library_w_with_path() {
+        // Register a DLL first
+        let exports = vec![(
+            "PATHDLL.DLL".to_string(),
+            "PathFunc".to_string(),
+            0x1234_5678_usize,
+        )];
+        register_dynamic_exports(&exports);
+
+        // LoadLibraryW should work with a bare name (wide string)
+        let wide_name: Vec<u16> = "pathdll.dll\0".encode_utf16().collect();
+        let handle = unsafe { kernel32_LoadLibraryW(wide_name.as_ptr()) } as usize;
+        assert_ne!(handle, 0, "LoadLibraryW should return a non-null handle");
+    }
+
+    #[test]
+    fn test_get_module_handle_w_named() {
+        // Register a known DLL
+        let exports = vec![(
+            "HANDLETEST.DLL".to_string(),
+            "SomeFunc".to_string(),
+            0xCAFE_BABE_usize,
+        )];
+        register_dynamic_exports(&exports);
+
+        let wide_name: Vec<u16> = "handletest.dll\0".encode_utf16().collect();
+        let handle = unsafe { kernel32_GetModuleHandleW(wide_name.as_ptr()) };
+        assert!(
+            !handle.is_null(),
+            "GetModuleHandleW should find the registered DLL"
+        );
+    }
+
+    #[test]
+    fn test_get_module_handle_w_null_returns_base() {
+        let handle = unsafe { kernel32_GetModuleHandleW(core::ptr::null()) } as usize;
+        assert_eq!(
+            handle, 0x400000,
+            "GetModuleHandleW(NULL) should return the main module base"
+        );
+    }
+
+    #[test]
+    fn test_create_hard_link_w_source_not_found() {
+        // Linking to a non-existent source should fail
+        let src: Vec<u16> = "C:\\nonexistent_src_12345.txt\0".encode_utf16().collect();
+        let dst: Vec<u16> = "C:\\nonexistent_dst_12345.txt\0".encode_utf16().collect();
+        let result =
+            unsafe { kernel32_CreateHardLinkW(dst.as_ptr(), src.as_ptr(), core::ptr::null_mut()) };
+        assert_eq!(result, 0, "CreateHardLinkW should fail for missing source");
+    }
+
+    #[test]
+    fn test_create_symbolic_link_w_already_exists() {
+        use std::io::Write;
+        let dir = std::env::temp_dir();
+        let target = dir.join("litebox_test_symlink_target.txt");
+        let link = dir.join("litebox_test_symlink_link.txt");
+        // Clean up in case left over from a previous run
+        let _ = std::fs::remove_file(&link);
+        let _ = std::fs::remove_file(&target);
+        // Create the target file
+        let mut f = std::fs::File::create(&target).unwrap();
+        f.write_all(b"hello").unwrap();
+
+        // First symlink should succeed
+        let target_wide: Vec<u16> = format!("{}\0", target.display()).encode_utf16().collect();
+        let link_wide: Vec<u16> = format!("{}\0", link.display()).encode_utf16().collect();
+        let r1 =
+            unsafe { kernel32_CreateSymbolicLinkW(link_wide.as_ptr(), target_wide.as_ptr(), 0) };
+        assert_eq!(r1, 1, "First CreateSymbolicLinkW should succeed");
+        assert!(
+            link.exists() || link.symlink_metadata().is_ok(),
+            "symlink should exist"
+        );
+
+        // Second call with the same link path should fail (already exists)
+        let r2 =
+            unsafe { kernel32_CreateSymbolicLinkW(link_wide.as_ptr(), target_wide.as_ptr(), 0) };
+        assert_eq!(
+            r2, 0,
+            "CreateSymbolicLinkW should fail when link already exists"
+        );
+
+        // Clean up
+        let _ = std::fs::remove_file(&link);
+        let _ = std::fs::remove_file(&target);
     }
 }
