@@ -2894,19 +2894,28 @@ pub unsafe extern "C" fn kernel32_GetCurrentDirectoryW(
 
 /// GetExitCodeProcess — retrieves the termination status of a process.
 ///
-/// For the current-process pseudo-handle (`-1 / 0xFFFF…`) this reports
-/// `STILL_ACTIVE` (259), which is the correct value for a running process.
-/// Any other handle is not tracked in our emulation layer, so we also
-/// return `STILL_ACTIVE` as the most safe default.
+/// Only the current-process pseudo-handle (`-1 / 0xFFFF…`, returned by
+/// `GetCurrentProcess()`) is supported.  For that handle this function
+/// reports `STILL_ACTIVE` (259), which is the correct value for a running
+/// process.
+///
+/// Any other handle value (including `NULL`) is not tracked in this emulation
+/// layer; those calls return FALSE and set `ERROR_INVALID_HANDLE`.
 ///
 /// # Safety
 /// `exit_code` must be null or point to a writable `u32`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_GetExitCodeProcess(
-    _process: *mut core::ffi::c_void,
+    process: *mut core::ffi::c_void,
     exit_code: *mut u32,
 ) -> i32 {
     const STILL_ACTIVE: u32 = 259;
+    // The Windows current-process pseudo-handle is -1 (all bits set).
+    let current_process = kernel32_GetCurrentProcess();
+    if process != current_process {
+        kernel32_SetLastError(6); // ERROR_INVALID_HANDLE
+        return 0; // FALSE
+    }
     if !exit_code.is_null() {
         // SAFETY: Caller guarantees exit_code is valid and non-null (checked above).
         *exit_code = STILL_ACTIVE;
@@ -4008,10 +4017,12 @@ pub unsafe extern "C" fn kernel32_SetCurrentDirectoryW(path_name: *const u16) ->
 
 /// SetFileAttributesW — sets the attributes of a file or directory.
 ///
-/// Maps Windows `FILE_ATTRIBUTE_READONLY (0x1)` to the Linux read-only
-/// permission model via `chmod`. Other attribute bits (hidden, system, etc.)
-/// have no direct Linux equivalent and are silently accepted so that programs
-/// that set them do not fail.
+/// Maps Windows `FILE_ATTRIBUTE_READONLY (0x1)` to the Linux permission model
+/// by toggling only the **owner write bit** (`0o200`).  Group and other write
+/// bits are left unchanged to avoid inadvertent permission side-effects.
+/// Other attribute bits (hidden, system, archive, etc.) have no direct Linux
+/// equivalent and are silently accepted so that programs that set them do not
+/// fail.
 ///
 /// Returns TRUE on success, FALSE on failure (sets last error).
 ///
@@ -4022,6 +4033,7 @@ pub unsafe extern "C" fn kernel32_SetFileAttributesW(
     file_name: *const u16,
     file_attributes: u32,
 ) -> i32 {
+    use std::os::unix::fs::PermissionsExt as _;
     const FILE_ATTRIBUTE_READONLY: u32 = 0x0001;
 
     if file_name.is_null() {
@@ -4030,17 +4042,23 @@ pub unsafe extern "C" fn kernel32_SetFileAttributesW(
     }
     let path_str = wide_path_to_linux(file_name);
     if path_str.is_empty() {
-        kernel32_SetLastError(87); // ERROR_INVALID_PARAMETER
+        // Empty path signals a sandbox escape — treat as access denied.
+        kernel32_SetLastError(5); // ERROR_ACCESS_DENIED
         return 0;
     }
     let path = std::path::Path::new(&path_str);
     match std::fs::metadata(path) {
         Ok(meta) => {
             let mut perms = meta.permissions();
+            let current_mode = perms.mode();
             if (file_attributes & FILE_ATTRIBUTE_READONLY) != 0 {
-                perms.set_readonly(true);
+                // Clear only the owner write bit.  Group and other write bits
+                // are not changed to avoid inadvertent permission side-effects.
+                perms.set_mode(current_mode & !0o200);
             } else {
-                perms.set_readonly(false);
+                // Restore only the owner write bit to avoid broadening access
+                // beyond what the original mode allowed for group/other.
+                perms.set_mode(current_mode | 0o200);
             }
             match std::fs::set_permissions(path, perms) {
                 Ok(()) => 1, // TRUE
@@ -4050,8 +4068,12 @@ pub unsafe extern "C" fn kernel32_SetFileAttributesW(
                 }
             }
         }
-        Err(_) => {
-            kernel32_SetLastError(2); // ERROR_FILE_NOT_FOUND
+        Err(e) => {
+            let win_err = match e.kind() {
+                std::io::ErrorKind::PermissionDenied => 5, // ERROR_ACCESS_DENIED
+                _ => 2,                                    // ERROR_FILE_NOT_FOUND
+            };
+            kernel32_SetLastError(win_err);
             0
         }
     }
@@ -4418,11 +4440,22 @@ pub unsafe extern "C" fn kernel32_GetModuleHandleA(
 ///
 /// When `module` is null (i.e. the main executable), reads the path from
 /// `/proc/self/exe` and returns it as a UTF-16 string in `filename`.
-/// Non-null module handles refer to loaded DLLs; for those we currently
-/// return an empty string (unimplemented).
 ///
-/// Returns the number of UTF-16 characters written, excluding the null
-/// terminator.  Returns 0 on failure (buffer too small or unresolvable path).
+/// Non-null module handles refer to loaded DLLs; those are currently
+/// unimplemented and the function returns 0 with `ERROR_GEN_FAILURE`.
+///
+/// On success, returns the number of UTF-16 characters written, excluding the
+/// null terminator.
+///
+/// If `filename` is null or `size` is 0 or too small to hold the full path,
+/// returns the required buffer length (in UTF-16 code units, including the
+/// null terminator) and sets the last error to `ERROR_MORE_DATA`.  Note: real
+/// Windows `GetModuleFileNameW` truncates the output and returns `nSize` when
+/// the buffer is too small; this shim instead follows `GetEnvironmentVariableW`
+/// semantics (returns required length, sets `ERROR_MORE_DATA`) to simplify
+/// callers.
+///
+/// On other failures returns 0 and sets an appropriate Windows error code.
 ///
 /// # Safety
 /// `filename` must point to a valid buffer of at least `size` `u16` elements,
@@ -7959,18 +7992,18 @@ mod tests {
     #[test]
     fn test_get_exit_code_process_still_active() {
         let mut exit_code: u32 = 0;
-        // NULL handle → current process pseudo-handle
-        let result =
-            unsafe { kernel32_GetExitCodeProcess(core::ptr::null_mut(), &raw mut exit_code) };
+        // Use the current-process pseudo-handle returned by GetCurrentProcess.
+        let current_process = unsafe { kernel32_GetCurrentProcess() };
+        let result = unsafe { kernel32_GetExitCodeProcess(current_process, &raw mut exit_code) };
         assert_eq!(result, 1, "GetExitCodeProcess should return TRUE");
         assert_eq!(exit_code, 259, "exit code should be STILL_ACTIVE (259)");
     }
 
     #[test]
     fn test_get_exit_code_process_null_out_ptr() {
-        // NULL output pointer should not crash
-        let result =
-            unsafe { kernel32_GetExitCodeProcess(core::ptr::null_mut(), core::ptr::null_mut()) };
+        // NULL output pointer should not crash for the current-process pseudo-handle
+        let current_process = unsafe { kernel32_GetCurrentProcess() };
+        let result = unsafe { kernel32_GetExitCodeProcess(current_process, core::ptr::null_mut()) };
         assert_eq!(
             result, 1,
             "GetExitCodeProcess should return TRUE even with null exit_code"
@@ -7978,8 +8011,22 @@ mod tests {
     }
 
     #[test]
+    fn test_get_exit_code_process_invalid_handle() {
+        let mut exit_code: u32 = 999;
+        // NULL is not the current-process pseudo-handle; should return FALSE + ERROR_INVALID_HANDLE.
+        let result =
+            unsafe { kernel32_GetExitCodeProcess(core::ptr::null_mut(), &raw mut exit_code) };
+        assert_eq!(result, 0, "GetExitCodeProcess(NULL) should return FALSE");
+        let err = unsafe { kernel32_GetLastError() };
+        assert_eq!(err, 6, "last error should be ERROR_INVALID_HANDLE (6)");
+        // exit_code must not have been modified.
+        assert_eq!(exit_code, 999, "exit_code should be unchanged on failure");
+    }
+
+    #[test]
     fn test_set_file_attributes_w_readonly() {
         use std::io::Write;
+        use std::os::unix::fs::PermissionsExt as _;
         let dir = std::env::temp_dir().join(format!("litebox_attr_test_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let file_path = dir.join("test_attr.txt");
@@ -7987,21 +8034,44 @@ mod tests {
         f.write_all(b"hello").unwrap();
         drop(f);
 
+        // Record the original mode to verify we don't disturb group/other bits.
+        let original_mode = std::fs::metadata(&file_path).unwrap().permissions().mode();
+
         // Build wide path
         let path_str = file_path.to_string_lossy();
         let wide: Vec<u16> = path_str.encode_utf16().chain(std::iter::once(0)).collect();
 
-        // Set read-only
+        // Set read-only: only owner write bit should be cleared; group/other unchanged.
         let r = unsafe { kernel32_SetFileAttributesW(wide.as_ptr(), 0x0001) }; // FILE_ATTRIBUTE_READONLY
         assert_eq!(r, 1, "SetFileAttributesW(READONLY) should return TRUE");
-        let meta = std::fs::metadata(&file_path).unwrap();
-        assert!(
-            meta.permissions().readonly(),
-            "file should be read-only after SetFileAttributesW"
+        let readonly_mode = std::fs::metadata(&file_path).unwrap().permissions().mode();
+        assert_eq!(
+            readonly_mode & 0o200,
+            0,
+            "owner write bit should be cleared"
+        );
+        // Group/other write bits must not have changed.
+        assert_eq!(
+            readonly_mode & 0o022,
+            original_mode & 0o022,
+            "group/other write bits must not be changed when setting READONLY"
         );
 
-        // Restore writable so cleanup works
-        unsafe { kernel32_SetFileAttributesW(wide.as_ptr(), 0x0080) }; // FILE_ATTRIBUTE_NORMAL
+        // Clear read-only: owner write bit should be restored; group/other unchanged.
+        let r2 = unsafe { kernel32_SetFileAttributesW(wide.as_ptr(), 0x0080) }; // FILE_ATTRIBUTE_NORMAL
+        assert_eq!(r2, 1, "SetFileAttributesW(NORMAL) should return TRUE");
+        let restored_mode = std::fs::metadata(&file_path).unwrap().permissions().mode();
+        assert_ne!(
+            restored_mode & 0o200,
+            0,
+            "owner write bit should be restored"
+        );
+        assert_eq!(
+            restored_mode & 0o022,
+            original_mode & 0o022,
+            "group/other write bits must not be broadened beyond original"
+        );
+
         let _ = std::fs::remove_file(&file_path);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -8036,15 +8106,18 @@ mod tests {
 
     #[test]
     fn test_get_module_file_name_w_null_buffer() {
-        // size=0 / null buffer: copy_utf8_to_wide returns the required length
-        // (including null terminator), which is consistent with Windows behaviour
-        // when the supplied buffer is too small.
+        // NOTE: This is an intentional, non-Windows-compatible behaviour.
+        // On Windows, GetModuleFileNameW with nSize=0 and a null buffer returns 0
+        // and sets an error (it does NOT have "required length" semantics).
+        // In this shim we instead return the required length (including the null
+        // terminator), matching GetEnvironmentVariableW-style semantics to make
+        // callers easier to write.
         let result =
             unsafe { kernel32_GetModuleFileNameW(core::ptr::null_mut(), core::ptr::null_mut(), 0) };
         // The required length must be > 0 because /proc/self/exe has a non-empty path.
         assert!(
             result > 0,
-            "GetModuleFileNameW with size=0 should return the required buffer length (> 0)"
+            "In this shim, GetModuleFileNameW with size=0 returns the required buffer length (> 0)"
         );
     }
 }

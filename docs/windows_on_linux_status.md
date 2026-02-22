@@ -1,7 +1,7 @@
 # Windows on Linux: Implementation Status
 
 **Last Updated:** 2026-02-22  
-**Total Tests:** 304 passing (241 platform + 47 shim + 16 runner)  
+**Total Tests:** 305 passing (242 platform + 47 shim + 16 runner)  
 **Overall Status:** Core infrastructure complete. Six Rust-based test programs (hello_cli, math_test, env_test, args_test, file_io_test, string_test) run successfully end-to-end through the runner on Linux.
 
 ---
@@ -224,7 +224,7 @@ litebox_runner_windows_on_linux_userland \
 
 ## Code Quality
 
-- **All 304 tests passing**
+- **All 305 tests passing**
 - `RUSTFLAGS=-Dwarnings cargo clippy --all-targets --all-features` — clean
 - `cargo fmt --check` — clean
 - All `unsafe` blocks have detailed safety comments
