@@ -13,7 +13,17 @@ This repository contains a Rust-based, security-focused sandboxing library OS. T
 The recommended sequence during development is:
 1. **Format**: `cargo fmt`
 2. **Build**: `cargo build`
-3. **Lint**: `cargo clippy --all-targets --all-features`
+3. **Lint**: `RUSTFLAGS="-Dwarnings" cargo clippy --all-targets --all-features`
+   - **Important**: Always run with `RUSTFLAGS="-Dwarnings"` to match the CI environment.
+     The CI uses `-Dwarnings` which promotes all warnings to errors, including:
+     - `clippy::items_after_statements` — `const` / `static` items must appear *before* any
+       non-`const`/`let` statements in the same block. Move them to the top of the function.
+     - `clippy::doc_overindented_list_items` — continuation lines of a doc-comment list item
+       must be indented with exactly 2 spaces (e.g. `///   text`), not aligned to the item text.
+     - `clippy::manual_let_else` — `match`/`if let` blocks that unconditionally early-return in
+       one arm should be written as `let x = … else { return … };`.
+     - `clippy::ptr_as_ptr` — use `.cast::<T>()` instead of `as *const T` / `as *mut T` when
+       only the type changes, not the constness.
 4. **Test**: `cargo nextest run`
 5. **Ratchet Tests**: `cargo test -p dev_tests` - Verify ratchet constraints are met
 
@@ -170,8 +180,8 @@ cargo build -p litebox_shim_windows \
             -p litebox_platform_linux_for_windows \
             -p litebox_runner_windows_on_linux_userland
 
-# Run clippy on Windows components
-cargo clippy -p litebox_shim_windows \
+# Run clippy on Windows components (with -Dwarnings to match CI)
+RUSTFLAGS="-Dwarnings" cargo clippy -p litebox_shim_windows \
              -p litebox_platform_linux_for_windows \
              -p litebox_runner_windows_on_linux_userland
 

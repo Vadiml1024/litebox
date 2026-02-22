@@ -5471,19 +5471,18 @@ pub unsafe extern "C" fn kernel32_VirtualProtect(
 /// - `[0..8]`   BaseAddress (page-aligned start of the region)
 /// - `[8..16]`  AllocationBase (same as BaseAddress for private/anonymous maps)
 /// - `[16..20]` AllocationProtect (Windows `PAGE_*` flags derived from the
-///              current Linux permission bits; `/proc/self/maps` does not
-///              record the original allocation protection, so this equals
-///              `Protect`)
+///   current Linux permission bits; `/proc/self/maps` does not record the
+///   original allocation protection, so this equals `Protect`)
 /// - `[20..24]` padding (written as 0)
 /// - `[24..32]` RegionSize
 /// - `[32..36]` State (`MEM_COMMIT = 0x1000` if mapped, `MEM_FREE = 0x10000`
-///              if no mapping was found)
+///   if no mapping was found)
 /// - `[36..40]` Protect (current Windows `PAGE_*` flags derived from the Linux
-///              `r`/`w`/`x` permission bits; equals `AllocationProtect` since
-///              the original allocation protection is not tracked)
+///   `r`/`w`/`x` permission bits; equals `AllocationProtect` since the
+///   original allocation protection is not tracked)
 /// - `[40..44]` Type (`MEM_PRIVATE = 0x20000` for anonymous; `MEM_MAPPED =
-///              0x40000` for file-backed; `MEM_IMAGE = 0x1000000` for the
-///              executable image)
+///   0x40000` for file-backed; `MEM_IMAGE = 0x1000000` for the executable
+///   image)
 /// - `[44..48]` padding (written as 0)
 ///
 /// **Limitation:** `AllocationProtect` and `Protect` are always identical because
@@ -5503,18 +5502,6 @@ pub unsafe extern "C" fn kernel32_VirtualQuery(
 ) -> usize {
     // The structure we write is 48 bytes; bail if the caller's buffer is too small.
     const MBI_SIZE: usize = 48;
-    if buffer.is_null() || length < MBI_SIZE {
-        return 0;
-    }
-
-    let query_addr = address as usize;
-
-    // Parse /proc/self/maps to locate the region.
-    let maps = match std::fs::read_to_string("/proc/self/maps") {
-        Ok(m) => m,
-        Err(_) => return 0,
-    };
-
     // Windows PAGE_* protection constants
     const PAGE_NOACCESS: u32 = 0x01;
     const PAGE_READONLY: u32 = 0x02;
@@ -5528,6 +5515,17 @@ pub unsafe extern "C" fn kernel32_VirtualQuery(
     const MEM_PRIVATE: u32 = 0x20000;
     const MEM_MAPPED: u32 = 0x40000;
     const MEM_IMAGE: u32 = 0x100_0000;
+
+    if buffer.is_null() || length < MBI_SIZE {
+        return 0;
+    }
+
+    let query_addr = address as usize;
+
+    // Parse /proc/self/maps to locate the region.
+    let Ok(maps) = std::fs::read_to_string("/proc/self/maps") else {
+        return 0;
+    };
 
     // Each line: "start-end perms offset dev inode [pathname]"
     for line in maps.lines() {
@@ -9487,8 +9485,8 @@ mod tests {
 
         // Write and read back through the mapped view.
         unsafe {
-            *(view as *mut u32) = 0xDEAD_BEEF;
-            assert_eq!(*(view as *const u32), 0xDEAD_BEEF);
+            *(view.cast::<u32>()) = 0xDEAD_BEEF;
+            assert_eq!(*(view.cast::<u32>()), 0xDEAD_BEEF);
         }
 
         let unmap = unsafe { kernel32_UnmapViewOfFile(view) };
@@ -9722,7 +9720,7 @@ mod tests {
         const MBI_SIZE: usize = 48;
         let mut buf = [0u8; MBI_SIZE];
         // Query an address that we know is mapped: the buffer itself.
-        let addr = buf.as_ptr() as *const core::ffi::c_void;
+        let addr = buf.as_ptr().cast::<core::ffi::c_void>();
         let ret = unsafe { kernel32_VirtualQuery(addr, buf.as_mut_ptr(), MBI_SIZE) };
         assert_eq!(
             ret, MBI_SIZE,
@@ -9770,7 +9768,7 @@ mod tests {
     #[test]
     fn test_virtual_query_buffer_too_small() {
         let mut buf = [0u8; 16]; // smaller than MBI_SIZE (48)
-        let addr = buf.as_ptr() as *const core::ffi::c_void;
+        let addr = buf.as_ptr().cast::<core::ffi::c_void>();
         let ret = unsafe { kernel32_VirtualQuery(addr, buf.as_mut_ptr(), 16) };
         assert_eq!(
             ret, 0,
@@ -9808,6 +9806,7 @@ mod tests {
     #[test]
     fn test_lock_file_ex_and_unlock() {
         // Create a temporary file to lock.
+        const LOCKFILE_FAIL_IMMEDIATELY: u32 = 0x0000_0001;
         let tmp_path = std::env::temp_dir().join("litebox_test_lock.tmp");
         let file = std::fs::OpenOptions::new()
             .read(true)
@@ -9825,7 +9824,6 @@ mod tests {
         let handle = handle_val as *mut core::ffi::c_void;
 
         // Acquire a shared lock (non-blocking).
-        const LOCKFILE_FAIL_IMMEDIATELY: u32 = 0x0000_0001;
         let lock_result = unsafe {
             kernel32_LockFileEx(
                 handle,
