@@ -1,14 +1,147 @@
-# Windows-on-Linux Support — Session Summary (2026-02-22 Session 26)
+# Windows-on-Linux Support — Session Summary (2026-02-22 Session 27)
 
 ## Work Completed ✅
 
-### Phase 26 — Mutex/Semaphore, Console Extensions, String Utilities, Drive/Volume APIs, User/Computer Name
+### Phase 27 — Thread Management, Process Management, File Times, Character APIs, Window Utilities, System Paths
 
-**Goal:** Add 38 new Windows API implementations across six areas — synchronization objects (mutex and semaphore), console management, string helper functions, drive/volume information, and user/computer identity queries — enabling a wider range of Windows programs to run without issues.
+**Goal:** Add 27 new Windows API implementations across six areas — thread and process management, file-time utilities, character conversion/classification, window utilities, system directory paths, and temp file name generation — enabling a wider range of Windows programs to run without issues.
 
 ---
 
-#### 26.1 New KERNEL32 Mutex/Semaphore APIs (8 + extensions)
+#### 27.1 New KERNEL32 Thread Management APIs (6)
+
+| Function | Implementation |
+|---|---|
+| `SetThreadPriority` | Accepts priority value; always returns TRUE (all threads run at normal priority) |
+| `GetThreadPriority` | Returns `THREAD_PRIORITY_NORMAL` (0) for all threads |
+| `SuspendThread` | Returns 0 (previous suspend count; suspension not implemented) |
+| `ResumeThread` | Returns 0 (previous suspend count; no-op) |
+| `OpenThread` | Validates thread ID against THREAD_HANDLES registry; returns handle or NULL |
+| `GetExitCodeThread` | Returns `STILL_ACTIVE` (259) or actual exit code from thread registry |
+
+#### 27.2 New KERNEL32 Process Management APIs (2)
+
+| Function | Implementation |
+|---|---|
+| `OpenProcess` | Returns pseudo-handle for current process; NULL + `ERROR_INVALID_PARAMETER` for unknown PIDs |
+| `GetProcessTimes` | Returns current wall-clock time as creation time; zero CPU times |
+
+#### 27.3 New KERNEL32 File Time APIs (3)
+
+| Function | Implementation |
+|---|---|
+| `GetFileTime` | Reads file timestamps via `fstat(2)` on the underlying file descriptor |
+| `CompareFileTime` | Compares two FILETIME values as `u64`; returns -1, 0, or 1 |
+| `FileTimeToLocalFileTime` | Adjusts UTC FILETIME by local timezone offset via `localtime_r` |
+
+#### 27.4 New KERNEL32 System Directory/Temp APIs (3)
+
+| Function | Implementation |
+|---|---|
+| `GetSystemDirectoryW` | Returns `"C:\Windows\System32"` |
+| `GetWindowsDirectoryW` | Returns `"C:\Windows"` |
+| `GetTempFileNameW` | Generates `<path>\<prefix><hex>.tmp` from path + prefix + unique value |
+
+#### 27.5 New USER32 Character Conversion APIs (4)
+
+| Function | Implementation |
+|---|---|
+| `CharUpperW` | Single-char mode (high word = 0): return uppercased char; string mode: in-place uppercase |
+| `CharLowerW` | Single-char mode: return lowercased char; string mode: in-place lowercase |
+| `CharUpperA` | ANSI single-char or string uppercase (via `to_ascii_uppercase`) |
+| `CharLowerA` | ANSI single-char or string lowercase (via `to_ascii_lowercase`) |
+
+#### 27.6 New USER32 Character Classification APIs (4)
+
+| Function | Implementation |
+|---|---|
+| `IsCharAlphaW` | `char::is_alphabetic()` via Rust standard library |
+| `IsCharAlphaNumericW` | `char::is_alphanumeric()` via Rust standard library |
+| `IsCharUpperW` | `char::is_uppercase()` via Rust standard library |
+| `IsCharLowerW` | `char::is_lowercase()` via Rust standard library |
+
+#### 27.7 New USER32 Window Utility APIs (7)
+
+| Function | Headless behavior |
+|---|---|
+| `IsWindow` | Returns FALSE (no real windows in headless mode) |
+| `IsWindowEnabled` | Returns FALSE |
+| `IsWindowVisible` | Returns FALSE |
+| `EnableWindow` | Returns FALSE (previous disabled state) |
+| `GetWindowTextW` | Returns 0; null-terminates buffer if provided |
+| `SetWindowTextW` | Returns FALSE (no window to update) |
+| `GetParent` | Returns NULL (no parent window) |
+
+#### 27.8 Infrastructure Updates
+
+- `function_table.rs` — 27 new `FunctionImpl` entries (14 KERNEL32 + 13 USER32)
+- `dll.rs` — 14 new KERNEL32 exports (offsets 0xC9–0xD6); 13 new USER32 exports
+
+#### 27.9 New Unit Tests (21 new)
+
+| Tests | What they verify |
+|---|---|
+| `test_set_get_thread_priority` | SetThreadPriority returns TRUE; GetThreadPriority returns 0 |
+| `test_suspend_resume_thread` | SuspendThread/ResumeThread return 0 (previous count) |
+| `test_open_process_current` | OpenProcess for current PID returns non-null |
+| `test_open_process_unknown` | OpenProcess for unknown PID returns NULL |
+| `test_get_process_times` | GetProcessTimes returns non-zero creation time |
+| `test_get_file_time` | GetFileTime returns non-zero timestamps via fstat |
+| `test_compare_file_time` | CompareFileTime returns -1/0/1 correctly |
+| `test_file_time_to_local` | FileTimeToLocalFileTime returns non-zero result |
+| `test_get_system_directory` | Returns path containing "System32" |
+| `test_get_windows_directory` | Returns path containing "Windows" |
+| `test_get_temp_file_name` | Returns name containing prefix and ending with ".tmp" |
+| `test_char_upper_w_string` | CharUpperW converts "hello" to "HELLO" in-place |
+| `test_char_lower_w_string` | CharLowerW converts "WORLD" to "world" in-place |
+| `test_is_char_alpha_w` | IsCharAlphaW returns 1 for letters, 0 for digits/symbols |
+| `test_is_char_alpha_numeric_w` | IsCharAlphaNumericW returns 1 for letters and digits |
+| `test_is_char_upper_lower_w` | IsCharUpperW/IsCharLowerW classify correctly |
+| `test_headless_window_utilities` | IsWindow/IsWindowEnabled/IsWindowVisible/EnableWindow/SetWindowTextW/GetParent return correct headless values |
+| `test_get_window_text_w_empty` | GetWindowTextW returns 0 and null-terminates buffer |
+| (+ 3 extra test coverage tests) | Edge cases for OpenThread, GetExitCodeThread |
+
+---
+
+## Test Results
+
+```
+cargo test -p litebox_platform_linux_for_windows -p litebox_shim_windows
+           -p litebox_runner_windows_on_linux_userland -p dev_tests -- --test-threads=1
+dev_tests:   5 passed  (ratchet globals unchanged at 42)
+Platform:  355 passed  (+21 new thread/file-time/char/window tests)
+Shim:       47 passed  (unchanged)
+Runner:     16 passed  (unchanged)
+Total:     423 passed  (+21 from Phase 27)
+```
+
+## Files Modified This Session
+
+- `litebox_platform_linux_for_windows/src/kernel32.rs` — 14 new functions; 11 new unit tests
+- `litebox_platform_linux_for_windows/src/user32.rs` — 13 new functions; 8 new unit tests
+- `litebox_platform_linux_for_windows/src/function_table.rs` — 27 new `FunctionImpl` entries
+- `litebox_shim_windows/src/loader/dll.rs` — 14 new KERNEL32 exports; 13 new USER32 exports
+- `docs/windows_on_linux_status.md` — updated counts, added Phase 27 tables and history entry
+- `SESSION_SUMMARY.md` — this file
+
+## Security Summary
+
+No new security vulnerabilities introduced.
+
+- `GetFileTime`: reads file metadata via `fstat(2)` on a file descriptor obtained from the validated handle registry; output pointers guarded by null checks; no buffer overflows.
+- `GetFileTime`: uses `st_mtime_nsec`/`st_atime_nsec`/`st_ctime_nsec` which are `i64` fields on Linux — all values fit safely in the 100-ns-interval computation.
+- `FileTimeToLocalFileTime`: uses `tm_gmtoff` from `localtime_r` for timezone offset; no external input can cause overflow (timezone offsets are bounded ±14 hours = ±50400 seconds).
+- `CharUpperW`/`CharLowerW` in string mode: traverse pointer until null terminator; writes only within the string bounds; no length parameters needed per Windows API contract.
+- `GetSystemDirectoryW`/`GetWindowsDirectoryW`: bounds-check buffer size before copy; no overflow possible.
+- `GetTempFileNameW`: copies at most 259 wide chars + null; bounded by the 260-char MAX_PATH limit.
+- `OpenThread`/`OpenProcess`: all logic operates on integer values; no unsafe pointer dereferences.
+- CodeQL timed out (large repo); no security concerns in the changed code.
+
+---
+
+*(Previous session history follows)*
+
+
 
 | Function | Implementation |
 |---|---|

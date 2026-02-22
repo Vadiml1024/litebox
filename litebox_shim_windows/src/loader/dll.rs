@@ -507,7 +507,7 @@ impl DllManager {
             ("CompareFileTime", KERNEL32_BASE + 0xD2),
             ("FileTimeToLocalFileTime", KERNEL32_BASE + 0xD3),
             // Phase 27: Temp File Name
-            ("GetTempFileNameW", KERNEL32_BASE + 0xD6),
+            ("GetTempFileNameW", KERNEL32_BASE + 0xD4),
         ];
 
         self.register_stub_dll("KERNEL32.dll", exports);

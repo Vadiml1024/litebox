@@ -462,12 +462,9 @@ pub unsafe extern "C" fn user32_ReleaseDC(_hwnd: *mut c_void, _hdc: *mut c_void)
 pub unsafe extern "C" fn user32_CharUpperW(lpsz: *mut u16) -> *mut u16 {
     let val = lpsz as usize;
     if val <= 0xFFFF {
-        // Single character mode: the low 16 bits are the character
-        // SAFETY: val <= 0xFFFF so it fits in u32 without truncation.
-        #[allow(clippy::cast_possible_truncation)]
+        // Single character mode: the low 16 bits hold the character value (fits in u16/u32).
         let ch = char::from_u32(val as u32).unwrap_or('\0');
-        #[allow(clippy::cast_possible_truncation)]
-        let upper: u32 = ch.to_uppercase().next().map_or(val as u32, |c| c as u32);
+        let upper = ch.to_uppercase().next().map_or(val as u16, |c| c as u16);
         upper as usize as *mut u16
     } else {
         // String mode: convert in place
@@ -499,10 +496,8 @@ pub unsafe extern "C" fn user32_CharLowerW(lpsz: *mut u16) -> *mut u16 {
     let val = lpsz as usize;
     if val <= 0xFFFF {
         // SAFETY: val <= 0xFFFF so it fits in u32 without truncation.
-        #[allow(clippy::cast_possible_truncation)]
         let ch = char::from_u32(val as u32).unwrap_or('\0');
-        #[allow(clippy::cast_possible_truncation)]
-        let lower: u32 = ch.to_lowercase().next().map_or(val as u32, |c| c as u32);
+        let lower = ch.to_lowercase().next().map_or(val as u16, |c| c as u16);
         lower as usize as *mut u16
     } else {
         let mut ptr = lpsz;

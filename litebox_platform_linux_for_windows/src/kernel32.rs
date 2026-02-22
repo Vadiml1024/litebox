@@ -7922,7 +7922,9 @@ pub unsafe extern "C" fn kernel32_GetFileTime(
         return 0;
     }
     let unix_to_filetime = |sec: i64, nsec: i64| -> FileTime {
-        let intervals = (sec + EPOCH_DIFF) as u64 * 10_000_000 + nsec as u64 / 100;
+        // Add EPOCH_DIFF in i64 to avoid overflow on pre-epoch dates; clamp to 0 if before 1601.
+        let adjusted = sec.saturating_add(EPOCH_DIFF).max(0) as u64;
+        let intervals = adjusted * 10_000_000 + nsec.max(0) as u64 / 100;
         FileTime {
             low_date_time: intervals as u32,
             high_date_time: (intervals >> 32) as u32,
@@ -7990,12 +7992,11 @@ pub unsafe extern "C" fn kernel32_FileTimeToLocalFileTime(
     let mut tm_local: libc::tm = unsafe { core::mem::zeroed() };
     // SAFETY: unix_time is a valid time_t value; tm_local is a valid out-pointer.
     unsafe { libc::localtime_r(&raw const unix_time, &raw mut tm_local) };
-    let offset_sec = tm_local.tm_gmtoff;
-    // Multiply offset by 10M to convert seconds to 100-ns intervals.
-    // Cast via i128 to avoid i64 overflow for extreme offsets, then reinterpret
-    // as u64 so wrapping_add correctly applies negative offsets.
-    let offset_100ns = (i128::from(offset_sec) * 10_000_000) as u64;
-    let local_intervals = intervals.wrapping_add(offset_100ns);
+    // offset_sec is bounded to ±50400 seconds (±14 hours); multiply by 10M to get
+    // 100-ns intervals, then add to the UTC intervals using signed arithmetic
+    // to correctly handle negative (west-of-UTC) offsets.
+    let offset_100ns = i64::from(tm_local.tm_gmtoff).saturating_mul(10_000_000);
+    let local_intervals = (intervals as i64).saturating_add(offset_100ns).max(0) as u64;
     // SAFETY: local_file_time is checked non-null above.
     unsafe {
         (*local_file_time).low_date_time = local_intervals as u32;
