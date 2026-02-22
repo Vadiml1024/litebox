@@ -4442,8 +4442,12 @@ pub unsafe extern "C" fn kernel32_InitializeProcThreadAttributeList(
 /// The byte-range parameters and the `overlapped` pointer are accepted but
 /// ignored because `flock(2)` locks the whole file.
 ///
-/// Returns TRUE (1) on success, FALSE (0) on failure with the last error set
-/// to `ERROR_LOCK_VIOLATION` (33) if the lock could not be acquired immediately.
+/// Returns TRUE (1) on success, FALSE (0) on failure. On failure, the last
+/// error is set to:
+/// - `ERROR_INVALID_HANDLE` (6) if `file` is not a valid file handle.
+/// - `ERROR_LOCK_VIOLATION` (33) if the underlying `flock(2)` call fails for
+///   any reason (including contention when the requested lock cannot be
+///   obtained).
 ///
 /// # Safety
 /// `file` must be a valid handle previously returned by `CreateFileW`, or
@@ -4850,8 +4854,9 @@ pub unsafe extern "C" fn kernel32_SetHandleInformation(
 ///
 /// Releases the `flock(2)` lock held by `LockFileEx` on this file.  The
 /// byte-range parameters are accepted but ignored because `flock` operates
-/// on the whole file.  Returns TRUE (1) on success, FALSE (0) with
-/// `ERROR_INVALID_HANDLE` (6) if the handle is not in the file registry.
+/// on the whole file.  Returns TRUE (1) on success, or FALSE (0) with
+/// `ERROR_INVALID_HANDLE` (6) if the handle is not in the file registry, or
+/// `ERROR_NOT_LOCKED` (158) if releasing the underlying `flock` lock fails.
 ///
 /// # Safety
 /// `file` must be a valid handle previously returned by `CreateFileW`, or
@@ -5865,8 +5870,9 @@ pub unsafe extern "C" fn kernel32_FindClose(find_file: *mut core::ffi::c_void) -
 
 /// WaitOnAddress - waits for the value at the specified address to change
 ///
-/// In this single-threaded sandboxed environment there is no other thread to
-/// change the value, so the wait completes immediately.  Returns TRUE (1).
+/// This is a stub implementation that does not perform any blocking wait and
+/// simply returns immediately with TRUE (1).  It can be extended in the future
+/// to provide real synchronization semantics if needed.
 ///
 /// # Safety
 /// All pointer arguments are accepted as opaque values; none are dereferenced.
