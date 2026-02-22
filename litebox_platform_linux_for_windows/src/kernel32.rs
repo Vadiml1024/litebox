@@ -6938,37 +6938,38 @@ pub unsafe extern "C" fn kernel32_CreateMutexW(
         Some(wide_ptr_to_string(name))
     };
 
-    if let Some(ref n) = name_opt {
-        let existing = with_sync_handles(|map| {
-            for (&h, entry) in map.iter() {
-                if let SyncObjectEntry::Mutex { name: Some(en), .. } = entry
-                    && en == n
-                {
-                    return Some(h);
-                }
-            }
-            None
-        });
-        if let Some(h) = existing {
-            return h as *mut core::ffi::c_void;
-        }
-    }
-
+    // Build the new entry upfront so it can be inserted if no existing named
+    // mutex is found. The state is constructed before acquiring the lock, but
+    // the entry is only inserted when we confirm no duplicate name exists.
     let state: MutexStateArc = Arc::new((Mutex::new(None), Condvar::new()));
     if initial_owner != 0 {
         // SAFETY: SYS_gettid is always safe
         let tid = unsafe { libc::syscall(libc::SYS_gettid) } as u32;
         *state.0.lock().unwrap() = Some((tid, 1));
     }
-    let handle = alloc_sync_handle();
-    with_sync_handles(|map| {
+
+    // Perform the lookup-and-insert atomically under a single SYNC_HANDLES lock.
+    let handle = with_sync_handles(|map| {
+        // Return the existing handle if a mutex with this name already exists.
+        if let Some(ref n) = name_opt {
+            for (&h, entry) in map.iter() {
+                if let SyncObjectEntry::Mutex { name: Some(en), .. } = entry
+                    && en == n
+                {
+                    return h;
+                }
+            }
+        }
+        // No existing named mutex found: allocate a new handle and insert.
+        let h = alloc_sync_handle();
         map.insert(
-            handle,
+            h,
             SyncObjectEntry::Mutex {
-                name: name_opt,
+                name: name_opt.clone(),
                 state: Arc::clone(&state),
             },
         );
+        h
     });
     handle as *mut core::ffi::c_void
 }
@@ -7026,7 +7027,7 @@ pub unsafe extern "C" fn kernel32_OpenMutexW(
     if let Some(h) = existing {
         h as *mut core::ffi::c_void
     } else {
-        kernel32_SetLastError(6); // ERROR_INVALID_HANDLE
+        kernel32_SetLastError(2); // ERROR_FILE_NOT_FOUND
         core::ptr::null_mut()
     }
 }
@@ -7086,33 +7087,32 @@ pub unsafe extern "C" fn kernel32_CreateSemaphoreW(
         Some(wide_ptr_to_string(name))
     };
 
-    if let Some(ref n) = name_opt {
-        let existing = with_sync_handles(|map| {
+    // Build the state before acquiring the lock; insert only when no named
+    // duplicate is found (atomic lookup-and-insert under SYNC_HANDLES).
+    let state: Arc<(Mutex<i32>, Condvar)> = Arc::new((Mutex::new(initial_count), Condvar::new()));
+
+    let handle = with_sync_handles(|map| {
+        // Return existing handle if a semaphore with this name already exists.
+        if let Some(ref n) = name_opt {
             for (&h, entry) in map.iter() {
                 if let SyncObjectEntry::Semaphore { name: Some(en), .. } = entry
                     && en == n
                 {
-                    return Some(h);
+                    return h;
                 }
             }
-            None
-        });
-        if let Some(h) = existing {
-            return h as *mut core::ffi::c_void;
         }
-    }
-
-    let state: Arc<(Mutex<i32>, Condvar)> = Arc::new((Mutex::new(initial_count), Condvar::new()));
-    let handle = alloc_sync_handle();
-    with_sync_handles(|map| {
+        // No existing named semaphore: allocate and insert.
+        let h = alloc_sync_handle();
         map.insert(
-            handle,
+            h,
             SyncObjectEntry::Semaphore {
-                name: name_opt,
+                name: name_opt.clone(),
                 max_count,
                 state: Arc::clone(&state),
             },
         );
+        h
     });
     handle as *mut core::ffi::c_void
 }
@@ -7171,7 +7171,7 @@ pub unsafe extern "C" fn kernel32_OpenSemaphoreW(
     if let Some(h) = existing {
         h as *mut core::ffi::c_void
     } else {
-        kernel32_SetLastError(6); // ERROR_INVALID_HANDLE
+        kernel32_SetLastError(2); // ERROR_FILE_NOT_FOUND
         core::ptr::null_mut()
     }
 }
@@ -7194,6 +7194,7 @@ pub unsafe extern "C" fn kernel32_ReleaseSemaphore(
         return 0;
     }
     let handle_val = semaphore as usize;
+    // Err(true) = handle not found; Err(false) = would exceed max_count
     let result = with_sync_handles(|map| {
         if let Some(SyncObjectEntry::Semaphore {
             state, max_count, ..
@@ -7204,7 +7205,7 @@ pub unsafe extern "C" fn kernel32_ReleaseSemaphore(
             let prev = *count;
             let new_count = prev.saturating_add(release_count);
             if new_count > *max_count {
-                return Err(());
+                return Err(false); // ERROR_TOO_MANY_POSTS
             }
             *count = new_count;
             for _ in 0..release_count {
@@ -7212,18 +7213,25 @@ pub unsafe extern "C" fn kernel32_ReleaseSemaphore(
             }
             Ok(prev)
         } else {
-            Err(())
+            Err(true) // ERROR_INVALID_HANDLE
         }
     });
-    if let Ok(prev) = result {
-        if !previous_count.is_null() {
-            // SAFETY: caller guarantees valid pointer
-            unsafe { *previous_count = prev };
+    match result {
+        Ok(prev) => {
+            if !previous_count.is_null() {
+                // SAFETY: caller guarantees valid pointer
+                unsafe { *previous_count = prev };
+            }
+            1
         }
-        1
-    } else {
-        kernel32_SetLastError(87); // ERROR_INVALID_PARAMETER
-        0
+        Err(true) => {
+            kernel32_SetLastError(6); // ERROR_INVALID_HANDLE
+            0
+        }
+        Err(false) => {
+            kernel32_SetLastError(298); // ERROR_TOO_MANY_POSTS
+            0
+        }
     }
 }
 
@@ -7617,7 +7625,7 @@ pub unsafe extern "C" fn kernel32_GetVolumeInformationW(
 ) -> i32 {
     if !volume_name.is_null() && volume_name_size > 0 {
         // SAFETY: caller guarantees valid writable buffer
-        copy_utf8_to_wide("", volume_name, volume_name_size);
+        copy_utf8_to_wide("LITEBOX", volume_name, volume_name_size);
     }
     if !serial.is_null() {
         // SAFETY: caller guarantees valid pointer
@@ -11239,6 +11247,16 @@ mod tests {
     }
 
     #[test]
+    fn test_open_mutex_not_found_error_code() {
+        // OpenMutexW on an unknown name must set ERROR_FILE_NOT_FOUND (2).
+        let name: Vec<u16> = "NonExistentMutex999\0".encode_utf16().collect();
+        let h = unsafe { kernel32_OpenMutexW(0x001F_0001, 0, name.as_ptr()) };
+        assert!(h.is_null(), "OpenMutexW should return NULL for unknown name");
+        let err = unsafe { kernel32_GetLastError() };
+        assert_eq!(err, 2, "Should be ERROR_FILE_NOT_FOUND (2)");
+    }
+
+    #[test]
     fn test_create_semaphore_and_release() {
         let handle =
             unsafe { kernel32_CreateSemaphoreW(core::ptr::null_mut(), 0, 5, core::ptr::null()) };
@@ -11247,6 +11265,29 @@ mod tests {
         let result = unsafe { kernel32_ReleaseSemaphore(handle, 2, core::ptr::addr_of_mut!(prev)) };
         assert_eq!(result, 1);
         assert_eq!(prev, 0, "Previous count should be 0");
+        unsafe { kernel32_CloseHandle(handle) };
+    }
+
+    #[test]
+    fn test_semaphore_release_invalid_handle_error() {
+        // ReleaseSemaphore on a bogus handle must set ERROR_INVALID_HANDLE (6).
+        let bogus = 0xDEAD_BEEF_usize as *mut core::ffi::c_void;
+        let result = unsafe { kernel32_ReleaseSemaphore(bogus, 1, core::ptr::null_mut()) };
+        assert_eq!(result, 0, "Should fail on bogus handle");
+        let err = unsafe { kernel32_GetLastError() };
+        assert_eq!(err, 6, "Should be ERROR_INVALID_HANDLE (6)");
+    }
+
+    #[test]
+    fn test_semaphore_release_too_many_posts() {
+        // Releasing beyond max_count must set ERROR_TOO_MANY_POSTS (298).
+        let handle =
+            unsafe { kernel32_CreateSemaphoreW(core::ptr::null_mut(), 3, 3, core::ptr::null()) };
+        assert!(!handle.is_null());
+        let result = unsafe { kernel32_ReleaseSemaphore(handle, 1, core::ptr::null_mut()) };
+        assert_eq!(result, 0, "Should fail when exceeding max_count");
+        let err = unsafe { kernel32_GetLastError() };
+        assert_eq!(err, 298, "Should be ERROR_TOO_MANY_POSTS (298)");
         unsafe { kernel32_CloseHandle(handle) };
     }
 
