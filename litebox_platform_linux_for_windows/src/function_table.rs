@@ -1791,6 +1791,19 @@ pub fn get_function_table() -> Vec<FunctionImpl> {
             num_params: 8,
             impl_address: crate::advapi32::advapi32_RegEnumValueW as *const () as usize,
         },
+        // ADVAPI32 — User name
+        FunctionImpl {
+            name: "GetUserNameW",
+            dll_name: "ADVAPI32.dll",
+            num_params: 2,
+            impl_address: crate::advapi32::advapi32_GetUserNameW as *const () as usize,
+        },
+        FunctionImpl {
+            name: "GetUserNameA",
+            dll_name: "ADVAPI32.dll",
+            num_params: 2,
+            impl_address: crate::advapi32::advapi32_GetUserNameA as *const () as usize,
+        },
         // GDI32.dll — Windows GDI graphics (headless stubs)
         FunctionImpl {
             name: "GetStockObject",
@@ -1965,6 +1978,197 @@ pub fn get_function_table() -> Vec<FunctionImpl> {
             dll_name: "KERNEL32.dll",
             num_params: 1,
             impl_address: crate::kernel32::kernel32_GetNativeSystemInfo as *const () as usize,
+        },
+        // KERNEL32 — Phase 26: Mutex / Semaphore
+        FunctionImpl {
+            name: "CreateMutexW",
+            dll_name: "KERNEL32.dll",
+            num_params: 3,
+            impl_address: crate::kernel32::kernel32_CreateMutexW as *const () as usize,
+        },
+        FunctionImpl {
+            name: "CreateMutexA",
+            dll_name: "KERNEL32.dll",
+            num_params: 3,
+            impl_address: crate::kernel32::kernel32_CreateMutexA as *const () as usize,
+        },
+        FunctionImpl {
+            name: "OpenMutexW",
+            dll_name: "KERNEL32.dll",
+            num_params: 3,
+            impl_address: crate::kernel32::kernel32_OpenMutexW as *const () as usize,
+        },
+        FunctionImpl {
+            name: "ReleaseMutex",
+            dll_name: "KERNEL32.dll",
+            num_params: 1,
+            impl_address: crate::kernel32::kernel32_ReleaseMutex as *const () as usize,
+        },
+        FunctionImpl {
+            name: "CreateSemaphoreW",
+            dll_name: "KERNEL32.dll",
+            num_params: 4,
+            impl_address: crate::kernel32::kernel32_CreateSemaphoreW as *const () as usize,
+        },
+        FunctionImpl {
+            name: "CreateSemaphoreA",
+            dll_name: "KERNEL32.dll",
+            num_params: 4,
+            impl_address: crate::kernel32::kernel32_CreateSemaphoreA as *const () as usize,
+        },
+        FunctionImpl {
+            name: "OpenSemaphoreW",
+            dll_name: "KERNEL32.dll",
+            num_params: 3,
+            impl_address: crate::kernel32::kernel32_OpenSemaphoreW as *const () as usize,
+        },
+        FunctionImpl {
+            name: "ReleaseSemaphore",
+            dll_name: "KERNEL32.dll",
+            num_params: 3,
+            impl_address: crate::kernel32::kernel32_ReleaseSemaphore as *const () as usize,
+        },
+        // KERNEL32 — Phase 26: Console Extensions
+        FunctionImpl {
+            name: "SetConsoleMode",
+            dll_name: "KERNEL32.dll",
+            num_params: 2,
+            impl_address: crate::kernel32::kernel32_SetConsoleMode as *const () as usize,
+        },
+        FunctionImpl {
+            name: "SetConsoleTitleW",
+            dll_name: "KERNEL32.dll",
+            num_params: 1,
+            impl_address: crate::kernel32::kernel32_SetConsoleTitleW as *const () as usize,
+        },
+        FunctionImpl {
+            name: "SetConsoleTitleA",
+            dll_name: "KERNEL32.dll",
+            num_params: 1,
+            impl_address: crate::kernel32::kernel32_SetConsoleTitleA as *const () as usize,
+        },
+        FunctionImpl {
+            name: "GetConsoleTitleW",
+            dll_name: "KERNEL32.dll",
+            num_params: 2,
+            impl_address: crate::kernel32::kernel32_GetConsoleTitleW as *const () as usize,
+        },
+        FunctionImpl {
+            name: "AllocConsole",
+            dll_name: "KERNEL32.dll",
+            num_params: 0,
+            impl_address: crate::kernel32::kernel32_AllocConsole as *const () as usize,
+        },
+        FunctionImpl {
+            name: "FreeConsole",
+            dll_name: "KERNEL32.dll",
+            num_params: 0,
+            impl_address: crate::kernel32::kernel32_FreeConsole as *const () as usize,
+        },
+        FunctionImpl {
+            name: "GetConsoleWindow",
+            dll_name: "KERNEL32.dll",
+            num_params: 0,
+            impl_address: crate::kernel32::kernel32_GetConsoleWindow as *const () as usize,
+        },
+        // KERNEL32 — Phase 26: String Utilities
+        FunctionImpl {
+            name: "lstrlenA",
+            dll_name: "KERNEL32.dll",
+            num_params: 1,
+            impl_address: crate::kernel32::kernel32_lstrlenA as *const () as usize,
+        },
+        FunctionImpl {
+            name: "lstrcpyW",
+            dll_name: "KERNEL32.dll",
+            num_params: 2,
+            impl_address: crate::kernel32::kernel32_lstrcpyW as *const () as usize,
+        },
+        FunctionImpl {
+            name: "lstrcpyA",
+            dll_name: "KERNEL32.dll",
+            num_params: 2,
+            impl_address: crate::kernel32::kernel32_lstrcpyA as *const () as usize,
+        },
+        FunctionImpl {
+            name: "lstrcmpW",
+            dll_name: "KERNEL32.dll",
+            num_params: 2,
+            impl_address: crate::kernel32::kernel32_lstrcmpW as *const () as usize,
+        },
+        FunctionImpl {
+            name: "lstrcmpA",
+            dll_name: "KERNEL32.dll",
+            num_params: 2,
+            impl_address: crate::kernel32::kernel32_lstrcmpA as *const () as usize,
+        },
+        FunctionImpl {
+            name: "lstrcmpiW",
+            dll_name: "KERNEL32.dll",
+            num_params: 2,
+            impl_address: crate::kernel32::kernel32_lstrcmpiW as *const () as usize,
+        },
+        FunctionImpl {
+            name: "lstrcmpiA",
+            dll_name: "KERNEL32.dll",
+            num_params: 2,
+            impl_address: crate::kernel32::kernel32_lstrcmpiA as *const () as usize,
+        },
+        FunctionImpl {
+            name: "OutputDebugStringW",
+            dll_name: "KERNEL32.dll",
+            num_params: 1,
+            impl_address: crate::kernel32::kernel32_OutputDebugStringW as *const () as usize,
+        },
+        FunctionImpl {
+            name: "OutputDebugStringA",
+            dll_name: "KERNEL32.dll",
+            num_params: 1,
+            impl_address: crate::kernel32::kernel32_OutputDebugStringA as *const () as usize,
+        },
+        // KERNEL32 — Phase 26: Drive / Volume APIs
+        FunctionImpl {
+            name: "GetDriveTypeW",
+            dll_name: "KERNEL32.dll",
+            num_params: 1,
+            impl_address: crate::kernel32::kernel32_GetDriveTypeW as *const () as usize,
+        },
+        FunctionImpl {
+            name: "GetLogicalDrives",
+            dll_name: "KERNEL32.dll",
+            num_params: 0,
+            impl_address: crate::kernel32::kernel32_GetLogicalDrives as *const () as usize,
+        },
+        FunctionImpl {
+            name: "GetLogicalDriveStringsW",
+            dll_name: "KERNEL32.dll",
+            num_params: 2,
+            impl_address: crate::kernel32::kernel32_GetLogicalDriveStringsW as *const () as usize,
+        },
+        FunctionImpl {
+            name: "GetDiskFreeSpaceExW",
+            dll_name: "KERNEL32.dll",
+            num_params: 4,
+            impl_address: crate::kernel32::kernel32_GetDiskFreeSpaceExW as *const () as usize,
+        },
+        FunctionImpl {
+            name: "GetVolumeInformationW",
+            dll_name: "KERNEL32.dll",
+            num_params: 8,
+            impl_address: crate::kernel32::kernel32_GetVolumeInformationW as *const () as usize,
+        },
+        // KERNEL32 — Phase 26: Computer Name
+        FunctionImpl {
+            name: "GetComputerNameW",
+            dll_name: "KERNEL32.dll",
+            num_params: 2,
+            impl_address: crate::kernel32::kernel32_GetComputerNameW as *const () as usize,
+        },
+        FunctionImpl {
+            name: "GetComputerNameExW",
+            dll_name: "KERNEL32.dll",
+            num_params: 3,
+            impl_address: crate::kernel32::kernel32_GetComputerNameExW as *const () as usize,
         },
         // SHELL32.dll functions
         FunctionImpl {

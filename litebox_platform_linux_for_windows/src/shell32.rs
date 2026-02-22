@@ -22,7 +22,7 @@ const CSIDL_SYSTEM: i32 = 0x0025;
 
 // COM-style return codes
 const S_OK: i32 = 0;
-const E_FAIL: i32 = 0x8000_4005u32 as i32; // E_FAIL (0x80004005)
+const E_FAIL: i32 = 0x8000_4005u32.cast_signed(); // E_FAIL (0x80004005)
 
 /// `CommandLineToArgvW` — parse a Unicode command-line string into an argv array.
 ///

@@ -26,6 +26,8 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use libc;
+
 // ── Windows registry error / status codes ─────────────────────────────────────
 
 /// Operation succeeded
@@ -692,6 +694,85 @@ pub unsafe extern "C" fn advapi32_RegEnumValueW(
     ERROR_SUCCESS
 }
 
+// ── Phase 26: User Name ────────────────────────────────────────────────────
+
+/// GetUserNameW - Retrieves the name of the user associated with the current thread
+///
+/// # Safety
+/// `buffer` must point to a valid writable buffer of at least `*size` u16 elements;
+/// `size` must be a valid non-null pointer.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn advapi32_GetUserNameW(buffer: *mut u16, size: *mut u32) -> i32 {
+    if size.is_null() {
+        return 0;
+    }
+    let username = get_username();
+    let utf16: Vec<u16> = username.encode_utf16().collect();
+    let needed = utf16.len() as u32 + 1;
+    // SAFETY: size is checked above
+    let buf_size = *size;
+    *size = needed;
+    if buffer.is_null() || buf_size < needed {
+        return 0;
+    }
+    // SAFETY: caller guarantees valid buffer of buf_size u16s
+    for (i, &ch) in utf16.iter().enumerate() {
+        *buffer.add(i) = ch;
+    }
+    *buffer.add(utf16.len()) = 0;
+    *size = needed;
+    1
+}
+
+/// GetUserNameA - Retrieves the name of the user associated with the current thread (ANSI)
+///
+/// # Safety
+/// `buffer` must point to a valid writable buffer of at least `*size` bytes;
+/// `size` must be a valid non-null pointer.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn advapi32_GetUserNameA(buffer: *mut u8, size: *mut u32) -> i32 {
+    if size.is_null() {
+        return 0;
+    }
+    let username = get_username();
+    let bytes = username.as_bytes();
+    let needed = bytes.len() as u32 + 1;
+    // SAFETY: size is checked above
+    let buf_size = *size;
+    *size = needed;
+    if buffer.is_null() || buf_size < needed {
+        return 0;
+    }
+    // SAFETY: caller guarantees valid buffer of buf_size bytes
+    for (i, &b) in bytes.iter().enumerate() {
+        *buffer.add(i) = b;
+    }
+    *buffer.add(bytes.len()) = 0;
+    *size = needed;
+    1
+}
+
+fn get_username() -> String {
+    if let Ok(user) = std::env::var("USER")
+        && !user.is_empty()
+    {
+        return user;
+    }
+    if let Ok(user) = std::env::var("LOGNAME")
+        && !user.is_empty()
+    {
+        return user;
+    }
+    let login = unsafe { libc::getlogin() };
+    if !login.is_null()
+        && let Ok(s) = unsafe { std::ffi::CStr::from_ptr(login) }.to_str()
+        && !s.is_empty()
+    {
+        return s.to_owned();
+    }
+    "user".to_owned()
+}
+
 // ── Unit tests ────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1324,5 +1405,19 @@ mod tests {
 
         // SAFETY: hk_open is a valid handle
         unsafe { advapi32_RegCloseKey(hk_open) };
+    }
+
+    #[test]
+    fn test_get_user_name() {
+        let mut buf = vec![0u16; 256];
+        let mut size: u32 = 256;
+        let r = unsafe { advapi32_GetUserNameW(buf.as_mut_ptr(), core::ptr::addr_of_mut!(size)) };
+        assert_eq!(r, 1);
+        assert!(size > 0);
+        let name: String = buf[..size as usize - 1]
+            .iter()
+            .map(|&c| char::from_u32(u32::from(c)).unwrap_or('?'))
+            .collect();
+        assert!(!name.is_empty());
     }
 }

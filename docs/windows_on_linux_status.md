@@ -1,8 +1,8 @@
 # Windows on Linux: Implementation Status
 
 **Last Updated:** 2026-02-22  
-**Total Tests:** 384 passing (316 platform + 47 shim + 16 runner + 5 dev_tests — +17 new time/interlocked/SHELL32/VERSION tests added in Phase 25)  
-**Overall Status:** Core infrastructure complete. Seven Rust-based test programs (hello_cli, math_test, env_test, args_test, file_io_test, string_test, getprocaddress_test) run successfully end-to-end through the runner on Linux. **All API stub functions have been fully replaced — stub count is now 0.** Phase 25 adds time APIs, interlocked operations, SHELL32.dll, and VERSION.dll support.
+**Total Tests:** 401 passing (334 platform + 47 shim + 16 runner + 5 dev_tests — +16 new mutex/semaphore/console/string/drive/user tests added in Phase 26)  
+**Overall Status:** Core infrastructure complete. Seven Rust-based test programs (hello_cli, math_test, env_test, args_test, file_io_test, string_test, getprocaddress_test) run successfully end-to-end through the runner on Linux. **All API stub functions have been fully replaced — stub count is now 0.** Phase 26 adds mutex/semaphore sync objects, console extensions, string utilities, drive/volume APIs, and user/computer name APIs.
 
 ---
 
@@ -117,6 +117,29 @@
 | `InterlockedCompareExchange64` | `AtomicI64::compare_exchange` with SeqCst |
 | `IsWow64Process` | Returns TRUE (call succeeded); sets `*is_wow64 = 0` (not WOW64) |
 | `GetNativeSystemInfo` | Delegates to `GetSystemInfo` (already returns AMD64 info) |
+| `CreateMutexW` / `CreateMutexA` | Recursive mutex backed by `Arc<(Mutex<Option<(u32,u32)>>, Condvar)>` |
+| `OpenMutexW` | Look up named mutex in global registry |
+| `ReleaseMutex` | Release ownership; decrement recursive count; notify waiters |
+| `CreateSemaphoreW` / `CreateSemaphoreA` | Counting semaphore backed by `Arc<(Mutex<i32>, Condvar)>` |
+| `OpenSemaphoreW` | Look up named semaphore in global registry |
+| `ReleaseSemaphore` | Increment semaphore count; notify one waiter |
+| `WaitForSingleObject` | Extended to handle mutex and semaphore handles |
+| `SetConsoleMode` | Accepts mode (no-op); returns TRUE |
+| `SetConsoleTitleW` / `SetConsoleTitleA` | Stores title in global `CONSOLE_TITLE` |
+| `GetConsoleTitleW` | Returns stored title; falls back to empty string |
+| `AllocConsole` / `FreeConsole` | Returns TRUE (always have a console) |
+| `GetConsoleWindow` | Returns NULL (headless) |
+| `lstrlenA` | ANSI `strlen` |
+| `lstrcpyW` / `lstrcpyA` | Wide/ANSI string copy; returns dst |
+| `lstrcmpW` / `lstrcmpA` | Wide/ANSI string comparison |
+| `lstrcmpiW` / `lstrcmpiA` | Case-insensitive wide/ANSI comparison |
+| `OutputDebugStringW` / `OutputDebugStringA` | Writes debug message to stderr |
+| `GetDriveTypeW` | Returns `DRIVE_FIXED` (3) for all paths |
+| `GetLogicalDrives` | Returns 0x4 (only C: drive) |
+| `GetLogicalDriveStringsW` | Returns `"C:\\\0\0"` (single-drive list) |
+| `GetDiskFreeSpaceExW` | Returns 10 GB free / 20 GB total (fake values) |
+| `GetVolumeInformationW` | Returns volume name `"LITEBOX"`, filesystem `"NTFS"` |
+| `GetComputerNameW` / `GetComputerNameExW` | Reads Linux hostname via `/proc/sys/kernel/hostname` |
 
 ### Permanently-correct no-op APIs (return appropriate Windows codes)
 | Function | Return / Error |
@@ -142,7 +165,8 @@
 *(These are minimal stubs sufficient to pass CRT initialization; full SEH is not implemented.)*
 
 ### String / Wide-Char Operations
-`MultiByteToWideChar`, `WideCharToMultiByte`, `lstrlenW`, `CompareStringOrdinal`
+`MultiByteToWideChar`, `WideCharToMultiByte`, `lstrlenW`, `lstrlenA`, `CompareStringOrdinal`  
+`lstrcpyW`, `lstrcpyA`, `lstrcmpW`, `lstrcmpA`, `lstrcmpiW`, `lstrcmpiA`, `OutputDebugStringW`, `OutputDebugStringA`
 
 ### Performance Counters
 `QueryPerformanceCounter`, `QueryPerformanceFrequency`, `GetSystemTimePreciseAsFileTime`
@@ -205,6 +229,21 @@ All GDI32 functions operate in headless mode: drawing is silently discarded.
 | `GetFileVersionInfoW` | Returns FALSE |
 | `VerQueryValueW` | Returns FALSE; clears output pointers |
 
+### ADVAPI32 — Extended System APIs (Phase 26)
+| Function | Implementation |
+|---|---|
+| `GetUserNameW` | Reads Linux username via `$USER` env / `getlogin_r(3)` |
+| `GetUserNameA` | ANSI variant; delegates to wide version |
+
+### Drive/Volume APIs (Phase 26, 5 functions)
+| Function | Behaviour |
+|---|---|
+| `GetDriveTypeW` | Returns `DRIVE_FIXED` (3) for all paths |
+| `GetLogicalDrives` | Returns 0x4 (only C: drive) |
+| `GetLogicalDriveStringsW` | Returns `"C:\\\0\0"` drive list |
+| `GetDiskFreeSpaceExW` | Returns 10 GB free / 20 GB total (fake) |
+| `GetVolumeInformationW` | Returns volume `"LITEBOX"`, filesystem `"NTFS"` |
+
 ### API Tracing Framework
 - Text and JSON output formats with timestamps and thread IDs
 - Filtering by function name pattern (wildcards), category, or exact name
@@ -231,11 +270,11 @@ All GDI32 functions operate in headless mode: drawing is silently discarded.
 
 ## Test Coverage
 
-**384 tests total (all passing):**
+**401 tests total (all passing):**
 
 | Package | Tests | Notes |
 |---|---|---|
-| `litebox_platform_linux_for_windows` | 316 | KERNEL32, MSVCRT, WS2_32, advapi32, user32, gdi32, shell32, version, platform APIs |
+| `litebox_platform_linux_for_windows` | 334 | KERNEL32, MSVCRT, WS2_32, advapi32, user32, gdi32, shell32, version, platform APIs |
 | `litebox_shim_windows` | 47 | ABI translation, PE loader, tracing |
 | `litebox_runner_windows_on_linux_userland` | 16 | 9 tracing + 7 integration tests |
 | `dev_tests` | 5 | Ratchet constraints (globals, transmutes, MaybeUninit, stubs, copyright) |
@@ -312,11 +351,11 @@ litebox_runner_windows_on_linux_userland \
 
 ## Code Quality
 
-- **All 384 tests passing**
+- **All 401 tests passing**
 - `RUSTFLAGS=-Dwarnings cargo clippy --all-targets --all-features` — clean
 - `cargo fmt --check` — clean
 - All `unsafe` blocks have detailed safety comments
-- Ratchet limits: globals ≤ 39, transmutes ≤ 3, MaybeUninit ≤ current
+- Ratchet limits: globals ≤ 42, transmutes ≤ 3, MaybeUninit ≤ current
 - **Stub count = 0** (ratchet entry removed; all stub doc-phrases eliminated)
 
 ---
@@ -343,4 +382,5 @@ litebox_runner_windows_on_linux_userland \
 | 23 | `LockFileEx` / `UnlockFile` (real `flock(2)`); appropriate error codes for all permanently-unsupported APIs; **stub count 14→0** | ✅ Complete |
 | 24 | Extended USER32 (18 new functions: `PostQuitMessage`, `DefWindowProcW`, `LoadCursorW`, `LoadIconW`, `GetSystemMetrics`, `SetWindowLongPtrW`, `GetWindowLongPtrW`, `SendMessageW`, `PostMessageW`, `PeekMessageW`, `BeginPaint`, `EndPaint`, `GetClientRect`, `InvalidateRect`, `SetTimer`, `KillTimer`, `GetDC`, `ReleaseDC`); new GDI32.dll (13 functions: `GetStockObject`, `CreateSolidBrush`, `DeleteObject`, `SelectObject`, `CreateCompatibleDC`, `DeleteDC`, `SetBkColor`, `SetTextColor`, `TextOutW`, `Rectangle`, `FillRect`, `CreateFontW`, `GetTextExtentPoint32W`); `hello_gui` integration test; +35 new tests | ✅ Complete |
 | 25 | Time APIs (`GetSystemTime`, `GetLocalTime`, `SystemTimeToFileTime`, `FileTimeToSystemTime`, `GetTickCount`); local memory (`LocalAlloc`, `LocalFree`); interlocked ops (`InterlockedIncrement/Decrement/Exchange/ExchangeAdd/CompareExchange/CompareExchange64`); system info (`IsWow64Process`, `GetNativeSystemInfo`); new SHELL32.dll (`CommandLineToArgvW`, `SHGetFolderPathW`, `ShellExecuteW`, `SHCreateDirectoryExW`); new VERSION.dll (`GetFileVersionInfoSizeW`, `GetFileVersionInfoW`, `VerQueryValueW`); +17 new tests | ✅ Complete |
+| 26 | Mutex/Semaphore sync objects (`CreateMutexW/A`, `OpenMutexW`, `ReleaseMutex`, `CreateSemaphoreW/A`, `OpenSemaphoreW`, `ReleaseSemaphore`); console extensions (`SetConsoleMode`, `SetConsoleTitleW/A`, `GetConsoleTitleW`, `AllocConsole`, `FreeConsole`, `GetConsoleWindow`); string utilities (`lstrlenA`, `lstrcpyW/A`, `lstrcmpW/A`, `lstrcmpiW/A`, `OutputDebugStringW/A`); drive/volume APIs (`GetDriveTypeW`, `GetLogicalDrives`, `GetLogicalDriveStringsW`, `GetDiskFreeSpaceExW`, `GetVolumeInformationW`); computer/user name (`GetComputerNameW/ExW`, `GetUserNameW/A`); +16 new tests; globals ratchet 39→42 | ✅ Complete |
 
