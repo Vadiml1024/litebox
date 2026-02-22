@@ -1,7 +1,7 @@
 # Windows on Linux: Implementation Status
 
 **Last Updated:** 2026-02-22  
-**Total Tests:** 305 passing (242 platform + 47 shim + 16 runner)  
+**Total Tests:** 330 passing (262 platform + 47 shim + 16 runner + 5 dev_tests)  
 **Overall Status:** Core infrastructure complete. Six Rust-based test programs (hello_cli, math_test, env_test, args_test, file_io_test, string_test) run successfully end-to-end through the runner on Linux.
 
 ---
@@ -144,9 +144,8 @@
 | GUI applications (USER32 / GDI32) | Not implemented |
 | Advanced networking (WS2_32) | Core socket API implemented (see above); overlapped/async I/O (`WSAEventSelect`, `WSAAsyncSelect`, completion ports) not implemented |
 | Process creation (`CreateProcessW`) | Not implemented |
-| Advanced file operations (memory mapping, overlapped I/O) | Not implemented |
-| Advanced registry operations (write, enumeration) | Not implemented |
-| 29 remaining KERNEL32 functions | Stub no-ops only |
+| Overlapped (async) file I/O | `ReadFileEx`, `WriteFileEx`, `GetOverlappedResult` are stubs |
+| 22 remaining KERNEL32 functions | Stub no-ops only |
 
 ---
 
@@ -156,7 +155,7 @@
 
 | Package | Tests | Notes |
 |---|---|---|
-| `litebox_platform_linux_for_windows` | 253 | KERNEL32, MSVCRT, WS2_32, advapi32, user32, platform APIs |
+| `litebox_platform_linux_for_windows` | 262 | KERNEL32, MSVCRT, WS2_32, advapi32, user32, platform APIs |
 | `litebox_shim_windows` | 47 | ABI translation, PE loader, tracing |
 | `litebox_runner_windows_on_linux_userland` | 16 | 9 tracing + 7 integration tests |
 
@@ -235,7 +234,7 @@ litebox_runner_windows_on_linux_userland \
 - `RUSTFLAGS=-Dwarnings cargo clippy --all-targets --all-features` — clean
 - `cargo fmt --check` — clean
 - All `unsafe` blocks have detailed safety comments
-- Ratchet limits: globals ≤ 36, stubs ≤ 29, transmutes ≤ current, MaybeUninit ≤ current
+- Ratchet limits: globals ≤ 39, stubs ≤ 22, transmutes ≤ current, MaybeUninit ≤ current
 
 ---
 
@@ -256,5 +255,6 @@ litebox_runner_windows_on_linux_userland \
 | 18 | CI test programs (hello_cli, math_test, env_test, args_test, file_io_test, string_test all pass) | ✅ Complete |
 | 19 | Real `GetExitCodeProcess`, `SetFileAttributesW`, `GetModuleFileNameW`; upgraded string_test and file_io_test integration tests | ✅ Complete |
 | 20 | Dynamic loading: `LoadLibraryA/W`, `GetModuleHandleA/W`, `GetProcAddress` backed by global DLL registry; `CreateHardLinkW`, `CreateSymbolicLinkW` | ✅ Complete |
+| 21 | Stub reduction: `CreateFileMappingA`, `MapViewOfFile`, `UnmapViewOfFile` (real mmap/munmap); `CreatePipe` (Linux pipe()); `DuplicateHandle`; `GetFinalPathNameByHandleW` (/proc/self/fd); `GetFileInformationByHandleEx` (FileBasicInfo+FileStandardInfo); `InitializeProcThreadAttributeList` (size query); stub count 29→22 | ✅ Complete |
 
-**Next:** Continue reducing the 29 remaining KERNEL32 stubs.
+**Next:** Continue reducing the 22 remaining KERNEL32 stubs.
