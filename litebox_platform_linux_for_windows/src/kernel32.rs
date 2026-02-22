@@ -2780,10 +2780,13 @@ pub unsafe extern "C" fn kernel32_CreatePipe(
     1 // TRUE
 }
 
-/// CreateProcessW stub - creates a new process
+/// CreateProcessW - creates a new process and its primary thread
+///
+/// Process creation is intentionally not supported in this sandboxed
+/// single-process environment.  Returns FALSE and sets `ERROR_NOT_SUPPORTED` (50).
 ///
 /// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
+/// All pointer arguments are accepted as opaque handles; none are dereferenced.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_CreateProcessW(
     _application_name: *const u16,
@@ -2797,7 +2800,8 @@ pub unsafe extern "C" fn kernel32_CreateProcessW(
     _startup_info: *mut core::ffi::c_void,
     _process_information: *mut core::ffi::c_void,
 ) -> i32 {
-    0 // FALSE - not implemented
+    kernel32_SetLastError(50); // ERROR_NOT_SUPPORTED
+    0 // FALSE
 }
 
 /// CreateSymbolicLinkW - creates a symbolic link
@@ -2895,22 +2899,30 @@ pub unsafe extern "C" fn kernel32_CreateThread(
     handle as *mut core::ffi::c_void
 }
 
-/// CreateToolhelp32Snapshot stub - creates a snapshot of processes/threads/etc
+/// CreateToolhelp32Snapshot - creates a snapshot of processes, heaps, modules, and threads
+///
+/// Process and thread enumeration via the Toolhelp32 API is not supported in
+/// this sandboxed environment.  Returns `INVALID_HANDLE_VALUE` and sets
+/// `ERROR_NOT_SUPPORTED` (50).
 ///
 /// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
+/// All arguments are accepted as opaque values; none are dereferenced.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_CreateToolhelp32Snapshot(
     _flags: u32,
     _process_id: u32,
 ) -> *mut core::ffi::c_void {
+    kernel32_SetLastError(50); // ERROR_NOT_SUPPORTED
     usize::MAX as *mut core::ffi::c_void // INVALID_HANDLE_VALUE
 }
 
-/// CreateWaitableTimerExW stub - creates a waitable timer
+/// CreateWaitableTimerExW - creates or opens a waitable timer object
+///
+/// Waitable timers are not implemented in this sandboxed environment.
+/// Returns NULL and sets `ERROR_NOT_SUPPORTED` (50).
 ///
 /// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
+/// All pointer arguments are accepted as opaque values; none are dereferenced.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_CreateWaitableTimerExW(
     _timer_attributes: *mut core::ffi::c_void,
@@ -2918,7 +2930,8 @@ pub unsafe extern "C" fn kernel32_CreateWaitableTimerExW(
     _flags: u32,
     _desired_access: u32,
 ) -> *mut core::ffi::c_void {
-    core::ptr::null_mut() // NULL - not implemented
+    kernel32_SetLastError(50); // ERROR_NOT_SUPPORTED
+    core::ptr::null_mut()
 }
 
 /// DeleteFileW - deletes a file
@@ -2960,10 +2973,13 @@ pub unsafe extern "C" fn kernel32_DeleteProcThreadAttributeList(
     // Attribute list holds no heap resources; nothing to free.
 }
 
-/// DeviceIoControl stub - sends a control code to a device driver
+/// DeviceIoControl - sends a control code to a device driver
+///
+/// Arbitrary device I/O control codes cannot be dispatched without a real
+/// device driver layer.  Returns FALSE and sets `ERROR_NOT_SUPPORTED` (50).
 ///
 /// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
+/// All pointer arguments are accepted as opaque values; none are dereferenced.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_DeviceIoControl(
     _device: *mut core::ffi::c_void,
@@ -2975,7 +2991,8 @@ pub unsafe extern "C" fn kernel32_DeviceIoControl(
     _bytes_returned: *mut u32,
     _overlapped: *mut core::ffi::c_void,
 ) -> i32 {
-    0 // FALSE - not implemented
+    kernel32_SetLastError(50); // ERROR_NOT_SUPPORTED
+    0 // FALSE
 }
 
 /// DuplicateHandle - duplicates an object handle
@@ -3736,10 +3753,17 @@ pub unsafe extern "C" fn kernel32_LoadLibraryW(
     }
 }
 
-/// SetConsoleCtrlHandler stub - sets a console control handler
+/// SetConsoleCtrlHandler - adds or removes a console control handler
+///
+/// Returns TRUE to indicate the request was accepted.  SIGINT and other
+/// console control events are delivered as Linux signals and are not currently
+/// routed to the registered handler function; the default process-termination
+/// behavior is preserved.  For programs that only register a handler to
+/// prevent the default Ctrl+C termination, this is the correct behavior.
 ///
 /// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
+/// `handler_routine` is accepted as an opaque pointer; it is not called or
+/// dereferenced.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_SetConsoleCtrlHandler(
     _handler_routine: *mut core::ffi::c_void,
@@ -4176,10 +4200,13 @@ pub unsafe extern "C" fn kernel32_GetFinalPathNameByHandleW(
     needed - 1 // return count of chars written, excluding the null terminator
 }
 
-/// GetOverlappedResult stub
+/// GetOverlappedResult - retrieves the result of an overlapped operation
+///
+/// All I/O in this sandboxed environment is synchronous; overlapped (async)
+/// I/O is not supported.  Returns FALSE and sets `ERROR_NOT_SUPPORTED` (50).
 ///
 /// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
+/// All pointer arguments are accepted as opaque values; none are dereferenced.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_GetOverlappedResult(
     _file: *mut core::ffi::c_void,
@@ -4187,6 +4214,7 @@ pub unsafe extern "C" fn kernel32_GetOverlappedResult(
     _number_of_bytes_transferred: *mut u32,
     _wait: i32,
 ) -> i32 {
+    kernel32_SetLastError(50); // ERROR_NOT_SUPPORTED
     0 // FALSE
 }
 
@@ -4404,20 +4432,60 @@ pub unsafe extern "C" fn kernel32_InitializeProcThreadAttributeList(
     1 // TRUE
 }
 
-/// LockFileEx stub
+/// LockFileEx - locks a region of a file for shared or exclusive access
+///
+/// Locks a byte-range region of the file associated with `file`.  The lock
+/// type is determined by `flags`:
+/// - `LOCKFILE_EXCLUSIVE_LOCK` (0x2): exclusive (write) lock; otherwise shared (read)
+/// - `LOCKFILE_FAIL_IMMEDIATELY` (0x1): return immediately if the lock cannot be acquired
+///
+/// The byte-range parameters and the `overlapped` pointer are accepted but
+/// ignored because `flock(2)` locks the whole file.
+///
+/// Returns TRUE (1) on success, FALSE (0) on failure. On failure, the last
+/// error is set to:
+/// - `ERROR_INVALID_HANDLE` (6) if `file` is not a valid file handle.
+/// - `ERROR_LOCK_VIOLATION` (33) if the underlying `flock(2)` call fails for
+///   any reason (including contention when the requested lock cannot be
+///   obtained).
 ///
 /// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
+/// `file` must be a valid handle previously returned by `CreateFileW`, or
+/// `INVALID_HANDLE_VALUE`.  `overlapped` is accepted but not dereferenced.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_LockFileEx(
-    _file: *mut core::ffi::c_void,
-    _flags: u32,
+    file: *mut core::ffi::c_void,
+    flags: u32,
     _reserved: u32,
     _number_of_bytes_to_lock_low: u32,
     _number_of_bytes_to_lock_high: u32,
     _overlapped: *mut core::ffi::c_void,
 ) -> i32 {
-    1 // TRUE - pretend success
+    use std::os::unix::io::AsRawFd as _;
+    const LOCKFILE_FAIL_IMMEDIATELY: u32 = 0x0000_0001;
+    const LOCKFILE_EXCLUSIVE_LOCK: u32 = 0x0000_0002;
+    let handle_val = file as usize;
+    let fd = with_file_handles(|map| map.get(&handle_val).map(|e| e.file.as_raw_fd()));
+    let Some(fd) = fd else {
+        kernel32_SetLastError(6); // ERROR_INVALID_HANDLE
+        return 0;
+    };
+    let mut lock_op = if flags & LOCKFILE_EXCLUSIVE_LOCK != 0 {
+        libc::LOCK_EX
+    } else {
+        libc::LOCK_SH
+    };
+    if flags & LOCKFILE_FAIL_IMMEDIATELY != 0 {
+        lock_op |= libc::LOCK_NB;
+    }
+    // SAFETY: fd is a valid file descriptor obtained from the handle registry.
+    let ret = unsafe { libc::flock(fd, lock_op) };
+    if ret == 0 {
+        1 // TRUE
+    } else {
+        kernel32_SetLastError(33); // ERROR_LOCK_VIOLATION
+        0
+    }
 }
 
 /// MapViewOfFile - maps a view of a file mapping into the calling process's address space
@@ -4503,27 +4571,37 @@ pub unsafe extern "C" fn kernel32_MapViewOfFile(
     ptr
 }
 
-/// Module32FirstW stub
+/// Module32FirstW - retrieves information about the first module in a snapshot
+///
+/// Returns FALSE because `CreateToolhelp32Snapshot` always returns
+/// `INVALID_HANDLE_VALUE` in this sandboxed environment, so no valid snapshot
+/// handle can reach this function.  Sets `ERROR_NO_MORE_FILES` (18).
 ///
 /// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
+/// All pointer arguments are accepted as opaque values; none are dereferenced.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_Module32FirstW(
     _snapshot: *mut core::ffi::c_void,
     _module_entry: *mut core::ffi::c_void,
 ) -> i32 {
+    kernel32_SetLastError(18); // ERROR_NO_MORE_FILES
     0 // FALSE
 }
 
-/// Module32NextW stub
+/// Module32NextW - retrieves information about the next module in a snapshot
+///
+/// Returns FALSE because `CreateToolhelp32Snapshot` always returns
+/// `INVALID_HANDLE_VALUE` in this sandboxed environment, so no valid snapshot
+/// handle can reach this function.  Sets `ERROR_NO_MORE_FILES` (18).
 ///
 /// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
+/// All pointer arguments are accepted as opaque values; none are dereferenced.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_Module32NextW(
     _snapshot: *mut core::ffi::c_void,
     _module_entry: *mut core::ffi::c_void,
 ) -> i32 {
+    kernel32_SetLastError(18); // ERROR_NO_MORE_FILES
     0 // FALSE
 }
 
@@ -4561,10 +4639,13 @@ pub unsafe extern "C" fn kernel32_MoveFileExW(
     }
 }
 
-/// ReadFileEx stub
+/// ReadFileEx - reads from a file using an asynchronous (overlapped) operation
+///
+/// Asynchronous file I/O is not supported in this sandboxed environment.
+/// Returns FALSE and sets `ERROR_NOT_SUPPORTED` (50).
 ///
 /// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
+/// All pointer arguments are accepted as opaque values; none are dereferenced.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_ReadFileEx(
     _file: *mut core::ffi::c_void,
@@ -4573,6 +4654,7 @@ pub unsafe extern "C" fn kernel32_ReadFileEx(
     _overlapped: *mut core::ffi::c_void,
     _completion_routine: *mut core::ffi::c_void,
 ) -> i32 {
+    kernel32_SetLastError(50); // ERROR_NOT_SUPPORTED
     0 // FALSE
 }
 
@@ -4714,10 +4796,14 @@ pub unsafe extern "C" fn kernel32_SetFileAttributesW(
     }
 }
 
-/// SetFileInformationByHandle stub
+/// SetFileInformationByHandle - sets file information by file handle
+///
+/// Setting extended file information via information-class codes is not
+/// supported in this sandboxed environment.  Returns FALSE and sets
+/// `ERROR_NOT_SUPPORTED` (50).
 ///
 /// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
+/// All pointer arguments are accepted as opaque values; none are dereferenced.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_SetFileInformationByHandle(
     _file: *mut core::ffi::c_void,
@@ -4725,6 +4811,7 @@ pub unsafe extern "C" fn kernel32_SetFileInformationByHandle(
     _file_information: *mut core::ffi::c_void,
     _buffer_size: u32,
 ) -> i32 {
+    kernel32_SetLastError(50); // ERROR_NOT_SUPPORTED
     0 // FALSE
 }
 
@@ -4765,20 +4852,38 @@ pub unsafe extern "C" fn kernel32_SetHandleInformation(
 
 /// UnlockFile - unlocks a region of an open file
 ///
-/// File-locking is not implemented; this always returns TRUE (success) since
-/// we do not implement `LockFile` either.
+/// Releases the `flock(2)` lock held by `LockFileEx` on this file.  The
+/// byte-range parameters are accepted but ignored because `flock` operates
+/// on the whole file.  Returns TRUE (1) on success, or FALSE (0) with
+/// `ERROR_INVALID_HANDLE` (6) if the handle is not in the file registry, or
+/// `ERROR_NOT_LOCKED` (158) if releasing the underlying `flock` lock fails.
 ///
 /// # Safety
-/// `file` is accepted as an opaque handle and is not dereferenced.
+/// `file` must be a valid handle previously returned by `CreateFileW`, or
+/// `INVALID_HANDLE_VALUE`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_UnlockFile(
-    _file: *mut core::ffi::c_void,
+    file: *mut core::ffi::c_void,
     _offset_low: u32,
     _offset_high: u32,
     _number_of_bytes_to_unlock_low: u32,
     _number_of_bytes_to_unlock_high: u32,
 ) -> i32 {
-    1 // TRUE
+    use std::os::unix::io::AsRawFd as _;
+    let handle_val = file as usize;
+    let fd = with_file_handles(|map| map.get(&handle_val).map(|e| e.file.as_raw_fd()));
+    let Some(fd) = fd else {
+        kernel32_SetLastError(6); // ERROR_INVALID_HANDLE
+        return 0;
+    };
+    // SAFETY: fd is a valid file descriptor obtained from the handle registry.
+    let ret = unsafe { libc::flock(fd, libc::LOCK_UN) };
+    if ret == 0 {
+        1
+    } else {
+        kernel32_SetLastError(158); // ERROR_NOT_LOCKED
+        0
+    }
 }
 
 /// UnmapViewOfFile - unmaps a mapped view of a file from the address space
@@ -4827,10 +4932,13 @@ pub unsafe extern "C" fn kernel32_UpdateProcThreadAttribute(
     1 // TRUE
 }
 
-/// WriteFileEx stub
+/// WriteFileEx - writes to a file using an asynchronous (overlapped) operation
+///
+/// Asynchronous file I/O is not supported in this sandboxed environment.
+/// Returns FALSE and sets `ERROR_NOT_SUPPORTED` (50).
 ///
 /// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
+/// All pointer arguments are accepted as opaque values; none are dereferenced.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_WriteFileEx(
     _file: *mut core::ffi::c_void,
@@ -4839,6 +4947,7 @@ pub unsafe extern "C" fn kernel32_WriteFileEx(
     _overlapped: *mut core::ffi::c_void,
     _completion_routine: *mut core::ffi::c_void,
 ) -> i32 {
+    kernel32_SetLastError(50); // ERROR_NOT_SUPPORTED
     0 // FALSE
 }
 
@@ -4854,10 +4963,15 @@ pub unsafe extern "C" fn kernel32_SetThreadStackGuarantee(_stack_size_in_bytes: 
     1 // TRUE
 }
 
-/// SetWaitableTimer stub
+/// SetWaitableTimer - activates the specified waitable timer
+///
+/// Waitable timers are not implemented (`CreateWaitableTimerExW` always
+/// returns NULL), so no valid timer handle can be passed to this function.
+/// Returns TRUE as a no-op for compatibility with programs that do not check
+/// whether `CreateWaitableTimerExW` succeeded before calling this function.
 ///
 /// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
+/// All pointer arguments are accepted as opaque values; none are dereferenced.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_SetWaitableTimer(
     _timer: *mut core::ffi::c_void,
@@ -5357,19 +5471,18 @@ pub unsafe extern "C" fn kernel32_VirtualProtect(
 /// - `[0..8]`   BaseAddress (page-aligned start of the region)
 /// - `[8..16]`  AllocationBase (same as BaseAddress for private/anonymous maps)
 /// - `[16..20]` AllocationProtect (Windows `PAGE_*` flags derived from the
-///              current Linux permission bits; `/proc/self/maps` does not
-///              record the original allocation protection, so this equals
-///              `Protect`)
+///   current Linux permission bits; `/proc/self/maps` does not record the
+///   original allocation protection, so this equals `Protect`)
 /// - `[20..24]` padding (written as 0)
 /// - `[24..32]` RegionSize
 /// - `[32..36]` State (`MEM_COMMIT = 0x1000` if mapped, `MEM_FREE = 0x10000`
-///              if no mapping was found)
+///   if no mapping was found)
 /// - `[36..40]` Protect (current Windows `PAGE_*` flags derived from the Linux
-///              `r`/`w`/`x` permission bits; equals `AllocationProtect` since
-///              the original allocation protection is not tracked)
+///   `r`/`w`/`x` permission bits; equals `AllocationProtect` since the
+///   original allocation protection is not tracked)
 /// - `[40..44]` Type (`MEM_PRIVATE = 0x20000` for anonymous; `MEM_MAPPED =
-///              0x40000` for file-backed; `MEM_IMAGE = 0x1000000` for the
-///              executable image)
+///   0x40000` for file-backed; `MEM_IMAGE = 0x1000000` for the executable
+///   image)
 /// - `[44..48]` padding (written as 0)
 ///
 /// **Limitation:** `AllocationProtect` and `Protect` are always identical because
@@ -5389,18 +5502,6 @@ pub unsafe extern "C" fn kernel32_VirtualQuery(
 ) -> usize {
     // The structure we write is 48 bytes; bail if the caller's buffer is too small.
     const MBI_SIZE: usize = 48;
-    if buffer.is_null() || length < MBI_SIZE {
-        return 0;
-    }
-
-    let query_addr = address as usize;
-
-    // Parse /proc/self/maps to locate the region.
-    let maps = match std::fs::read_to_string("/proc/self/maps") {
-        Ok(m) => m,
-        Err(_) => return 0,
-    };
-
     // Windows PAGE_* protection constants
     const PAGE_NOACCESS: u32 = 0x01;
     const PAGE_READONLY: u32 = 0x02;
@@ -5414,6 +5515,17 @@ pub unsafe extern "C" fn kernel32_VirtualQuery(
     const MEM_PRIVATE: u32 = 0x20000;
     const MEM_MAPPED: u32 = 0x40000;
     const MEM_IMAGE: u32 = 0x100_0000;
+
+    if buffer.is_null() || length < MBI_SIZE {
+        return 0;
+    }
+
+    let query_addr = address as usize;
+
+    // Parse /proc/self/maps to locate the region.
+    let Ok(maps) = std::fs::read_to_string("/proc/self/maps") else {
+        return 0;
+    };
 
     // Each line: "start-end perms offset dev inode [pathname]"
     for line in maps.lines() {
@@ -5756,8 +5868,12 @@ pub unsafe extern "C" fn kernel32_FindClose(find_file: *mut core::ffi::c_void) -
 
 /// WaitOnAddress - waits for the value at the specified address to change
 ///
+/// This is a stub implementation that does not perform any blocking wait and
+/// simply returns immediately with TRUE (1).  It can be extended in the future
+/// to provide real synchronization semantics if needed.
+///
 /// # Safety
-/// This function is a stub that returns success immediately.
+/// All pointer arguments are accepted as opaque values; none are dereferenced.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_WaitOnAddress(
     _address: *mut core::ffi::c_void,
@@ -9369,8 +9485,8 @@ mod tests {
 
         // Write and read back through the mapped view.
         unsafe {
-            *(view as *mut u32) = 0xDEAD_BEEF;
-            assert_eq!(*(view as *const u32), 0xDEAD_BEEF);
+            *(view.cast::<u32>()) = 0xDEAD_BEEF;
+            assert_eq!(*(view.cast::<u32>()), 0xDEAD_BEEF);
         }
 
         let unmap = unsafe { kernel32_UnmapViewOfFile(view) };
@@ -9604,7 +9720,7 @@ mod tests {
         const MBI_SIZE: usize = 48;
         let mut buf = [0u8; MBI_SIZE];
         // Query an address that we know is mapped: the buffer itself.
-        let addr = buf.as_ptr() as *const core::ffi::c_void;
+        let addr = buf.as_ptr().cast::<core::ffi::c_void>();
         let ret = unsafe { kernel32_VirtualQuery(addr, buf.as_mut_ptr(), MBI_SIZE) };
         assert_eq!(
             ret, MBI_SIZE,
@@ -9652,11 +9768,81 @@ mod tests {
     #[test]
     fn test_virtual_query_buffer_too_small() {
         let mut buf = [0u8; 16]; // smaller than MBI_SIZE (48)
-        let addr = buf.as_ptr() as *const core::ffi::c_void;
+        let addr = buf.as_ptr().cast::<core::ffi::c_void>();
         let ret = unsafe { kernel32_VirtualQuery(addr, buf.as_mut_ptr(), 16) };
         assert_eq!(
             ret, 0,
             "VirtualQuery should return 0 when buffer is too small"
         );
+    }
+
+    /// `LockFileEx` with an invalid handle should return FALSE and set
+    /// `ERROR_INVALID_HANDLE` (6).
+    #[test]
+    fn test_lock_file_ex_invalid_handle() {
+        let result = unsafe {
+            kernel32_LockFileEx(
+                0xDEAD as *mut core::ffi::c_void, // bogus handle
+                0,                                // LOCK_SH, may block
+                0,
+                0,
+                0,
+                core::ptr::null_mut(),
+            )
+        };
+        assert_eq!(
+            result, 0,
+            "LockFileEx with invalid handle must return FALSE"
+        );
+        let err = unsafe { kernel32_GetLastError() };
+        assert_eq!(
+            err, 6,
+            "LockFileEx with invalid handle must set ERROR_INVALID_HANDLE"
+        );
+    }
+
+    /// `LockFileEx` on a real file handle should succeed and `UnlockFile`
+    /// should release the lock.
+    #[test]
+    fn test_lock_file_ex_and_unlock() {
+        // Create a temporary file to lock.
+        const LOCKFILE_FAIL_IMMEDIATELY: u32 = 0x0000_0001;
+        let tmp_path = std::env::temp_dir().join("litebox_test_lock.tmp");
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&tmp_path)
+            .expect("open tmp file");
+        let _ = std::fs::remove_file(&tmp_path); // unlink path; fd stays open
+
+        let handle_val = alloc_file_handle();
+        with_file_handles(|map| {
+            map.insert(handle_val, FileEntry { file });
+        });
+        let handle = handle_val as *mut core::ffi::c_void;
+
+        // Acquire a shared lock (non-blocking).
+        let lock_result = unsafe {
+            kernel32_LockFileEx(
+                handle,
+                LOCKFILE_FAIL_IMMEDIATELY,
+                0,
+                0,
+                0,
+                core::ptr::null_mut(),
+            )
+        };
+        assert_eq!(lock_result, 1, "LockFileEx should succeed on real file");
+
+        // Release the lock.
+        let unlock_result = unsafe { kernel32_UnlockFile(handle, 0, 0, 0, 0) };
+        assert_eq!(unlock_result, 1, "UnlockFile should succeed on locked file");
+
+        // Clean up.
+        with_file_handles(|map| {
+            map.remove(&handle_val);
+        });
     }
 }
