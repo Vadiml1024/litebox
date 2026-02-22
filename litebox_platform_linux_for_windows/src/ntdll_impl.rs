@@ -250,12 +250,17 @@ pub unsafe extern "C" fn ntdll_NtOpenFile(
 
 /// NtClose — close an object handle
 ///
-/// This stub always succeeds (no real handle table yet).
+/// Delegates to `kernel32_CloseHandle` to release the handle from the shared
+/// kernel32 handle tables (file handles, event handles, etc.).
+/// Always returns `STATUS_SUCCESS` regardless of whether the handle was known,
+/// matching Windows behaviour for best-effort close.
 ///
 /// # Safety
-/// This function is a stub and does not dereference any pointers.
+/// `handle` must be a valid handle value or a value that was previously
+/// returned by one of the kernel32 handle-creating functions.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn ntdll_NtClose(_handle: u64) -> u32 {
+pub unsafe extern "C" fn ntdll_NtClose(handle: u64) -> u32 {
+    crate::kernel32::kernel32_CloseHandle(handle as usize as *mut core::ffi::c_void);
     status::STATUS_SUCCESS
 }
 

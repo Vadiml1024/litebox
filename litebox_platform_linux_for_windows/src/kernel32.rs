@@ -2477,13 +2477,16 @@ pub unsafe extern "C" fn kernel32_GetStartupInfoW(startup_info: *mut u8) {
 // They allow programs to link and run, but don't provide full functionality.
 //
 
-/// CancelIo stub - cancels pending I/O operations
+/// CancelIo - cancels all pending input and output (I/O) operations
+///
+/// All I/O in this implementation is synchronous, so there are no pending
+/// operations to cancel.  Returns TRUE to indicate success.
 ///
 /// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
+/// This function never dereferences any pointers.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_CancelIo(_file: *mut core::ffi::c_void) -> i32 {
-    0 // FALSE - not implemented
+    1 // TRUE - no pending I/O to cancel
 }
 
 /// CopyFileExW - copies a file (progress callback and cancel flag are ignored)
@@ -2942,15 +2945,19 @@ pub unsafe extern "C" fn kernel32_DeleteFileW(file_name: *const u16) -> i32 {
     }
 }
 
-/// DeleteProcThreadAttributeList stub - deletes a process thread attribute list
+/// DeleteProcThreadAttributeList - deletes a process/thread attribute list
+///
+/// Since `InitializeProcThreadAttributeList` only zero-initialises the caller's
+/// buffer, the list holds no heap-allocated resources.  No-op is the correct
+/// implementation.
 ///
 /// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
+/// This function never dereferences any pointers.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_DeleteProcThreadAttributeList(
     _attribute_list: *mut core::ffi::c_void,
 ) {
-    // No-op stub
+    // Attribute list holds no heap resources; nothing to free.
 }
 
 /// DeviceIoControl stub - sends a control code to a device driver
@@ -4309,10 +4316,16 @@ pub unsafe extern "C" fn kernel32_GetWindowsDirectoryW(buffer: *mut u16, size: u
     (path.len() - 1) as u32 // characters written, excluding null terminator
 }
 
-/// InitOnceBeginInitialize stub
+/// InitOnceBeginInitialize - begin a one-time initialisation
+///
+/// This implementation always reports that initialisation is already complete
+/// (`*pending = FALSE`, returns TRUE).  In the single-process model used here
+/// there is no concurrent initialisation, so treating every `INIT_ONCE` object
+/// as already-initialised is the correct simplification.
 ///
 /// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
+/// `pending` must be either null or a valid pointer to an `i32`.
+/// `context` is ignored and need not be valid.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_InitOnceBeginInitialize(
     _init_once: *mut core::ffi::c_void,
@@ -4327,10 +4340,14 @@ pub unsafe extern "C" fn kernel32_InitOnceBeginInitialize(
     1 // TRUE
 }
 
-/// InitOnceComplete stub
+/// InitOnceComplete - complete a one-time initialisation
+///
+/// Because `InitOnceBeginInitialize` always reports initialisation as already
+/// done, this function is never called in practice.  Returning TRUE is the
+/// correct no-op.
 ///
 /// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
+/// This function never dereferences any pointers.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_InitOnceComplete(
     _init_once: *mut core::ffi::c_void,
@@ -4789,10 +4806,14 @@ pub unsafe extern "C" fn kernel32_UnmapViewOfFile(base_address: *const core::ffi
     1 // TRUE
 }
 
-/// UpdateProcThreadAttribute stub
+/// UpdateProcThreadAttribute - update a process/thread attribute
+///
+/// Accepts the attribute without storing it, because `CreateProcessW` is not
+/// yet implemented and the attribute list is never consumed.  Returns TRUE so
+/// callers that chain multiple `UpdateProcThreadAttribute` calls can proceed.
 ///
 /// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
+/// This function never dereferences any pointers.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_UpdateProcThreadAttribute(
     _attribute_list: *mut core::ffi::c_void,
@@ -4803,7 +4824,7 @@ pub unsafe extern "C" fn kernel32_UpdateProcThreadAttribute(
     _previous_value: *mut core::ffi::c_void,
     _return_size: *mut usize,
 ) -> i32 {
-    0 // FALSE
+    1 // TRUE
 }
 
 /// WriteFileEx stub
@@ -5326,23 +5347,177 @@ pub unsafe extern "C" fn kernel32_VirtualProtect(
     1 // TRUE - success
 }
 
-/// VirtualQuery - retrieves information about a range of pages
+/// VirtualQuery - retrieves information about a range of pages in the virtual
+/// address space of the calling process.
+///
+/// Fills a `MEMORY_BASIC_INFORMATION` structure (48 bytes on 64-bit Windows)
+/// by parsing `/proc/self/maps` to find the region that contains `address`.
+///
+/// The 64-bit layout written into `buffer`:
+/// - `[0..8]`   BaseAddress (page-aligned start of the region)
+/// - `[8..16]`  AllocationBase (same as BaseAddress for private/anonymous maps)
+/// - `[16..20]` AllocationProtect (Windows `PAGE_*` flags for the initial
+///              protection at the time of allocation)
+/// - `[20..24]` padding (written as 0)
+/// - `[24..32]` RegionSize
+/// - `[32..36]` State (`MEM_COMMIT = 0x1000` if mapped, `MEM_FREE = 0x10000`
+///              if no mapping was found)
+/// - `[36..40]` Protect (current Windows `PAGE_*` flags derived from the Linux
+///              `r`/`w`/`x` permission bits)
+/// - `[40..44]` Type (`MEM_PRIVATE = 0x20000` for anonymous; `MEM_MAPPED =
+///              0x40000` for file-backed; `MEM_IMAGE = 0x1000000` for the
+///              executable image)
+/// - `[44..48]` padding (written as 0)
+///
+/// Returns the number of bytes written on success (48), or 0 on failure.
 ///
 /// # Safety
-/// This function is a stub that returns 0 (failure).
+/// `buffer` must be non-null and point to at least `length` writable bytes.
+/// `address` is only used as a lookup key and is never dereferenced.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_VirtualQuery(
-    _address: *const core::ffi::c_void,
-    _buffer: *mut u8,
-    _length: usize,
+    address: *const core::ffi::c_void,
+    buffer: *mut u8,
+    length: usize,
 ) -> usize {
-    0 // Failure - not implemented
+    // The structure we write is 48 bytes; bail if the caller's buffer is too small.
+    const MBI_SIZE: usize = 48;
+    if buffer.is_null() || length < MBI_SIZE {
+        return 0;
+    }
+
+    let query_addr = address as usize;
+
+    // Parse /proc/self/maps to locate the region.
+    let maps = match std::fs::read_to_string("/proc/self/maps") {
+        Ok(m) => m,
+        Err(_) => return 0,
+    };
+
+    // Windows PAGE_* protection constants
+    const PAGE_NOACCESS: u32 = 0x01;
+    const PAGE_READONLY: u32 = 0x02;
+    const PAGE_READWRITE: u32 = 0x04;
+    const PAGE_EXECUTE: u32 = 0x10;
+    const PAGE_EXECUTE_READ: u32 = 0x20;
+    const PAGE_EXECUTE_READWRITE: u32 = 0x40;
+    // Windows memory-type constants
+    const MEM_COMMIT: u32 = 0x1000;
+    const MEM_FREE: u32 = 0x10000;
+    const MEM_PRIVATE: u32 = 0x20000;
+    const MEM_MAPPED: u32 = 0x40000;
+    const MEM_IMAGE: u32 = 0x100_0000;
+
+    // Each line: "start-end perms offset dev inode [pathname]"
+    for line in maps.lines() {
+        let mut parts = line.split_whitespace();
+        let Some(range) = parts.next() else {
+            continue;
+        };
+        let Some((start_str, end_str)) = range.split_once('-') else {
+            continue;
+        };
+        let (Ok(start), Ok(end)) = (
+            usize::from_str_radix(start_str, 16),
+            usize::from_str_radix(end_str, 16),
+        ) else {
+            continue;
+        };
+        if query_addr < start || query_addr >= end {
+            continue;
+        }
+
+        // Found the region — decode permission flags.
+        let perms = parts.next().unwrap_or("----");
+        let readable = perms.as_bytes().first().copied() == Some(b'r');
+        let writable = perms.as_bytes().get(1).copied() == Some(b'w');
+        let executable = perms.as_bytes().get(2).copied() == Some(b'x');
+
+        let protect: u32 = match (readable, writable, executable) {
+            (false, _, true) => PAGE_EXECUTE,
+            (true, false, true) => PAGE_EXECUTE_READ,
+            (true, true, true) => PAGE_EXECUTE_READWRITE,
+            (true, false, false) => PAGE_READONLY,
+            (true, true, false) => PAGE_READWRITE,
+            _ => PAGE_NOACCESS,
+        };
+
+        // Determine memory type from the pathname field.
+        // In /proc/self/maps:
+        //   - Empty pathname or special tokens like "[heap]"/"[stack]"/"[vdso]" →
+        //     anonymous/private memory → MEM_PRIVATE
+        //   - Pathname of a shared object (contains ".so" followed by nothing or
+        //     a version suffix like ".so.6") or of the main executable →
+        //     MEM_IMAGE (executable image)
+        //   - Any other file-backed mapping → MEM_MAPPED
+        let pathname = parts.nth(3).unwrap_or(""); // skip offset, dev, inode
+        let mem_type: u32 = if pathname.is_empty() || pathname.starts_with('[') {
+            MEM_PRIVATE // anonymous or special region ([heap], [stack], [vdso], …)
+        } else if pathname.contains(".so") || executable {
+            // Shared objects may appear as "libfoo.so" or "libfoo.so.6"; executable
+            // code regions are also identified by the execute permission bit.
+            MEM_IMAGE
+        } else {
+            MEM_MAPPED
+        };
+
+        let region_size = (end - start) as u64;
+        let base_addr = start as u64;
+
+        // Write the MEMORY_BASIC_INFORMATION fields using unaligned writes.
+        // SAFETY: We checked buffer is non-null and length >= MBI_SIZE above.
+        let p = buffer;
+        // BaseAddress [0..8]
+        std::ptr::write_unaligned(p.add(0).cast::<u64>(), base_addr);
+        // AllocationBase [8..16]
+        std::ptr::write_unaligned(p.add(8).cast::<u64>(), base_addr);
+        // AllocationProtect [16..20]
+        std::ptr::write_unaligned(p.add(16).cast::<u32>(), protect);
+        // padding [20..24]
+        std::ptr::write_unaligned(p.add(20).cast::<u32>(), 0u32);
+        // RegionSize [24..32]
+        std::ptr::write_unaligned(p.add(24).cast::<u64>(), region_size);
+        // State [32..36]
+        std::ptr::write_unaligned(p.add(32).cast::<u32>(), MEM_COMMIT);
+        // Protect [36..40]
+        std::ptr::write_unaligned(p.add(36).cast::<u32>(), protect);
+        // Type [40..44]
+        std::ptr::write_unaligned(p.add(40).cast::<u32>(), mem_type);
+        // padding [44..48]
+        std::ptr::write_unaligned(p.add(44).cast::<u32>(), 0u32);
+
+        return MBI_SIZE;
+    }
+
+    // Address not found in any mapping — report as free.
+    // BaseAddress: page-aligned address (query the OS for the actual page size).
+    // SAFETY: sysconf is always safe to call with _SC_PAGESIZE.
+    let page_size: usize = unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize };
+    let page_size = if page_size == 0 { 4096 } else { page_size };
+    let base_addr = (query_addr & !(page_size - 1)) as u64;
+    let p = buffer;
+    // SAFETY: We checked buffer is non-null and length >= MBI_SIZE above.
+    std::ptr::write_unaligned(p.add(0).cast::<u64>(), base_addr);
+    std::ptr::write_unaligned(p.add(8).cast::<u64>(), 0u64); // AllocationBase: 0 for free
+    std::ptr::write_unaligned(p.add(16).cast::<u32>(), 0u32); // AllocationProtect
+    std::ptr::write_unaligned(p.add(20).cast::<u32>(), 0u32); // padding
+    std::ptr::write_unaligned(p.add(24).cast::<u64>(), page_size as u64); // RegionSize: one page
+    std::ptr::write_unaligned(p.add(32).cast::<u32>(), MEM_FREE);
+    std::ptr::write_unaligned(p.add(36).cast::<u32>(), PAGE_NOACCESS);
+    std::ptr::write_unaligned(p.add(40).cast::<u32>(), 0u32); // Type: 0 for free
+    std::ptr::write_unaligned(p.add(44).cast::<u32>(), 0u32); // padding
+
+    MBI_SIZE
 }
 
 /// FreeLibrary - frees the loaded dynamic-link library module
 ///
+/// In the Windows-on-Linux shim, DLLs are not loaded as shared objects; their
+/// exports are resolved at PE-load time by the shim loader.  Unloading is a
+/// no-op, and returning TRUE (success) is the correct response.
+///
 /// # Safety
-/// This function is a stub that returns success without freeing anything.
+/// This function never dereferences any pointers.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_FreeLibrary(_module: *mut core::ffi::c_void) -> i32 {
     1 // TRUE - success
@@ -9067,8 +9242,6 @@ mod tests {
     /// can still be used after the original is closed.
     #[test]
     fn test_duplicate_handle_file() {
-        use std::io::Write as _;
-
         let dir = std::env::temp_dir().join(format!("litebox_dup_test_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let file_path = dir.join("dup_test.txt");
@@ -9383,5 +9556,97 @@ mod tests {
             )
         };
         assert_eq!(r2, 1, "Initialization with valid buffer should return TRUE");
+    }
+
+    /// `CancelIo` should return TRUE for any handle since all I/O is synchronous.
+    #[test]
+    fn test_cancel_io_returns_true() {
+        let result = unsafe { kernel32_CancelIo(0x1234 as *mut core::ffi::c_void) };
+        assert_eq!(result, 1, "CancelIo should return TRUE");
+        let result_null = unsafe { kernel32_CancelIo(core::ptr::null_mut()) };
+        assert_eq!(
+            result_null, 1,
+            "CancelIo should return TRUE even for null handle"
+        );
+    }
+
+    /// `UpdateProcThreadAttribute` should return TRUE.
+    #[test]
+    fn test_update_proc_thread_attribute_returns_true() {
+        let result = unsafe {
+            kernel32_UpdateProcThreadAttribute(
+                0x1000 as *mut core::ffi::c_void,
+                0,
+                0x20007, // PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY
+                0x2000 as *mut core::ffi::c_void,
+                8,
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+            )
+        };
+        assert_eq!(result, 1, "UpdateProcThreadAttribute should return TRUE");
+    }
+
+    /// `VirtualQuery` must return MBI_SIZE (48) and fill in sensible fields for
+    /// an address that is definitely mapped (the stack or heap is always mapped).
+    #[test]
+    fn test_virtual_query_mapped_address() {
+        const MBI_SIZE: usize = 48;
+        let mut buf = [0u8; MBI_SIZE];
+        // Query an address that we know is mapped: the buffer itself.
+        let addr = buf.as_ptr() as *const core::ffi::c_void;
+        let ret = unsafe { kernel32_VirtualQuery(addr, buf.as_mut_ptr(), MBI_SIZE) };
+        assert_eq!(
+            ret, MBI_SIZE,
+            "VirtualQuery should return 48 for a mapped address"
+        );
+
+        // BaseAddress should be non-zero and ≤ the queried address.
+        let base = u64::from_le_bytes(buf[0..8].try_into().unwrap());
+        assert!(base > 0, "BaseAddress should be non-zero");
+        assert!(
+            base <= addr as u64,
+            "BaseAddress should be ≤ the queried address"
+        );
+
+        // RegionSize should be > 0.
+        let region_size = u64::from_le_bytes(buf[24..32].try_into().unwrap());
+        assert!(region_size > 0, "RegionSize should be > 0");
+
+        // State should be MEM_COMMIT (0x1000).
+        let state = u32::from_le_bytes(buf[32..36].try_into().unwrap());
+        assert_eq!(state, 0x1000, "State should be MEM_COMMIT");
+    }
+
+    /// `VirtualQuery` on an unmapped address should return MBI_SIZE with
+    /// State == MEM_FREE (0x10000).
+    #[test]
+    fn test_virtual_query_unmapped_address() {
+        const MBI_SIZE: usize = 48;
+        let mut buf = [0u8; MBI_SIZE];
+        // Use a very low address that is almost certainly not mapped.
+        let addr = 0x1000usize as *const core::ffi::c_void;
+        let ret = unsafe { kernel32_VirtualQuery(addr, buf.as_mut_ptr(), MBI_SIZE) };
+        assert_eq!(
+            ret, MBI_SIZE,
+            "VirtualQuery should return 48 even for unmapped address"
+        );
+        let state = u32::from_le_bytes(buf[32..36].try_into().unwrap());
+        assert_eq!(
+            state, 0x10000,
+            "State should be MEM_FREE for unmapped address"
+        );
+    }
+
+    /// `VirtualQuery` with a buffer that is too small should return 0.
+    #[test]
+    fn test_virtual_query_buffer_too_small() {
+        let mut buf = [0u8; 16]; // smaller than MBI_SIZE (48)
+        let addr = buf.as_ptr() as *const core::ffi::c_void;
+        let ret = unsafe { kernel32_VirtualQuery(addr, buf.as_mut_ptr(), 16) };
+        assert_eq!(
+            ret, 0,
+            "VirtualQuery should return 0 when buffer is too small"
+        );
     }
 }
