@@ -26,6 +26,15 @@ const FAKE_HWND: usize = 0x0000_BEEF;
 /// Fake non-zero ATOM returned by `RegisterClassExW`
 const FAKE_ATOM: u16 = 1;
 
+/// Fake non-null HCURSOR returned by `LoadCursorW`
+const FAKE_HCURSOR: usize = 0x0000_C001;
+
+/// Fake non-null HICON returned by `LoadIconW`
+const FAKE_HICON: usize = 0x0000_1C04;
+
+/// Fake non-null HDC returned by `GetDC`, `BeginPaint`, etc.
+const FAKE_HDC: usize = 0x0000_0D0C;
+
 // ── Wide-string helper ────────────────────────────────────────────────────────
 
 /// Convert a null-terminated UTF-16 pointer to a `String`, or return an empty
@@ -177,6 +186,269 @@ pub unsafe extern "C" fn user32_DestroyWindow(_hwnd: *mut c_void) -> i32 {
     1
 }
 
+/// `PostQuitMessage` — indicate a request to terminate an application.
+///
+/// In headless mode there is no message queue, so this is a no-op.
+///
+/// # Safety
+/// Always safe to call; the parameter is an exit code integer.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_PostQuitMessage(_exit_code: i32) {}
+
+/// `DefWindowProcW` — call the default window procedure.
+///
+/// Returns 0 (no action taken in headless mode).
+///
+/// # Safety
+/// All pointer/integer parameters are accepted without dereference.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_DefWindowProcW(
+    _hwnd: *mut c_void,
+    _msg: u32,
+    _wparam: usize,
+    _lparam: isize,
+) -> isize {
+    0
+}
+
+/// `LoadCursorW` — load a cursor resource.
+///
+/// Returns a fake non-null HCURSOR so callers believe the cursor was loaded.
+///
+/// # Safety
+/// Parameters are not dereferenced; always safe.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_LoadCursorW(
+    _hinstance: *mut c_void,
+    _cursor_name: *const u16,
+) -> *mut c_void {
+    FAKE_HCURSOR as *mut c_void
+}
+
+/// `LoadIconW` — load an icon resource.
+///
+/// Returns a fake non-null HICON.
+///
+/// # Safety
+/// Parameters are not dereferenced; always safe.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_LoadIconW(
+    _hinstance: *mut c_void,
+    _icon_name: *const u16,
+) -> *mut c_void {
+    FAKE_HICON as *mut c_void
+}
+
+/// `GetSystemMetrics` — retrieve the specified system metric or configuration setting.
+///
+/// Returns sensible defaults for a headless 800×600 environment:
+/// - `SM_CXSCREEN` (0) / `SM_CXFULLSCREEN` (16) → 800
+/// - `SM_CYSCREEN` (1) / `SM_CYFULLSCREEN` (17) → 600
+/// - All others → 0
+///
+/// # Safety
+/// Always safe to call; `n_index` is a plain integer.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_GetSystemMetrics(n_index: i32) -> i32 {
+    match n_index {
+        0 | 16 => 800, // SM_CXSCREEN / SM_CXFULLSCREEN
+        1 | 17 => 600, // SM_CYSCREEN / SM_CYFULLSCREEN
+        _ => 0,
+    }
+}
+
+/// `SetWindowLongPtrW` — change a window attribute (64-bit).
+///
+/// Returns 0 (the fake previous value) in headless mode.
+///
+/// # Safety
+/// `hwnd` is not dereferenced; always safe.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_SetWindowLongPtrW(
+    _hwnd: *mut c_void,
+    _n_index: i32,
+    _new_long: isize,
+) -> isize {
+    0
+}
+
+/// `GetWindowLongPtrW` — retrieve a window attribute (64-bit).
+///
+/// Returns 0 in headless mode.
+///
+/// # Safety
+/// `hwnd` is not dereferenced; always safe.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_GetWindowLongPtrW(_hwnd: *mut c_void, _n_index: i32) -> isize {
+    0
+}
+
+/// `SendMessageW` — send a message to a window procedure and wait for it to return.
+///
+/// Returns 0 in headless mode (no window procedure to dispatch to).
+///
+/// # Safety
+/// Parameters are not dereferenced; always safe.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_SendMessageW(
+    _hwnd: *mut c_void,
+    _msg: u32,
+    _wparam: usize,
+    _lparam: isize,
+) -> isize {
+    0
+}
+
+/// `PostMessageW` — post a message to a message queue.
+///
+/// Returns 1 (TRUE) in headless mode; the message is silently discarded.
+///
+/// # Safety
+/// Parameters are not dereferenced; always safe.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_PostMessageW(
+    _hwnd: *mut c_void,
+    _msg: u32,
+    _wparam: usize,
+    _lparam: isize,
+) -> i32 {
+    1
+}
+
+/// `PeekMessageW` — check for a message and optionally remove it from the queue.
+///
+/// Returns 0 (no message available) in headless mode, causing message loops to
+/// yield rather than spin.
+///
+/// # Safety
+/// `msg` must be a valid pointer to a MSG structure or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_PeekMessageW(
+    _msg: *mut c_void,
+    _hwnd: *mut c_void,
+    _msg_filter_min: u32,
+    _msg_filter_max: u32,
+    _remove_msg: u32,
+) -> i32 {
+    0
+}
+
+/// `BeginPaint` — prepare the specified window for painting.
+///
+/// Returns a fake HDC so that paint code can continue without crashing.
+/// `paint_struct`, if non-null, is zero-filled (100 bytes) to satisfy callers
+/// that inspect the `rcPaint` rectangle.
+///
+/// # Safety
+/// `paint_struct` must be either null or a valid writable buffer of ≥ 100 bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_BeginPaint(
+    _hwnd: *mut c_void,
+    paint_struct: *mut u8,
+) -> *mut c_void {
+    if !paint_struct.is_null() {
+        // SAFETY: caller guarantees paint_struct is a valid writable ≥100-byte buffer.
+        core::ptr::write_bytes(paint_struct, 0, 100);
+    }
+    FAKE_HDC as *mut c_void
+}
+
+/// `EndPaint` — mark the end of painting in the specified window.
+///
+/// Returns 1 (TRUE).
+///
+/// # Safety
+/// Parameters are not meaningfully dereferenced; always safe.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_EndPaint(_hwnd: *mut c_void, _paint_struct: *const c_void) -> i32 {
+    1
+}
+
+/// `GetClientRect` — retrieve the coordinates of a window's client area.
+///
+/// Fills the RECT structure (4 × i32 = 16 bytes) with a default 800×600
+/// client area (`left=0, top=0, right=800, bottom=600`).  Returns 1 (TRUE).
+///
+/// # Safety
+/// `rect` must be either null or a valid writable buffer of ≥ 16 bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_GetClientRect(_hwnd: *mut c_void, rect: *mut i32) -> i32 {
+    if !rect.is_null() {
+        // SAFETY: caller guarantees `rect` points to a RECT (4 × i32).
+        rect.write(0); // left
+        rect.add(1).write(0); // top
+        rect.add(2).write(800); // right
+        rect.add(3).write(600); // bottom
+    }
+    1
+}
+
+/// `InvalidateRect` — add a rectangle to the update region of a window.
+///
+/// Returns 1 (TRUE); the repaint is silently skipped in headless mode.
+///
+/// # Safety
+/// `rect` is not dereferenced; always safe.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_InvalidateRect(
+    _hwnd: *mut c_void,
+    _rect: *const c_void,
+    _erase: i32,
+) -> i32 {
+    1
+}
+
+/// `SetTimer` — create a timer with a specified time-out value.
+///
+/// Timers are not supported in headless mode. Returns 0 to indicate failure,
+/// consistent with the Windows documentation for a non-window timer that
+/// could not be created.
+///
+/// # Safety
+/// Parameters are not dereferenced; always safe.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_SetTimer(
+    _hwnd: *mut c_void,
+    _id_event: usize,
+    _elapse: u32,
+    _timer_func: *const c_void,
+) -> usize {
+    0
+}
+
+/// `KillTimer` — destroy the specified timer.
+///
+/// Returns 1 (TRUE); there are no real timers to destroy in headless mode.
+///
+/// # Safety
+/// Parameters are not dereferenced; always safe.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_KillTimer(_hwnd: *mut c_void, _id_event: usize) -> i32 {
+    1
+}
+
+/// `GetDC` — retrieve the device context for a window's client area.
+///
+/// Returns a fake non-null HDC.
+///
+/// # Safety
+/// `hwnd` is not dereferenced; always safe.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_GetDC(_hwnd: *mut c_void) -> *mut c_void {
+    FAKE_HDC as *mut c_void
+}
+
+/// `ReleaseDC` — release a device context.
+///
+/// Returns 1 (TRUE).
+///
+/// # Safety
+/// Parameters are not dereferenced; always safe.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_ReleaseDC(_hwnd: *mut c_void, _hdc: *mut c_void) -> i32 {
+    1
+}
+
 // ── Unit tests ────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -271,6 +543,161 @@ mod tests {
     fn test_destroy_window_returns_one() {
         // SAFETY: null HWND; stub does not dereference it
         let result = unsafe { user32_DestroyWindow(std::ptr::null_mut()) };
+        assert_eq!(result, 1);
+    }
+
+    #[test]
+    fn test_post_quit_message_does_not_panic() {
+        // SAFETY: pure integer argument; always safe.
+        unsafe { user32_PostQuitMessage(0) };
+    }
+
+    #[test]
+    fn test_def_window_proc_returns_zero() {
+        // SAFETY: all parameters are integers/null; stub does not dereference.
+        let result = unsafe { user32_DefWindowProcW(std::ptr::null_mut(), 0, 0, 0) };
+        assert_eq!(result, 0);
+    }
+
+    #[test]
+    fn test_load_cursor_returns_nonnull() {
+        // SAFETY: null instance and null name; stub returns a fake handle.
+        let hcursor = unsafe { user32_LoadCursorW(std::ptr::null_mut(), std::ptr::null()) };
+        assert!(!hcursor.is_null());
+    }
+
+    #[test]
+    fn test_load_icon_returns_nonnull() {
+        // SAFETY: null instance and null name; stub returns a fake handle.
+        let hicon = unsafe { user32_LoadIconW(std::ptr::null_mut(), std::ptr::null()) };
+        assert!(!hicon.is_null());
+    }
+
+    #[test]
+    fn test_get_system_metrics_screen_size() {
+        // SM_CXSCREEN = 0, SM_CYSCREEN = 1
+        let cx = unsafe { user32_GetSystemMetrics(0) };
+        let cy = unsafe { user32_GetSystemMetrics(1) };
+        assert_eq!(cx, 800);
+        assert_eq!(cy, 600);
+    }
+
+    #[test]
+    fn test_get_system_metrics_unknown_returns_zero() {
+        let result = unsafe { user32_GetSystemMetrics(9999) };
+        assert_eq!(result, 0);
+    }
+
+    #[test]
+    fn test_set_window_long_ptr_returns_zero() {
+        // SAFETY: null HWND; stub does not dereference it.
+        let result = unsafe { user32_SetWindowLongPtrW(std::ptr::null_mut(), 0, 42) };
+        assert_eq!(result, 0);
+    }
+
+    #[test]
+    fn test_get_window_long_ptr_returns_zero() {
+        // SAFETY: null HWND; stub does not dereference it.
+        let result = unsafe { user32_GetWindowLongPtrW(std::ptr::null_mut(), 0) };
+        assert_eq!(result, 0);
+    }
+
+    #[test]
+    fn test_send_message_returns_zero() {
+        // SAFETY: null HWND; stub does not dereference any param.
+        let result = unsafe { user32_SendMessageW(std::ptr::null_mut(), 0, 0, 0) };
+        assert_eq!(result, 0);
+    }
+
+    #[test]
+    fn test_post_message_returns_one() {
+        // SAFETY: null HWND; stub does not dereference any param.
+        let result = unsafe { user32_PostMessageW(std::ptr::null_mut(), 0, 0, 0) };
+        assert_eq!(result, 1);
+    }
+
+    #[test]
+    fn test_peek_message_returns_zero() {
+        // SAFETY: all null pointers; stub does not dereference any param.
+        let result =
+            unsafe { user32_PeekMessageW(std::ptr::null_mut(), std::ptr::null_mut(), 0, 0, 0) };
+        assert_eq!(result, 0);
+    }
+
+    #[test]
+    fn test_begin_paint_returns_fake_hdc() {
+        // SAFETY: null paint_struct; BeginPaint guards with null check.
+        let hdc = unsafe { user32_BeginPaint(std::ptr::null_mut(), std::ptr::null_mut()) };
+        assert!(!hdc.is_null());
+    }
+
+    #[test]
+    fn test_begin_paint_zeroes_paint_struct() {
+        // SAFETY: paint_struct is a valid 100-byte buffer on the stack.
+        let mut paint_struct = [0xFFu8; 100];
+        let hdc = unsafe { user32_BeginPaint(std::ptr::null_mut(), paint_struct.as_mut_ptr()) };
+        assert!(!hdc.is_null());
+        assert!(paint_struct.iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn test_end_paint_returns_one() {
+        // SAFETY: null parameters; stub does not dereference them.
+        let result = unsafe { user32_EndPaint(std::ptr::null_mut(), std::ptr::null()) };
+        assert_eq!(result, 1);
+    }
+
+    #[test]
+    fn test_get_client_rect_fills_800x600() {
+        // SAFETY: rect is a valid 4-i32 buffer.
+        let mut rect = [0i32; 4];
+        let result = unsafe { user32_GetClientRect(std::ptr::null_mut(), rect.as_mut_ptr()) };
+        assert_eq!(result, 1);
+        assert_eq!(rect[0], 0); // left
+        assert_eq!(rect[1], 0); // top
+        assert_eq!(rect[2], 800); // right
+        assert_eq!(rect[3], 600); // bottom
+    }
+
+    #[test]
+    fn test_get_client_rect_null_rect() {
+        // SAFETY: null rect; GetClientRect guards with null check.
+        let result = unsafe { user32_GetClientRect(std::ptr::null_mut(), std::ptr::null_mut()) };
+        assert_eq!(result, 1);
+    }
+
+    #[test]
+    fn test_invalidate_rect_returns_one() {
+        // SAFETY: null parameters; stub does not dereference them.
+        let result = unsafe { user32_InvalidateRect(std::ptr::null_mut(), std::ptr::null(), 0) };
+        assert_eq!(result, 1);
+    }
+
+    #[test]
+    fn test_set_timer_returns_zero() {
+        // SAFETY: null parameters; stub does not dereference them.
+        let result = unsafe { user32_SetTimer(std::ptr::null_mut(), 1, 1000, std::ptr::null()) };
+        assert_eq!(result, 0);
+    }
+
+    #[test]
+    fn test_kill_timer_returns_one() {
+        // SAFETY: null HWND; stub does not dereference it.
+        let result = unsafe { user32_KillTimer(std::ptr::null_mut(), 1) };
+        assert_eq!(result, 1);
+    }
+
+    #[test]
+    fn test_get_dc_returns_nonnull() {
+        // SAFETY: null HWND; stub returns a fake HDC.
+        let hdc = unsafe { user32_GetDC(std::ptr::null_mut()) };
+        assert!(!hdc.is_null());
+    }
+
+    #[test]
+    fn test_release_dc_returns_one() {
+        // SAFETY: null parameters; stub does not dereference them.
+        let result = unsafe { user32_ReleaseDC(std::ptr::null_mut(), std::ptr::null_mut()) };
         assert_eq!(result, 1);
     }
 }

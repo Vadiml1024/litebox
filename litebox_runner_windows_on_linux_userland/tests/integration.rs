@@ -258,6 +258,66 @@ fn test_dll_manager_has_all_required_exports() {
         let result = dll_manager.get_proc_address(ws2_32, func_name);
         assert!(result.is_ok(), "WS2_32.dll should export {func_name}");
     }
+
+    // Check USER32.dll extended exports (Phase 24)
+    let user32 = dll_manager.load_library("USER32.dll").unwrap();
+    let user32_functions = vec![
+        "MessageBoxW",
+        "RegisterClassExW",
+        "CreateWindowExW",
+        "ShowWindow",
+        "UpdateWindow",
+        "GetMessageW",
+        "TranslateMessage",
+        "DispatchMessageW",
+        "DestroyWindow",
+        "PostQuitMessage",
+        "DefWindowProcW",
+        "LoadCursorW",
+        "LoadIconW",
+        "GetSystemMetrics",
+        "SetWindowLongPtrW",
+        "GetWindowLongPtrW",
+        "SendMessageW",
+        "PostMessageW",
+        "PeekMessageW",
+        "BeginPaint",
+        "EndPaint",
+        "GetClientRect",
+        "InvalidateRect",
+        "SetTimer",
+        "KillTimer",
+        "GetDC",
+        "ReleaseDC",
+    ];
+
+    for func_name in user32_functions {
+        let result = dll_manager.get_proc_address(user32, func_name);
+        assert!(result.is_ok(), "USER32.dll should export {func_name}");
+    }
+
+    // Check GDI32.dll exports (Phase 24)
+    let gdi32 = dll_manager.load_library("GDI32.dll").unwrap();
+    let gdi32_functions = vec![
+        "GetStockObject",
+        "CreateSolidBrush",
+        "DeleteObject",
+        "SelectObject",
+        "CreateCompatibleDC",
+        "DeleteDC",
+        "SetBkColor",
+        "SetTextColor",
+        "TextOutW",
+        "Rectangle",
+        "FillRect",
+        "CreateFontW",
+        "GetTextExtentPoint32W",
+    ];
+
+    for func_name in gdi32_functions {
+        let result = dll_manager.get_proc_address(gdi32, func_name);
+        assert!(result.is_ok(), "GDI32.dll should export {func_name}");
+    }
 }
 
 #[cfg(test)]
@@ -476,5 +536,36 @@ fn test_getprocaddress_c_program() {
     assert!(
         stdout.contains("0 failed"),
         "output should report 0 failures\nstdout:\n{stdout}"
+    );
+}
+
+/// Test that hello_gui.exe loads and runs to completion in headless mode.
+///
+/// `hello_gui` is a Rust Windows program that calls `GetModuleHandleW` and
+/// `MessageBoxW`.  In headless mode, `MessageBoxW` prints to stderr and returns
+/// IDOK immediately.  The program must exit with code 0.
+///
+/// Build the program with:
+/// ```
+/// cd windows_test_programs
+/// cargo build --release --target x86_64-pc-windows-gnu -p hello_gui
+/// ```
+#[test]
+#[ignore = "Requires MinGW-built Windows test programs (run with --ignored after building windows_test_programs)"]
+fn test_hello_gui_program() {
+    use test_program_helpers::*;
+
+    assert!(
+        test_program_exists("hello_gui"),
+        "hello_gui.exe should be built in windows_test_programs"
+    );
+
+    // Run the program; MessageBoxW will print to stderr and return IDOK
+    let output = run_test_program("hello_gui", &[]).expect("failed to launch hello_gui runner");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "hello_gui.exe should exit with code 0\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
 }
