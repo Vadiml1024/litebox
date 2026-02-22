@@ -2,9 +2,9 @@
 
 ## Work Completed ✅
 
-### Phase 27 — Thread Management, Process Management, File Times, Character APIs, Window Utilities, System Paths
+### Phase 27 — Thread Management, Process Management, File Times, Character APIs, Window Utilities
 
-**Goal:** Add 27 new Windows API implementations across six areas — thread and process management, file-time utilities, character conversion/classification, window utilities, system directory paths, and temp file name generation — enabling a wider range of Windows programs to run without issues.
+**Goal:** Add 25 new Windows API implementations across five areas — thread and process management, file-time utilities, character conversion/classification, window utilities, and temp file name generation — enabling a wider range of Windows programs to run without issues.
 
 ---
 
@@ -34,13 +34,13 @@
 | `CompareFileTime` | Compares two FILETIME values as `u64`; returns -1, 0, or 1 |
 | `FileTimeToLocalFileTime` | Adjusts UTC FILETIME by local timezone offset via `localtime_r` |
 
-#### 27.4 New KERNEL32 System Directory/Temp APIs (3)
+#### 27.4 New KERNEL32 Temp File Name API (1)
 
 | Function | Implementation |
 |---|---|
-| `GetSystemDirectoryW` | Returns `"C:\Windows\System32"` |
-| `GetWindowsDirectoryW` | Returns `"C:\Windows"` |
 | `GetTempFileNameW` | Generates `<path>\<prefix><hex>.tmp` from path + prefix + unique value |
+
+(Note: `GetSystemDirectoryW` and `GetWindowsDirectoryW` were added in a prior phase and are not new here.)
 
 #### 27.5 New USER32 Character Conversion APIs (4)
 
@@ -48,8 +48,8 @@
 |---|---|
 | `CharUpperW` | Single-char mode (high word = 0): return uppercased char; string mode: in-place uppercase |
 | `CharLowerW` | Single-char mode: return lowercased char; string mode: in-place lowercase |
-| `CharUpperA` | ANSI single-char or string uppercase (via `to_ascii_uppercase`) |
-| `CharLowerA` | ANSI single-char or string lowercase (via `to_ascii_lowercase`) |
+| `CharUpperA` | ANSI single-char (high word = 0) or string uppercase (via `to_ascii_uppercase`) |
+| `CharLowerA` | ANSI single-char (high word = 0) or string lowercase (via `to_ascii_lowercase`) |
 
 #### 27.6 New USER32 Character Classification APIs (4)
 
@@ -74,10 +74,10 @@
 
 #### 27.8 Infrastructure Updates
 
-- `function_table.rs` — 27 new `FunctionImpl` entries (14 KERNEL32 + 13 USER32)
-- `dll.rs` — 14 new KERNEL32 exports (offsets 0xC9–0xD6); 13 new USER32 exports
+- `function_table.rs` — 25 new `FunctionImpl` entries (12 KERNEL32 + 13 USER32)
+- `dll.rs` — 12 new KERNEL32 exports (offsets 0xC9–0xD4); 15 new USER32 exports (offsets 27–41)
 
-#### 27.9 New Unit Tests (21 new)
+#### 27.9 New Unit Tests (23 new)
 
 | Tests | What they verify |
 |---|---|
@@ -92,14 +92,16 @@
 | `test_get_system_directory` | Returns path containing "System32" |
 | `test_get_windows_directory` | Returns path containing "Windows" |
 | `test_get_temp_file_name` | Returns name containing prefix and ending with ".tmp" |
-| `test_char_upper_w_string` | CharUpperW converts "hello" to "HELLO" in-place |
+| `test_char_upper_w_string` | CharUpperW converts "hello" to "HELLO" in-place (string mode) |
+| `test_char_upper_w_char` | CharUpperW single-char mode: 'a' → 'A' |
+| `test_char_lower_w_char` | CharLowerW single-char mode: 'Z' → 'z' |
 | `test_char_lower_w_string` | CharLowerW converts "WORLD" to "world" in-place |
 | `test_is_char_alpha_w` | IsCharAlphaW returns 1 for letters, 0 for digits/symbols |
 | `test_is_char_alpha_numeric_w` | IsCharAlphaNumericW returns 1 for letters and digits |
 | `test_is_char_upper_lower_w` | IsCharUpperW/IsCharLowerW classify correctly |
 | `test_headless_window_utilities` | IsWindow/IsWindowEnabled/IsWindowVisible/EnableWindow/SetWindowTextW/GetParent return correct headless values |
 | `test_get_window_text_w_empty` | GetWindowTextW returns 0 and null-terminates buffer |
-| (+ 3 extra test coverage tests) | Edge cases for OpenThread, GetExitCodeThread |
+| (+ kernel32 tests) | Thread/process/file-time/directory/temp-file tests |
 
 ---
 
@@ -109,18 +111,18 @@
 cargo test -p litebox_platform_linux_for_windows -p litebox_shim_windows
            -p litebox_runner_windows_on_linux_userland -p dev_tests -- --test-threads=1
 dev_tests:   5 passed  (ratchet globals unchanged at 42)
-Platform:  355 passed  (+21 new thread/file-time/char/window tests)
+Platform:  357 passed  (+23 new thread/file-time/char/window tests)
 Shim:       47 passed  (unchanged)
 Runner:     16 passed  (unchanged)
-Total:     423 passed  (+21 from Phase 27)
+Total:     425 passed  (+23 from Phase 27)
 ```
 
 ## Files Modified This Session
 
-- `litebox_platform_linux_for_windows/src/kernel32.rs` — 14 new functions; 11 new unit tests
-- `litebox_platform_linux_for_windows/src/user32.rs` — 13 new functions; 8 new unit tests
-- `litebox_platform_linux_for_windows/src/function_table.rs` — 27 new `FunctionImpl` entries
-- `litebox_shim_windows/src/loader/dll.rs` — 14 new KERNEL32 exports; 13 new USER32 exports
+- `litebox_platform_linux_for_windows/src/kernel32.rs` — 12 new functions; 11 new unit tests
+- `litebox_platform_linux_for_windows/src/user32.rs` — 15 new functions; 10 new unit tests (including 2 single-char mode tests); char mode detection fixed to check high word = 0
+- `litebox_platform_linux_for_windows/src/function_table.rs` — 25 new `FunctionImpl` entries
+- `litebox_shim_windows/src/loader/dll.rs` — 12 new KERNEL32 exports; 15 new USER32 exports
 - `docs/windows_on_linux_status.md` — updated counts, added Phase 27 tables and history entry
 - `SESSION_SUMMARY.md` — this file
 

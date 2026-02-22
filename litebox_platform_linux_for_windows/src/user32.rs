@@ -461,8 +461,8 @@ pub unsafe extern "C" fn user32_ReleaseDC(_hwnd: *mut c_void, _hdc: *mut c_void)
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn user32_CharUpperW(lpsz: *mut u16) -> *mut u16 {
     let val = lpsz as usize;
-    if val <= 0xFFFF {
-        // Single character mode: the low 16 bits hold the character value (fits in u16/u32).
+    if (val >> 16) == 0 {
+        // Single character mode: the high-order word is zero; the low word is the character.
         let ch = char::from_u32(val as u32).unwrap_or('\0');
         let upper = ch.to_uppercase().next().map_or(val as u16, |c| c as u16);
         upper as usize as *mut u16
@@ -494,8 +494,8 @@ pub unsafe extern "C" fn user32_CharUpperW(lpsz: *mut u16) -> *mut u16 {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn user32_CharLowerW(lpsz: *mut u16) -> *mut u16 {
     let val = lpsz as usize;
-    if val <= 0xFFFF {
-        // SAFETY: val <= 0xFFFF so it fits in u32 without truncation.
+    if (val >> 16) == 0 {
+        // Single character mode: the high-order word is zero; the low word is the character.
         let ch = char::from_u32(val as u32).unwrap_or('\0');
         let lower = ch.to_lowercase().next().map_or(val as u16, |c| c as u16);
         lower as usize as *mut u16
@@ -525,8 +525,8 @@ pub unsafe extern "C" fn user32_CharLowerW(lpsz: *mut u16) -> *mut u16 {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn user32_CharUpperA(lpsz: *mut u8) -> *mut u8 {
     let val = lpsz as usize;
-    if val <= 0xFF {
-        // SAFETY: val <= 0xFF so it fits in u8 without truncation.
+    if (val >> 16) == 0 {
+        // Single character mode: the high-order word is zero; the low word is the character.
         #[allow(clippy::cast_possible_truncation)]
         let b = val as u8;
         b.to_ascii_uppercase() as usize as *mut u8
@@ -551,8 +551,8 @@ pub unsafe extern "C" fn user32_CharUpperA(lpsz: *mut u8) -> *mut u8 {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn user32_CharLowerA(lpsz: *mut u8) -> *mut u8 {
     let val = lpsz as usize;
-    if val <= 0xFF {
-        // SAFETY: val <= 0xFF so it fits in u8 without truncation.
+    if (val >> 16) == 0 {
+        // Single character mode: the high-order word is zero; the low word is the character.
         #[allow(clippy::cast_possible_truncation)]
         let b = val as u8;
         b.to_ascii_lowercase() as usize as *mut u8
@@ -944,6 +944,18 @@ mod tests {
             .map(|&c| char::from_u32(u32::from(c)).unwrap_or('?'))
             .collect();
         assert_eq!(upper, "HELLO");
+    }
+
+    #[test]
+    fn test_char_upper_w_char() {
+        let result = unsafe { user32_CharUpperW(u32::from(b'a') as usize as *mut u16) };
+        assert_eq!(result as usize, u32::from(b'A') as usize);
+    }
+
+    #[test]
+    fn test_char_lower_w_char() {
+        let result = unsafe { user32_CharLowerW(u32::from(b'Z') as usize as *mut u16) };
+        assert_eq!(result as usize, u32::from(b'z') as usize);
     }
 
     #[test]

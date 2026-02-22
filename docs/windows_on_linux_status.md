@@ -1,7 +1,7 @@
 # Windows on Linux: Implementation Status
 
 **Last Updated:** 2026-02-22  
-**Total Tests:** 423 passing (355 platform + 47 shim + 16 runner + 5 dev_tests — +21 new thread/file-time/char/window tests added in Phase 27)  
+**Total Tests:** 425 passing (357 platform + 47 shim + 16 runner + 5 dev_tests — +23 new thread/file-time/char/window tests added in Phase 27)  
 **Overall Status:** Core infrastructure complete. Seven Rust-based test programs (hello_cli, math_test, env_test, args_test, file_io_test, string_test, getprocaddress_test) run successfully end-to-end through the runner on Linux. **All API stub functions have been fully replaced — stub count is now 0.** Phase 27 adds thread management, process management, file-time utilities, character conversion/classification, window utilities, system directory paths, and temp file name generation.
 
 ---
@@ -151,8 +151,6 @@
 | `GetFileTime` | Reads file timestamps via `fstat(2)` on the underlying fd |
 | `CompareFileTime` | Compares two FILETIME values; returns -1, 0, or 1 |
 | `FileTimeToLocalFileTime` | Adjusts UTC FILETIME by local timezone offset via `localtime_r` |
-| `GetSystemDirectoryW` | Returns `"C:\Windows\System32"` |
-| `GetWindowsDirectoryW` | Returns `"C:\Windows"` |
 | `GetTempFileNameW` | Generates a temp file name from path + prefix + unique hex suffix |
 
 ### Permanently-correct no-op APIs (return appropriate Windows codes)
@@ -201,7 +199,7 @@
 | Byte order | `htons`, `htonl`, `ntohs`, `ntohl` |
 | Misc | `WSADuplicateSocketW` |
 
-### USER32 — Extended GUI Support (Phases 24 + 27, 40 functions)
+### USER32 — Extended GUI Support (Phases 24 + 27, 42 functions)
 | Category | Implemented Functions |
 |---|---|
 | Basic | `MessageBoxW`, `RegisterClassExW`, `CreateWindowExW`, `ShowWindow`, `UpdateWindow`, `DestroyWindow` |
@@ -287,11 +285,11 @@ All GDI32 functions operate in headless mode: drawing is silently discarded.
 
 ## Test Coverage
 
-**423 tests total (all passing):**
+**425 tests total (all passing):**
 
 | Package | Tests | Notes |
 |---|---|---|
-| `litebox_platform_linux_for_windows` | 355 | KERNEL32, MSVCRT, WS2_32, advapi32, user32, gdi32, shell32, version, platform APIs |
+| `litebox_platform_linux_for_windows` | 357 | KERNEL32, MSVCRT, WS2_32, advapi32, user32, gdi32, shell32, version, platform APIs |
 | `litebox_shim_windows` | 47 | ABI translation, PE loader, tracing |
 | `litebox_runner_windows_on_linux_userland` | 16 | 9 tracing + 7 integration tests |
 | `dev_tests` | 5 | Ratchet constraints (globals, transmutes, MaybeUninit, stubs, copyright) |
@@ -368,7 +366,7 @@ litebox_runner_windows_on_linux_userland \
 
 ## Code Quality
 
-- **All 423 tests passing**
+- **All 425 tests passing**
 - `RUSTFLAGS=-Dwarnings cargo clippy --all-targets --all-features` — clean
 - `cargo fmt --check` — clean
 - All `unsafe` blocks have detailed safety comments
@@ -400,5 +398,5 @@ litebox_runner_windows_on_linux_userland \
 | 24 | Extended USER32 (18 new functions: `PostQuitMessage`, `DefWindowProcW`, `LoadCursorW`, `LoadIconW`, `GetSystemMetrics`, `SetWindowLongPtrW`, `GetWindowLongPtrW`, `SendMessageW`, `PostMessageW`, `PeekMessageW`, `BeginPaint`, `EndPaint`, `GetClientRect`, `InvalidateRect`, `SetTimer`, `KillTimer`, `GetDC`, `ReleaseDC`); new GDI32.dll (13 functions: `GetStockObject`, `CreateSolidBrush`, `DeleteObject`, `SelectObject`, `CreateCompatibleDC`, `DeleteDC`, `SetBkColor`, `SetTextColor`, `TextOutW`, `Rectangle`, `FillRect`, `CreateFontW`, `GetTextExtentPoint32W`); `hello_gui` integration test; +35 new tests | ✅ Complete |
 | 25 | Time APIs (`GetSystemTime`, `GetLocalTime`, `SystemTimeToFileTime`, `FileTimeToSystemTime`, `GetTickCount`); local memory (`LocalAlloc`, `LocalFree`); interlocked ops (`InterlockedIncrement/Decrement/Exchange/ExchangeAdd/CompareExchange/CompareExchange64`); system info (`IsWow64Process`, `GetNativeSystemInfo`); new SHELL32.dll (`CommandLineToArgvW`, `SHGetFolderPathW`, `ShellExecuteW`, `SHCreateDirectoryExW`); new VERSION.dll (`GetFileVersionInfoSizeW`, `GetFileVersionInfoW`, `VerQueryValueW`); +17 new tests | ✅ Complete |
 | 26 | Mutex/Semaphore sync objects (`CreateMutexW/A`, `OpenMutexW`, `ReleaseMutex`, `CreateSemaphoreW/A`, `OpenSemaphoreW`, `ReleaseSemaphore`); console extensions (`SetConsoleMode`, `SetConsoleTitleW/A`, `GetConsoleTitleW`, `AllocConsole`, `FreeConsole`, `GetConsoleWindow`); string utilities (`lstrlenA`, `lstrcpyW/A`, `lstrcmpW/A`, `lstrcmpiW/A`, `OutputDebugStringW/A`); drive/volume APIs (`GetDriveTypeW`, `GetLogicalDrives`, `GetLogicalDriveStringsW`, `GetDiskFreeSpaceExW`, `GetVolumeInformationW`); computer/user name (`GetComputerNameW/ExW`, `GetUserNameW/A`); +16 new tests; globals ratchet 39→42 | ✅ Complete |
-| 27 | Thread management (`SetThreadPriority`, `GetThreadPriority`, `SuspendThread`, `ResumeThread`, `OpenThread`, `GetExitCodeThread`); process management (`OpenProcess`, `GetProcessTimes`); file-time utilities (`GetFileTime`, `CompareFileTime`, `FileTimeToLocalFileTime`); system directory paths (`GetSystemDirectoryW`, `GetWindowsDirectoryW`); temp file name (`GetTempFileNameW`); USER32 character conversion (`CharUpperW/A`, `CharLowerW/A`); character classification (`IsCharAlphaW`, `IsCharAlphaNumericW`, `IsCharUpperW`, `IsCharLowerW`); window utilities (`IsWindow`, `IsWindowEnabled`, `IsWindowVisible`, `EnableWindow`, `GetWindowTextW`, `SetWindowTextW`, `GetParent`); +21 new tests | ✅ Complete |
+| 27 | Thread management (`SetThreadPriority`, `GetThreadPriority`, `SuspendThread`, `ResumeThread`, `OpenThread`, `GetExitCodeThread`); process management (`OpenProcess`, `GetProcessTimes`); file-time utilities (`GetFileTime`, `CompareFileTime`, `FileTimeToLocalFileTime`); temp file name (`GetTempFileNameW`); USER32 character conversion (`CharUpperW/A`, `CharLowerW/A`); character classification (`IsCharAlphaW`, `IsCharAlphaNumericW`, `IsCharUpperW`, `IsCharLowerW`); window utilities (`IsWindow`, `IsWindowEnabled`, `IsWindowVisible`, `EnableWindow`, `GetWindowTextW`, `SetWindowTextW`, `GetParent`); +23 new tests | ✅ Complete |
 
