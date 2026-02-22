@@ -7848,7 +7848,12 @@ pub unsafe extern "C" fn kernel32_GetProcessTimes(
     };
     // SAFETY: ts is a valid out-pointer for clock_gettime.
     unsafe { libc::clock_gettime(libc::CLOCK_REALTIME, &raw mut ts) };
-    let unix_100ns = (ts.tv_sec as u64 + EPOCH_DIFF as u64) * 10_000_000 + ts.tv_nsec as u64 / 100;
+    // Convert Unix time to Windows FILETIME (100-ns intervals since 1601-01-01).
+    // Use wrapping arithmetic to make overflow behavior explicit.
+    let unix_100ns = (ts.tv_sec as u64)
+        .wrapping_add(EPOCH_DIFF as u64)
+        .wrapping_mul(10_000_000)
+        .wrapping_add(ts.tv_nsec as u64 / 100);
     let ft = FileTime {
         low_date_time: unix_100ns as u32,
         high_date_time: (unix_100ns >> 32) as u32,
@@ -7986,7 +7991,11 @@ pub unsafe extern "C" fn kernel32_FileTimeToLocalFileTime(
     // SAFETY: unix_time is a valid time_t value; tm_local is a valid out-pointer.
     unsafe { libc::localtime_r(&raw const unix_time, &raw mut tm_local) };
     let offset_sec = tm_local.tm_gmtoff;
-    let local_intervals = intervals.wrapping_add((offset_sec * 10_000_000) as u64);
+    // Multiply offset by 10M to convert seconds to 100-ns intervals.
+    // Cast via i128 to avoid i64 overflow for extreme offsets, then reinterpret
+    // as u64 so wrapping_add correctly applies negative offsets.
+    let offset_100ns = (i128::from(offset_sec) * 10_000_000) as u64;
+    let local_intervals = intervals.wrapping_add(offset_100ns);
     // SAFETY: local_file_time is checked non-null above.
     unsafe {
         (*local_file_time).low_date_time = local_intervals as u32;
