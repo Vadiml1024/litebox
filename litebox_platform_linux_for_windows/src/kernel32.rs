@@ -4440,8 +4440,13 @@ pub unsafe extern "C" fn kernel32_GetModuleFileNameW(
     }
     let exe_path = match std::fs::read_link("/proc/self/exe") {
         Ok(p) => p.to_string_lossy().into_owned(),
-        Err(_) => {
-            kernel32_SetLastError(31); // ERROR_GEN_FAILURE
+        Err(e) => {
+            let win_err = match e.kind() {
+                std::io::ErrorKind::PermissionDenied => 5, // ERROR_ACCESS_DENIED
+                std::io::ErrorKind::NotFound => 2,         // ERROR_FILE_NOT_FOUND
+                _ => 31,                                   // ERROR_GEN_FAILURE
+            };
+            kernel32_SetLastError(win_err);
             return 0;
         }
     };
@@ -8031,13 +8036,15 @@ mod tests {
 
     #[test]
     fn test_get_module_file_name_w_null_buffer() {
-        // NULL buffer → return required size (no crash)
-        let required =
+        // size=0 / null buffer: copy_utf8_to_wide returns the required length
+        // (including null terminator), which is consistent with Windows behaviour
+        // when the supplied buffer is too small.
+        let result =
             unsafe { kernel32_GetModuleFileNameW(core::ptr::null_mut(), core::ptr::null_mut(), 0) };
-        // Should return a non-zero required length when module is the current exe
+        // The required length must be > 0 because /proc/self/exe has a non-empty path.
         assert!(
-            required > 0,
-            "GetModuleFileNameW with null buffer should return required size"
+            result > 0,
+            "GetModuleFileNameW with size=0 should return the required buffer length (> 0)"
         );
     }
 }

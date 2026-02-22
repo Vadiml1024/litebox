@@ -408,7 +408,11 @@ fn test_string_test_program_exists() {
         "string_test.exe stdout should contain test header, got:\n{stdout}"
     );
     assert!(
-        stdout.contains("Results:") && stdout.contains("0 failed"),
+        stdout.contains("Results:"),
+        "string_test.exe stdout should contain a Results: line, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("0 failed"),
         "string_test.exe should report 0 failures, got:\n{stdout}"
     );
 }
