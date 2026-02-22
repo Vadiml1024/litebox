@@ -22,10 +22,11 @@
 // Allow cast warnings: we're implementing Windows APIs which use specific integer types
 #![allow(clippy::cast_possible_truncation)]
 
-use libc;
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
+
+use libc;
 
 // ── Windows registry error / status codes ─────────────────────────────────────
 
@@ -719,7 +720,7 @@ pub unsafe extern "C" fn advapi32_GetUserNameW(buffer: *mut u16, size: *mut u32)
         *buffer.add(i) = ch;
     }
     *buffer.add(utf16.len()) = 0;
-    *size = utf16.len() as u32 + 1;
+    *size = needed;
     1
 }
 
