@@ -3864,7 +3864,7 @@ pub unsafe extern "C" fn kernel32_SetLastError(error_code: u32) {
 }
 
 /// Result type for sync handle wait operations inside `kernel32_WaitForSingleObject`.
-enum SyncResult {
+enum SyncWaitResult {
     MutexAcquired,
     MutexTimeout,
     SemaphoreAcquired,
@@ -3963,7 +3963,7 @@ pub unsafe extern "C" fn kernel32_WaitForSingleObject(
     }
 
     // Check sync handles (mutex / semaphore)
-    let sync_result: Option<SyncResult> = with_sync_handles(|map| {
+    let sync_result: Option<SyncWaitResult> = with_sync_handles(|map| {
         if let Some(entry) = map.get(&handle_val) {
             match entry {
                 SyncObjectEntry::Mutex { state, .. } => {
@@ -3974,38 +3974,38 @@ pub unsafe extern "C" fn kernel32_WaitForSingleObject(
                         && owner == tid
                     {
                         *guard = Some((owner, count + 1));
-                        return Some(SyncResult::MutexAcquired);
+                        return Some(SyncWaitResult::MutexAcquired);
                     }
                     if milliseconds == u32::MAX {
                         while guard.is_some() {
                             guard = cvar.wait(guard).unwrap();
                         }
                         *guard = Some((tid, 1));
-                        return Some(SyncResult::MutexAcquired);
+                        return Some(SyncWaitResult::MutexAcquired);
                     }
                     if guard.is_none() {
                         *guard = Some((tid, 1));
-                        return Some(SyncResult::MutexAcquired);
+                        return Some(SyncWaitResult::MutexAcquired);
                     }
                     if milliseconds == 0 {
-                        return Some(SyncResult::MutexTimeout);
+                        return Some(SyncWaitResult::MutexTimeout);
                     }
                     let timeout = Duration::from_millis(u64::from(milliseconds));
                     let deadline = std::time::Instant::now() + timeout;
                     loop {
                         if guard.is_none() {
                             *guard = Some((tid, 1));
-                            return Some(SyncResult::MutexAcquired);
+                            return Some(SyncWaitResult::MutexAcquired);
                         }
                         let now = std::time::Instant::now();
                         if now >= deadline {
-                            return Some(SyncResult::MutexTimeout);
+                            return Some(SyncWaitResult::MutexTimeout);
                         }
                         let remaining = deadline - now;
                         let (g, result) = cvar.wait_timeout(guard, remaining).unwrap();
                         guard = g;
                         if result.timed_out() && guard.is_some() {
-                            return Some(SyncResult::MutexTimeout);
+                            return Some(SyncWaitResult::MutexTimeout);
                         }
                     }
                 }
@@ -4017,31 +4017,31 @@ pub unsafe extern "C" fn kernel32_WaitForSingleObject(
                             count = cvar.wait(count).unwrap();
                         }
                         *count -= 1;
-                        return Some(SyncResult::SemaphoreAcquired);
+                        return Some(SyncWaitResult::SemaphoreAcquired);
                     }
                     if *count > 0 {
                         *count -= 1;
-                        return Some(SyncResult::SemaphoreAcquired);
+                        return Some(SyncWaitResult::SemaphoreAcquired);
                     }
                     if milliseconds == 0 {
-                        return Some(SyncResult::SemaphoreTimeout);
+                        return Some(SyncWaitResult::SemaphoreTimeout);
                     }
                     let timeout = Duration::from_millis(u64::from(milliseconds));
                     let deadline = std::time::Instant::now() + timeout;
                     loop {
                         if *count > 0 {
                             *count -= 1;
-                            return Some(SyncResult::SemaphoreAcquired);
+                            return Some(SyncWaitResult::SemaphoreAcquired);
                         }
                         let now = std::time::Instant::now();
                         if now >= deadline {
-                            return Some(SyncResult::SemaphoreTimeout);
+                            return Some(SyncWaitResult::SemaphoreTimeout);
                         }
                         let remaining = deadline - now;
                         let (g, result) = cvar.wait_timeout(count, remaining).unwrap();
                         count = g;
                         if result.timed_out() && *count == 0 {
-                            return Some(SyncResult::SemaphoreTimeout);
+                            return Some(SyncWaitResult::SemaphoreTimeout);
                         }
                     }
                 }
@@ -4051,10 +4051,10 @@ pub unsafe extern "C" fn kernel32_WaitForSingleObject(
         }
     });
     match sync_result {
-        Some(SyncResult::MutexAcquired | SyncResult::SemaphoreAcquired) => {
+        Some(SyncWaitResult::MutexAcquired | SyncWaitResult::SemaphoreAcquired) => {
             return WAIT_OBJECT_0;
         }
-        Some(SyncResult::MutexTimeout | SyncResult::SemaphoreTimeout) => {
+        Some(SyncWaitResult::MutexTimeout | SyncWaitResult::SemaphoreTimeout) => {
             return WAIT_TIMEOUT;
         }
         None => {}
@@ -6908,7 +6908,7 @@ pub unsafe extern "C" fn kernel32_GetNativeSystemInfo(system_info: *mut u8) {
 
 /// # Safety
 /// ptr must be a valid null-terminated UTF-16 string
-unsafe fn wide_to_string_local(ptr: *const u16) -> String {
+unsafe fn wide_ptr_to_string(ptr: *const u16) -> String {
     let mut chars = Vec::new();
     let mut i = 0;
     while *ptr.add(i) != 0 {
@@ -6935,7 +6935,7 @@ pub unsafe extern "C" fn kernel32_CreateMutexW(
         None
     } else {
         // SAFETY: caller guarantees valid null-terminated UTF-16 string
-        Some(wide_to_string_local(name))
+        Some(wide_ptr_to_string(name))
     };
 
     if let Some(ref n) = name_opt {
@@ -7012,7 +7012,7 @@ pub unsafe extern "C" fn kernel32_OpenMutexW(
         return core::ptr::null_mut();
     }
     // SAFETY: caller guarantees valid null-terminated UTF-16 string
-    let name_str = wide_to_string_local(name);
+    let name_str = wide_ptr_to_string(name);
     let existing = with_sync_handles(|map| {
         for (&h, entry) in map.iter() {
             if let SyncObjectEntry::Mutex { name: Some(en), .. } = entry
@@ -7083,7 +7083,7 @@ pub unsafe extern "C" fn kernel32_CreateSemaphoreW(
         None
     } else {
         // SAFETY: caller guarantees valid null-terminated UTF-16 string
-        Some(wide_to_string_local(name))
+        Some(wide_ptr_to_string(name))
     };
 
     if let Some(ref n) = name_opt {
@@ -7157,7 +7157,7 @@ pub unsafe extern "C" fn kernel32_OpenSemaphoreW(
         return core::ptr::null_mut();
     }
     // SAFETY: caller guarantees valid null-terminated UTF-16 string
-    let name_str = wide_to_string_local(name);
+    let name_str = wide_ptr_to_string(name);
     let existing = with_sync_handles(|map| {
         for (&h, entry) in map.iter() {
             if let SyncObjectEntry::Semaphore { name: Some(en), .. } = entry
@@ -7254,7 +7254,7 @@ pub unsafe extern "C" fn kernel32_SetConsoleTitleW(title: *const u16) -> i32 {
         return 0;
     }
     // SAFETY: caller guarantees valid null-terminated UTF-16 string
-    let title_str = wide_to_string_local(title);
+    let title_str = wide_ptr_to_string(title);
     let mut guard = CONSOLE_TITLE.lock().unwrap();
     *guard = Some(title_str);
     1
@@ -7400,8 +7400,8 @@ pub unsafe extern "C" fn kernel32_lstrcmpW(s1: *const u16, s2: *const u16) -> i3
         return 1;
     }
     // SAFETY: caller guarantees valid null-terminated UTF-16 strings
-    let str1 = wide_to_string_local(s1);
-    let str2 = wide_to_string_local(s2);
+    let str1 = wide_ptr_to_string(s1);
+    let str2 = wide_ptr_to_string(s2);
     match str1.cmp(&str2) {
         std::cmp::Ordering::Less => -1,
         std::cmp::Ordering::Equal => 0,
@@ -7455,8 +7455,8 @@ pub unsafe extern "C" fn kernel32_lstrcmpiW(s1: *const u16, s2: *const u16) -> i
         return 1;
     }
     // SAFETY: caller guarantees valid null-terminated UTF-16 strings
-    let str1 = wide_to_string_local(s1).to_lowercase();
-    let str2 = wide_to_string_local(s2).to_lowercase();
+    let str1 = wide_ptr_to_string(s1).to_lowercase();
+    let str2 = wide_ptr_to_string(s2).to_lowercase();
     match str1.cmp(&str2) {
         std::cmp::Ordering::Less => -1,
         std::cmp::Ordering::Equal => 0,
@@ -7482,8 +7482,8 @@ pub unsafe extern "C" fn kernel32_lstrcmpiA(s1: *const u8, s2: *const u8) -> i32
     // SAFETY: caller guarantees valid null-terminated ANSI strings
     let mut i = 0usize;
     loop {
-        let c1 = (unsafe { *s1.add(i) } as char).to_ascii_lowercase() as u8;
-        let c2 = (unsafe { *s2.add(i) } as char).to_ascii_lowercase() as u8;
+        let c1 = unsafe { *s1.add(i) }.to_ascii_lowercase();
+        let c2 = unsafe { *s2.add(i) }.to_ascii_lowercase();
         if c1 != c2 {
             return i32::from(c1) - i32::from(c2);
         }
@@ -7504,7 +7504,7 @@ pub unsafe extern "C" fn kernel32_OutputDebugStringW(output_string: *const u16) 
         return;
     }
     // SAFETY: caller guarantees valid null-terminated UTF-16 string
-    let s = wide_to_string_local(output_string);
+    let s = wide_ptr_to_string(output_string);
     eprintln!("[OutputDebugString] {s}");
 }
 

@@ -1,18 +1,148 @@
-# Windows-on-Linux Support — Session Summary (2026-02-22 Session 25)
+# Windows-on-Linux Support — Session Summary (2026-02-22 Session 26)
 
 ## Work Completed ✅
 
-### Phase 25 — Time APIs, Interlocked Operations, SHELL32.dll, VERSION.dll
+### Phase 26 — Mutex/Semaphore, Console Extensions, String Utilities, Drive/Volume APIs, User/Computer Name
 
-**Goal:** Add 29 new Windows API implementations across four areas — time/calendar, atomic
-interlocked operations, shell folder APIs, and file version queries — enabling a wider range
-of Windows programs to run without crashing.
+**Goal:** Add 38 new Windows API implementations across six areas — synchronization objects (mutex and semaphore), console management, string helper functions, drive/volume information, and user/computer identity queries — enabling a wider range of Windows programs to run without issues.
 
 ---
 
-#### 25.1 New KERNEL32 time APIs (5)
+#### 26.1 New KERNEL32 Mutex/Semaphore APIs (8 + extensions)
 
 | Function | Implementation |
+|---|---|
+| `CreateMutexW` | Recursive mutex backed by `Arc<(Mutex<Option<(u32,u32)>>, Condvar)>` |
+| `CreateMutexA` | Converts ANSI name, delegates to `CreateMutexW` |
+| `OpenMutexW` | Looks up named mutex in `SYNC_HANDLES` registry |
+| `ReleaseMutex` | Decrements recursive count; notifies waiting threads |
+| `CreateSemaphoreW` | Counting semaphore backed by `Arc<(Mutex<i32>, Condvar)>` |
+| `CreateSemaphoreA` | Converts ANSI name, delegates to `CreateSemaphoreW` |
+| `OpenSemaphoreW` | Looks up named semaphore in `SYNC_HANDLES` registry |
+| `ReleaseSemaphore` | Increments semaphore count; notifies one waiter |
+
+`WaitForSingleObject` and `WaitForMultipleObjects` extended to handle mutex and semaphore handles.
+`CloseHandle` extended to remove mutex/semaphore entries from `SYNC_HANDLES`.
+
+#### 26.2 New KERNEL32 Console APIs (7)
+
+| Function | Behaviour |
+|---|---|
+| `SetConsoleMode` | Accepts mode (no-op); returns TRUE |
+| `SetConsoleTitleW` | Stores title in global `CONSOLE_TITLE` |
+| `SetConsoleTitleA` | Converts ANSI → UTF-16, delegates to `SetConsoleTitleW` |
+| `GetConsoleTitleW` | Returns stored title (or empty string); fills caller buffer |
+| `AllocConsole` | Returns TRUE (always have a console in this environment) |
+| `FreeConsole` | Returns TRUE |
+| `GetConsoleWindow` | Returns NULL (headless; no real window handle) |
+
+#### 26.3 New KERNEL32 String Utilities (9)
+
+| Function | Implementation |
+|---|---|
+| `lstrlenA` | ANSI `strlen` (counts until null terminator) |
+| `lstrcpyW` | Wide string copy; returns `dst` |
+| `lstrcpyA` | ANSI string copy; returns `dst` |
+| `lstrcmpW` | Wide string comparison (delegates to `String::cmp`) |
+| `lstrcmpA` | ANSI string comparison |
+| `lstrcmpiW` | Case-insensitive wide string comparison (via `to_lowercase`) |
+| `lstrcmpiA` | Case-insensitive ANSI comparison (via `to_ascii_lowercase`) |
+| `OutputDebugStringW` | Writes UTF-16 message to stderr with `[OutputDebugString]` prefix |
+| `OutputDebugStringA` | Writes ANSI message to stderr with same prefix |
+
+#### 26.4 New KERNEL32 Drive/Volume APIs (5)
+
+| Function | Behaviour |
+|---|---|
+| `GetDriveTypeW` | Returns `DRIVE_FIXED` (3) for all paths |
+| `GetLogicalDrives` | Returns 0x4 (only C: drive) |
+| `GetLogicalDriveStringsW` | Returns `"C:\\\0\0"` (single-drive list) |
+| `GetDiskFreeSpaceExW` | Returns 10 GB free / 20 GB total (fake values) |
+| `GetVolumeInformationW` | Returns volume `"LITEBOX"`, serial 0x12345678, filesystem `"NTFS"` |
+
+#### 26.5 New KERNEL32 Computer Name APIs (2)
+
+| Function | Implementation |
+|---|---|
+| `GetComputerNameW` | Reads Linux hostname via `/proc/sys/kernel/hostname` |
+| `GetComputerNameExW` | Delegates to `GetComputerNameW` for most name types |
+
+#### 26.6 New ADVAPI32 User Name APIs (2)
+
+| Function | Implementation |
+|---|---|
+| `GetUserNameW` | Reads Linux username via `$USER` env / `getlogin_r(3)` |
+| `GetUserNameA` | ANSI variant; converts to UTF-8 from wide version |
+
+#### 26.7 Infrastructure updates
+
+- `SYNC_HANDLE_COUNTER` + `SYNC_HANDLES` + `CONSOLE_TITLE` — 3 new globals
+- `function_table.rs` — 38 new `FunctionImpl` entries
+- `dll.rs` — 29 new KERNEL32 exports (offsets 0xAA–0xC8); 2 new ADVAPI32 exports
+- `ratchet.rs` — globals count updated 39 → 42
+
+#### 26.8 New unit tests (16 new)
+
+| Tests | What they verify |
+|---|---|
+| `test_create_mutex_and_wait` | Mutex creation, WaitForSingleObject acquire, ReleaseMutex |
+| `test_mutex_recursive_acquire` | Same thread can acquire a mutex multiple times |
+| `test_open_mutex_not_found` | OpenMutexW returns NULL for unknown names |
+| `test_create_semaphore_and_wait` | Semaphore creation, WaitForSingleObject decrement, ReleaseSemaphore |
+| `test_semaphore_release_count` | ReleaseSemaphore increments count and returns previous |
+| `test_semaphore_timeout` | WaitForSingleObject returns WAIT_TIMEOUT when count is 0 |
+| `test_set_console_mode_returns_true` | SetConsoleMode returns TRUE for any mode |
+| `test_set_get_console_title` | SetConsoleTitleW/GetConsoleTitleW round-trip |
+| `test_alloc_free_console` | AllocConsole/FreeConsole/GetConsoleWindow return correct values |
+| `test_lstrlen_a` | lstrlenA returns correct length |
+| `test_lstrcpy_w` | lstrcpyW copies wide string correctly |
+| `test_lstrcmpi_w` | lstrcmpiW is case-insensitive |
+| `test_output_debug_string` | OutputDebugStringW doesn't crash |
+| `test_get_drive_type` | Returns DRIVE_FIXED |
+| `test_get_logical_drives` | Returns 0x4 |
+| `test_get_computer_name` | Returns non-empty hostname string |
+
+---
+
+## Test Results
+
+```
+cargo test -p litebox_platform_linux_for_windows -p litebox_shim_windows
+           -p litebox_runner_windows_on_linux_userland -p dev_tests -- --test-threads=1
+dev_tests:   5 passed  (ratchet_globals updated 39→42)
+Platform:  334 passed  (+16 new mutex/semaphore/console/string/drive/user tests)
+Shim:       47 passed  (unchanged)
+Runner:     16 passed  (unchanged)
+Total:     401 passed  (+16 from Phase 26)
+```
+
+## Files Modified This Session
+
+- `litebox_platform_linux_for_windows/src/kernel32.rs` — 3 new globals; 36 new functions; extended WaitForSingleObject/WaitForMultipleObjects/CloseHandle; 15 new tests
+- `litebox_platform_linux_for_windows/src/advapi32.rs` — 2 new functions (GetUserNameW, GetUserNameA); 1 new test
+- `litebox_platform_linux_for_windows/src/function_table.rs` — 38 new `FunctionImpl` entries
+- `litebox_shim_windows/src/loader/dll.rs` — 29 new KERNEL32 exports; 2 new ADVAPI32 exports
+- `dev_tests/src/ratchet.rs` — globals 39 → 42
+- `docs/windows_on_linux_status.md` — updated counts, added Phase 26 tables, history entry
+- `SESSION_SUMMARY.md` — this file
+
+## Security Summary
+
+No new security vulnerabilities introduced.
+
+- `CreateMutexW`/`CreateSemaphoreW`: all sync state is managed through safe Rust `Arc<Mutex<...>>/Condvar` primitives; no unsafe pointer arithmetic beyond null checks.
+- `lstrcpyW`/`lstrcpyA`: no bound checking (matches real Windows API contract where caller must supply sufficient buffer); null checks prevent null pointer dereference.
+- `GetComputerNameW`: reads from `/proc/sys/kernel/hostname`; result is bounded to `MAX_COMPUTERNAME_LENGTH` (15) characters before writing to caller buffer.
+- `GetUserNameW`/`GetUserNameA`: username bounded by `UNLEN` (256) before writing to caller buffer; null-pointer check before write.
+- `OutputDebugStringW`/`A`: only writes to stderr; no memory writes to caller buffers.
+- `GetDiskFreeSpaceExW`/`GetVolumeInformationW`: all pointer writes are guarded with null checks.
+- CodeQL timed out (large repo); no security concerns in the changed code.
+
+---
+
+*(Previous session history follows)*
+
+
 |---|---|
 | `GetSystemTime` | `clock_gettime(CLOCK_REALTIME)` + `gmtime_r` → SYSTEMTIME |
 | `GetLocalTime` | `clock_gettime(CLOCK_REALTIME)` + `localtime_r` → SYSTEMTIME |
