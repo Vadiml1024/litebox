@@ -6475,7 +6475,7 @@ pub unsafe extern "C" fn kernel32_GetLocalTime(system_time: *mut SystemTime) {
 
 /// `SystemTimeToFileTime` — convert a SYSTEMTIME to a FILETIME (100-ns intervals since 1601-01-01).
 ///
-/// Returns 1 (TRUE) on success, 0 if either pointer is null.
+/// Returns 1 (TRUE) on success, 0 if either pointer is null or the SYSTEMTIME fields are invalid.
 ///
 /// # Safety
 /// `system_time` must point to a valid `SystemTime` (16 bytes).
@@ -6490,6 +6490,21 @@ pub unsafe extern "C" fn kernel32_SystemTimeToFileTime(
     }
     // SAFETY: Caller guarantees system_time points to a valid SystemTime.
     let st = unsafe { &*(system_time.cast::<SystemTime>()) };
+
+    // Validate SYSTEMTIME fields per Win32 contract (returns FALSE for invalid dates).
+    if st.w_month < 1
+        || st.w_month > 12
+        || st.w_day < 1
+        || st.w_day > 31
+        || st.w_hour > 23
+        || st.w_minute > 59
+        || st.w_second > 59
+        || st.w_milliseconds > 999
+        || st.w_year < 1601
+    {
+        return 0; // FALSE – invalid input
+    }
+
     let mut tm_val: libc::tm = unsafe { core::mem::zeroed() };
     tm_val.tm_year = i32::from(st.w_year) - 1900;
     tm_val.tm_mon = i32::from(st.w_month) - 1;
@@ -6500,8 +6515,13 @@ pub unsafe extern "C" fn kernel32_SystemTimeToFileTime(
     tm_val.tm_isdst = -1;
     // SAFETY: tm_val fields are set above.
     let unix_time = unsafe { libc::timegm(&raw mut tm_val) };
-    let intervals =
-        (unix_time + EPOCH_DIFF) as u64 * 10_000_000 + u64::from(st.w_milliseconds) * 10_000;
+
+    // Guard against dates before the Windows FILETIME epoch (1601-01-01).
+    let adjusted = unix_time + EPOCH_DIFF;
+    if adjusted < 0 {
+        return 0; // FALSE – date before FILETIME epoch (should not happen after year validation)
+    }
+    let intervals = adjusted as u64 * 10_000_000 + u64::from(st.w_milliseconds) * 10_000;
     // SAFETY: file_time is checked non-null above.
     unsafe {
         (*file_time).low_date_time = intervals as u32;
@@ -6581,15 +6601,20 @@ pub unsafe extern "C" fn kernel32_LocalAlloc(flags: u32, bytes: usize) -> *mut c
 
 /// `LocalFree` — free local memory previously allocated by `LocalAlloc`.
 ///
-/// Delegates to `HeapFree`.  Returns NULL on success (per Windows API contract).
+/// Delegates to `HeapFree`.  Returns NULL on success; returns the original handle on failure
+/// (per Win32 contract).
 ///
 /// # Safety
 /// `mem` must have been allocated by `LocalAlloc` (or `HeapAlloc`), or be NULL.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_LocalFree(mem: *mut core::ffi::c_void) -> *mut core::ffi::c_void {
     // SAFETY: Delegating to HeapFree; caller guarantees mem is a valid allocation.
-    unsafe { kernel32_HeapFree(core::ptr::null_mut(), 0, mem) };
-    core::ptr::null_mut()
+    let ok = unsafe { kernel32_HeapFree(core::ptr::null_mut(), 0, mem) };
+    if ok != 0 {
+        core::ptr::null_mut() // success
+    } else {
+        mem // failure: return the original handle per Win32 contract
+    }
 }
 
 // ── Interlocked atomic operations ────────────────────────────────────────
@@ -10146,5 +10171,68 @@ mod tests {
         with_file_handles(|map| {
             map.remove(&handle_val);
         });
+    }
+
+    /// `SystemTimeToFileTime` should return FALSE for out-of-range SYSTEMTIME fields.
+    #[test]
+    fn test_system_time_to_file_time_invalid_input() {
+        let mut ft = FileTime {
+            low_date_time: 0,
+            high_date_time: 0,
+        };
+        // Invalid month (0)
+        let st_bad = SystemTime {
+            w_year: 2024,
+            w_month: 0, // invalid
+            w_day: 1,
+            w_day_of_week: 0,
+            w_hour: 0,
+            w_minute: 0,
+            w_second: 0,
+            w_milliseconds: 0,
+        };
+        let result = unsafe {
+            kernel32_SystemTimeToFileTime(
+                core::ptr::addr_of!(st_bad).cast::<u8>(),
+                core::ptr::addr_of_mut!(ft),
+            )
+        };
+        assert_eq!(result, 0, "Invalid month=0 should return FALSE");
+
+        // Invalid year (before FILETIME epoch: 1601)
+        let st_early = SystemTime {
+            w_year: 1600,
+            w_month: 1,
+            w_day: 1,
+            w_day_of_week: 0,
+            w_hour: 0,
+            w_minute: 0,
+            w_second: 0,
+            w_milliseconds: 0,
+        };
+        let result2 = unsafe {
+            kernel32_SystemTimeToFileTime(
+                core::ptr::addr_of!(st_early).cast::<u8>(),
+                core::ptr::addr_of_mut!(ft),
+            )
+        };
+        assert_eq!(result2, 0, "Year < 1601 should return FALSE");
+    }
+
+    /// `LocalFree` should return NULL on success and the original pointer on failure.
+    #[test]
+    fn test_local_free_success_and_failure() {
+        // Allocate a block and free it — LocalFree should return NULL.
+        let ptr = unsafe { kernel32_LocalAlloc(0, 16) };
+        assert!(!ptr.is_null());
+        let result = unsafe { kernel32_LocalFree(ptr) };
+        assert!(result.is_null(), "LocalFree should return NULL on success");
+
+        // Passing NULL: HeapFree returns TRUE for NULL (no-op), so LocalFree returns NULL.
+        let result_null = unsafe { kernel32_LocalFree(core::ptr::null_mut()) };
+        assert!(
+            result_null.is_null(),
+            "LocalFree(NULL) should return NULL (no-op)"
+        );
     }
 }

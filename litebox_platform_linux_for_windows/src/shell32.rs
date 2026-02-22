@@ -10,7 +10,6 @@
 #![allow(unsafe_op_in_unsafe_fn)]
 
 use core::ffi::c_void;
-use std::alloc::{Layout, alloc};
 
 // CSIDL constants for SHGetFolderPathW
 const CSIDL_DESKTOP: i32 = 0x0000;
@@ -23,7 +22,7 @@ const CSIDL_SYSTEM: i32 = 0x0025;
 
 // COM-style return codes
 const S_OK: i32 = 0;
-const E_FAIL: i32 = -0x7FFF_BFFF_i32; // 0x80004005
+const E_FAIL: i32 = 0x8000_4005u32 as i32; // E_FAIL (0x80004005)
 
 /// `CommandLineToArgvW` — parse a Unicode command-line string into an argv array.
 ///
@@ -81,32 +80,32 @@ pub unsafe extern "C" fn shell32_CommandLineToArgvW(
         })
         .collect();
 
-    // Allocate: pointer array + all string data in one block
-    let ptr_array_bytes = encoded.len() * core::mem::size_of::<*mut u16>();
+    // Allocate: pointer array (argc+1 entries, last is NULL) + all string data in one block.
+    // Use kernel32_HeapAlloc so the block can be freed with LocalFree/HeapFree.
+    let ptr_array_bytes = (encoded.len() + 1) * core::mem::size_of::<*mut u16>();
     let data_bytes: usize = encoded.iter().map(|v| v.len() * 2).sum();
     let total = ptr_array_bytes + data_bytes;
 
-    let Ok(layout) = Layout::from_size_align(total, core::mem::align_of::<*mut u16>()) else {
-        return core::ptr::null_mut();
-    };
-    // SAFETY: layout is valid and non-zero.
-    let block = unsafe { alloc(layout) };
+    // SAFETY: kernel32_HeapAlloc is safe to call; the returned block must be freed with LocalFree.
+    let block = unsafe { crate::kernel32::kernel32_HeapAlloc(core::ptr::null_mut(), 0, total) };
     if block.is_null() {
         return core::ptr::null_mut();
     }
 
     // Write pointers and strings into the allocated block.
     // SAFETY: block is freshly allocated with enough space for all writes below.
-    // The layout was created with pointer alignment so both casts are valid.
+    // HeapAlloc guarantees at least usize alignment, sufficient for *mut u16 pointers.
     #[allow(clippy::cast_ptr_alignment)]
     unsafe {
         let ptrs = block.cast::<*mut u16>();
-        let mut data_ptr = block.add(ptr_array_bytes).cast::<u16>();
+        let mut data_ptr = block.cast::<u8>().add(ptr_array_bytes).cast::<u16>();
         for (i, enc) in encoded.iter().enumerate() {
             *ptrs.add(i) = data_ptr;
             core::ptr::copy_nonoverlapping(enc.as_ptr(), data_ptr, enc.len());
             data_ptr = data_ptr.add(enc.len());
         }
+        // NULL-terminate the pointer array (argv[argc] == NULL per Windows contract)
+        *ptrs.add(encoded.len()) = core::ptr::null_mut();
         ptrs
     }
 }
@@ -308,21 +307,13 @@ mod tests {
         let arg_ptrs = unsafe { shell32_CommandLineToArgvW(cmd.as_ptr(), &raw mut num_args) };
         assert!(!arg_ptrs.is_null());
         assert_eq!(num_args, 3);
-        // Compute the exact layout to free the allocation.
-        let args_encoded: Vec<Vec<u16>> = ["prog.exe", "arg1", "arg2"]
-            .iter()
-            .map(|a| {
-                let mut v: Vec<u16> = a.encode_utf16().collect();
-                v.push(0);
-                v
-            })
-            .collect();
-        let ptr_bytes = 3 * core::mem::size_of::<*mut u16>();
-        let data_bytes: usize = args_encoded.iter().map(|v| v.len() * 2).sum();
-        let total = ptr_bytes + data_bytes;
-        let layout =
-            std::alloc::Layout::from_size_align(total, core::mem::align_of::<*mut u16>()).unwrap();
-        unsafe { std::alloc::dealloc(arg_ptrs.cast::<u8>(), layout) };
+        // argv[3] must be NULL (NULL-terminated pointer array per Windows contract)
+        let null_sentinel = unsafe { *arg_ptrs.add(3) };
+        assert!(null_sentinel.is_null(), "argv[argc] should be NULL");
+        // Free via LocalFree (block was allocated with HeapAlloc)
+        let result =
+            unsafe { crate::kernel32::kernel32_LocalFree(arg_ptrs.cast::<core::ffi::c_void>()) };
+        assert!(result.is_null(), "LocalFree should return NULL on success");
     }
 
     #[test]
