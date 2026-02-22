@@ -429,3 +429,52 @@ fn test_math_test_program_exists() {
         "math_test.exe should be built in windows_test_programs"
     );
 }
+
+/// Test that getprocaddress_test.exe builds, loads, and all 8 test cases pass.
+///
+/// The executable is a plain-C program in `windows_test_programs/dynload_test/`
+/// built with `make` (MinGW cross-compiler), not via Cargo.  It directly calls
+/// `GetModuleHandleA`, `GetModuleHandleW`, `GetProcAddress`, `LoadLibraryA`, and
+/// `FreeLibrary`, exercising the LiteBox dynamic-loading shim.
+#[test]
+#[ignore = "Requires MinGW-built C test program (run: cd windows_test_programs/dynload_test && make)"]
+fn test_getprocaddress_c_program() {
+    use std::env;
+    use std::path::PathBuf;
+    use std::process::Command;
+
+    // Locate the compiled exe next to its source
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let workspace_root = PathBuf::from(manifest_dir).parent().unwrap().to_path_buf();
+    let exe_path = workspace_root
+        .join("windows_test_programs")
+        .join("dynload_test")
+        .join("getprocaddress_test.exe");
+
+    assert!(
+        exe_path.exists(),
+        "getprocaddress_test.exe not found at {exe_path:?}. \
+         Build it with: cd windows_test_programs/dynload_test && make"
+    );
+
+    let runner_exe = env!("CARGO_BIN_EXE_litebox_runner_windows_on_linux_userland");
+    let output = Command::new(runner_exe)
+        .arg(&exe_path)
+        .output()
+        .expect("failed to launch litebox runner for getprocaddress_test.exe");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert!(
+        output.status.success(),
+        "getprocaddress_test.exe should exit with code 0\nstdout:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("=== GetProcAddress Test Suite ==="),
+        "output should contain test suite header\nstdout:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("0 failed"),
+        "output should report 0 failures\nstdout:\n{stdout}"
+    );
+}

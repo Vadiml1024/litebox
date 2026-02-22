@@ -74,6 +74,25 @@ C++ programs that test the Windows Sockets 2 (WinSock2) API implementation
 provided by the Windows-on-Linux platform.  Located in the `winsock_test/`
 subdirectory and built with the MinGW cross-compiler (not Cargo).
 
+### dynload_test (C)
+
+A plain-C program that exercises the dynamic-loading Windows APIs:
+`GetModuleHandleA`, `GetModuleHandleW`, `GetProcAddress`, `LoadLibraryA`, and
+`FreeLibrary`.  Located in `dynload_test/` and built with the MinGW C
+cross-compiler (not Cargo).
+
+#### getprocaddress_test
+
+Validates the `GetProcAddress` API and friends:
+- `GetModuleHandleA(NULL)` → non-NULL pseudo-handle for the main module
+- `GetModuleHandleA("kernel32.dll")` → non-NULL HMODULE
+- `GetProcAddress` with a known export (`GetLastError`) → non-NULL
+- Call the resolved function pointer and verify it executes correctly
+- `GetProcAddress` with an unknown name → NULL + `ERROR_PROC_NOT_FOUND` (127)
+- `GetProcAddress` with an ordinal value → NULL + `ERROR_PROC_NOT_FOUND` (127)
+- `GetModuleHandleW(NULL)` → non-NULL (wide-string variant)
+- `LoadLibraryA` + `GetProcAddress` + `FreeLibrary` round-trip
+
 #### winsock_basic_test
 
 Validates the fundamental WinSock2 building blocks:
@@ -155,6 +174,20 @@ The resulting executables will be in `windows_test_programs/winsock_test/`:
 - `winsock_tcp_test.exe`
 - `winsock_udp_test.exe`
 
+### C dynload program (dynload_test/)
+
+```bash
+# Install MinGW C cross-compiler (if not already installed)
+sudo apt install -y gcc-mingw-w64-x86-64
+
+# Build
+cd windows_test_programs/dynload_test
+make
+```
+
+The resulting executable will be in `windows_test_programs/dynload_test/`:
+- `getprocaddress_test.exe`
+
 ## Testing
 
 These programs can be used to test the Windows-on-Linux runner:
@@ -175,6 +208,9 @@ cargo build -p litebox_runner_windows_on_linux_userland
 ./target/debug/litebox_runner_windows_on_linux_userland ./windows_test_programs/winsock_test/winsock_basic_test.exe
 ./target/debug/litebox_runner_windows_on_linux_userland ./windows_test_programs/winsock_test/winsock_tcp_test.exe
 ./target/debug/litebox_runner_windows_on_linux_userland ./windows_test_programs/winsock_test/winsock_udp_test.exe
+
+# Run the C dynload test program
+./target/debug/litebox_runner_windows_on_linux_userland ./windows_test_programs/dynload_test/getprocaddress_test.exe
 ```
 
 ### Current Status
