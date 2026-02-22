@@ -8491,4 +8491,46 @@ mod tests {
         let _ = std::fs::remove_file(&link);
         let _ = std::fs::remove_file(&target);
     }
+
+    /// `GetProcAddress` called with an ordinal (proc_name value < 0x10000) must
+    /// return NULL and set `ERROR_PROC_NOT_FOUND` (127).  Windows encodes ordinals
+    /// as small integers below the 64 KB boundary; this shim does not support
+    /// ordinal-based lookup.
+    #[test]
+    fn test_get_proc_address_ordinal() {
+        // Use any non-null handle; the ordinal path exits before the handle lookup.
+        let fake_handle = 0x1_0000 as *mut core::ffi::c_void;
+        // Ordinal 1 as a pointer value (< 0x10000).
+        let ordinal_ptr = 1_usize as *const u8;
+        let result = unsafe { kernel32_GetProcAddress(fake_handle, ordinal_ptr) };
+        assert!(
+            result.is_null(),
+            "GetProcAddress with ordinal should return NULL"
+        );
+        let err = unsafe { kernel32_GetLastError() };
+        assert_eq!(
+            err, 127,
+            "GetLastError should be ERROR_PROC_NOT_FOUND (127) for ordinal input"
+        );
+    }
+
+    /// `GetProcAddress` called with a handle that was never returned by
+    /// `LoadLibraryA/W` or `GetModuleHandleA/W` must return NULL and set
+    /// `ERROR_PROC_NOT_FOUND` (127).
+    #[test]
+    fn test_get_proc_address_invalid_handle() {
+        // A handle value that is deliberately not in the DLL registry.
+        let bogus_handle = 0xDEAD_C0DE_usize as *mut core::ffi::c_void;
+        let func_name = b"SomeFunction\0";
+        let result = unsafe { kernel32_GetProcAddress(bogus_handle, func_name.as_ptr()) };
+        assert!(
+            result.is_null(),
+            "GetProcAddress with invalid handle should return NULL"
+        );
+        let err = unsafe { kernel32_GetLastError() };
+        assert_eq!(
+            err, 127,
+            "GetLastError should be ERROR_PROC_NOT_FOUND (127) for invalid handle"
+        );
+    }
 }
