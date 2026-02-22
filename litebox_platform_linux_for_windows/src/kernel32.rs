@@ -5356,18 +5356,25 @@ pub unsafe extern "C" fn kernel32_VirtualProtect(
 /// The 64-bit layout written into `buffer`:
 /// - `[0..8]`   BaseAddress (page-aligned start of the region)
 /// - `[8..16]`  AllocationBase (same as BaseAddress for private/anonymous maps)
-/// - `[16..20]` AllocationProtect (Windows `PAGE_*` flags for the initial
-///              protection at the time of allocation)
+/// - `[16..20]` AllocationProtect (Windows `PAGE_*` flags derived from the
+///              current Linux permission bits; `/proc/self/maps` does not
+///              record the original allocation protection, so this equals
+///              `Protect`)
 /// - `[20..24]` padding (written as 0)
 /// - `[24..32]` RegionSize
 /// - `[32..36]` State (`MEM_COMMIT = 0x1000` if mapped, `MEM_FREE = 0x10000`
 ///              if no mapping was found)
 /// - `[36..40]` Protect (current Windows `PAGE_*` flags derived from the Linux
-///              `r`/`w`/`x` permission bits)
+///              `r`/`w`/`x` permission bits; equals `AllocationProtect` since
+///              the original allocation protection is not tracked)
 /// - `[40..44]` Type (`MEM_PRIVATE = 0x20000` for anonymous; `MEM_MAPPED =
 ///              0x40000` for file-backed; `MEM_IMAGE = 0x1000000` for the
 ///              executable image)
 /// - `[44..48]` padding (written as 0)
+///
+/// **Limitation:** `AllocationProtect` and `Protect` are always identical because
+/// `/proc/self/maps` only exposes the *current* protection; the original protection
+/// at allocation time is not recorded.
 ///
 /// Returns the number of bytes written on success (48), or 0 on failure.
 ///
@@ -5445,17 +5452,15 @@ pub unsafe extern "C" fn kernel32_VirtualQuery(
         // Determine memory type from the pathname field.
         // In /proc/self/maps:
         //   - Empty pathname or special tokens like "[heap]"/"[stack]"/"[vdso]" →
-        //     anonymous/private memory → MEM_PRIVATE
+        //     anonymous/private memory → MEM_PRIVATE (regardless of execute bit)
         //   - Pathname of a shared object (contains ".so" followed by nothing or
-        //     a version suffix like ".so.6") or of the main executable →
-        //     MEM_IMAGE (executable image)
+        //     a version suffix like ".so.6") → MEM_IMAGE (executable image)
         //   - Any other file-backed mapping → MEM_MAPPED
         let pathname = parts.nth(3).unwrap_or(""); // skip offset, dev, inode
         let mem_type: u32 = if pathname.is_empty() || pathname.starts_with('[') {
             MEM_PRIVATE // anonymous or special region ([heap], [stack], [vdso], …)
-        } else if pathname.contains(".so") || executable {
-            // Shared objects may appear as "libfoo.so" or "libfoo.so.6"; executable
-            // code regions are also identified by the execute permission bit.
+        } else if pathname.contains(".so") {
+            // Shared objects may appear as "libfoo.so" or "libfoo.so.6".
             MEM_IMAGE
         } else {
             MEM_MAPPED
@@ -5492,8 +5497,13 @@ pub unsafe extern "C" fn kernel32_VirtualQuery(
     // Address not found in any mapping — report as free.
     // BaseAddress: page-aligned address (query the OS for the actual page size).
     // SAFETY: sysconf is always safe to call with _SC_PAGESIZE.
-    let page_size: usize = unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize };
-    let page_size = if page_size == 0 { 4096 } else { page_size };
+    let raw_page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+    let page_size: usize = if raw_page_size <= 0 || raw_page_size > (1 << 30) {
+        // Fallback to a sane default if sysconf fails or returns an absurd value.
+        4096
+    } else {
+        raw_page_size as usize
+    };
     let base_addr = (query_addr & !(page_size - 1)) as u64;
     let p = buffer;
     // SAFETY: We checked buffer is non-null and length >= MBI_SIZE above.
