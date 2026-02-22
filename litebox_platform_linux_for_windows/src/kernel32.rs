@@ -23,6 +23,8 @@ use std::collections::HashMap;
 use std::ffi::CString;
 use std::fs::File;
 use std::io::{Read, Seek, Write};
+use std::os::unix::fs::MetadataExt as _;
+use std::os::unix::io::{AsRawFd, FromRawFd};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU32, AtomicUsize};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
@@ -262,6 +264,46 @@ fn with_event_handles<R>(f: impl FnOnce(&mut HashMap<usize, EventEntry>) -> R) -
 fn alloc_event_handle() -> usize {
     use std::sync::atomic::Ordering;
     EVENT_HANDLE_COUNTER.fetch_add(4, Ordering::SeqCst)
+}
+
+// ── File-mapping-handle registry ──────────────────────────────────────────
+// Maps synthetic HANDLE values (usize) to file-mapping metadata.
+// Used by CreateFileMappingA, MapViewOfFile, UnmapViewOfFile.
+
+static FILE_MAPPING_HANDLE_COUNTER: AtomicUsize = AtomicUsize::new(0x6_0000);
+
+struct FileMappingEntry {
+    /// Raw file descriptor; -1 for anonymous (pagefile-backed) mappings.
+    raw_fd: i32,
+    /// Total mapping size in bytes (0 = use full file).
+    size: u64,
+    /// Windows PAGE_* protection flags from CreateFileMappingA.
+    protect: u32,
+}
+
+static FILE_MAPPING_HANDLES: Mutex<Option<HashMap<usize, FileMappingEntry>>> = Mutex::new(None);
+
+fn with_file_mapping_handles<R>(f: impl FnOnce(&mut HashMap<usize, FileMappingEntry>) -> R) -> R {
+    let mut guard = FILE_MAPPING_HANDLES.lock().unwrap();
+    let map = guard.get_or_insert_with(HashMap::new);
+    f(map)
+}
+
+fn alloc_file_mapping_handle() -> usize {
+    use std::sync::atomic::Ordering;
+    FILE_MAPPING_HANDLE_COUNTER.fetch_add(4, Ordering::SeqCst)
+}
+
+// ── Mapped-view registry ───────────────────────────────────────────────────
+// Maps base_address (usize) → mapping size (usize) so UnmapViewOfFile can
+// call munmap with the correct length.
+
+static MAPPED_VIEWS: Mutex<Option<HashMap<usize, usize>>> = Mutex::new(None);
+
+fn with_mapped_views<R>(f: impl FnOnce(&mut HashMap<usize, usize>) -> R) -> R {
+    let mut guard = MAPPED_VIEWS.lock().unwrap();
+    let map = guard.get_or_insert_with(HashMap::new);
+    f(map)
 }
 
 // ── DLL-load-handle registry ──────────────────────────────────────────────
@@ -2597,20 +2639,53 @@ pub unsafe extern "C" fn kernel32_CreateEventW(
     handle as *mut core::ffi::c_void
 }
 
-/// CreateFileMappingA stub - creates a file mapping object
+/// CreateFileMappingA - creates or opens a named or unnamed file mapping object
+///
+/// `file` may be `INVALID_HANDLE_VALUE` (-1 as usize) for a pagefile-backed
+/// (anonymous) mapping.  The `name` parameter (named mappings) is accepted
+/// but ignored; all mappings are process-private.
 ///
 /// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
+/// `file` must be a handle previously returned by `CreateFileW` (or
+/// `INVALID_HANDLE_VALUE`).  `name`, if non-null, must be a valid
+/// null-terminated ASCII string (not dereferenced here).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_CreateFileMappingA(
-    _file: *mut core::ffi::c_void,
+    file: *mut core::ffi::c_void,
     _security_attributes: *mut core::ffi::c_void,
-    _protect: u32,
-    _maximum_size_high: u32,
-    _maximum_size_low: u32,
+    protect: u32,
+    maximum_size_high: u32,
+    maximum_size_low: u32,
     _name: *const u8,
 ) -> *mut core::ffi::c_void {
-    core::ptr::null_mut() // NULL - not implemented
+    let handle_val = file as usize;
+    let size = (u64::from(maximum_size_high) << 32) | u64::from(maximum_size_low);
+
+    // INVALID_HANDLE_VALUE (usize::MAX, i.e. -1 cast to usize) means a
+    // pagefile-backed anonymous mapping.
+    let raw_fd = if handle_val == usize::MAX {
+        -1i32
+    } else {
+        let fd = with_file_handles(|map| map.get(&handle_val).map(|e| e.file.as_raw_fd()));
+        let Some(fd) = fd else {
+            kernel32_SetLastError(6); // ERROR_INVALID_HANDLE
+            return core::ptr::null_mut();
+        };
+        fd
+    };
+
+    let mapping_handle = alloc_file_mapping_handle();
+    with_file_mapping_handles(|map| {
+        map.insert(
+            mapping_handle,
+            FileMappingEntry {
+                raw_fd,
+                size,
+                protect,
+            },
+        );
+    });
+    mapping_handle as *mut core::ffi::c_void
 }
 
 /// CreateHardLinkW - creates a hard link to an existing file
@@ -2647,18 +2722,59 @@ pub unsafe extern "C" fn kernel32_CreateHardLinkW(
     }
 }
 
-/// CreatePipe stub - creates a pipe
+/// CreatePipe - creates an anonymous pipe
+///
+/// Creates a unidirectional pipe; `read_pipe` receives the read-end handle
+/// and `write_pipe` receives the write-end handle.  Both handles are
+/// registered in the file-handle table so `ReadFile`/`WriteFile`/`CloseHandle`
+/// work on them normally.  `pipe_attributes` (security/inheritability) and
+/// `size` (suggested buffer size hint) are accepted but ignored.
 ///
 /// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
+/// `read_pipe` and `write_pipe` must be valid writable pointers.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_CreatePipe(
-    _read_pipe: *mut *mut core::ffi::c_void,
-    _write_pipe: *mut *mut core::ffi::c_void,
+    read_pipe: *mut *mut core::ffi::c_void,
+    write_pipe: *mut *mut core::ffi::c_void,
     _pipe_attributes: *mut core::ffi::c_void,
     _size: u32,
 ) -> i32 {
-    0 // FALSE - not implemented
+    if read_pipe.is_null() || write_pipe.is_null() {
+        kernel32_SetLastError(87); // ERROR_INVALID_PARAMETER
+        return 0;
+    }
+
+    let mut pipe_fds = [0i32; 2];
+    // SAFETY: pipe_fds is a valid two-element array for the pipe() syscall.
+    if libc::pipe(pipe_fds.as_mut_ptr()) != 0 {
+        kernel32_SetLastError(6); // ERROR_INVALID_HANDLE (generic I/O error)
+        return 0;
+    }
+
+    // SAFETY: pipe() returned valid, owned file descriptors.
+    let read_file = File::from_raw_fd(pipe_fds[0]);
+    let write_file = File::from_raw_fd(pipe_fds[1]);
+
+    let read_handle = alloc_file_handle();
+    let write_handle = alloc_file_handle();
+
+    let inserted = with_file_handles(|map| {
+        if map.len() + 2 > MAX_OPEN_FILE_HANDLES {
+            return false;
+        }
+        map.insert(read_handle, FileEntry { file: read_file });
+        map.insert(write_handle, FileEntry { file: write_file });
+        true
+    });
+
+    if !inserted {
+        kernel32_SetLastError(ERROR_TOO_MANY_OPEN_FILES);
+        return 0;
+    }
+
+    *read_pipe = read_handle as *mut core::ffi::c_void;
+    *write_pipe = write_handle as *mut core::ffi::c_void;
+    1 // TRUE
 }
 
 /// CreateProcessW stub - creates a new process
@@ -2855,21 +2971,70 @@ pub unsafe extern "C" fn kernel32_DeviceIoControl(
     0 // FALSE - not implemented
 }
 
-/// DuplicateHandle stub - duplicates a handle
+/// DuplicateHandle - duplicates an object handle
+///
+/// Only same-process duplication is supported (`source_process_handle` and
+/// `target_process_handle` are accepted but their values are ignored).
+///
+/// For file handles, the underlying `File` is cloned via `try_clone()` so
+/// the duplicate has its own file-offset cursor but refers to the same open
+/// file description.  For event and thread handles the same handle value is
+/// returned (they are already reference-counted via `Arc`).
 ///
 /// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
+/// `target_handle` must be a valid writable pointer to a HANDLE when non-null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_DuplicateHandle(
     _source_process_handle: *mut core::ffi::c_void,
-    _source_handle: *mut core::ffi::c_void,
+    source_handle: *mut core::ffi::c_void,
     _target_process_handle: *mut core::ffi::c_void,
-    _target_handle: *mut *mut core::ffi::c_void,
+    target_handle: *mut *mut core::ffi::c_void,
     _desired_access: u32,
     _inherit_handle: i32,
     _options: u32,
 ) -> i32 {
-    0 // FALSE - not implemented
+    if target_handle.is_null() {
+        kernel32_SetLastError(87); // ERROR_INVALID_PARAMETER
+        return 0;
+    }
+
+    let src_val = source_handle as usize;
+
+    // Try to duplicate as a file handle.
+    let cloned = with_file_handles(|map| map.get(&src_val).and_then(|e| e.file.try_clone().ok()));
+    if let Some(cloned_file) = cloned {
+        let new_handle = alloc_file_handle();
+        let inserted = with_file_handles(|map| {
+            if map.len() >= MAX_OPEN_FILE_HANDLES {
+                return false;
+            }
+            map.insert(new_handle, FileEntry { file: cloned_file });
+            true
+        });
+        if inserted {
+            *target_handle = new_handle as *mut core::ffi::c_void;
+            return 1; // TRUE
+        }
+        kernel32_SetLastError(ERROR_TOO_MANY_OPEN_FILES);
+        return 0;
+    }
+
+    // For event handles, copy the value (they are Arc-backed and ref-counted).
+    let is_event = with_event_handles(|map| map.contains_key(&src_val));
+    if is_event {
+        *target_handle = source_handle;
+        return 1; // TRUE
+    }
+
+    // For thread handles, copy the value (join handles cannot be truly cloned).
+    let is_thread = with_thread_handles(|map| map.contains_key(&src_val));
+    if is_thread {
+        *target_handle = source_handle;
+        return 1; // TRUE
+    }
+
+    kernel32_SetLastError(6); // ERROR_INVALID_HANDLE
+    0 // FALSE
 }
 
 /// FlushFileBuffers - flushes the write buffers of the specified file
@@ -3116,8 +3281,6 @@ pub unsafe extern "C" fn kernel32_GetFileInformationByHandle(
     file: *mut core::ffi::c_void,
     file_information: *mut core::ffi::c_void,
 ) -> i32 {
-    use std::os::unix::fs::MetadataExt;
-
     // Windows FILETIME: 100-nanosecond intervals since 1601-01-01 UTC.
     // Unix time: seconds since 1970-01-01 UTC.  Difference: 11 644 473 600 s.
     const UNIX_EPOCH_OFFSET: u64 = 11_644_473_600;
@@ -3814,18 +3977,109 @@ pub unsafe extern "C" fn kernel32_WriteConsoleW(
 
 // Additional stubs for remaining missing APIs
 
-/// GetFileInformationByHandleEx stub
+/// GetFileInformationByHandleEx - retrieves file information by file handle
+///
+/// Supports two information classes:
+/// - `FileBasicInfo` (0): timestamps and file attributes.
+/// - `FileStandardInfo` (1): file size, link count, directory flag.
+///
+/// Returns FALSE for unknown classes (`ERROR_INVALID_PARAMETER`).
 ///
 /// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
+/// `file_information` must point to a writable buffer of at least
+/// `buffer_size` bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_GetFileInformationByHandleEx(
-    _file: *mut core::ffi::c_void,
-    _file_information_class: u32,
-    _file_information: *mut core::ffi::c_void,
-    _buffer_size: u32,
+    file: *mut core::ffi::c_void,
+    file_information_class: u32,
+    file_information: *mut core::ffi::c_void,
+    buffer_size: u32,
 ) -> i32 {
-    0 // FALSE
+    if file_information.is_null() {
+        kernel32_SetLastError(87); // ERROR_INVALID_PARAMETER
+        return 0;
+    }
+
+    let handle_val = file as usize;
+    let meta = with_file_handles(|map| map.get(&handle_val).and_then(|e| e.file.metadata().ok()));
+    let Some(meta) = meta else {
+        kernel32_SetLastError(6); // ERROR_INVALID_HANDLE
+        return 0;
+    };
+
+    match file_information_class {
+        0 => {
+            // FileBasicInfo: CreationTime, LastAccessTime, LastWriteTime, ChangeTime, FileAttributes
+            // Layout: 4 × i64 (32 bytes) + u32 (4 bytes) = 36 bytes total.
+            if buffer_size < 36 {
+                kernel32_SetLastError(122); // ERROR_INSUFFICIENT_BUFFER
+                return 0;
+            }
+            let buf = file_information.cast::<u8>();
+            // Zero the whole struct first.
+            // SAFETY: Caller guarantees buffer is writable for buffer_size bytes (checked ≥ 36).
+            std::ptr::write_bytes(buf, 0, 36);
+
+            // Convert a Unix timestamp (seconds + nanoseconds) to a Windows FILETIME
+            // (100-nanosecond intervals since 1601-01-01).
+            let to_filetime =
+                |secs: i64, nsec: i64| -> i64 { (secs + EPOCH_DIFF) * 10_000_000 + nsec / 100 };
+
+            // Linux has no dedicated "creation time"; use ctime (metadata-change time)
+            // as the closest approximation.
+            let creation = to_filetime(meta.ctime(), meta.ctime_nsec());
+            let atime = to_filetime(meta.atime(), meta.atime_nsec());
+            let mtime = to_filetime(meta.mtime(), meta.mtime_nsec());
+            let ctime = to_filetime(meta.ctime(), meta.ctime_nsec());
+
+            // SAFETY: buffer is at least 36 bytes, offsets are within bounds.
+            std::ptr::write_unaligned(buf.add(0).cast::<i64>(), creation);
+            std::ptr::write_unaligned(buf.add(8).cast::<i64>(), atime);
+            std::ptr::write_unaligned(buf.add(16).cast::<i64>(), mtime);
+            std::ptr::write_unaligned(buf.add(24).cast::<i64>(), ctime);
+
+            let attrs: u32 = if meta.is_dir() {
+                0x10 // FILE_ATTRIBUTE_DIRECTORY
+            } else if meta.mode() & 0o200 == 0 {
+                0x01 // FILE_ATTRIBUTE_READONLY
+            } else {
+                0x80 // FILE_ATTRIBUTE_NORMAL
+            };
+            // SAFETY: offset 32 is within the 36-byte buffer.
+            std::ptr::write_unaligned(buf.add(32).cast::<u32>(), attrs);
+            1 // TRUE
+        }
+        1 => {
+            // FileStandardInfo: AllocationSize, EndOfFile, NumberOfLinks,
+            //                   DeletePending, Directory
+            // Layout: i64 (8) + i64 (8) + u32 (4) + u8 (1) + u8 (1) = 22 bytes.
+            if buffer_size < 22 {
+                kernel32_SetLastError(122); // ERROR_INSUFFICIENT_BUFFER
+                return 0;
+            }
+            let buf = file_information.cast::<u8>();
+            // SAFETY: Caller guarantees buffer is writable for buffer_size bytes (checked ≥ 22).
+            std::ptr::write_bytes(buf, 0, 22);
+
+            let file_size = meta.len() as i64;
+            // Round allocation size up to the nearest 4 KiB cluster.
+            let alloc_size = ((file_size + 4095) / 4096) * 4096;
+            let nlinks = meta.nlink() as u32;
+            let is_dir = meta.is_dir();
+
+            // SAFETY: offsets are within the 22-byte buffer.
+            std::ptr::write_unaligned(buf.add(0).cast::<i64>(), alloc_size); // AllocationSize
+            std::ptr::write_unaligned(buf.add(8).cast::<i64>(), file_size); // EndOfFile
+            std::ptr::write_unaligned(buf.add(16).cast::<u32>(), nlinks); // NumberOfLinks
+            *buf.add(20) = 0u8; // DeletePending: always FALSE
+            *buf.add(21) = u8::from(is_dir); // Directory
+            1 // TRUE
+        }
+        _ => {
+            kernel32_SetLastError(87); // ERROR_INVALID_PARAMETER
+            0 // FALSE
+        }
+    }
 }
 
 /// GetFileSizeEx - retrieves the size of the specified file
@@ -3860,18 +4114,59 @@ pub unsafe extern "C" fn kernel32_GetFileSizeEx(
     }
 }
 
-/// GetFinalPathNameByHandleW stub
+/// GetFinalPathNameByHandleW - retrieves the final path for the specified file
+///
+/// Reads the `/proc/self/fd/<fd>` symlink to obtain the actual filesystem path
+/// for the file handle, then converts it to a null-terminated UTF-16 string.
+///
+/// Returns the number of characters written (excluding the null terminator)
+/// on success, or 0 on failure.  When `file_path` is null or the buffer is
+/// too small, returns the required buffer length (including the null terminator)
+/// and sets `ERROR_INSUFFICIENT_BUFFER`.
 ///
 /// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
+/// When `file_path` is non-null it must be writable for `file_path_size` `u16`
+/// elements.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_GetFinalPathNameByHandleW(
-    _file: *mut core::ffi::c_void,
-    _file_path: *mut u16,
-    _file_path_size: u32,
+    file: *mut core::ffi::c_void,
+    file_path: *mut u16,
+    file_path_size: u32,
     _flags: u32,
 ) -> u32 {
-    0 // 0 = error
+    let handle_val = file as usize;
+    let raw_fd = with_file_handles(|map| map.get(&handle_val).map(|e| e.file.as_raw_fd()));
+    let Some(fd) = raw_fd else {
+        kernel32_SetLastError(6); // ERROR_INVALID_HANDLE
+        return 0;
+    };
+
+    let proc_path = std::format!("/proc/self/fd/{fd}");
+    let Ok(real_path) = std::fs::read_link(&proc_path) else {
+        kernel32_SetLastError(2); // ERROR_FILE_NOT_FOUND
+        return 0;
+    };
+
+    let path_str = real_path.to_string_lossy();
+    // Build a null-terminated UTF-16 representation of the path.
+    let wide: Vec<u16> = path_str
+        .encode_utf16()
+        .chain(std::iter::once(0u16))
+        .collect();
+    let needed = wide.len() as u32; // includes the null terminator
+
+    if file_path.is_null() || file_path_size < needed {
+        kernel32_SetLastError(122); // ERROR_INSUFFICIENT_BUFFER
+        return needed; // callers use this to size the buffer
+    }
+
+    for (i, &ch) in wide.iter().enumerate() {
+        // SAFETY: Caller guarantees file_path is writable for file_path_size u16 elements,
+        // and we've checked file_path_size >= needed.
+        *file_path.add(i) = ch;
+    }
+
+    needed - 1 // return count of chars written, excluding the null terminator
 }
 
 /// GetOverlappedResult stub
@@ -4045,18 +4340,51 @@ pub unsafe extern "C" fn kernel32_InitOnceComplete(
     1 // TRUE
 }
 
-/// InitializeProcThreadAttributeList stub
+/// InitializeProcThreadAttributeList - initialises a process/thread attribute list
+///
+/// When `attribute_list` is null the function writes the required buffer size
+/// to `*size` and returns FALSE with `ERROR_INSUFFICIENT_BUFFER`, which is the
+/// standard Windows pattern for querying the required size.
+///
+/// When `attribute_list` is non-null the function zero-initialises the buffer
+/// (as a minimal marker) and returns TRUE.  Because we do not implement
+/// process creation, the attribute values are never consumed.
 ///
 /// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
+/// When `attribute_list` is non-null it must be writable for `*size` bytes.
+/// When `size` is non-null it must be a valid readable/writable `usize` pointer.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_InitializeProcThreadAttributeList(
-    _attribute_list: *mut core::ffi::c_void,
+    attribute_list: *mut core::ffi::c_void,
     _attribute_count: u32,
     _flags: u32,
-    _size: *mut usize,
+    size: *mut usize,
 ) -> i32 {
-    0 // FALSE
+    // Minimal opaque size for our attribute list placeholder.
+    const MIN_ATTR_LIST_SIZE: usize = 64;
+
+    if attribute_list.is_null() {
+        // Caller is querying the required size.
+        if !size.is_null() {
+            *size = MIN_ATTR_LIST_SIZE;
+        }
+        kernel32_SetLastError(122); // ERROR_INSUFFICIENT_BUFFER
+        return 0; // FALSE
+    }
+
+    // At this point, attribute_list is non-null. According to the Windows API
+    // contract, size must also be non-null; otherwise this is an invalid call.
+    if size.is_null() {
+        kernel32_SetLastError(87); // ERROR_INVALID_PARAMETER
+        return 0; // FALSE
+    }
+
+    // Caller provided a buffer; zero-initialise it so it is in a defined state.
+    let buf_size = (*size).max(MIN_ATTR_LIST_SIZE);
+    // SAFETY: attribute_list is non-null (checked above); caller is required by
+    // the Windows API contract to provide a buffer of at least *size bytes.
+    std::ptr::write_bytes(attribute_list.cast::<u8>(), 0, buf_size);
+    1 // TRUE
 }
 
 /// LockFileEx stub
@@ -4075,19 +4403,87 @@ pub unsafe extern "C" fn kernel32_LockFileEx(
     1 // TRUE - pretend success
 }
 
-/// MapViewOfFile stub
+/// MapViewOfFile - maps a view of a file mapping into the calling process's address space
+///
+/// Looks up the file mapping handle created by `CreateFileMappingA`, calls
+/// `mmap(2)` with the appropriate protection derived from `desired_access`,
+/// and registers the returned base address in `MAPPED_VIEWS` so that
+/// `UnmapViewOfFile` can release it.
 ///
 /// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
+/// `file_mapping_object` must be a handle returned by `CreateFileMappingA`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_MapViewOfFile(
-    _file_mapping_object: *mut core::ffi::c_void,
-    _desired_access: u32,
-    _file_offset_high: u32,
-    _file_offset_low: u32,
-    _number_of_bytes_to_map: usize,
+    file_mapping_object: *mut core::ffi::c_void,
+    desired_access: u32,
+    file_offset_high: u32,
+    file_offset_low: u32,
+    number_of_bytes_to_map: usize,
 ) -> *mut core::ffi::c_void {
-    core::ptr::null_mut() // NULL
+    let mapping_handle = file_mapping_object as usize;
+    let entry = with_file_mapping_handles(|map| {
+        map.get(&mapping_handle)
+            .map(|e| (e.raw_fd, e.size, e.protect))
+    });
+    let Some((raw_fd, mapping_size, protect)) = entry else {
+        kernel32_SetLastError(6); // ERROR_INVALID_HANDLE
+        return core::ptr::null_mut();
+    };
+
+    let file_offset = ((i64::from(file_offset_high) << 32) | i64::from(file_offset_low)).max(0);
+
+    // Determine the size to map.
+    let actual_size = if number_of_bytes_to_map > 0 {
+        number_of_bytes_to_map
+    } else if mapping_size > 0 {
+        mapping_size as usize
+    } else {
+        // Anonymous mapping without explicit size: default to 64 KiB.
+        0x1_0000
+    };
+
+    // Windows PAGE_* protection constants:
+    //   PAGE_READONLY           = 0x02
+    //   PAGE_READWRITE          = 0x04
+    //   PAGE_WRITECOPY          = 0x08
+    //   PAGE_EXECUTE_READ       = 0x20
+    //   PAGE_EXECUTE_READWRITE  = 0x40
+    // FILE_MAP_WRITE (desired_access bit 2) overrides to read+write.
+    let prot = if desired_access & 0x04 != 0 || protect == 4 || protect == 8 {
+        libc::PROT_READ | libc::PROT_WRITE
+    } else if desired_access & 0x20 != 0 || protect == 0x20 {
+        libc::PROT_READ | libc::PROT_EXEC
+    } else if protect == 0x40 {
+        libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC
+    } else {
+        libc::PROT_READ
+    };
+
+    let (flags, fd) = if raw_fd == -1 {
+        (libc::MAP_PRIVATE | libc::MAP_ANONYMOUS, -1i32)
+    } else {
+        (libc::MAP_SHARED, raw_fd)
+    };
+
+    // SAFETY: mmap parameters are valid; we own the fd (or -1 for anonymous).
+    let ptr = libc::mmap(
+        core::ptr::null_mut(),
+        actual_size,
+        prot,
+        flags,
+        fd,
+        file_offset,
+    );
+
+    if ptr == libc::MAP_FAILED {
+        kernel32_SetLastError(8); // ERROR_NOT_ENOUGH_MEMORY
+        return core::ptr::null_mut();
+    }
+
+    with_mapped_views(|map| {
+        map.insert(ptr as usize, actual_size);
+    });
+    ptr
 }
 
 /// Module32FirstW stub
@@ -4370,14 +4766,26 @@ pub unsafe extern "C" fn kernel32_UnlockFile(
 
 /// UnmapViewOfFile - unmaps a mapped view of a file from the address space
 ///
-/// File mapping is not implemented; this always returns TRUE (success) since
-/// `MapViewOfFile` returns NULL and programs typically check for NULL before
-/// calling `UnmapViewOfFile`.
+/// Looks up `base_address` in the `MAPPED_VIEWS` registry that was populated
+/// by `MapViewOfFile` and calls `munmap(2)` with the stored size.  If the
+/// address is not in the registry (e.g. the caller passes an already-unmapped
+/// pointer) the function still returns TRUE for compatibility with programs
+/// that do not check the return value.
 ///
 /// # Safety
-/// `base_address` is accepted as an opaque pointer and is not dereferenced.
+/// `base_address` must be a pointer previously returned by `MapViewOfFile`,
+/// or null (in which case the call is a no-op that returns TRUE).
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn kernel32_UnmapViewOfFile(_base_address: *const core::ffi::c_void) -> i32 {
+pub unsafe extern "C" fn kernel32_UnmapViewOfFile(base_address: *const core::ffi::c_void) -> i32 {
+    if base_address.is_null() {
+        return 1; // TRUE — Windows docs say null is a no-op
+    }
+    let ptr_val = base_address as usize;
+    if let Some(size) = with_mapped_views(|map| map.remove(&ptr_val)) {
+        // SAFETY: base_address was previously returned by mmap (via MapViewOfFile)
+        // and the size was recorded at that time.
+        libc::munmap(base_address.cast_mut(), size);
+    }
     1 // TRUE
 }
 
@@ -8581,5 +8989,399 @@ mod tests {
             err, 127,
             "GetLastError should be ERROR_PROC_NOT_FOUND (127) for invalid handle"
         );
+    }
+
+    /// `CreatePipe` must create two functional handles where writing to the write end
+    /// is readable from the read end.
+    #[test]
+    fn test_create_pipe_read_write() {
+        let mut read_handle: *mut core::ffi::c_void = core::ptr::null_mut();
+        let mut write_handle: *mut core::ffi::c_void = core::ptr::null_mut();
+
+        let result = unsafe {
+            kernel32_CreatePipe(
+                &raw mut read_handle,
+                &raw mut write_handle,
+                core::ptr::null_mut(),
+                0,
+            )
+        };
+        assert_eq!(result, 1, "CreatePipe should return TRUE");
+        assert!(!read_handle.is_null(), "read handle must not be null");
+        assert!(!write_handle.is_null(), "write handle must not be null");
+
+        // Write to the write end.
+        let data = b"hello pipe";
+        let mut bytes_written: u32 = 0;
+        let wr = unsafe {
+            kernel32_WriteFile(
+                write_handle,
+                data.as_ptr(),
+                data.len() as u32,
+                &raw mut bytes_written,
+                core::ptr::null_mut(),
+            )
+        };
+        assert_eq!(wr, 1, "WriteFile to write end should succeed");
+        assert_eq!(bytes_written as usize, data.len());
+
+        // Close the write end so the read side can detect EOF.
+        unsafe { kernel32_CloseHandle(write_handle) };
+
+        // Read from the read end.
+        let mut buf = [0u8; 16];
+        let mut bytes_read: u32 = 0;
+        let rd = unsafe {
+            kernel32_ReadFile(
+                read_handle,
+                buf.as_mut_ptr(),
+                buf.len() as u32,
+                &raw mut bytes_read,
+                core::ptr::null_mut(),
+            )
+        };
+        assert_eq!(rd, 1, "ReadFile from read end should succeed");
+        assert_eq!(&buf[..bytes_read as usize], data);
+
+        unsafe { kernel32_CloseHandle(read_handle) };
+    }
+
+    /// `CreatePipe` with a null `read_pipe` pointer should fail.
+    #[test]
+    fn test_create_pipe_null_read_ptr() {
+        let mut write_handle: *mut core::ffi::c_void = core::ptr::null_mut();
+        let result = unsafe {
+            kernel32_CreatePipe(
+                core::ptr::null_mut(),
+                &raw mut write_handle,
+                core::ptr::null_mut(),
+                0,
+            )
+        };
+        assert_eq!(result, 0, "CreatePipe should fail with null read_pipe");
+        let err = unsafe { kernel32_GetLastError() };
+        assert_eq!(err, 87, "ERROR_INVALID_PARAMETER (87) expected");
+    }
+
+    /// `DuplicateHandle` on a file handle should produce an independent clone that
+    /// can still be used after the original is closed.
+    #[test]
+    fn test_duplicate_handle_file() {
+        use std::io::Write as _;
+
+        let dir = std::env::temp_dir().join(format!("litebox_dup_test_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file_path = dir.join("dup_test.txt");
+
+        let path_wide: Vec<u16> = file_path
+            .to_string_lossy()
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+
+        // Open a file for writing.
+        let orig = unsafe {
+            kernel32_CreateFileW(
+                path_wide.as_ptr(),
+                0x4000_0000u32, // GENERIC_WRITE
+                0,
+                core::ptr::null_mut(),
+                2, // CREATE_ALWAYS
+                0,
+                core::ptr::null_mut(),
+            )
+        };
+        assert_ne!(
+            orig,
+            usize::MAX as *mut core::ffi::c_void,
+            "CreateFileW should succeed"
+        );
+
+        let mut dup: *mut core::ffi::c_void = core::ptr::null_mut();
+        let result = unsafe {
+            kernel32_DuplicateHandle(
+                usize::MAX as *mut core::ffi::c_void, // current process
+                orig,
+                usize::MAX as *mut core::ffi::c_void, // current process
+                &raw mut dup,
+                0,
+                0,
+                0,
+            )
+        };
+        assert_eq!(result, 1, "DuplicateHandle should return TRUE");
+        assert!(!dup.is_null(), "duplicate handle must not be null");
+
+        // Close the original; the duplicate should still work.
+        unsafe { kernel32_CloseHandle(orig) };
+
+        let text = b"dup works";
+        let mut written: u32 = 0;
+        let wr = unsafe {
+            kernel32_WriteFile(
+                dup,
+                text.as_ptr(),
+                text.len() as u32,
+                &raw mut written,
+                core::ptr::null_mut(),
+            )
+        };
+        assert_eq!(wr, 1, "WriteFile through duplicate should succeed");
+        assert_eq!(written as usize, text.len());
+
+        unsafe { kernel32_CloseHandle(dup) };
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `DuplicateHandle` with a null `target_handle` must return FALSE with
+    /// `ERROR_INVALID_PARAMETER`.
+    #[test]
+    fn test_duplicate_handle_null_target() {
+        let fake_src = 0x1_0000 as *mut core::ffi::c_void;
+        let result = unsafe {
+            kernel32_DuplicateHandle(
+                core::ptr::null_mut(),
+                fake_src,
+                core::ptr::null_mut(),
+                core::ptr::null_mut(), // null target — should fail
+                0,
+                0,
+                0,
+            )
+        };
+        assert_eq!(result, 0, "DuplicateHandle with null target must fail");
+        let err = unsafe { kernel32_GetLastError() };
+        assert_eq!(err, 87, "ERROR_INVALID_PARAMETER (87) expected");
+    }
+
+    /// `CreateFileMappingA` on `INVALID_HANDLE_VALUE` followed by `MapViewOfFile`
+    /// and `UnmapViewOfFile` must round-trip correctly for an anonymous mapping.
+    #[test]
+    fn test_create_file_mapping_anonymous() {
+        // INVALID_HANDLE_VALUE = usize::MAX as *mut c_void
+        let invalid = usize::MAX as *mut core::ffi::c_void;
+        let mapping = unsafe {
+            kernel32_CreateFileMappingA(
+                invalid,
+                core::ptr::null_mut(),
+                4,    // PAGE_READWRITE
+                0,    // size_high
+                4096, // size_low = 4 KiB
+                core::ptr::null(),
+            )
+        };
+        assert!(
+            !mapping.is_null(),
+            "CreateFileMappingA should return a handle"
+        );
+
+        let view = unsafe {
+            kernel32_MapViewOfFile(
+                mapping, 4, // FILE_MAP_WRITE
+                0, 0, // offset = 0
+                4096,
+            )
+        };
+        assert!(!view.is_null(), "MapViewOfFile should succeed");
+
+        // Write and read back through the mapped view.
+        unsafe {
+            *(view as *mut u32) = 0xDEAD_BEEF;
+            assert_eq!(*(view as *const u32), 0xDEAD_BEEF);
+        }
+
+        let unmap = unsafe { kernel32_UnmapViewOfFile(view) };
+        assert_eq!(unmap, 1, "UnmapViewOfFile should return TRUE");
+    }
+
+    /// `GetFinalPathNameByHandleW` must return the correct path for an open file.
+    #[test]
+    fn test_get_final_path_name_by_handle_w() {
+        let dir = std::env::temp_dir().join(format!("litebox_final_path_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file_path = dir.join("final_path.txt");
+        std::fs::write(&file_path, b"test").unwrap();
+
+        let path_wide: Vec<u16> = file_path
+            .to_string_lossy()
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+
+        let handle = unsafe {
+            kernel32_CreateFileW(
+                path_wide.as_ptr(),
+                0x8000_0000u32, // GENERIC_READ
+                0,
+                core::ptr::null_mut(),
+                3, // OPEN_EXISTING
+                0,
+                core::ptr::null_mut(),
+            )
+        };
+        assert_ne!(
+            handle,
+            usize::MAX as *mut core::ffi::c_void,
+            "CreateFileW should succeed"
+        );
+
+        let mut buf = [0u16; 512];
+        let len = unsafe {
+            kernel32_GetFinalPathNameByHandleW(handle, buf.as_mut_ptr(), buf.len() as u32, 0)
+        };
+        assert!(
+            len > 0,
+            "GetFinalPathNameByHandleW should return a non-zero length"
+        );
+
+        let returned_path: String = String::from_utf16_lossy(
+            &buf[..len as usize], // len does not include the null terminator
+        );
+        // The returned path must end with the file name.
+        assert!(
+            returned_path.ends_with("final_path.txt"),
+            "Returned path '{returned_path}' should end with 'final_path.txt'"
+        );
+
+        unsafe { kernel32_CloseHandle(handle) };
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `GetFileInformationByHandleEx` with FileBasicInfo (class 0) should fill the
+    /// buffer without returning an error for a real file.
+    #[test]
+    fn test_get_file_information_by_handle_ex_basic() {
+        let dir = std::env::temp_dir().join(format!("litebox_file_info_ex_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file_path = dir.join("info_ex.txt");
+        std::fs::write(&file_path, b"hello").unwrap();
+
+        let path_wide: Vec<u16> = file_path
+            .to_string_lossy()
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+
+        let handle = unsafe {
+            kernel32_CreateFileW(
+                path_wide.as_ptr(),
+                0x8000_0000u32,
+                0,
+                core::ptr::null_mut(),
+                3,
+                0,
+                core::ptr::null_mut(),
+            )
+        };
+        assert_ne!(handle, usize::MAX as *mut core::ffi::c_void);
+
+        let mut buf = [0u8; 40];
+        let result = unsafe {
+            kernel32_GetFileInformationByHandleEx(
+                handle,
+                0, // FileBasicInfo
+                buf.as_mut_ptr().cast::<core::ffi::c_void>(),
+                buf.len() as u32,
+            )
+        };
+        assert_eq!(result, 1, "FileBasicInfo query should succeed");
+
+        // FileAttributes at offset 32 should be FILE_ATTRIBUTE_NORMAL (0x80) since
+        // the file is writable.
+        let attrs = u32::from_le_bytes(buf[32..36].try_into().unwrap());
+        assert!(
+            attrs == 0x80 || attrs == 0x01,
+            "FileAttributes should be NORMAL (0x80) or READONLY (0x01), got {attrs:#x}"
+        );
+
+        unsafe { kernel32_CloseHandle(handle) };
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `GetFileInformationByHandleEx` with FileStandardInfo (class 1) should return
+    /// the correct file size.
+    #[test]
+    fn test_get_file_information_by_handle_ex_standard() {
+        let dir =
+            std::env::temp_dir().join(format!("litebox_file_info_std_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file_path = dir.join("info_std.txt");
+        std::fs::write(&file_path, b"hello world").unwrap();
+
+        let path_wide: Vec<u16> = file_path
+            .to_string_lossy()
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+
+        let handle = unsafe {
+            kernel32_CreateFileW(
+                path_wide.as_ptr(),
+                0x8000_0000u32,
+                0,
+                core::ptr::null_mut(),
+                3,
+                0,
+                core::ptr::null_mut(),
+            )
+        };
+        assert_ne!(handle, usize::MAX as *mut core::ffi::c_void);
+
+        let mut buf = [0u8; 24];
+        let result = unsafe {
+            kernel32_GetFileInformationByHandleEx(
+                handle,
+                1, // FileStandardInfo
+                buf.as_mut_ptr().cast::<core::ffi::c_void>(),
+                buf.len() as u32,
+            )
+        };
+        assert_eq!(result, 1, "FileStandardInfo query should succeed");
+
+        // EndOfFile is at offset 8 and should equal 11 (len("hello world")).
+        let end_of_file = i64::from_le_bytes(buf[8..16].try_into().unwrap());
+        assert_eq!(end_of_file, 11, "EndOfFile should be 11");
+
+        // Directory flag at offset 21 should be 0 (file, not directory).
+        assert_eq!(buf[21], 0, "Directory flag should be 0 for a regular file");
+
+        unsafe { kernel32_CloseHandle(handle) };
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `InitializeProcThreadAttributeList(null, …)` should set `*size` and return FALSE.
+    /// `InitializeProcThreadAttributeList(non_null, …)` should return TRUE.
+    #[test]
+    fn test_initialize_proc_thread_attribute_list() {
+        let mut required_size: usize = 0;
+
+        // Size query: attribute_list = null.
+        let r1 = unsafe {
+            kernel32_InitializeProcThreadAttributeList(
+                core::ptr::null_mut(),
+                1,
+                0,
+                &raw mut required_size,
+            )
+        };
+        assert_eq!(r1, 0, "Size query should return FALSE");
+        let err = unsafe { kernel32_GetLastError() };
+        assert_eq!(
+            err, 122,
+            "ERROR_INSUFFICIENT_BUFFER (122) expected on size query"
+        );
+        assert!(required_size > 0, "Required size must be non-zero");
+
+        // Actual initialization with a properly-sized buffer.
+        let mut buf = vec![0u8; required_size];
+        let r2 = unsafe {
+            kernel32_InitializeProcThreadAttributeList(
+                buf.as_mut_ptr().cast::<core::ffi::c_void>(),
+                1,
+                0,
+                &raw mut required_size,
+            )
+        };
+        assert_eq!(r2, 1, "Initialization with valid buffer should return TRUE");
     }
 }

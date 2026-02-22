@@ -1,52 +1,112 @@
-# Windows-on-Linux Support - Session Summary (2026-02-20 Session 17)
+# Windows-on-Linux Support - Session Summary (2026-02-22 Session 21)
 
 ## Work Completed ✅
 
-### Phase 18 — Test Coverage and CI Integration
+### Phase 21 — Stub Reduction: File Mapping, Pipes, Handle Duplication, File Info
 
-**Goal:** Integrate the Windows-on-Linux test programs into CI and add a ratchet to track
-reduction in stub implementations.
+**Goal:** Reduce KERNEL32 stub count from 29 to 22 by implementing real functionality
+for seven commonly-needed Windows APIs.
 
-#### 18.1 CI integration for Windows test programs
+#### 21.1 New handle-table infrastructure
 
-Added a new `build_and_test_windows_on_linux` job to `.github/workflows/ci.yml`:
+Two new global handle registries were added (after the existing event-handle table):
 
-- Runs on `ubuntu-latest` and installs the MinGW cross-compiler (`gcc-mingw-w64-x86-64`)
-- Installs the `x86_64-pc-windows-gnu` Rust target
-- Builds all programs in `windows_test_programs/` with `cargo build --release`
-- Builds the runner (`litebox_runner_windows_on_linux_userland`)
-- Runs and validates four test programs:
-  - `hello_cli.exe` — checks stdout contains `"Hello World from LiteBox!"`
-  - `math_test.exe` — checks exit code 0
-  - `env_test.exe` — checks exit code 0
-  - `args_test.exe` — checks exit code 0
-- `string_test.exe` and `file_io_test.exe` are excluded (known failing tests from Phase 12)
+- **`FILE_MAPPING_HANDLES`** (`Mutex<Option<HashMap<usize, FileMappingEntry>>>`) — maps
+  synthetic `HANDLE` values (starting at `0x6_0000`) to file-mapping metadata
+  (`raw_fd`, `size`, `protect`).
+- **`MAPPED_VIEWS`** (`Mutex<Option<HashMap<usize, usize>>>`) — maps `mmap`-returned
+  base addresses (as `usize`) to the mapping size, so `UnmapViewOfFile` can call
+  `munmap` with the correct length.
 
-#### 18.2 Ratchet for stub implementations
+#### 21.2 File mapping: `CreateFileMappingA` + `MapViewOfFile` + `UnmapViewOfFile`
 
-Added a `ratchet_stubs` test to `dev_tests/src/ratchet.rs`:
+- **`CreateFileMappingA`**: Accepts a file handle or `INVALID_HANDLE_VALUE` (for
+  anonymous/pagefile-backed mappings). Stores `(raw_fd, size, protect)` in
+  `FILE_MAPPING_HANDLES` and returns a synthetic mapping handle.
+- **`MapViewOfFile`**: Looks up the mapping handle, translates Windows
+  `PAGE_*`/`FILE_MAP_*` access flags to POSIX `PROT_*` flags, calls `mmap(2)`,
+  and records the base address in `MAPPED_VIEWS`.
+- **`UnmapViewOfFile`**: Updated from a no-op to look up the address in
+  `MAPPED_VIEWS` and call `munmap(2)`.
 
-- Counts lines containing `"This function is a stub"` in the
-  `litebox_platform_linux_for_windows/` crate
-- Current baseline: **58 stubs** (57 in `kernel32.rs`, 1 in `ntdll_impl.rs`)
-- As stub implementations are replaced with real ones, this count must not increase
-- The ratchet enforces a hard upper bound: any PR that adds new stubs will fail CI
+#### 21.3 Pipe creation: `CreatePipe`
+
+- Calls `libc::pipe(2)` to create a Linux anonymous pipe.
+- Wraps each file descriptor in a `File` via `File::from_raw_fd`.
+- Registers both ends in `FILE_HANDLES` so that `ReadFile`/`WriteFile`/`CloseHandle`
+  work on them identically to regular file handles.
+
+#### 21.4 Handle duplication: `DuplicateHandle`
+
+- **File handles**: Uses `File::try_clone()` to produce an independent clone with its
+  own file-offset cursor; registers the clone in `FILE_HANDLES`.
+- **Event/thread handles**: Copies the handle value (they are already `Arc`-backed
+  reference-counted objects, so sharing the value is correct).
+- Returns `ERROR_INVALID_HANDLE` for unknown handle values.
+
+#### 21.5 Final path name: `GetFinalPathNameByHandleW`
+
+- Looks up the raw fd from `FILE_HANDLES` via `AsRawFd::as_raw_fd()`.
+- Reads the symlink at `/proc/self/fd/<fd>` to obtain the real filesystem path.
+- Converts to null-terminated UTF-16 and returns the character count (excluding the
+  null terminator), or the required buffer size if the buffer is too small.
+
+#### 21.6 File information: `GetFileInformationByHandleEx`
+
+Supports two information classes:
+- **Class 0 (`FileBasicInfo`)**: creation time, last access time, last write time,
+  change time (each as a Windows FILETIME in 100-ns intervals since 1601-01-01),
+  and file attributes (directory / readonly / normal). Linux `ctime` is used as the
+  creation-time approximation.
+- **Class 1 (`FileStandardInfo`)**: allocation size (rounded up to 4 KiB), end-of-file
+  size, number of hard links, delete-pending flag (always false), and directory flag.
+
+#### 21.7 Proc/thread attribute list: `InitializeProcThreadAttributeList`
+
+- **Size query** (`attribute_list == NULL`): writes `MIN_ATTR_LIST_SIZE` (64) to
+  `*size`, sets `ERROR_INSUFFICIENT_BUFFER`, and returns FALSE — the standard Windows
+  pattern for querying the required buffer size.
+- **Initialization** (`attribute_list != NULL`): zero-initializes the buffer and returns
+  TRUE. The values are never consumed since `CreateProcessW` is not yet implemented.
+
+#### 21.8 New unit tests (9 new)
+
+| Test | What it verifies |
+|---|---|
+| `test_create_pipe_read_write` | Pipe round-trip: write → read succeeds |
+| `test_create_pipe_null_read_ptr` | Null `read_pipe` returns ERROR_INVALID_PARAMETER |
+| `test_duplicate_handle_file` | Duplicate file handle works after original is closed |
+| `test_duplicate_handle_null_target` | Null `target_handle` returns ERROR_INVALID_PARAMETER |
+| `test_create_file_mapping_anonymous` | Anonymous mapping: write and read back |
+| `test_get_final_path_name_by_handle_w` | Returns path ending in the expected filename |
+| `test_get_file_information_by_handle_ex_basic` | FileBasicInfo class fills buffer, correct attributes |
+| `test_get_file_information_by_handle_ex_standard` | FileStandardInfo reports correct size |
+| `test_initialize_proc_thread_attribute_list` | Size query returns FALSE; init returns TRUE |
+
+#### Ratchet updates
+
+- `litebox_platform_linux_for_windows/` **stubs**: 29 → **22** (−7)
+- `litebox_platform_linux_for_windows/` **globals**: 36 → **39** (+3 new statics)
 
 ## Test Results
 
 ```
 cargo test -p litebox_platform_linux_for_windows -p litebox_shim_windows
            -p litebox_runner_windows_on_linux_userland -p dev_tests
-dev_tests:   5 passed  (+1 from session 16: new ratchet_stubs test)
-Platform:  218 passed  (unchanged)
+dev_tests:   5 passed  (unchanged)
+Platform:  262 passed  (+9 from session 21: new tests for new implementations)
 Shim:       47 passed  (unchanged)
-Runner:     16 passed  (7 unit + 9 tracing, 6 ignored pending MinGW build)
+Runner:     16 passed  (7 non-ignored + 9 tracing, 7 ignored pending MinGW build)
 ```
 
 ## Files Modified This Session
 
-- `.github/workflows/ci.yml` — Added `build_and_test_windows_on_linux` CI job
-- `dev_tests/src/ratchet.rs` — Added `ratchet_stubs` test (baseline: 58)
+- `litebox_platform_linux_for_windows/src/kernel32.rs` — Added `FILE_MAPPING_HANDLES`,
+  `MAPPED_VIEWS`, `FILE_MAPPING_HANDLE_COUNTER`; implemented `CreateFileMappingA`,
+  `MapViewOfFile`, `UnmapViewOfFile`, `CreatePipe`, `DuplicateHandle`,
+  `GetFinalPathNameByHandleW`, `GetFileInformationByHandleEx`,
+  `InitializeProcThreadAttributeList`; 9 new unit tests
+- `dev_tests/src/ratchet.rs` — stubs 29 → 22; globals 36 → 39
 
 ---
 
