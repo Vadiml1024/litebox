@@ -215,6 +215,17 @@ jobs:
           ./target/debug/litebox_runner_windows_on_linux_userland \
             windows_test_programs/target/x86_64-pc-windows-gnu/release/string_test.exe \
             2>"$stderr_file" || { echo "ERROR: string_test.exe failed"; cat "$stderr_file"; exit 1; }
+      - name: Build getprocaddress_test.exe (C program)
+        working-directory: windows_test_programs/dynload_test
+        run: make
+      - name: Run getprocaddress_test.exe and verify output
+        run: |
+          stderr_file=$(mktemp)
+          output=$(./target/debug/litebox_runner_windows_on_linux_userland \
+            windows_test_programs/dynload_test/getprocaddress_test.exe \
+            2>"$stderr_file") || { echo "ERROR: getprocaddress_test.exe runner failed"; cat "$stderr_file"; exit 1; }
+          echo "$output"
+          echo "$output" | grep -q "0 failed" || { echo "ERROR: getprocaddress_test.exe reported failures"; exit 1; }
 
   build_and_test_snp:
     name: Build and Test SNP

@@ -16,6 +16,7 @@ pub mod trampoline;
 pub mod user32;
 pub mod ws2_32;
 
+pub use kernel32::register_dynamic_exports;
 pub use kernel32::set_process_command_line;
 pub use kernel32::set_sandbox_root;
 pub use kernel32::set_volume_serial;

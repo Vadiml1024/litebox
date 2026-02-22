@@ -92,6 +92,11 @@
 | `GetExitCodeProcess` | Returns `STILL_ACTIVE` (259) for the current process |
 | `SetFileAttributesW` | Maps `FILE_ATTRIBUTE_READONLY` to Linux `chmod`; other bits silently accepted |
 | `GetModuleFileNameW` | Returns current executable path via `/proc/self/exe` |
+| `LoadLibraryA` / `LoadLibraryW` | Looks up registered DLL in global registry; returns synthetic HMODULE |
+| `GetModuleHandleA` / `GetModuleHandleW` | Null → main module base; named → registry lookup |
+| `GetProcAddress` | Looks up trampoline address in global registry by HMODULE + function name |
+| `CreateHardLinkW` | `std::fs::hard_link` |
+| `CreateSymbolicLinkW` | `std::os::unix::fs::symlink` |
 
 ### MSVCRT Implementations (18 functions)
 `printf`, `fprintf`, `sprintf`, `snprintf`, `malloc`, `calloc`, `realloc`, `free`, `memcpy`, `memmove`, `memset`, `memcmp`, `strlen`, `strcpy`, `strncpy`, `strcmp`, `strncmp`, `exit`
@@ -141,17 +146,17 @@
 | Process creation (`CreateProcessW`) | Not implemented |
 | Advanced file operations (memory mapping, overlapped I/O) | Not implemented |
 | Advanced registry operations (write, enumeration) | Not implemented |
-| 36 remaining KERNEL32 functions | Stub no-ops only |
+| 29 remaining KERNEL32 functions | Stub no-ops only |
 
 ---
 
 ## Test Coverage
 
-**304 tests total (all passing):**
+**321 tests total (all passing):**
 
 | Package | Tests | Notes |
 |---|---|---|
-| `litebox_platform_linux_for_windows` | 241 | KERNEL32, MSVCRT, WS2_32, advapi32, user32, platform APIs |
+| `litebox_platform_linux_for_windows` | 253 | KERNEL32, MSVCRT, WS2_32, advapi32, user32, platform APIs |
 | `litebox_shim_windows` | 47 | ABI translation, PE loader, tracing |
 | `litebox_runner_windows_on_linux_userland` | 16 | 9 tracing + 7 integration tests |
 
@@ -164,15 +169,16 @@
 6. Error handling APIs (`GetLastError` / `SetLastError`)
 7. DLL exports validation (all critical KERNEL32 and WS2_32 exports)
 
-**MinGW-gated integration tests (6, require `--include-ignored`):**
+**MinGW-gated integration tests (7, require `--include-ignored`):**
 - `test_hello_cli_program_exists` — checks hello_cli.exe is present
 - `test_math_test_program_exists` — checks math_test.exe is present
 - `test_env_test_program_exists` — checks env_test.exe is present
 - `test_args_test_program_exists` — checks args_test.exe is present
 - `test_file_io_test_program_exists` — **runs** file_io_test.exe end-to-end; verifies exit 0 and test header/completion output
 - `test_string_test_program_exists` — **runs** string_test.exe end-to-end; verifies exit 0, test header, and 0 failures
+- `test_getprocaddress_c_program` — **runs** getprocaddress_test.exe end-to-end; verifies exit 0 and 0 failures
 
-**CI-validated test programs (6):**
+**CI-validated test programs (7):**
 
 | Program | What it tests | CI status |
 |---|---|---|
@@ -182,6 +188,7 @@
 | `args_test.exe` | `GetCommandLineW` / `CommandLineToArgvW` | ✅ Passing |
 | `file_io_test.exe` | `CreateFileW`, `ReadFile`, `WriteFile`, directory operations | ✅ Passing |
 | `string_test.exe` | Rust `String` operations (allocations, comparisons, Unicode) | ✅ Passing |
+| `getprocaddress_test.exe` (C) | `GetModuleHandleA/W`, `GetProcAddress`, `LoadLibraryA`, `FreeLibrary` | ✅ Passing |
 
 ---
 
@@ -224,11 +231,11 @@ litebox_runner_windows_on_linux_userland \
 
 ## Code Quality
 
-- **All 305 tests passing**
+- **All 321 tests passing**
 - `RUSTFLAGS=-Dwarnings cargo clippy --all-targets --all-features` — clean
 - `cargo fmt --check` — clean
 - All `unsafe` blocks have detailed safety comments
-- Ratchet limits: globals ≤ 35, stubs ≤ 36, transmutes ≤ current, MaybeUninit ≤ current
+- Ratchet limits: globals ≤ 36, stubs ≤ 29, transmutes ≤ current, MaybeUninit ≤ current
 
 ---
 
@@ -248,5 +255,6 @@ litebox_runner_windows_on_linux_userland \
 | 10–17 | Path security (sandbox root), handle limits, advapi32 registry APIs, WS2_32 networking, Win32 events, CI integration | ✅ Complete |
 | 18 | CI test programs (hello_cli, math_test, env_test, args_test, file_io_test, string_test all pass) | ✅ Complete |
 | 19 | Real `GetExitCodeProcess`, `SetFileAttributesW`, `GetModuleFileNameW`; upgraded string_test and file_io_test integration tests | ✅ Complete |
+| 20 | Dynamic loading: `LoadLibraryA/W`, `GetModuleHandleA/W`, `GetProcAddress` backed by global DLL registry; `CreateHardLinkW`, `CreateSymbolicLinkW` | ✅ Complete |
 
-**Next:** Continue reducing the 36 remaining KERNEL32 stubs; add `LoadLibraryW`/`GetProcAddress` backed by a global DLL manager for dynamic loading scenarios.
+**Next:** Continue reducing the 29 remaining KERNEL32 stubs.
