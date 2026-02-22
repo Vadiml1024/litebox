@@ -1,8 +1,8 @@
 # Windows on Linux: Implementation Status
 
 **Last Updated:** 2026-02-22  
-**Total Tests:** 367 passing (304 platform + 47 shim + 16 runner + 5 dev_tests — +35 new USER32/GDI32 tests added in Phase 24)  
-**Overall Status:** Core infrastructure complete. Seven Rust-based test programs (hello_cli, math_test, env_test, args_test, file_io_test, string_test, getprocaddress_test) run successfully end-to-end through the runner on Linux. **All API stub functions have been fully replaced — stub count is now 0.** Phase 24 adds GDI32 support and extended USER32 APIs for GUI program compatibility.
+**Total Tests:** 384 passing (316 platform + 47 shim + 16 runner + 5 dev_tests — +17 new time/interlocked/SHELL32/VERSION tests added in Phase 25)  
+**Overall Status:** Core infrastructure complete. Seven Rust-based test programs (hello_cli, math_test, env_test, args_test, file_io_test, string_test, getprocaddress_test) run successfully end-to-end through the runner on Linux. **All API stub functions have been fully replaced — stub count is now 0.** Phase 25 adds time APIs, interlocked operations, SHELL32.dll, and VERSION.dll support.
 
 ---
 
@@ -51,6 +51,7 @@
 - `LoadLibrary` / `GetProcAddress` / `FreeLibrary` APIs
 - 57 trampolined functions with proper Windows x64 → System V AMD64 ABI translation (18 MSVCRT + 39 KERNEL32)
 - All KERNEL32 exports have real implementations or permanently-correct no-op behavior (stub count = 0)
+- SHELL32.dll and VERSION.dll registered at startup with Phase 25 implementations
 
 ### Execution Context
 - TEB (Thread Environment Block) and PEB (Process Environment Block) structures
@@ -103,6 +104,19 @@
 | `CancelIo` | Returns TRUE (all I/O is synchronous; no pending async I/O to cancel) |
 | `UpdateProcThreadAttribute` | Returns TRUE (attribute accepted; `CreateProcessW` is not implemented) |
 | `NtClose` | Delegates to `CloseHandle` to update handle tables |
+| `GetSystemTime` | `clock_gettime(CLOCK_REALTIME)` + `gmtime_r` → SYSTEMTIME |
+| `GetLocalTime` | `clock_gettime(CLOCK_REALTIME)` + `localtime_r` → SYSTEMTIME |
+| `SystemTimeToFileTime` | SYSTEMTIME → Windows FILETIME via `timegm` |
+| `FileTimeToSystemTime` | Windows FILETIME → SYSTEMTIME via `gmtime_r` |
+| `GetTickCount` | 32-bit truncation of `GetTickCount64` |
+| `LocalAlloc` | Delegates to `HeapAlloc` (`LMEM_ZEROINIT` maps to `HEAP_ZERO_MEMORY`) |
+| `LocalFree` | Delegates to `HeapFree`; returns NULL |
+| `InterlockedIncrement` / `InterlockedDecrement` | `AtomicI32::fetch_add/fetch_sub` with SeqCst |
+| `InterlockedExchange` / `InterlockedExchangeAdd` | `AtomicI32::swap` / `fetch_add` with SeqCst |
+| `InterlockedCompareExchange` | `AtomicI32::compare_exchange` with SeqCst |
+| `InterlockedCompareExchange64` | `AtomicI64::compare_exchange` with SeqCst |
+| `IsWow64Process` | Returns TRUE (call succeeded); sets `*is_wow64 = 0` (not WOW64) |
+| `GetNativeSystemInfo` | Delegates to `GetSystemInfo` (already returns AMD64 info) |
 
 ### Permanently-correct no-op APIs (return appropriate Windows codes)
 | Function | Return / Error |
@@ -176,6 +190,21 @@ are dispatched, and drawing operations are silently discarded.
 
 All GDI32 functions operate in headless mode: drawing is silently discarded.
 
+### SHELL32.dll — Shell API (Phase 25, 4 functions)
+| Category | Implemented Functions |
+|---|---|
+| Command line | `CommandLineToArgvW` (real Windows parsing with backslash/quote rules) |
+| Folder paths | `SHGetFolderPathW` (maps CSIDL constants to Linux paths) |
+| Process | `ShellExecuteW` (headless stub; returns success value > 32) |
+| File system | `SHCreateDirectoryExW` (delegates to `CreateDirectoryW`) |
+
+### VERSION.dll — File Version Info (Phase 25, 3 functions)
+| Function | Behaviour |
+|---|---|
+| `GetFileVersionInfoSizeW` | Returns 0 (no version resources in emulated environment) |
+| `GetFileVersionInfoW` | Returns FALSE |
+| `VerQueryValueW` | Returns FALSE; clears output pointers |
+
 ### API Tracing Framework
 - Text and JSON output formats with timestamps and thread IDs
 - Filtering by function name pattern (wildcards), category, or exact name
@@ -202,11 +231,11 @@ All GDI32 functions operate in headless mode: drawing is silently discarded.
 
 ## Test Coverage
 
-**367 tests total (all passing):**
+**384 tests total (all passing):**
 
 | Package | Tests | Notes |
 |---|---|---|
-| `litebox_platform_linux_for_windows` | 304 | KERNEL32, MSVCRT, WS2_32, advapi32, user32, gdi32, platform APIs |
+| `litebox_platform_linux_for_windows` | 316 | KERNEL32, MSVCRT, WS2_32, advapi32, user32, gdi32, shell32, version, platform APIs |
 | `litebox_shim_windows` | 47 | ABI translation, PE loader, tracing |
 | `litebox_runner_windows_on_linux_userland` | 16 | 9 tracing + 7 integration tests |
 | `dev_tests` | 5 | Ratchet constraints (globals, transmutes, MaybeUninit, stubs, copyright) |
@@ -283,7 +312,7 @@ litebox_runner_windows_on_linux_userland \
 
 ## Code Quality
 
-- **All 332 tests passing**
+- **All 384 tests passing**
 - `RUSTFLAGS=-Dwarnings cargo clippy --all-targets --all-features` — clean
 - `cargo fmt --check` — clean
 - All `unsafe` blocks have detailed safety comments
@@ -313,4 +342,5 @@ litebox_runner_windows_on_linux_userland \
 | 22 | `VirtualQuery` (parses `/proc/self/maps`), `CancelIo`, `UpdateProcThreadAttribute`, `NtClose`; stub count 22→14 | ✅ Complete |
 | 23 | `LockFileEx` / `UnlockFile` (real `flock(2)`); appropriate error codes for all permanently-unsupported APIs; **stub count 14→0** | ✅ Complete |
 | 24 | Extended USER32 (18 new functions: `PostQuitMessage`, `DefWindowProcW`, `LoadCursorW`, `LoadIconW`, `GetSystemMetrics`, `SetWindowLongPtrW`, `GetWindowLongPtrW`, `SendMessageW`, `PostMessageW`, `PeekMessageW`, `BeginPaint`, `EndPaint`, `GetClientRect`, `InvalidateRect`, `SetTimer`, `KillTimer`, `GetDC`, `ReleaseDC`); new GDI32.dll (13 functions: `GetStockObject`, `CreateSolidBrush`, `DeleteObject`, `SelectObject`, `CreateCompatibleDC`, `DeleteDC`, `SetBkColor`, `SetTextColor`, `TextOutW`, `Rectangle`, `FillRect`, `CreateFontW`, `GetTextExtentPoint32W`); `hello_gui` integration test; +35 new tests | ✅ Complete |
+| 25 | Time APIs (`GetSystemTime`, `GetLocalTime`, `SystemTimeToFileTime`, `FileTimeToSystemTime`, `GetTickCount`); local memory (`LocalAlloc`, `LocalFree`); interlocked ops (`InterlockedIncrement/Decrement/Exchange/ExchangeAdd/CompareExchange/CompareExchange64`); system info (`IsWow64Process`, `GetNativeSystemInfo`); new SHELL32.dll (`CommandLineToArgvW`, `SHGetFolderPathW`, `ShellExecuteW`, `SHCreateDirectoryExW`); new VERSION.dll (`GetFileVersionInfoSizeW`, `GetFileVersionInfoW`, `VerQueryValueW`); +17 new tests | ✅ Complete |
 

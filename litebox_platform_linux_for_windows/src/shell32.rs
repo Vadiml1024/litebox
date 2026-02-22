@@ -20,7 +20,6 @@ const CSIDL_PERSONAL: i32 = 0x0005; // My Documents
 const CSIDL_PROFILE: i32 = 0x0028;
 const CSIDL_WINDOWS: i32 = 0x0024;
 const CSIDL_SYSTEM: i32 = 0x0025;
-const CSIDL_TEMP: i32 = 0x0020; // Note: not a real CSIDL but included for convenience
 
 // COM-style return codes
 const S_OK: i32 = 0;
@@ -182,7 +181,7 @@ fn parse_command_line(s: &str) -> Vec<String> {
 /// - `CSIDL_APPDATA` / `CSIDL_LOCAL_APPDATA` → `$HOME/.config`
 /// - `CSIDL_PERSONAL` / `CSIDL_PROFILE` → `$HOME`
 /// - `CSIDL_DESKTOP` → `$HOME/Desktop`
-/// - `CSIDL_WINDOWS` / `CSIDL_SYSTEM` / `CSIDL_TEMP` → `/tmp`
+/// - `CSIDL_WINDOWS` / `CSIDL_SYSTEM` → `/tmp`
 /// - Anything else → `$TEMP` or `/tmp`
 ///
 /// Returns `S_OK` (0) on success, `E_FAIL` on failure.
@@ -212,7 +211,7 @@ pub unsafe extern "C" fn shell32_SHGetFolderPathW(
             std::env::var("HOME")
                 .map_or_else(|_| "/tmp/Desktop".to_string(), |h| format!("{h}/Desktop")),
         ),
-        c if c == CSIDL_WINDOWS || c == CSIDL_SYSTEM || c == CSIDL_TEMP => {
+        c if c == CSIDL_WINDOWS || c == CSIDL_SYSTEM => {
             Some(std::env::temp_dir().to_string_lossy().into_owned())
         }
         _ => Some(std::env::temp_dir().to_string_lossy().into_owned()),

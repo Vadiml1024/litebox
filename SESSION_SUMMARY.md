@@ -1,4 +1,135 @@
-# Windows-on-Linux Support — Session Summary (2026-02-22 Session 24)
+# Windows-on-Linux Support — Session Summary (2026-02-22 Session 25)
+
+## Work Completed ✅
+
+### Phase 25 — Time APIs, Interlocked Operations, SHELL32.dll, VERSION.dll
+
+**Goal:** Add 29 new Windows API implementations across four areas — time/calendar, atomic
+interlocked operations, shell folder APIs, and file version queries — enabling a wider range
+of Windows programs to run without crashing.
+
+---
+
+#### 25.1 New KERNEL32 time APIs (5)
+
+| Function | Implementation |
+|---|---|
+| `GetSystemTime` | `clock_gettime(CLOCK_REALTIME)` + `gmtime_r` → SYSTEMTIME |
+| `GetLocalTime` | `clock_gettime(CLOCK_REALTIME)` + `localtime_r` → SYSTEMTIME |
+| `SystemTimeToFileTime` | SYSTEMTIME → Unix timestamp via `timegm` → Windows FILETIME |
+| `FileTimeToSystemTime` | FILETIME → Unix timestamp → SYSTEMTIME via `gmtime_r` |
+| `GetTickCount` | 32-bit truncation of `GetTickCount64()` |
+
+New `SystemTime` struct (#repr(C), 16 bytes, 8 × u16 fields) added to kernel32.rs.
+
+#### 25.2 New KERNEL32 local memory APIs (2)
+
+| Function | Implementation |
+|---|---|
+| `LocalAlloc` | Delegates to `HeapAlloc` (maps `LMEM_ZEROINIT→HEAP_ZERO_MEMORY`) |
+| `LocalFree` | Delegates to `HeapFree`; returns NULL |
+
+These are required by programs that use `CommandLineToArgvW` (which returns a LocalAlloc'd block).
+
+#### 25.3 New KERNEL32 interlocked atomic operations (6)
+
+| Function | Rust implementation |
+|---|---|
+| `InterlockedIncrement` | `AtomicI32::fetch_add(1, SeqCst) + 1` |
+| `InterlockedDecrement` | `AtomicI32::fetch_sub(1, SeqCst) - 1` |
+| `InterlockedExchange` | `AtomicI32::swap(value, SeqCst)` |
+| `InterlockedExchangeAdd` | `AtomicI32::fetch_add(value, SeqCst)` |
+| `InterlockedCompareExchange` | `AtomicI32::compare_exchange(comparand, exchange, ...)` |
+| `InterlockedCompareExchange64` | `AtomicI64::compare_exchange(comparand, exchange, ...)` |
+
+All operations use `Ordering::SeqCst` to match Windows sequential-consistency guarantees.
+
+#### 25.4 New KERNEL32 system info APIs (2)
+
+| Function | Behaviour |
+|---|---|
+| `IsWow64Process` | Returns TRUE (call succeeded); sets `*is_wow64 = 0` (not WOW64) |
+| `GetNativeSystemInfo` | Delegates to `GetSystemInfo` (already returns AMD64 info) |
+
+#### 25.5 New SHELL32.dll (`shell32.rs`, 4 functions)
+
+| Function | Implementation |
+|---|---|
+| `CommandLineToArgvW` | Real Windows backslash/quote parsing; allocates with `alloc` |
+| `SHGetFolderPathW` | Maps CSIDL constants to Linux paths (`$HOME`, `/tmp`, etc.) |
+| `ShellExecuteW` | Headless stub; returns fake HINSTANCE > 32 (success) |
+| `SHCreateDirectoryExW` | Delegates to `kernel32_CreateDirectoryW` |
+
+SHELL32 registered at base address `0xB000` in the DLL manager.
+
+#### 25.6 New VERSION.dll (`version.rs`, 3 functions)
+
+| Function | Behaviour |
+|---|---|
+| `GetFileVersionInfoSizeW` | Returns 0; sets `*lpdw_handle = 0` |
+| `GetFileVersionInfoW` | Returns FALSE (no version resources in emulated environment) |
+| `VerQueryValueW` | Returns FALSE; sets `*lp_buffer = NULL`, `*pu_len = 0` |
+
+VERSION.dll registered at base address `0xC000` in the DLL manager.
+
+#### 25.7 Infrastructure updates
+
+- `function_table.rs` — 29 new `FunctionImpl` entries
+- `dll.rs` — SHELL32/VERSION stub DLLs; 16 new KERNEL32 exports; DLL count 10→12
+- `lib.rs` — `pub mod shell32` and `pub mod version`
+
+#### 25.8 New unit tests (17 new)
+
+| Module | Tests added |
+|---|---|
+| `kernel32.rs` | 7 new (GetSystemTime, GetLocalTime, SystemTimeToFileTime roundtrip, FileTimeToSystemTime roundtrip, GetTickCount, LocalAlloc/LocalFree, InterlockedIncrement, IsWow64Process) |
+| `shell32.rs` | 7 new (parse_command_line_simple/quoted/empty/single, CommandLineToArgvW_basic/null, SHGetFolderPathW_null/appdata, ShellExecuteW) |
+| `version.rs` | 3 new (GetFileVersionInfoSizeW, GetFileVersionInfoW, VerQueryValueW) |
+
+---
+
+## Test Results
+
+```
+cargo test -p litebox_platform_linux_for_windows -p litebox_shim_windows
+           -p litebox_runner_windows_on_linux_userland -p dev_tests -- --test-threads=1
+dev_tests:   5 passed  (unchanged)
+Platform:  316 passed  (+12 new shell32/version/kernel32 tests)
+Shim:       47 passed  (unchanged)
+Runner:     16 passed  (unchanged)
+Total:     384 passed  (+17 from Phase 25)
+```
+
+## Files Modified This Session
+
+- `litebox_platform_linux_for_windows/src/kernel32.rs` — `SystemTime` struct; 16 new functions; unit tests; `AtomicI32`/`AtomicI64`/`Ordering` imports; `copy_utf8_to_wide` made `pub(crate)`
+- `litebox_platform_linux_for_windows/src/shell32.rs` — **new file**, 4 functions + 7 tests
+- `litebox_platform_linux_for_windows/src/version.rs` — **new file**, 3 functions + 3 tests
+- `litebox_platform_linux_for_windows/src/function_table.rs` — 29 new `FunctionImpl` entries
+- `litebox_platform_linux_for_windows/src/lib.rs` — `pub mod shell32`, `pub mod version`
+- `litebox_shim_windows/src/loader/dll.rs` — SHELL32/VERSION DLLs; 16 new KERNEL32 exports; DLL count 10→12
+- `docs/windows_on_linux_status.md` — updated counts, SHELL32/VERSION tables, Phase 25 history
+- `SESSION_SUMMARY.md` — this file
+
+## Security Summary
+
+No new security vulnerabilities introduced.
+
+- `CommandLineToArgvW`: parses command-line without pointer arithmetic beyond bounds; allocation
+  is bounded by the total byte count of all encoded args; all pointer writes are within the
+  allocated block.
+- `SHGetFolderPathW`: writes at most 260 wide characters via `copy_utf8_to_wide`; null-pointer
+  check on `path` before any write.
+- Interlocked operations: use `core::sync::atomic` exclusively; no raw pointer arithmetic.
+- `LocalAlloc`/`LocalFree`: delegate to `HeapAlloc`/`HeapFree` which already have null-pointer
+  guards.
+- CodeQL timed out (large repo); no security concerns in the changed code.
+
+---
+
+*(Previous session history follows)*
+
+
 
 ## Work Completed ✅
 

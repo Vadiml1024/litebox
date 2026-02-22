@@ -6638,7 +6638,7 @@ pub unsafe extern "C" fn kernel32_InterlockedExchangeAdd(addend: *mut i32, value
     atomic.fetch_add(value, Ordering::SeqCst)
 }
 
-/// `InterlockedCompareExchange` — CAS: if `*dest == comperand`, set `*dest = exchange`; return old `*dest`.
+/// `InterlockedCompareExchange` — CAS: if `*dest == comparand`, set `*dest = exchange`; return old `*dest`.
 ///
 /// # Safety
 /// `dest` must be a valid, aligned pointer to an `i32`.
@@ -6646,12 +6646,12 @@ pub unsafe extern "C" fn kernel32_InterlockedExchangeAdd(addend: *mut i32, value
 pub unsafe extern "C" fn kernel32_InterlockedCompareExchange(
     dest: *mut i32,
     exchange: i32,
-    comperand: i32,
+    comparand: i32,
 ) -> i32 {
     // SAFETY: Caller guarantees dest is a valid aligned i32 pointer.
     let atomic = unsafe { &*(dest.cast::<AtomicI32>()) };
     atomic
-        .compare_exchange(comperand, exchange, Ordering::SeqCst, Ordering::SeqCst)
+        .compare_exchange(comparand, exchange, Ordering::SeqCst, Ordering::SeqCst)
         .unwrap_or_else(|e| e)
 }
 
@@ -6663,12 +6663,12 @@ pub unsafe extern "C" fn kernel32_InterlockedCompareExchange(
 pub unsafe extern "C" fn kernel32_InterlockedCompareExchange64(
     dest: *mut i64,
     exchange: i64,
-    comperand: i64,
+    comparand: i64,
 ) -> i64 {
     // SAFETY: Caller guarantees dest is a valid aligned i64 pointer.
     let atomic = unsafe { &*(dest.cast::<AtomicI64>()) };
     atomic
-        .compare_exchange(comperand, exchange, Ordering::SeqCst, Ordering::SeqCst)
+        .compare_exchange(comparand, exchange, Ordering::SeqCst, Ordering::SeqCst)
         .unwrap_or_else(|e| e)
 }
 
