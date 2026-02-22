@@ -289,6 +289,38 @@ fn alloc_file_mapping_handle() -> usize {
     FILE_MAPPING_HANDLE_COUNTER.fetch_add(4, Ordering::SeqCst)
 }
 
+// ── Sync-object handle registry (mutexes + semaphores) ─────────────────────
+static SYNC_HANDLE_COUNTER: AtomicUsize = AtomicUsize::new(0x7_0000);
+
+type MutexStateArc = Arc<(Mutex<Option<(u32, u32)>>, Condvar)>;
+
+enum SyncObjectEntry {
+    Mutex {
+        name: Option<String>,
+        state: MutexStateArc,
+    },
+    Semaphore {
+        name: Option<String>,
+        max_count: i32,
+        state: Arc<(Mutex<i32>, Condvar)>,
+    },
+}
+
+static SYNC_HANDLES: Mutex<Option<HashMap<usize, SyncObjectEntry>>> = Mutex::new(None);
+
+fn with_sync_handles<R>(f: impl FnOnce(&mut HashMap<usize, SyncObjectEntry>) -> R) -> R {
+    let mut guard = SYNC_HANDLES.lock().unwrap();
+    let map = guard.get_or_insert_with(HashMap::new);
+    f(map)
+}
+
+fn alloc_sync_handle() -> usize {
+    SYNC_HANDLE_COUNTER.fetch_add(4, Ordering::SeqCst)
+}
+
+// ── Console title ─────────────────────────────────────────────────────────
+static CONSOLE_TITLE: Mutex<Option<String>> = Mutex::new(None);
+
 // ── Mapped-view registry ───────────────────────────────────────────────────
 // Maps base_address (usize) → mapping size (usize) so UnmapViewOfFile can
 // call munmap with the correct length.
@@ -2095,6 +2127,10 @@ pub unsafe extern "C" fn kernel32_CloseHandle(handle: *mut core::ffi::c_void) ->
     with_event_handles(|map| {
         map.remove(&handle_val);
     });
+    // Remove from sync-handle map if present (drops the Arc-backed sync state)
+    with_sync_handles(|map| {
+        map.remove(&handle_val);
+    });
     1 // TRUE - success (or was not a registered handle)
 }
 
@@ -3827,6 +3863,14 @@ pub unsafe extern "C" fn kernel32_SetLastError(error_code: u32) {
     LAST_ERROR.with(|error| error.set(error_code));
 }
 
+/// Result type for sync handle wait operations inside `kernel32_WaitForSingleObject`.
+enum SyncResult {
+    MutexAcquired,
+    MutexTimeout,
+    SemaphoreAcquired,
+    SemaphoreTimeout,
+}
+
 /// WaitForSingleObject - waits until the specified object is in the signaled state or the
 /// time-out interval elapses.
 ///
@@ -3916,6 +3960,104 @@ pub unsafe extern "C" fn kernel32_WaitForSingleObject(
                 return WAIT_TIMEOUT;
             }
         }
+    }
+
+    // Check sync handles (mutex / semaphore)
+    let sync_result: Option<SyncResult> = with_sync_handles(|map| {
+        if let Some(entry) = map.get(&handle_val) {
+            match entry {
+                SyncObjectEntry::Mutex { state, .. } => {
+                    let (lock, cvar) = &**state;
+                    let tid = unsafe { libc::syscall(libc::SYS_gettid) } as u32;
+                    let mut guard = lock.lock().unwrap();
+                    if let Some((owner, count)) = *guard
+                        && owner == tid
+                    {
+                        *guard = Some((owner, count + 1));
+                        return Some(SyncResult::MutexAcquired);
+                    }
+                    if milliseconds == u32::MAX {
+                        while guard.is_some() {
+                            guard = cvar.wait(guard).unwrap();
+                        }
+                        *guard = Some((tid, 1));
+                        return Some(SyncResult::MutexAcquired);
+                    }
+                    if guard.is_none() {
+                        *guard = Some((tid, 1));
+                        return Some(SyncResult::MutexAcquired);
+                    }
+                    if milliseconds == 0 {
+                        return Some(SyncResult::MutexTimeout);
+                    }
+                    let timeout = Duration::from_millis(u64::from(milliseconds));
+                    let deadline = std::time::Instant::now() + timeout;
+                    loop {
+                        if guard.is_none() {
+                            *guard = Some((tid, 1));
+                            return Some(SyncResult::MutexAcquired);
+                        }
+                        let now = std::time::Instant::now();
+                        if now >= deadline {
+                            return Some(SyncResult::MutexTimeout);
+                        }
+                        let remaining = deadline - now;
+                        let (g, result) = cvar.wait_timeout(guard, remaining).unwrap();
+                        guard = g;
+                        if result.timed_out() && guard.is_some() {
+                            return Some(SyncResult::MutexTimeout);
+                        }
+                    }
+                }
+                SyncObjectEntry::Semaphore { state, .. } => {
+                    let (lock, cvar) = &**state;
+                    let mut count = lock.lock().unwrap();
+                    if milliseconds == u32::MAX {
+                        while *count == 0 {
+                            count = cvar.wait(count).unwrap();
+                        }
+                        *count -= 1;
+                        return Some(SyncResult::SemaphoreAcquired);
+                    }
+                    if *count > 0 {
+                        *count -= 1;
+                        return Some(SyncResult::SemaphoreAcquired);
+                    }
+                    if milliseconds == 0 {
+                        return Some(SyncResult::SemaphoreTimeout);
+                    }
+                    let timeout = Duration::from_millis(u64::from(milliseconds));
+                    let deadline = std::time::Instant::now() + timeout;
+                    loop {
+                        if *count > 0 {
+                            *count -= 1;
+                            return Some(SyncResult::SemaphoreAcquired);
+                        }
+                        let now = std::time::Instant::now();
+                        if now >= deadline {
+                            return Some(SyncResult::SemaphoreTimeout);
+                        }
+                        let remaining = deadline - now;
+                        let (g, result) = cvar.wait_timeout(count, remaining).unwrap();
+                        count = g;
+                        if result.timed_out() && *count == 0 {
+                            return Some(SyncResult::SemaphoreTimeout);
+                        }
+                    }
+                }
+            }
+        } else {
+            None
+        }
+    });
+    match sync_result {
+        Some(SyncResult::MutexAcquired | SyncResult::SemaphoreAcquired) => {
+            return WAIT_OBJECT_0;
+        }
+        Some(SyncResult::MutexTimeout | SyncResult::SemaphoreTimeout) => {
+            return WAIT_TIMEOUT;
+        }
+        None => {}
     }
 
     // Take ownership of the join handle (if this is a thread handle).
@@ -5077,6 +5219,29 @@ pub unsafe extern "C" fn kernel32_WaitForMultipleObjects(
             });
 
             let Some((join_handle_opt, _)) = thread_entry else {
+                // Also handle sync handles
+                let sync_done = with_sync_handles(|map| map.contains_key(&hval));
+                if sync_done {
+                    let h = hval as *mut core::ffi::c_void;
+                    let remaining_ms = match timeout_opt {
+                        None => u32::MAX,
+                        Some(timeout) => {
+                            let elapsed = start.elapsed();
+                            if elapsed >= timeout {
+                                return WAIT_TIMEOUT;
+                            }
+                            timeout
+                                .checked_sub(elapsed)
+                                .unwrap()
+                                .as_millis()
+                                .min(u128::from(u32::MAX)) as u32
+                        }
+                    };
+                    let r = kernel32_WaitForSingleObject(h, remaining_ms);
+                    if r == WAIT_TIMEOUT {
+                        return WAIT_TIMEOUT;
+                    }
+                }
                 continue; // non-thread handle: treat as signaled
             };
             let Some(join_handle) = join_handle_opt else {
@@ -5139,6 +5304,15 @@ pub unsafe extern "C" fn kernel32_WaitForMultipleObjects(
                         }
                     });
                     return WAIT_OBJECT_0 + i as u32;
+                }
+                // Check sync handles
+                let sync_signaled = with_sync_handles(|map| map.contains_key(&hval));
+                if sync_signaled {
+                    let h = hval as *mut core::ffi::c_void;
+                    let r = kernel32_WaitForSingleObject(h, 0);
+                    if r == WAIT_OBJECT_0 {
+                        return WAIT_OBJECT_0 + i as u32;
+                    }
                 }
             }
 
@@ -6728,6 +6902,803 @@ pub unsafe extern "C" fn kernel32_IsWow64Process(
 pub unsafe extern "C" fn kernel32_GetNativeSystemInfo(system_info: *mut u8) {
     // SAFETY: Delegating with the same pointer contract.
     unsafe { kernel32_GetSystemInfo(system_info) }
+}
+
+// ── Phase 26: Mutex / Semaphore ───────────────────────────────────────────
+
+/// # Safety
+/// ptr must be a valid null-terminated UTF-16 string
+unsafe fn wide_to_string_local(ptr: *const u16) -> String {
+    let mut chars = Vec::new();
+    let mut i = 0;
+    while *ptr.add(i) != 0 {
+        chars.push(*ptr.add(i));
+        i += 1;
+    }
+    String::from_utf16_lossy(&chars)
+}
+
+/// CreateMutexW - Creates or opens a named or unnamed mutex object
+///
+/// # Safety
+/// `name` must be a valid null-terminated UTF-16 string or NULL.
+///
+/// # Panics
+/// Panics if an internal mutex is poisoned.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_CreateMutexW(
+    _attrs: *mut u8,
+    initial_owner: i32,
+    name: *const u16,
+) -> *mut core::ffi::c_void {
+    let name_opt = if name.is_null() {
+        None
+    } else {
+        // SAFETY: caller guarantees valid null-terminated UTF-16 string
+        Some(wide_to_string_local(name))
+    };
+
+    if let Some(ref n) = name_opt {
+        let existing = with_sync_handles(|map| {
+            for (&h, entry) in map.iter() {
+                if let SyncObjectEntry::Mutex { name: Some(en), .. } = entry
+                    && en == n
+                {
+                    return Some(h);
+                }
+            }
+            None
+        });
+        if let Some(h) = existing {
+            return h as *mut core::ffi::c_void;
+        }
+    }
+
+    let state: MutexStateArc = Arc::new((Mutex::new(None), Condvar::new()));
+    if initial_owner != 0 {
+        // SAFETY: SYS_gettid is always safe
+        let tid = unsafe { libc::syscall(libc::SYS_gettid) } as u32;
+        *state.0.lock().unwrap() = Some((tid, 1));
+    }
+    let handle = alloc_sync_handle();
+    with_sync_handles(|map| {
+        map.insert(
+            handle,
+            SyncObjectEntry::Mutex {
+                name: name_opt,
+                state: Arc::clone(&state),
+            },
+        );
+    });
+    handle as *mut core::ffi::c_void
+}
+
+/// CreateMutexA - Creates or opens a named or unnamed mutex object (ANSI)
+///
+/// # Safety
+/// `name` must be a valid null-terminated ANSI string or NULL.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_CreateMutexA(
+    attrs: *mut u8,
+    initial_owner: i32,
+    name: *const u8,
+) -> *mut core::ffi::c_void {
+    let wide_name: Vec<u16>;
+    let name_w = if name.is_null() {
+        core::ptr::null()
+    } else {
+        // SAFETY: caller guarantees valid null-terminated ANSI string
+        let s = unsafe { std::ffi::CStr::from_ptr(name.cast::<i8>()) }
+            .to_string_lossy()
+            .into_owned();
+        wide_name = s.encode_utf16().chain(std::iter::once(0)).collect();
+        wide_name.as_ptr()
+    };
+    kernel32_CreateMutexW(attrs, initial_owner, name_w)
+}
+
+/// OpenMutexW - Opens an existing named mutex object
+///
+/// # Safety
+/// `name` must be a valid null-terminated UTF-16 string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_OpenMutexW(
+    _desired_access: u32,
+    _inherit_handle: i32,
+    name: *const u16,
+) -> *mut core::ffi::c_void {
+    if name.is_null() {
+        kernel32_SetLastError(87); // ERROR_INVALID_PARAMETER
+        return core::ptr::null_mut();
+    }
+    // SAFETY: caller guarantees valid null-terminated UTF-16 string
+    let name_str = wide_to_string_local(name);
+    let existing = with_sync_handles(|map| {
+        for (&h, entry) in map.iter() {
+            if let SyncObjectEntry::Mutex { name: Some(en), .. } = entry
+                && *en == name_str
+            {
+                return Some(h);
+            }
+        }
+        None
+    });
+    if let Some(h) = existing {
+        h as *mut core::ffi::c_void
+    } else {
+        kernel32_SetLastError(6); // ERROR_INVALID_HANDLE
+        core::ptr::null_mut()
+    }
+}
+
+/// ReleaseMutex - Releases ownership of the specified mutex object
+///
+/// # Safety
+/// `mutex` must be a valid mutex handle returned by CreateMutexW/A.
+///
+/// # Panics
+/// Panics if an internal mutex is poisoned.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_ReleaseMutex(mutex: *mut core::ffi::c_void) -> i32 {
+    let handle_val = mutex as usize;
+    // SAFETY: SYS_gettid is always safe
+    let tid = unsafe { libc::syscall(libc::SYS_gettid) } as u32;
+    let released = with_sync_handles(|map| {
+        if let Some(SyncObjectEntry::Mutex { state, .. }) = map.get(&handle_val) {
+            let (lock, cvar) = &**state;
+            let mut guard = lock.lock().unwrap();
+            if let Some((owner, count)) = *guard
+                && owner == tid
+            {
+                if count > 1 {
+                    *guard = Some((owner, count - 1));
+                } else {
+                    *guard = None;
+                    cvar.notify_one();
+                }
+                return true;
+            }
+        }
+        false
+    });
+    i32::from(released)
+}
+
+/// CreateSemaphoreW - Creates or opens a named or unnamed semaphore object
+///
+/// # Safety
+/// `name` must be a valid null-terminated UTF-16 string or NULL.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_CreateSemaphoreW(
+    _attrs: *mut u8,
+    initial_count: i32,
+    max_count: i32,
+    name: *const u16,
+) -> *mut core::ffi::c_void {
+    if initial_count < 0 || max_count <= 0 || initial_count > max_count {
+        kernel32_SetLastError(87); // ERROR_INVALID_PARAMETER
+        return core::ptr::null_mut();
+    }
+    let name_opt = if name.is_null() {
+        None
+    } else {
+        // SAFETY: caller guarantees valid null-terminated UTF-16 string
+        Some(wide_to_string_local(name))
+    };
+
+    if let Some(ref n) = name_opt {
+        let existing = with_sync_handles(|map| {
+            for (&h, entry) in map.iter() {
+                if let SyncObjectEntry::Semaphore { name: Some(en), .. } = entry
+                    && en == n
+                {
+                    return Some(h);
+                }
+            }
+            None
+        });
+        if let Some(h) = existing {
+            return h as *mut core::ffi::c_void;
+        }
+    }
+
+    let state: Arc<(Mutex<i32>, Condvar)> = Arc::new((Mutex::new(initial_count), Condvar::new()));
+    let handle = alloc_sync_handle();
+    with_sync_handles(|map| {
+        map.insert(
+            handle,
+            SyncObjectEntry::Semaphore {
+                name: name_opt,
+                max_count,
+                state: Arc::clone(&state),
+            },
+        );
+    });
+    handle as *mut core::ffi::c_void
+}
+
+/// CreateSemaphoreA - Creates or opens a named or unnamed semaphore object (ANSI)
+///
+/// # Safety
+/// `name` must be a valid null-terminated ANSI string or NULL.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_CreateSemaphoreA(
+    attrs: *mut u8,
+    initial_count: i32,
+    max_count: i32,
+    name: *const u8,
+) -> *mut core::ffi::c_void {
+    let wide_name: Vec<u16>;
+    let name_w = if name.is_null() {
+        core::ptr::null()
+    } else {
+        // SAFETY: caller guarantees valid null-terminated ANSI string
+        let s = unsafe { std::ffi::CStr::from_ptr(name.cast::<i8>()) }
+            .to_string_lossy()
+            .into_owned();
+        wide_name = s.encode_utf16().chain(std::iter::once(0)).collect();
+        wide_name.as_ptr()
+    };
+    kernel32_CreateSemaphoreW(attrs, initial_count, max_count, name_w)
+}
+
+/// OpenSemaphoreW - Opens an existing named semaphore object
+///
+/// # Safety
+/// `name` must be a valid null-terminated UTF-16 string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_OpenSemaphoreW(
+    _desired_access: u32,
+    _inherit_handle: i32,
+    name: *const u16,
+) -> *mut core::ffi::c_void {
+    if name.is_null() {
+        kernel32_SetLastError(87); // ERROR_INVALID_PARAMETER
+        return core::ptr::null_mut();
+    }
+    // SAFETY: caller guarantees valid null-terminated UTF-16 string
+    let name_str = wide_to_string_local(name);
+    let existing = with_sync_handles(|map| {
+        for (&h, entry) in map.iter() {
+            if let SyncObjectEntry::Semaphore { name: Some(en), .. } = entry
+                && *en == name_str
+            {
+                return Some(h);
+            }
+        }
+        None
+    });
+    if let Some(h) = existing {
+        h as *mut core::ffi::c_void
+    } else {
+        kernel32_SetLastError(6); // ERROR_INVALID_HANDLE
+        core::ptr::null_mut()
+    }
+}
+
+/// ReleaseSemaphore - Increases the count of the specified semaphore object
+///
+/// # Safety
+/// `semaphore` must be a valid semaphore handle.
+///
+/// # Panics
+/// Panics if an internal mutex is poisoned.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_ReleaseSemaphore(
+    semaphore: *mut core::ffi::c_void,
+    release_count: i32,
+    previous_count: *mut i32,
+) -> i32 {
+    if release_count <= 0 {
+        kernel32_SetLastError(87); // ERROR_INVALID_PARAMETER
+        return 0;
+    }
+    let handle_val = semaphore as usize;
+    let result = with_sync_handles(|map| {
+        if let Some(SyncObjectEntry::Semaphore {
+            state, max_count, ..
+        }) = map.get(&handle_val)
+        {
+            let (lock, cvar) = &**state;
+            let mut count = lock.lock().unwrap();
+            let prev = *count;
+            let new_count = prev.saturating_add(release_count);
+            if new_count > *max_count {
+                return Err(());
+            }
+            *count = new_count;
+            for _ in 0..release_count {
+                cvar.notify_one();
+            }
+            Ok(prev)
+        } else {
+            Err(())
+        }
+    });
+    if let Ok(prev) = result {
+        if !previous_count.is_null() {
+            // SAFETY: caller guarantees valid pointer
+            unsafe { *previous_count = prev };
+        }
+        1
+    } else {
+        kernel32_SetLastError(87); // ERROR_INVALID_PARAMETER
+        0
+    }
+}
+
+// ── Phase 26: Console Extensions ──────────────────────────────────────────
+
+/// SetConsoleMode - Sets the input mode of a console's input buffer or output mode
+///
+/// # Safety
+/// `console` must be a valid console handle or pseudo-handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_SetConsoleMode(
+    _console: *mut core::ffi::c_void,
+    _mode: u32,
+) -> i32 {
+    1 // TRUE - succeed silently
+}
+
+/// SetConsoleTitleW - Sets the title bar string for the current console window
+///
+/// # Safety
+/// `title` must be a valid null-terminated UTF-16 string.
+///
+/// # Panics
+/// Panics if an internal mutex is poisoned.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_SetConsoleTitleW(title: *const u16) -> i32 {
+    if title.is_null() {
+        return 0;
+    }
+    // SAFETY: caller guarantees valid null-terminated UTF-16 string
+    let title_str = wide_to_string_local(title);
+    let mut guard = CONSOLE_TITLE.lock().unwrap();
+    *guard = Some(title_str);
+    1
+}
+
+/// SetConsoleTitleA - Sets the title bar string for the current console window (ANSI)
+///
+/// # Safety
+/// `title` must be a valid null-terminated ANSI string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_SetConsoleTitleA(title: *const u8) -> i32 {
+    if title.is_null() {
+        return 0;
+    }
+    // SAFETY: caller guarantees valid null-terminated ANSI string
+    let s = std::ffi::CStr::from_ptr(title.cast::<i8>())
+        .to_string_lossy()
+        .into_owned();
+    let wide: Vec<u16> = s.encode_utf16().chain(std::iter::once(0)).collect();
+    kernel32_SetConsoleTitleW(wide.as_ptr())
+}
+
+/// GetConsoleTitleW - Retrieves the title bar string for the current console window
+///
+/// # Safety
+/// `buffer` must point to a valid writable buffer of at least `size` u16 elements.
+///
+/// # Panics
+/// Panics if an internal mutex is poisoned.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_GetConsoleTitleW(buffer: *mut u16, size: u32) -> u32 {
+    let guard = CONSOLE_TITLE.lock().unwrap();
+    let title = guard.as_deref().unwrap_or("");
+    // SAFETY: caller guarantees valid buffer with `size` elements
+    copy_utf8_to_wide(title, buffer, size)
+}
+
+/// AllocConsole - Allocates a new console for the calling process
+///
+/// # Safety
+/// This function is always safe to call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_AllocConsole() -> i32 {
+    1 // TRUE - already have a console (or headless)
+}
+
+/// FreeConsole - Detaches the calling process from its console
+///
+/// # Safety
+/// This function is always safe to call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_FreeConsole() -> i32 {
+    1 // TRUE
+}
+
+/// GetConsoleWindow - Retrieves the window handle used by the console
+///
+/// # Safety
+/// This function is always safe to call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_GetConsoleWindow() -> *mut core::ffi::c_void {
+    core::ptr::null_mut() // headless: no window
+}
+
+// ── Phase 26: String Utilities ─────────────────────────────────────────────
+
+/// lstrlenA - Calculates the length of the specified string (ANSI)
+///
+/// # Safety
+/// `string` must be a valid null-terminated ANSI string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_lstrlenA(string: *const u8) -> i32 {
+    if string.is_null() {
+        return 0;
+    }
+    // SAFETY: caller guarantees valid null-terminated string
+    let mut len = 0usize;
+    while unsafe { *string.add(len) } != 0 {
+        len += 1;
+    }
+    len as i32
+}
+
+/// lstrcpyW - Copies a string to a buffer (wide)
+///
+/// # Safety
+/// `dst` must point to a valid writable buffer large enough for `src`.
+/// `src` must be a valid null-terminated UTF-16 string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_lstrcpyW(dst: *mut u16, src: *const u16) -> *mut u16 {
+    if dst.is_null() || src.is_null() {
+        return core::ptr::null_mut();
+    }
+    // SAFETY: caller guarantees valid pointers with sufficient space
+    let mut i = 0usize;
+    loop {
+        let ch = unsafe { *src.add(i) };
+        unsafe { *dst.add(i) = ch };
+        if ch == 0 {
+            break;
+        }
+        i += 1;
+    }
+    dst
+}
+
+/// lstrcpyA - Copies a string to a buffer (ANSI)
+///
+/// # Safety
+/// `dst` must point to a valid writable buffer large enough for `src`.
+/// `src` must be a valid null-terminated ANSI string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_lstrcpyA(dst: *mut u8, src: *const u8) -> *mut u8 {
+    if dst.is_null() || src.is_null() {
+        return core::ptr::null_mut();
+    }
+    // SAFETY: caller guarantees valid pointers with sufficient space
+    let mut i = 0usize;
+    loop {
+        let ch = unsafe { *src.add(i) };
+        unsafe { *dst.add(i) = ch };
+        if ch == 0 {
+            break;
+        }
+        i += 1;
+    }
+    dst
+}
+
+/// lstrcmpW - Compares two wide strings (case-sensitive)
+///
+/// # Safety
+/// Both strings must be valid null-terminated UTF-16 strings.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_lstrcmpW(s1: *const u16, s2: *const u16) -> i32 {
+    if s1.is_null() && s2.is_null() {
+        return 0;
+    }
+    if s1.is_null() {
+        return -1;
+    }
+    if s2.is_null() {
+        return 1;
+    }
+    // SAFETY: caller guarantees valid null-terminated UTF-16 strings
+    let str1 = wide_to_string_local(s1);
+    let str2 = wide_to_string_local(s2);
+    match str1.cmp(&str2) {
+        std::cmp::Ordering::Less => -1,
+        std::cmp::Ordering::Equal => 0,
+        std::cmp::Ordering::Greater => 1,
+    }
+}
+
+/// lstrcmpA - Compares two ANSI strings (case-sensitive)
+///
+/// # Safety
+/// Both strings must be valid null-terminated ANSI strings.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_lstrcmpA(s1: *const u8, s2: *const u8) -> i32 {
+    if s1.is_null() && s2.is_null() {
+        return 0;
+    }
+    if s1.is_null() {
+        return -1;
+    }
+    if s2.is_null() {
+        return 1;
+    }
+    // SAFETY: caller guarantees valid null-terminated ANSI strings
+    let mut i = 0usize;
+    loop {
+        let c1 = unsafe { *s1.add(i) };
+        let c2 = unsafe { *s2.add(i) };
+        if c1 != c2 {
+            return i32::from(c1) - i32::from(c2);
+        }
+        if c1 == 0 {
+            return 0;
+        }
+        i += 1;
+    }
+}
+
+/// lstrcmpiW - Compares two wide strings (case-insensitive)
+///
+/// # Safety
+/// Both strings must be valid null-terminated UTF-16 strings.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_lstrcmpiW(s1: *const u16, s2: *const u16) -> i32 {
+    if s1.is_null() && s2.is_null() {
+        return 0;
+    }
+    if s1.is_null() {
+        return -1;
+    }
+    if s2.is_null() {
+        return 1;
+    }
+    // SAFETY: caller guarantees valid null-terminated UTF-16 strings
+    let str1 = wide_to_string_local(s1).to_lowercase();
+    let str2 = wide_to_string_local(s2).to_lowercase();
+    match str1.cmp(&str2) {
+        std::cmp::Ordering::Less => -1,
+        std::cmp::Ordering::Equal => 0,
+        std::cmp::Ordering::Greater => 1,
+    }
+}
+
+/// lstrcmpiA - Compares two ANSI strings (case-insensitive)
+///
+/// # Safety
+/// Both strings must be valid null-terminated ANSI strings.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_lstrcmpiA(s1: *const u8, s2: *const u8) -> i32 {
+    if s1.is_null() && s2.is_null() {
+        return 0;
+    }
+    if s1.is_null() {
+        return -1;
+    }
+    if s2.is_null() {
+        return 1;
+    }
+    // SAFETY: caller guarantees valid null-terminated ANSI strings
+    let mut i = 0usize;
+    loop {
+        let c1 = (unsafe { *s1.add(i) } as char).to_ascii_lowercase() as u8;
+        let c2 = (unsafe { *s2.add(i) } as char).to_ascii_lowercase() as u8;
+        if c1 != c2 {
+            return i32::from(c1) - i32::from(c2);
+        }
+        if c1 == 0 {
+            return 0;
+        }
+        i += 1;
+    }
+}
+
+/// OutputDebugStringW - Sends a wide string to the debugger (writes to stderr)
+///
+/// # Safety
+/// `output_string` must be a valid null-terminated UTF-16 string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_OutputDebugStringW(output_string: *const u16) {
+    if output_string.is_null() {
+        return;
+    }
+    // SAFETY: caller guarantees valid null-terminated UTF-16 string
+    let s = wide_to_string_local(output_string);
+    eprintln!("[OutputDebugString] {s}");
+}
+
+/// OutputDebugStringA - Sends an ANSI string to the debugger (writes to stderr)
+///
+/// # Safety
+/// `output_string` must be a valid null-terminated ANSI string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_OutputDebugStringA(output_string: *const u8) {
+    if output_string.is_null() {
+        return;
+    }
+    // SAFETY: caller guarantees valid null-terminated ANSI string
+    let s = std::ffi::CStr::from_ptr(output_string.cast::<i8>()).to_string_lossy();
+    eprintln!("[OutputDebugString] {s}");
+}
+
+// ── Phase 26: Drive / Volume APIs ─────────────────────────────────────────
+
+const DRIVE_FIXED: u32 = 3;
+
+/// GetDriveTypeW - Determines whether a disk drive is a removable, fixed, CD-ROM, RAM disk, or network drive
+///
+/// # Safety
+/// `root_path_name` must be a valid null-terminated UTF-16 string or NULL.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_GetDriveTypeW(_root_path_name: *const u16) -> u32 {
+    DRIVE_FIXED
+}
+
+/// GetLogicalDrives - Retrieves a bitmask representing currently available disk drives
+///
+/// # Safety
+/// This function is always safe to call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_GetLogicalDrives() -> u32 {
+    0x4 // Bit 2 set = C: drive only
+}
+
+/// GetLogicalDriveStringsW - Fills a buffer with strings for valid drives in the system
+///
+/// # Safety
+/// `buffer` must point to a writable buffer of at least `buffer_length` u16 elements.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_GetLogicalDriveStringsW(
+    buffer_length: u32,
+    buffer: *mut u16,
+) -> u32 {
+    // "C:\\\0\0" in wide chars = ['C', ':', '\\', 0, 0] = 5 u16s
+    let drive_str: &[u16] = &[
+        u16::from(b'C'),
+        u16::from(b':'),
+        u16::from(b'\\'),
+        0u16,
+        0u16,
+    ];
+    let required = drive_str.len() as u32;
+    if buffer.is_null() || buffer_length < required {
+        return required;
+    }
+    // SAFETY: caller guarantees valid writable buffer of at least buffer_length u16s
+    for (i, &ch) in drive_str.iter().enumerate() {
+        *buffer.add(i) = ch;
+    }
+    required - 1
+}
+
+/// GetDiskFreeSpaceExW - Retrieves information about the amount of space available on a disk volume
+///
+/// # Safety
+/// Output pointers must be valid or NULL.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_GetDiskFreeSpaceExW(
+    _dir: *const u16,
+    free_bytes: *mut u64,
+    total_bytes: *mut u64,
+    total_free_bytes: *mut u64,
+) -> i32 {
+    const TOTAL: u64 = 20 * 1024 * 1024 * 1024;
+    const FREE: u64 = 10 * 1024 * 1024 * 1024;
+    if !free_bytes.is_null() {
+        // SAFETY: caller guarantees valid pointer
+        *free_bytes = FREE;
+    }
+    if !total_bytes.is_null() {
+        // SAFETY: caller guarantees valid pointer
+        *total_bytes = TOTAL;
+    }
+    if !total_free_bytes.is_null() {
+        // SAFETY: caller guarantees valid pointer
+        *total_free_bytes = FREE;
+    }
+    1 // TRUE
+}
+
+/// GetVolumeInformationW - Returns information about a file system and volume
+///
+/// # Safety
+/// Output pointers must be valid buffers or NULL.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_GetVolumeInformationW(
+    _root: *const u16,
+    volume_name: *mut u16,
+    volume_name_size: u32,
+    serial: *mut u32,
+    max_component: *mut u32,
+    fs_flags: *mut u32,
+    fs_name: *mut u16,
+    fs_name_size: u32,
+) -> i32 {
+    if !volume_name.is_null() && volume_name_size > 0 {
+        // SAFETY: caller guarantees valid writable buffer
+        copy_utf8_to_wide("", volume_name, volume_name_size);
+    }
+    if !serial.is_null() {
+        // SAFETY: caller guarantees valid pointer
+        *serial = 0x1234_5678;
+    }
+    if !max_component.is_null() {
+        // SAFETY: caller guarantees valid pointer
+        *max_component = 255;
+    }
+    if !fs_flags.is_null() {
+        // SAFETY: caller guarantees valid pointer
+        *fs_flags = 0x0003;
+    }
+    if !fs_name.is_null() && fs_name_size > 0 {
+        // SAFETY: caller guarantees valid writable buffer
+        copy_utf8_to_wide("NTFS", fs_name, fs_name_size);
+    }
+    1 // TRUE
+}
+
+// ── Phase 26: Computer Name ───────────────────────────────────────────────
+
+/// GetComputerNameW - Retrieves the NetBIOS name of the local computer
+///
+/// # Safety
+/// `buffer` must point to a valid writable buffer; `size` must be a valid pointer.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_GetComputerNameW(buffer: *mut u16, size: *mut u32) -> i32 {
+    if size.is_null() {
+        kernel32_SetLastError(87); // ERROR_INVALID_PARAMETER
+        return 0;
+    }
+    let hostname = get_hostname();
+    let utf16: Vec<u16> = hostname.encode_utf16().collect();
+    let needed = utf16.len() as u32 + 1;
+    // SAFETY: size is checked above
+    let buf_size = *size;
+    *size = needed;
+    if buffer.is_null() || buf_size < needed {
+        kernel32_SetLastError(234); // ERROR_MORE_DATA
+        return 0;
+    }
+    // SAFETY: caller guarantees valid buffer of buf_size u16s
+    for (i, &ch) in utf16.iter().enumerate() {
+        *buffer.add(i) = ch;
+    }
+    *buffer.add(utf16.len()) = 0;
+    *size = utf16.len() as u32;
+    1
+}
+
+/// GetComputerNameExW - Retrieves a NetBIOS or DNS name associated with the local computer
+///
+/// # Safety
+/// `buffer` must point to a valid writable buffer; `size` must be a valid pointer.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_GetComputerNameExW(
+    _name_type: u32,
+    buffer: *mut u16,
+    size: *mut u32,
+) -> i32 {
+    kernel32_GetComputerNameW(buffer, size)
+}
+
+fn get_hostname() -> String {
+    if let Ok(s) = std::fs::read_to_string("/proc/sys/kernel/hostname") {
+        let trimmed = s.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_owned();
+        }
+    }
+    let mut buf = vec![0u8; 256];
+    // SAFETY: buf is a valid mutable buffer of 256 bytes
+    let ret = unsafe { libc::gethostname(buf.as_mut_ptr().cast::<i8>(), buf.len()) };
+    if ret == 0
+        && let Some(end) = buf.iter().position(|&b| b == 0)
+        && let Ok(s) = std::str::from_utf8(&buf[..end])
+    {
+        return s.to_owned();
+    }
+    "localhost".to_owned()
 }
 
 #[cfg(test)]
@@ -10234,5 +11205,169 @@ mod tests {
             result_null.is_null(),
             "LocalFree(NULL) should return NULL (no-op)"
         );
+    }
+
+    // ── Phase 26 tests ────────────────────────────────────────────────────
+    #[test]
+    fn test_create_mutex_and_release() {
+        let handle = unsafe { kernel32_CreateMutexW(core::ptr::null_mut(), 0, core::ptr::null()) };
+        assert!(!handle.is_null());
+        let wait_result = unsafe { kernel32_WaitForSingleObject(handle, 0) };
+        assert_eq!(
+            wait_result, 0,
+            "WaitForSingleObject on unowned mutex should return WAIT_OBJECT_0"
+        );
+        let release_result = unsafe { kernel32_ReleaseMutex(handle) };
+        assert_eq!(release_result, 1, "ReleaseMutex should return TRUE");
+        unsafe { kernel32_CloseHandle(handle) };
+    }
+
+    #[test]
+    fn test_mutex_recursive_acquire() {
+        let handle = unsafe { kernel32_CreateMutexW(core::ptr::null_mut(), 1, core::ptr::null()) };
+        assert!(!handle.is_null());
+        let wait_result = unsafe { kernel32_WaitForSingleObject(handle, 0) };
+        assert_eq!(
+            wait_result, 0,
+            "Recursive mutex acquire should return WAIT_OBJECT_0"
+        );
+        let r1 = unsafe { kernel32_ReleaseMutex(handle) };
+        assert_eq!(r1, 1);
+        let r2 = unsafe { kernel32_ReleaseMutex(handle) };
+        assert_eq!(r2, 1);
+        unsafe { kernel32_CloseHandle(handle) };
+    }
+
+    #[test]
+    fn test_create_semaphore_and_release() {
+        let handle =
+            unsafe { kernel32_CreateSemaphoreW(core::ptr::null_mut(), 0, 5, core::ptr::null()) };
+        assert!(!handle.is_null());
+        let mut prev: i32 = -1;
+        let result = unsafe { kernel32_ReleaseSemaphore(handle, 2, core::ptr::addr_of_mut!(prev)) };
+        assert_eq!(result, 1);
+        assert_eq!(prev, 0, "Previous count should be 0");
+        unsafe { kernel32_CloseHandle(handle) };
+    }
+
+    #[test]
+    fn test_semaphore_wait_and_release() {
+        let handle =
+            unsafe { kernel32_CreateSemaphoreW(core::ptr::null_mut(), 2, 5, core::ptr::null()) };
+        assert!(!handle.is_null());
+        let w1 = unsafe { kernel32_WaitForSingleObject(handle, 0) };
+        assert_eq!(w1, 0);
+        let w2 = unsafe { kernel32_WaitForSingleObject(handle, 0) };
+        assert_eq!(w2, 0);
+        let w3 = unsafe { kernel32_WaitForSingleObject(handle, 0) };
+        assert_eq!(w3, 0x102, "Should return WAIT_TIMEOUT");
+        unsafe { kernel32_CloseHandle(handle) };
+    }
+
+    #[test]
+    fn test_set_console_mode_returns_true() {
+        let result = unsafe { kernel32_SetConsoleMode(core::ptr::null_mut(), 0x0007) };
+        assert_eq!(result, 1);
+    }
+
+    #[test]
+    fn test_set_get_console_title() {
+        let title: Vec<u16> = "TestTitle\0".encode_utf16().collect();
+        let set_result = unsafe { kernel32_SetConsoleTitleW(title.as_ptr()) };
+        assert_eq!(set_result, 1);
+        let mut buf = vec![0u16; 64];
+        let got = unsafe { kernel32_GetConsoleTitleW(buf.as_mut_ptr(), 64) };
+        assert!(got > 0);
+        let s: String = buf[..got as usize]
+            .iter()
+            .map(|&c| char::from_u32(u32::from(c)).unwrap_or('?'))
+            .collect();
+        assert_eq!(s, "TestTitle");
+    }
+
+    #[test]
+    fn test_alloc_free_console() {
+        assert_eq!(unsafe { kernel32_AllocConsole() }, 1);
+        assert_eq!(unsafe { kernel32_FreeConsole() }, 1);
+    }
+
+    #[test]
+    fn test_lstrlen_a() {
+        let s = b"hello\0";
+        let len = unsafe { kernel32_lstrlenA(s.as_ptr()) };
+        assert_eq!(len, 5);
+    }
+
+    #[test]
+    fn test_lstrcpy_w() {
+        let src: Vec<u16> = "hello\0".encode_utf16().collect();
+        let mut dst = vec![0u16; 16];
+        let result = unsafe { kernel32_lstrcpyW(dst.as_mut_ptr(), src.as_ptr()) };
+        assert!(!result.is_null());
+        let copied: String = dst
+            .iter()
+            .take_while(|&&c| c != 0)
+            .map(|&c| char::from_u32(u32::from(c)).unwrap_or('?'))
+            .collect();
+        assert_eq!(copied, "hello");
+    }
+
+    #[test]
+    fn test_lstrcmpi_w() {
+        let s1: Vec<u16> = "Hello\0".encode_utf16().collect();
+        let s2: Vec<u16> = "hello\0".encode_utf16().collect();
+        let result = unsafe { kernel32_lstrcmpiW(s1.as_ptr(), s2.as_ptr()) };
+        assert_eq!(result, 0, "Case-insensitive compare should return 0");
+    }
+
+    #[test]
+    fn test_output_debug_string_w() {
+        let s: Vec<u16> = "test debug\0".encode_utf16().collect();
+        unsafe { kernel32_OutputDebugStringW(s.as_ptr()) };
+    }
+
+    #[test]
+    fn test_get_drive_type() {
+        let path: Vec<u16> = "C:\\\0".encode_utf16().collect();
+        let t = unsafe { kernel32_GetDriveTypeW(path.as_ptr()) };
+        assert_eq!(t, 3, "Should return DRIVE_FIXED");
+    }
+
+    #[test]
+    fn test_get_logical_drives() {
+        let result = unsafe { kernel32_GetLogicalDrives() };
+        assert_eq!(result, 0x4);
+    }
+
+    #[test]
+    fn test_get_disk_free_space() {
+        let mut free: u64 = 0;
+        let mut total: u64 = 0;
+        let r = unsafe {
+            kernel32_GetDiskFreeSpaceExW(
+                core::ptr::null(),
+                core::ptr::addr_of_mut!(free),
+                core::ptr::addr_of_mut!(total),
+                core::ptr::null_mut(),
+            )
+        };
+        assert_eq!(r, 1);
+        assert!(free > 0);
+        assert!(total > 0);
+    }
+
+    #[test]
+    fn test_get_computer_name() {
+        let mut buf = vec![0u16; 256];
+        let mut size: u32 = 256;
+        let r =
+            unsafe { kernel32_GetComputerNameW(buf.as_mut_ptr(), core::ptr::addr_of_mut!(size)) };
+        assert_eq!(r, 1);
+        assert!(size > 0);
+        let name: String = buf[..size as usize]
+            .iter()
+            .map(|&c| char::from_u32(u32::from(c)).unwrap_or('?'))
+            .collect();
+        assert!(!name.is_empty());
     }
 }

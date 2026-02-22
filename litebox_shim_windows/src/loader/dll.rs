@@ -456,6 +456,42 @@ impl DllManager {
             ("InterlockedCompareExchange64", KERNEL32_BASE + 0xA7),
             ("IsWow64Process", KERNEL32_BASE + 0xA8),
             ("GetNativeSystemInfo", KERNEL32_BASE + 0xA9),
+            // Phase 26: Mutex / Semaphore
+            ("CreateMutexW", KERNEL32_BASE + 0xAA),
+            ("CreateMutexA", KERNEL32_BASE + 0xAB),
+            ("OpenMutexW", KERNEL32_BASE + 0xAC),
+            ("ReleaseMutex", KERNEL32_BASE + 0xAD),
+            ("CreateSemaphoreW", KERNEL32_BASE + 0xAE),
+            ("CreateSemaphoreA", KERNEL32_BASE + 0xAF),
+            ("OpenSemaphoreW", KERNEL32_BASE + 0xB0),
+            ("ReleaseSemaphore", KERNEL32_BASE + 0xB1),
+            // Phase 26: Console Extensions
+            ("SetConsoleMode", KERNEL32_BASE + 0xB2),
+            ("SetConsoleTitleW", KERNEL32_BASE + 0xB3),
+            ("SetConsoleTitleA", KERNEL32_BASE + 0xB4),
+            ("GetConsoleTitleW", KERNEL32_BASE + 0xB5),
+            ("AllocConsole", KERNEL32_BASE + 0xB6),
+            ("FreeConsole", KERNEL32_BASE + 0xB7),
+            ("GetConsoleWindow", KERNEL32_BASE + 0xB8),
+            // Phase 26: String Utilities
+            ("lstrlenA", KERNEL32_BASE + 0xB9),
+            ("lstrcpyW", KERNEL32_BASE + 0xBA),
+            ("lstrcpyA", KERNEL32_BASE + 0xBB),
+            ("lstrcmpW", KERNEL32_BASE + 0xBC),
+            ("lstrcmpA", KERNEL32_BASE + 0xBD),
+            ("lstrcmpiW", KERNEL32_BASE + 0xBE),
+            ("lstrcmpiA", KERNEL32_BASE + 0xBF),
+            ("OutputDebugStringW", KERNEL32_BASE + 0xC0),
+            ("OutputDebugStringA", KERNEL32_BASE + 0xC1),
+            // Phase 26: Drive / Volume APIs
+            ("GetDriveTypeW", KERNEL32_BASE + 0xC2),
+            ("GetLogicalDrives", KERNEL32_BASE + 0xC3),
+            ("GetLogicalDriveStringsW", KERNEL32_BASE + 0xC4),
+            ("GetDiskFreeSpaceExW", KERNEL32_BASE + 0xC5),
+            ("GetVolumeInformationW", KERNEL32_BASE + 0xC6),
+            // Phase 26: Computer Name
+            ("GetComputerNameW", KERNEL32_BASE + 0xC7),
+            ("GetComputerNameExW", KERNEL32_BASE + 0xC8),
         ];
 
         self.register_stub_dll("KERNEL32.dll", exports);
@@ -707,6 +743,9 @@ impl DllManager {
             // Registry enumeration
             ("RegEnumKeyExW", ADVAPI32_BASE + 6),
             ("RegEnumValueW", ADVAPI32_BASE + 7),
+            // Phase 26: User Name
+            ("GetUserNameW", ADVAPI32_BASE + 8),
+            ("GetUserNameA", ADVAPI32_BASE + 9),
         ];
 
         self.register_stub_dll("ADVAPI32.dll", exports);
