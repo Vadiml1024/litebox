@@ -1,8 +1,8 @@
 # Windows on Linux: Implementation Status
 
-**Last Updated:** 2026-02-21  
-**Total Tests:** 298 passing (235 platform + 47 shim + 16 runner)  
-**Overall Status:** Core infrastructure complete. Windows PE binaries load and begin execution; full end-to-end execution of real-world programs is still a work in progress.
+**Last Updated:** 2026-02-22  
+**Total Tests:** 305 passing (242 platform + 47 shim + 16 runner)  
+**Overall Status:** Core infrastructure complete. Six Rust-based test programs (hello_cli, math_test, env_test, args_test, file_io_test, string_test) run successfully end-to-end through the runner on Linux.
 
 ---
 
@@ -89,6 +89,9 @@
 | `CloseHandle` | Removes event/thread entries |
 | `GetTempPathW` | `std::env::temp_dir()` |
 | `InitializeCriticalSection` / `EnterCriticalSection` / `LeaveCriticalSection` / `DeleteCriticalSection` | Mutex-backed |
+| `GetExitCodeProcess` | Returns `STILL_ACTIVE` (259) for the current process |
+| `SetFileAttributesW` | Maps `FILE_ATTRIBUTE_READONLY` to Linux `chmod`; other bits silently accepted |
+| `GetModuleFileNameW` | Returns current executable path via `/proc/self/exe` |
 
 ### MSVCRT Implementations (18 functions)
 `printf`, `fprintf`, `sprintf`, `snprintf`, `malloc`, `calloc`, `realloc`, `free`, `memcpy`, `memmove`, `memset`, `memcmp`, `strlen`, `strcpy`, `strncpy`, `strcmp`, `strncmp`, `exit`
@@ -138,25 +141,21 @@
 | Process creation (`CreateProcessW`) | Not implemented |
 | Advanced file operations (memory mapping, overlapped I/O) | Not implemented |
 | Advanced registry operations (write, enumeration) | Not implemented |
-| 38 remaining KERNEL32 functions | Stub no-ops only |
-| Full end-to-end execution of MinGW binaries | Entry point reached; crashes during CRT global initialization (BSS / `.data` reliance on not-yet-initialized globals) |
-
-### Known Blocker: MinGW CRT Global Initialization
-Running a MinGW-compiled `hello_cli.exe` currently crashes during CRT startup at a low memory address (e.g., `0x3018`). The root cause is that BSS sections must be explicitly zero-initialized when loaded (they have `SizeOfRawData == 0` but `VirtualSize > 0`). Until this is fixed, real Windows binaries will not run to completion.
+| 36 remaining KERNEL32 functions | Stub no-ops only |
 
 ---
 
 ## Test Coverage
 
-**298 tests total (all passing):**
+**304 tests total (all passing):**
 
 | Package | Tests | Notes |
 |---|---|---|
-| `litebox_platform_linux_for_windows` | 235 | KERNEL32, MSVCRT, WS2_32, advapi32, user32, platform APIs |
+| `litebox_platform_linux_for_windows` | 241 | KERNEL32, MSVCRT, WS2_32, advapi32, user32, platform APIs |
 | `litebox_shim_windows` | 47 | ABI translation, PE loader, tracing |
 | `litebox_runner_windows_on_linux_userland` | 16 | 9 tracing + 7 integration tests |
 
-**Integration tests (7):**
+**Integration tests (7, plus 6 MinGW-gated):**
 1. PE loader with minimal binary
 2. DLL loading infrastructure
 3. Command-line APIs (`GetCommandLineW`, `CommandLineToArgvW`)
@@ -164,6 +163,25 @@ Running a MinGW-compiled `hello_cli.exe` currently crashes during CRT startup at
 5. Memory protection APIs (`NtProtectVirtualMemory`)
 6. Error handling APIs (`GetLastError` / `SetLastError`)
 7. DLL exports validation (all critical KERNEL32 and WS2_32 exports)
+
+**MinGW-gated integration tests (6, require `--include-ignored`):**
+- `test_hello_cli_program_exists` — checks hello_cli.exe is present
+- `test_math_test_program_exists` — checks math_test.exe is present
+- `test_env_test_program_exists` — checks env_test.exe is present
+- `test_args_test_program_exists` — checks args_test.exe is present
+- `test_file_io_test_program_exists` — **runs** file_io_test.exe end-to-end; verifies exit 0 and test header/completion output
+- `test_string_test_program_exists` — **runs** string_test.exe end-to-end; verifies exit 0, test header, and 0 failures
+
+**CI-validated test programs (6):**
+
+| Program | What it tests | CI status |
+|---|---|---|
+| `hello_cli.exe` | Basic stdout via `println!` | ✅ Passing |
+| `math_test.exe` | Arithmetic and math operations | ✅ Passing |
+| `env_test.exe` | `GetEnvironmentVariableW` / `SetEnvironmentVariableW` | ✅ Passing |
+| `args_test.exe` | `GetCommandLineW` / `CommandLineToArgvW` | ✅ Passing |
+| `file_io_test.exe` | `CreateFileW`, `ReadFile`, `WriteFile`, directory operations | ✅ Passing |
+| `string_test.exe` | Rust `String` operations (allocations, comparisons, Unicode) | ✅ Passing |
 
 ---
 
@@ -206,11 +224,11 @@ litebox_runner_windows_on_linux_userland \
 
 ## Code Quality
 
-- **All 298 tests passing**
+- **All 305 tests passing**
 - `RUSTFLAGS=-Dwarnings cargo clippy --all-targets --all-features` — clean
 - `cargo fmt --check` — clean
 - All `unsafe` blocks have detailed safety comments
-- Ratchet limits: globals ≤ 35, transmutes ≤ current, MaybeUninit ≤ current
+- Ratchet limits: globals ≤ 35, stubs ≤ 36, transmutes ≤ current, MaybeUninit ≤ current
 
 ---
 
@@ -226,6 +244,9 @@ litebox_runner_windows_on_linux_userland \
 | 6 | Import resolution, IAT patching, relocations, DLL manager, TEB/PEB | ✅ Complete |
 | 7 | MSVCRT, GS register, ABI trampolines, TLS, memory protection, error handling | ✅ Complete |
 | 8 | Real stack allocation, Windows x64 ABI entry-point calling, exception/heap/critical-section stubs | ✅ Complete |
-| 19 | Win32 event objects (KERNEL32), stub promotions (53→38), test race-condition fix | ✅ Complete |
+| 9 | BSS zero-initialization, `__CTOR_LIST__` patching for MinGW CRT compatibility | ✅ Complete |
+| 10–17 | Path security (sandbox root), handle limits, advapi32 registry APIs, WS2_32 networking, Win32 events, CI integration | ✅ Complete |
+| 18 | CI test programs (hello_cli, math_test, env_test, args_test, file_io_test, string_test all pass) | ✅ Complete |
+| 19 | Real `GetExitCodeProcess`, `SetFileAttributesW`, `GetModuleFileNameW`; upgraded string_test and file_io_test integration tests | ✅ Complete |
 
-**Next:** Fix BSS zero-initialization in `load_sections()` to unblock MinGW CRT global initialization.
+**Next:** Continue reducing the 36 remaining KERNEL32 stubs; add `LoadLibraryW`/`GetProcAddress` backed by a global DLL manager for dynamic loading scenarios.

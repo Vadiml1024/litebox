@@ -336,10 +336,26 @@ fn test_hello_cli_program_exists() {
 fn test_file_io_test_program_exists() {
     use test_program_helpers::*;
 
-    // Verify the test program was built
     assert!(
         test_program_exists("file_io_test"),
         "file_io_test.exe should be built in windows_test_programs"
+    );
+
+    // Run the program and verify it succeeds
+    let output =
+        run_test_program("file_io_test", &[]).expect("failed to launch file_io_test runner");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "file_io_test.exe should exit with code 0, stdout:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("=== File I/O Test Suite ==="),
+        "file_io_test.exe stdout should contain test header, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("=== File I/O Test Complete ==="),
+        "file_io_test.exe stdout should contain completion marker, got:\n{stdout}"
     );
 }
 
@@ -369,16 +385,35 @@ fn test_env_test_program_exists() {
     );
 }
 
-/// Test that we can load and potentially run the string_test program
+/// Test that string_test runs correctly and all string operations pass
 #[test]
 #[ignore = "Requires MinGW-built Windows test programs (run with --ignored after building windows_test_programs)"]
 fn test_string_test_program_exists() {
     use test_program_helpers::*;
 
-    // Verify the test program was built
     assert!(
         test_program_exists("string_test"),
         "string_test.exe should be built in windows_test_programs"
+    );
+
+    // Run the program and verify all 7 string tests pass
+    let output = run_test_program("string_test", &[]).expect("failed to launch string_test runner");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "string_test.exe should exit with code 0, stdout:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("=== String Operations Test ==="),
+        "string_test.exe stdout should contain test header, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("Results:"),
+        "string_test.exe stdout should contain a Results: line, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("0 failed"),
+        "string_test.exe should report 0 failures, got:\n{stdout}"
     );
 }
 
