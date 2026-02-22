@@ -449,6 +449,242 @@ pub unsafe extern "C" fn user32_ReleaseDC(_hwnd: *mut c_void, _hdc: *mut c_void)
     1
 }
 
+// ── Phase 27: Character Conversion ───────────────────────────────────────────
+
+/// CharUpperW - converts a character or string to uppercase
+/// If the high-order word of the input is zero, the character is treated as a single
+/// wide char and returned uppercased. Otherwise the pointer is treated as a string
+/// (in-place conversion) and returned.
+/// # Safety
+/// When called with a string pointer (high word != 0), the pointer must point to
+/// a valid null-terminated wide string with writable memory.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_CharUpperW(lpsz: *mut u16) -> *mut u16 {
+    let val = lpsz as usize;
+    if val <= 0xFFFF {
+        // Single character mode: the low 16 bits are the character
+        // SAFETY: val <= 0xFFFF so it fits in u32 without truncation.
+        #[allow(clippy::cast_possible_truncation)]
+        let ch = char::from_u32(val as u32).unwrap_or('\0');
+        #[allow(clippy::cast_possible_truncation)]
+        let upper: u32 = ch.to_uppercase().next().map_or(val as u32, |c| c as u32);
+        upper as usize as *mut u16
+    } else {
+        // String mode: convert in place
+        let mut ptr = lpsz;
+        // SAFETY: caller guarantees ptr is a valid null-terminated wide string.
+        while unsafe { *ptr } != 0 {
+            let ch = char::from_u32(u32::from(unsafe { *ptr })).unwrap_or('\0');
+            let upper = ch
+                .to_uppercase()
+                .next()
+                .map_or(unsafe { *ptr }, |c| c as u16);
+            // SAFETY: ptr is within the valid string range checked by the while condition.
+            unsafe { *ptr = upper };
+            ptr = unsafe { ptr.add(1) };
+        }
+        lpsz
+    }
+}
+
+/// CharLowerW - converts a character or string to lowercase
+/// If the high-order word of the input is zero, the character is treated as a single
+/// wide char and returned lowercased. Otherwise the pointer is treated as a string
+/// (in-place conversion) and returned.
+/// # Safety
+/// When called with a string pointer (high word != 0), the pointer must point to
+/// a valid null-terminated wide string with writable memory.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_CharLowerW(lpsz: *mut u16) -> *mut u16 {
+    let val = lpsz as usize;
+    if val <= 0xFFFF {
+        // SAFETY: val <= 0xFFFF so it fits in u32 without truncation.
+        #[allow(clippy::cast_possible_truncation)]
+        let ch = char::from_u32(val as u32).unwrap_or('\0');
+        #[allow(clippy::cast_possible_truncation)]
+        let lower: u32 = ch.to_lowercase().next().map_or(val as u32, |c| c as u32);
+        lower as usize as *mut u16
+    } else {
+        let mut ptr = lpsz;
+        // SAFETY: caller guarantees ptr is a valid null-terminated wide string.
+        while unsafe { *ptr } != 0 {
+            let ch = char::from_u32(u32::from(unsafe { *ptr })).unwrap_or('\0');
+            let lower = ch
+                .to_lowercase()
+                .next()
+                .map_or(unsafe { *ptr }, |c| c as u16);
+            // SAFETY: ptr is within the valid string range checked by the while condition.
+            unsafe { *ptr = lower };
+            ptr = unsafe { ptr.add(1) };
+        }
+        lpsz
+    }
+}
+
+/// CharUpperA - converts an ANSI character or string to uppercase
+/// If the high-order word of the input is zero, treats the low byte as a single
+/// character and returns it uppercased. Otherwise converts the string in place.
+/// # Safety
+/// When called with a string pointer (high word != 0), the pointer must point to
+/// a valid null-terminated ANSI string with writable memory.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_CharUpperA(lpsz: *mut u8) -> *mut u8 {
+    let val = lpsz as usize;
+    if val <= 0xFF {
+        // SAFETY: val <= 0xFF so it fits in u8 without truncation.
+        #[allow(clippy::cast_possible_truncation)]
+        let b = val as u8;
+        b.to_ascii_uppercase() as usize as *mut u8
+    } else {
+        let mut ptr = lpsz;
+        // SAFETY: caller guarantees ptr is a valid null-terminated ANSI string.
+        while unsafe { *ptr } != 0 {
+            // SAFETY: ptr is within the valid string range checked by the while condition.
+            unsafe { *ptr = (*ptr).to_ascii_uppercase() };
+            ptr = unsafe { ptr.add(1) };
+        }
+        lpsz
+    }
+}
+
+/// CharLowerA - converts an ANSI character or string to lowercase
+/// If the high-order word of the input is zero, treats the low byte as a single
+/// character and returns it lowercased. Otherwise converts the string in place.
+/// # Safety
+/// When called with a string pointer (high word != 0), the pointer must point to
+/// a valid null-terminated ANSI string with writable memory.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_CharLowerA(lpsz: *mut u8) -> *mut u8 {
+    let val = lpsz as usize;
+    if val <= 0xFF {
+        // SAFETY: val <= 0xFF so it fits in u8 without truncation.
+        #[allow(clippy::cast_possible_truncation)]
+        let b = val as u8;
+        b.to_ascii_lowercase() as usize as *mut u8
+    } else {
+        let mut ptr = lpsz;
+        // SAFETY: caller guarantees ptr is a valid null-terminated ANSI string.
+        while unsafe { *ptr } != 0 {
+            // SAFETY: ptr is within the valid string range checked by the while condition.
+            unsafe { *ptr = (*ptr).to_ascii_lowercase() };
+            ptr = unsafe { ptr.add(1) };
+        }
+        lpsz
+    }
+}
+
+// ── Phase 27: Character Classification ───────────────────────────────────────
+
+/// IsCharAlphaW - determines whether a character is an alphabetic Unicode character
+/// Returns 1 (TRUE) if the character is alphabetic, 0 (FALSE) otherwise.
+/// # Safety
+/// This function is safe to call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_IsCharAlphaW(ch: u16) -> i32 {
+    i32::from(char::from_u32(u32::from(ch)).is_some_and(char::is_alphabetic))
+}
+
+/// IsCharAlphaNumericW - determines whether a character is an alphanumeric Unicode character
+/// Returns 1 (TRUE) if the character is alphanumeric, 0 (FALSE) otherwise.
+/// # Safety
+/// This function is safe to call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_IsCharAlphaNumericW(ch: u16) -> i32 {
+    i32::from(char::from_u32(u32::from(ch)).is_some_and(char::is_alphanumeric))
+}
+
+/// IsCharUpperW - determines whether a character is an uppercase Unicode character
+/// Returns 1 (TRUE) if the character is uppercase, 0 (FALSE) otherwise.
+/// # Safety
+/// This function is safe to call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_IsCharUpperW(ch: u16) -> i32 {
+    i32::from(char::from_u32(u32::from(ch)).is_some_and(char::is_uppercase))
+}
+
+/// IsCharLowerW - determines whether a character is a lowercase Unicode character
+/// Returns 1 (TRUE) if the character is lowercase, 0 (FALSE) otherwise.
+/// # Safety
+/// This function is safe to call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_IsCharLowerW(ch: u16) -> i32 {
+    i32::from(char::from_u32(u32::from(ch)).is_some_and(char::is_lowercase))
+}
+
+// ── Phase 27: Window Utilities ────────────────────────────────────────────────
+
+/// IsWindow - determines whether the specified window handle identifies an existing window
+/// In headless mode, no real windows exist; always returns FALSE.
+/// # Safety
+/// `hwnd` is accepted as an opaque value and is not dereferenced.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_IsWindow(_hwnd: *mut c_void) -> i32 {
+    0 // FALSE (headless)
+}
+
+/// IsWindowEnabled - determines whether the specified window is enabled for mouse/keyboard input
+/// In headless mode, returns FALSE.
+/// # Safety
+/// `hwnd` is accepted as an opaque value and is not dereferenced.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_IsWindowEnabled(_hwnd: *mut c_void) -> i32 {
+    0 // FALSE (headless)
+}
+
+/// IsWindowVisible - determines whether the specified window is visible
+/// In headless mode, returns FALSE.
+/// # Safety
+/// `hwnd` is accepted as an opaque value and is not dereferenced.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_IsWindowVisible(_hwnd: *mut c_void) -> i32 {
+    0 // FALSE (headless)
+}
+
+/// EnableWindow - enables or disables mouse/keyboard input to the specified window
+/// In headless mode, returns FALSE (window was previously disabled).
+/// # Safety
+/// `hwnd` is accepted as an opaque value and is not dereferenced.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_EnableWindow(_hwnd: *mut c_void, _enable: i32) -> i32 {
+    0 // FALSE (headless)
+}
+
+/// GetWindowTextW - copies the text of a window's title bar into a buffer
+/// In headless mode, no windows exist; returns 0 (empty/no text).
+/// # Safety
+/// `hwnd` is accepted as opaque; not dereferenced.
+/// `string` must point to at least `max_count` wide chars if non-null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_GetWindowTextW(
+    _hwnd: *mut c_void,
+    string: *mut u16,
+    max_count: i32,
+) -> i32 {
+    if !string.is_null() && max_count > 0 {
+        // SAFETY: string has at least max_count wide chars; we write a single null terminator.
+        unsafe { *string = 0 };
+    }
+    0 // empty string
+}
+
+/// SetWindowTextW - changes the text of the specified window's title bar
+/// In headless mode, returns FALSE (no window to update).
+/// # Safety
+/// `hwnd` is accepted as an opaque value and is not dereferenced.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_SetWindowTextW(_hwnd: *mut c_void, _string: *const u16) -> i32 {
+    0 // FALSE (headless)
+}
+
+/// GetParent - retrieves a handle to the specified window's parent
+/// In headless mode, returns NULL (no parent window exists).
+/// # Safety
+/// `hwnd` is accepted as an opaque value and is not dereferenced.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_GetParent(_hwnd: *mut c_void) -> *mut c_void {
+    core::ptr::null_mut()
+}
+
 // ── Unit tests ────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -699,5 +935,77 @@ mod tests {
         // SAFETY: null parameters; stub does not dereference them.
         let result = unsafe { user32_ReleaseDC(std::ptr::null_mut(), std::ptr::null_mut()) };
         assert_eq!(result, 1);
+    }
+
+    // ── Phase 27 tests ────────────────────────────────────────────────────
+    #[test]
+    fn test_char_upper_w_string() {
+        let mut s: Vec<u16> = "hello\0".encode_utf16().collect();
+        let result = unsafe { user32_CharUpperW(s.as_mut_ptr()) };
+        assert!(!result.is_null());
+        let upper: String = s
+            .iter()
+            .take_while(|&&c| c != 0)
+            .map(|&c| char::from_u32(u32::from(c)).unwrap_or('?'))
+            .collect();
+        assert_eq!(upper, "HELLO");
+    }
+
+    #[test]
+    fn test_char_lower_w_string() {
+        let mut s: Vec<u16> = "WORLD\0".encode_utf16().collect();
+        let result = unsafe { user32_CharLowerW(s.as_mut_ptr()) };
+        assert!(!result.is_null());
+        let lower: String = s
+            .iter()
+            .take_while(|&&c| c != 0)
+            .map(|&c| char::from_u32(u32::from(c)).unwrap_or('?'))
+            .collect();
+        assert_eq!(lower, "world");
+    }
+
+    #[test]
+    fn test_is_char_alpha_w() {
+        assert_eq!(unsafe { user32_IsCharAlphaW(u16::from(b'A')) }, 1);
+        assert_eq!(unsafe { user32_IsCharAlphaW(u16::from(b'0')) }, 0);
+        assert_eq!(unsafe { user32_IsCharAlphaW(u16::from(b'!')) }, 0);
+    }
+
+    #[test]
+    fn test_is_char_alpha_numeric_w() {
+        assert_eq!(unsafe { user32_IsCharAlphaNumericW(u16::from(b'A')) }, 1);
+        assert_eq!(unsafe { user32_IsCharAlphaNumericW(u16::from(b'5')) }, 1);
+        assert_eq!(unsafe { user32_IsCharAlphaNumericW(u16::from(b'!')) }, 0);
+    }
+
+    #[test]
+    fn test_is_char_upper_lower_w() {
+        assert_eq!(unsafe { user32_IsCharUpperW(u16::from(b'A')) }, 1);
+        assert_eq!(unsafe { user32_IsCharUpperW(u16::from(b'a')) }, 0);
+        assert_eq!(unsafe { user32_IsCharLowerW(u16::from(b'a')) }, 1);
+        assert_eq!(unsafe { user32_IsCharLowerW(u16::from(b'A')) }, 0);
+    }
+
+    #[test]
+    fn test_headless_window_utilities() {
+        let fake_hwnd = 0x1234usize as *mut core::ffi::c_void;
+        assert_eq!(unsafe { user32_IsWindow(fake_hwnd) }, 0);
+        assert_eq!(unsafe { user32_IsWindowEnabled(fake_hwnd) }, 0);
+        assert_eq!(unsafe { user32_IsWindowVisible(fake_hwnd) }, 0);
+        assert_eq!(unsafe { user32_EnableWindow(fake_hwnd, 1) }, 0);
+        assert_eq!(
+            unsafe { user32_SetWindowTextW(fake_hwnd, core::ptr::null()) },
+            0
+        );
+        assert!(unsafe { user32_GetParent(fake_hwnd) }.is_null());
+    }
+
+    #[test]
+    fn test_get_window_text_w_empty() {
+        let fake_hwnd = 0x1234usize as *mut core::ffi::c_void;
+        let mut buf = vec![0u16; 64];
+        let result = unsafe { user32_GetWindowTextW(fake_hwnd, buf.as_mut_ptr(), 64) };
+        assert_eq!(result, 0);
+        assert_eq!(buf[0], 0, "Buffer should be null-terminated");
     }
 }
