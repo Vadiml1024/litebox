@@ -4043,7 +4043,7 @@ pub unsafe extern "C" fn kernel32_GetFileInformationByHandleEx(
             } else if meta.mode() & 0o200 == 0 {
                 0x01 // FILE_ATTRIBUTE_READONLY
             } else {
-                0x20 // FILE_ATTRIBUTE_NORMAL
+                0x80 // FILE_ATTRIBUTE_NORMAL
             };
             // SAFETY: offset 32 is within the 36-byte buffer.
             std::ptr::write_unaligned(buf.add(32).cast::<u32>(), attrs);
@@ -4372,14 +4372,17 @@ pub unsafe extern "C" fn kernel32_InitializeProcThreadAttributeList(
         return 0; // FALSE
     }
 
+    // At this point, attribute_list is non-null. According to the Windows API
+    // contract, size must also be non-null; otherwise this is an invalid call.
+    if size.is_null() {
+        kernel32_SetLastError(87); // ERROR_INVALID_PARAMETER
+        return 0; // FALSE
+    }
+
     // Caller provided a buffer; zero-initialise it so it is in a defined state.
-    let buf_size = if size.is_null() {
-        MIN_ATTR_LIST_SIZE
-    } else {
-        (*size).max(MIN_ATTR_LIST_SIZE)
-    };
-    // SAFETY: attribute_list is non-null (checked above); caller guarantees the
-    // buffer is writable for at least buf_size bytes.
+    let buf_size = (*size).max(MIN_ATTR_LIST_SIZE);
+    // SAFETY: attribute_list is non-null (checked above); caller is required by
+    // the Windows API contract to provide a buffer of at least *size bytes.
     std::ptr::write_bytes(attribute_list.cast::<u8>(), 0, buf_size);
     1 // TRUE
 }
@@ -9283,12 +9286,12 @@ mod tests {
         };
         assert_eq!(result, 1, "FileBasicInfo query should succeed");
 
-        // FileAttributes at offset 32 should be FILE_ATTRIBUTE_NORMAL (0x20) since
+        // FileAttributes at offset 32 should be FILE_ATTRIBUTE_NORMAL (0x80) since
         // the file is writable.
         let attrs = u32::from_le_bytes(buf[32..36].try_into().unwrap());
         assert!(
-            attrs == 0x20 || attrs == 0x01,
-            "FileAttributes should be NORMAL (0x20) or READONLY (0x01), got {attrs:#x}"
+            attrs == 0x80 || attrs == 0x01,
+            "FileAttributes should be NORMAL (0x80) or READONLY (0x01), got {attrs:#x}"
         );
 
         unsafe { kernel32_CloseHandle(handle) };
