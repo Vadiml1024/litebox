@@ -46,6 +46,12 @@ mod stub_addresses {
 
     /// GDI32.dll function address range: 0xA000-0xAFFF
     pub const GDI32_BASE: usize = 0xA000;
+
+    /// SHELL32.dll function address range: 0xB000-0xBFFF
+    pub const SHELL32_BASE: usize = 0xB000;
+
+    /// VERSION.dll function address range: 0xC000-0xCFFF
+    pub const VERSION_BASE: usize = 0xC000;
 }
 
 /// Type for a DLL function pointer
@@ -123,6 +129,8 @@ impl DllManager {
         manager.load_stub_user32();
         manager.load_stub_advapi32();
         manager.load_stub_gdi32();
+        manager.load_stub_shell32();
+        manager.load_stub_version();
 
         manager
     }
@@ -432,6 +440,22 @@ impl DllManager {
             ("CopyFileW", KERNEL32_BASE + 0x98),
             ("CreateDirectoryExW", KERNEL32_BASE + 0x99),
             ("IsDBCSLeadByteEx", KERNEL32_BASE + 0x9A),
+            // Phase 25: Time, local memory, interlocked, system info
+            ("GetSystemTime", KERNEL32_BASE + 0x9B),
+            ("GetLocalTime", KERNEL32_BASE + 0x9C),
+            ("SystemTimeToFileTime", KERNEL32_BASE + 0x9D),
+            ("FileTimeToSystemTime", KERNEL32_BASE + 0x9E),
+            ("GetTickCount", KERNEL32_BASE + 0x9F),
+            ("LocalAlloc", KERNEL32_BASE + 0xA0),
+            ("LocalFree", KERNEL32_BASE + 0xA1),
+            ("InterlockedIncrement", KERNEL32_BASE + 0xA2),
+            ("InterlockedDecrement", KERNEL32_BASE + 0xA3),
+            ("InterlockedExchange", KERNEL32_BASE + 0xA4),
+            ("InterlockedExchangeAdd", KERNEL32_BASE + 0xA5),
+            ("InterlockedCompareExchange", KERNEL32_BASE + 0xA6),
+            ("InterlockedCompareExchange64", KERNEL32_BASE + 0xA7),
+            ("IsWow64Process", KERNEL32_BASE + 0xA8),
+            ("GetNativeSystemInfo", KERNEL32_BASE + 0xA9),
         ];
 
         self.register_stub_dll("KERNEL32.dll", exports);
@@ -715,6 +739,31 @@ impl DllManager {
 
         self.register_stub_dll("GDI32.dll", exports);
     }
+
+    fn load_stub_shell32(&mut self) {
+        use stub_addresses::SHELL32_BASE;
+
+        let exports = vec![
+            ("CommandLineToArgvW", SHELL32_BASE),
+            ("SHGetFolderPathW", SHELL32_BASE + 1),
+            ("ShellExecuteW", SHELL32_BASE + 2),
+            ("SHCreateDirectoryExW", SHELL32_BASE + 3),
+        ];
+
+        self.register_stub_dll("SHELL32.dll", exports);
+    }
+
+    fn load_stub_version(&mut self) {
+        use stub_addresses::VERSION_BASE;
+
+        let exports = vec![
+            ("GetFileVersionInfoSizeW", VERSION_BASE),
+            ("GetFileVersionInfoW", VERSION_BASE + 1),
+            ("VerQueryValueW", VERSION_BASE + 2),
+        ];
+
+        self.register_stub_dll("VERSION.dll", exports);
+    }
 }
 
 /// Map Windows API Set DLL names to their real implementation DLLs
@@ -790,9 +839,9 @@ mod tests {
     #[test]
     fn test_dll_manager_creation() {
         let manager = DllManager::new();
-        // Should have 10 pre-loaded stub DLLs (KERNEL32, NTDLL, MSVCRT, bcrypt, USERENV,
-        // WS2_32, api-ms-win-core-synch, USER32, ADVAPI32, GDI32)
-        assert_eq!(manager.dlls.len(), 10);
+        // Should have 12 pre-loaded stub DLLs (KERNEL32, NTDLL, MSVCRT, bcrypt, USERENV,
+        // WS2_32, api-ms-win-core-synch, USER32, ADVAPI32, GDI32, SHELL32, VERSION)
+        assert_eq!(manager.dlls.len(), 12);
     }
 
     #[test]

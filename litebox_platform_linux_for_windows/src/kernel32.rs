@@ -26,7 +26,7 @@ use std::io::{Read, Seek, Write};
 use std::os::unix::fs::MetadataExt as _;
 use std::os::unix::io::{AsRawFd, FromRawFd};
 use std::path::{Component, Path, PathBuf};
-use std::sync::atomic::{AtomicU32, AtomicUsize};
+use std::sync::atomic::{AtomicI32, AtomicI64, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
@@ -175,7 +175,6 @@ const MAX_OPEN_FILE_HANDLES: usize = 8;
 
 /// Allocate a new Win32-style file handle value (non-null, not INVALID_HANDLE_VALUE).
 fn alloc_file_handle() -> usize {
-    use std::sync::atomic::Ordering;
     FILE_HANDLE_COUNTER.fetch_add(4, Ordering::SeqCst)
 }
 
@@ -213,7 +212,6 @@ const MAX_OPEN_FIND_HANDLES: usize = 1024;
 const MAX_OPEN_FIND_HANDLES: usize = 8;
 
 fn alloc_find_handle() -> usize {
-    use std::sync::atomic::Ordering;
     FIND_HANDLE_COUNTER.fetch_add(4, Ordering::SeqCst)
 }
 
@@ -238,7 +236,6 @@ fn with_thread_handles<R>(f: impl FnOnce(&mut HashMap<usize, ThreadEntry>) -> R)
 }
 
 fn alloc_thread_handle() -> usize {
-    use std::sync::atomic::Ordering;
     THREAD_HANDLE_COUNTER.fetch_add(4, Ordering::SeqCst)
 }
 
@@ -262,7 +259,6 @@ fn with_event_handles<R>(f: impl FnOnce(&mut HashMap<usize, EventEntry>) -> R) -
 }
 
 fn alloc_event_handle() -> usize {
-    use std::sync::atomic::Ordering;
     EVENT_HANDLE_COUNTER.fetch_add(4, Ordering::SeqCst)
 }
 
@@ -290,7 +286,6 @@ fn with_file_mapping_handles<R>(f: impl FnOnce(&mut HashMap<usize, FileMappingEn
 }
 
 fn alloc_file_mapping_handle() -> usize {
-    use std::sync::atomic::Ordering;
     FILE_MAPPING_HANDLE_COUNTER.fetch_add(4, Ordering::SeqCst)
 }
 
@@ -599,7 +594,6 @@ static VOLUME_SERIAL: AtomicU32 = AtomicU32::new(0);
 /// previously pinned value, causing the next `GetFileInformationByHandle`
 /// call to generate a fresh per-run value.
 pub fn set_volume_serial(serial: u32) {
-    use std::sync::atomic::Ordering;
     VOLUME_SERIAL.store(serial, Ordering::Relaxed);
 }
 
@@ -609,7 +603,6 @@ pub fn set_volume_serial(serial: u32) {
 /// system time, giving a different value on each run without requiring an
 /// external RNG dependency.
 fn get_volume_serial() -> u32 {
-    use std::sync::atomic::Ordering;
     let current = VOLUME_SERIAL.load(Ordering::Relaxed);
     if current != 0 {
         return current;
@@ -802,7 +795,7 @@ unsafe fn wide_path_to_linux(wide: *const u16) -> String {
 /// # Safety
 /// `buffer` must point to a valid writable buffer of at least `buffer_len` `u16` elements,
 /// or be null.
-unsafe fn copy_utf8_to_wide(value: &str, buffer: *mut u16, buffer_len: u32) -> u32 {
+pub(crate) unsafe fn copy_utf8_to_wide(value: &str, buffer: *mut u16, buffer_len: u32) -> u32 {
     let utf16: Vec<u16> = value.encode_utf16().collect();
     let required = utf16.len() as u32 + 1; // +1 for null terminator
 
@@ -6401,6 +6394,315 @@ pub unsafe extern "C" fn kernel32_ResetEvent(event: *mut core::ffi::c_void) -> i
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_IsDBCSLeadByteEx(_code_page: u32, _test_char: u8) -> i32 {
     0 // FALSE – not a DBCS lead byte
+}
+
+// ── Time APIs ────────────────────────────────────────────────────────────
+
+/// Windows SYSTEMTIME structure (16 bytes, 8 × u16 fields).
+#[repr(C)]
+pub struct SystemTime {
+    pub w_year: u16,
+    pub w_month: u16,
+    pub w_day_of_week: u16,
+    pub w_day: u16,
+    pub w_hour: u16,
+    pub w_minute: u16,
+    pub w_second: u16,
+    pub w_milliseconds: u16,
+}
+
+/// `GetSystemTime` — fill a SYSTEMTIME pointer with the current UTC time.
+///
+/// # Safety
+/// Caller must ensure `system_time` points to at least 16 bytes of writable memory.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_GetSystemTime(system_time: *mut SystemTime) {
+    if system_time.is_null() {
+        return;
+    }
+    let mut ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: &mut ts is a valid pointer.
+    unsafe { libc::clock_gettime(libc::CLOCK_REALTIME, &raw mut ts) };
+    let mut tm_buf: libc::tm = unsafe { core::mem::zeroed() };
+    // SAFETY: ts.tv_sec is a valid time_t; tm_buf is a valid out-pointer.
+    unsafe { libc::gmtime_r(&raw const ts.tv_sec, &raw mut tm_buf) };
+    // SAFETY: system_time is checked non-null above.
+    unsafe {
+        (*system_time).w_year = (tm_buf.tm_year + 1900) as u16;
+        (*system_time).w_month = (tm_buf.tm_mon + 1) as u16;
+        (*system_time).w_day_of_week = tm_buf.tm_wday as u16;
+        (*system_time).w_day = tm_buf.tm_mday as u16;
+        (*system_time).w_hour = tm_buf.tm_hour as u16;
+        (*system_time).w_minute = tm_buf.tm_min as u16;
+        (*system_time).w_second = tm_buf.tm_sec as u16;
+        (*system_time).w_milliseconds = (ts.tv_nsec / 1_000_000) as u16;
+    }
+}
+
+/// `GetLocalTime` — fill a SYSTEMTIME pointer with the current local time.
+///
+/// # Safety
+/// Caller must ensure `system_time` points to at least 16 bytes of writable memory.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_GetLocalTime(system_time: *mut SystemTime) {
+    if system_time.is_null() {
+        return;
+    }
+    let mut ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: &mut ts is a valid pointer.
+    unsafe { libc::clock_gettime(libc::CLOCK_REALTIME, &raw mut ts) };
+    let mut tm_buf: libc::tm = unsafe { core::mem::zeroed() };
+    // SAFETY: ts.tv_sec is a valid time_t; tm_buf is a valid out-pointer.
+    unsafe { libc::localtime_r(&raw const ts.tv_sec, &raw mut tm_buf) };
+    // SAFETY: system_time is checked non-null above.
+    unsafe {
+        (*system_time).w_year = (tm_buf.tm_year + 1900) as u16;
+        (*system_time).w_month = (tm_buf.tm_mon + 1) as u16;
+        (*system_time).w_day_of_week = tm_buf.tm_wday as u16;
+        (*system_time).w_day = tm_buf.tm_mday as u16;
+        (*system_time).w_hour = tm_buf.tm_hour as u16;
+        (*system_time).w_minute = tm_buf.tm_min as u16;
+        (*system_time).w_second = tm_buf.tm_sec as u16;
+        (*system_time).w_milliseconds = (ts.tv_nsec / 1_000_000) as u16;
+    }
+}
+
+/// `SystemTimeToFileTime` — convert a SYSTEMTIME to a FILETIME (100-ns intervals since 1601-01-01).
+///
+/// Returns 1 (TRUE) on success, 0 if either pointer is null.
+///
+/// # Safety
+/// `system_time` must point to a valid `SystemTime` (16 bytes).
+/// `file_time` must point to a valid `FileTime` (8 bytes).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_SystemTimeToFileTime(
+    system_time: *const u8,
+    file_time: *mut FileTime,
+) -> i32 {
+    if system_time.is_null() || file_time.is_null() {
+        return 0;
+    }
+    // SAFETY: Caller guarantees system_time points to a valid SystemTime.
+    let st = unsafe { &*(system_time.cast::<SystemTime>()) };
+    let mut tm_val: libc::tm = unsafe { core::mem::zeroed() };
+    tm_val.tm_year = i32::from(st.w_year) - 1900;
+    tm_val.tm_mon = i32::from(st.w_month) - 1;
+    tm_val.tm_mday = i32::from(st.w_day);
+    tm_val.tm_hour = i32::from(st.w_hour);
+    tm_val.tm_min = i32::from(st.w_minute);
+    tm_val.tm_sec = i32::from(st.w_second);
+    tm_val.tm_isdst = -1;
+    // SAFETY: tm_val fields are set above.
+    let unix_time = unsafe { libc::timegm(&raw mut tm_val) };
+    let intervals =
+        (unix_time + EPOCH_DIFF) as u64 * 10_000_000 + u64::from(st.w_milliseconds) * 10_000;
+    // SAFETY: file_time is checked non-null above.
+    unsafe {
+        (*file_time).low_date_time = intervals as u32;
+        (*file_time).high_date_time = (intervals >> 32) as u32;
+    }
+    1 // TRUE
+}
+
+/// `FileTimeToSystemTime` — convert a FILETIME to a SYSTEMTIME.
+///
+/// Returns 1 (TRUE) on success, 0 if either pointer is null.
+///
+/// # Safety
+/// `file_time` must point to a valid `FileTime` (8 bytes).
+/// `system_time` must point to at least 16 bytes of writable memory.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_FileTimeToSystemTime(
+    file_time: *const FileTime,
+    system_time: *mut SystemTime,
+) -> i32 {
+    if file_time.is_null() || system_time.is_null() {
+        return 0;
+    }
+    // SAFETY: Caller guarantees file_time points to a valid FileTime.
+    let ft = unsafe { &*file_time };
+    let intervals = u64::from(ft.low_date_time) | (u64::from(ft.high_date_time) << 32);
+    let unix_time = (intervals / 10_000_000) as i64 - EPOCH_DIFF;
+    let millis = ((intervals % 10_000_000) / 10_000) as u16;
+    let mut tm_buf: libc::tm = unsafe { core::mem::zeroed() };
+    let time_t_val: libc::time_t = unix_time;
+    // SAFETY: time_t_val is a valid Unix timestamp; tm_buf is a valid out-pointer.
+    unsafe { libc::gmtime_r(&raw const time_t_val, &raw mut tm_buf) };
+    // SAFETY: system_time is checked non-null above.
+    unsafe {
+        (*system_time).w_year = (tm_buf.tm_year + 1900) as u16;
+        (*system_time).w_month = (tm_buf.tm_mon + 1) as u16;
+        (*system_time).w_day_of_week = tm_buf.tm_wday as u16;
+        (*system_time).w_day = tm_buf.tm_mday as u16;
+        (*system_time).w_hour = tm_buf.tm_hour as u16;
+        (*system_time).w_minute = tm_buf.tm_min as u16;
+        (*system_time).w_second = tm_buf.tm_sec as u16;
+        (*system_time).w_milliseconds = millis;
+    }
+    1 // TRUE
+}
+
+/// `GetTickCount` — return the number of milliseconds since system start as a 32-bit value.
+///
+/// This is a 32-bit wrapper around `GetTickCount64`; the value wraps around after ~49.7 days.
+///
+/// # Safety
+/// This function is safe to call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_GetTickCount() -> u32 {
+    // SAFETY: kernel32_GetTickCount64 is always safe to call.
+    (unsafe { kernel32_GetTickCount64() }) as u32
+}
+
+// ── Local memory management ──────────────────────────────────────────────
+
+/// `LocalAlloc` — allocate local memory.
+///
+/// Delegates to `HeapAlloc`.  `LMEM_ZEROINIT` (0x0040) maps to `HEAP_ZERO_MEMORY` (0x0008).
+///
+/// # Safety
+/// The caller must eventually free the returned pointer with `LocalFree`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_LocalAlloc(flags: u32, bytes: usize) -> *mut core::ffi::c_void {
+    let heap_flags = if flags & 0x0040 != 0 {
+        HEAP_ZERO_MEMORY
+    } else {
+        0
+    };
+    // SAFETY: Delegating to HeapAlloc with validated flags.
+    unsafe { kernel32_HeapAlloc(core::ptr::null_mut(), heap_flags, bytes) }
+}
+
+/// `LocalFree` — free local memory previously allocated by `LocalAlloc`.
+///
+/// Delegates to `HeapFree`.  Returns NULL on success (per Windows API contract).
+///
+/// # Safety
+/// `mem` must have been allocated by `LocalAlloc` (or `HeapAlloc`), or be NULL.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_LocalFree(mem: *mut core::ffi::c_void) -> *mut core::ffi::c_void {
+    // SAFETY: Delegating to HeapFree; caller guarantees mem is a valid allocation.
+    unsafe { kernel32_HeapFree(core::ptr::null_mut(), 0, mem) };
+    core::ptr::null_mut()
+}
+
+// ── Interlocked atomic operations ────────────────────────────────────────
+
+/// `InterlockedIncrement` — atomically increment `*addend` by 1; return new value.
+///
+/// # Safety
+/// `addend` must be a valid, aligned pointer to an `i32`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_InterlockedIncrement(addend: *mut i32) -> i32 {
+    // SAFETY: Caller guarantees addend is a valid aligned i32 pointer.
+    let atomic = unsafe { &*(addend.cast::<AtomicI32>()) };
+    atomic.fetch_add(1, Ordering::SeqCst) + 1
+}
+
+/// `InterlockedDecrement` — atomically decrement `*addend` by 1; return new value.
+///
+/// # Safety
+/// `addend` must be a valid, aligned pointer to an `i32`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_InterlockedDecrement(addend: *mut i32) -> i32 {
+    // SAFETY: Caller guarantees addend is a valid aligned i32 pointer.
+    let atomic = unsafe { &*(addend.cast::<AtomicI32>()) };
+    atomic.fetch_sub(1, Ordering::SeqCst) - 1
+}
+
+/// `InterlockedExchange` — atomically set `*target = value`; return the old value.
+///
+/// # Safety
+/// `target` must be a valid, aligned pointer to an `i32`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_InterlockedExchange(target: *mut i32, value: i32) -> i32 {
+    // SAFETY: Caller guarantees target is a valid aligned i32 pointer.
+    let atomic = unsafe { &*(target.cast::<AtomicI32>()) };
+    atomic.swap(value, Ordering::SeqCst)
+}
+
+/// `InterlockedExchangeAdd` — atomically add `value` to `*addend`; return the old value.
+///
+/// # Safety
+/// `addend` must be a valid, aligned pointer to an `i32`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_InterlockedExchangeAdd(addend: *mut i32, value: i32) -> i32 {
+    // SAFETY: Caller guarantees addend is a valid aligned i32 pointer.
+    let atomic = unsafe { &*(addend.cast::<AtomicI32>()) };
+    atomic.fetch_add(value, Ordering::SeqCst)
+}
+
+/// `InterlockedCompareExchange` — CAS: if `*dest == comperand`, set `*dest = exchange`; return old `*dest`.
+///
+/// # Safety
+/// `dest` must be a valid, aligned pointer to an `i32`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_InterlockedCompareExchange(
+    dest: *mut i32,
+    exchange: i32,
+    comperand: i32,
+) -> i32 {
+    // SAFETY: Caller guarantees dest is a valid aligned i32 pointer.
+    let atomic = unsafe { &*(dest.cast::<AtomicI32>()) };
+    atomic
+        .compare_exchange(comperand, exchange, Ordering::SeqCst, Ordering::SeqCst)
+        .unwrap_or_else(|e| e)
+}
+
+/// `InterlockedCompareExchange64` — CAS on 64-bit value; return old `*dest`.
+///
+/// # Safety
+/// `dest` must be a valid, 8-byte-aligned pointer to an `i64`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_InterlockedCompareExchange64(
+    dest: *mut i64,
+    exchange: i64,
+    comperand: i64,
+) -> i64 {
+    // SAFETY: Caller guarantees dest is a valid aligned i64 pointer.
+    let atomic = unsafe { &*(dest.cast::<AtomicI64>()) };
+    atomic
+        .compare_exchange(comperand, exchange, Ordering::SeqCst, Ordering::SeqCst)
+        .unwrap_or_else(|e| e)
+}
+
+// ── System info helpers ──────────────────────────────────────────────────
+
+/// `IsWow64Process` — determine whether the process is running under WOW64.
+///
+/// Always returns TRUE (1) with `*is_wow64` set to FALSE (0) because we are
+/// running as a native 64-bit process.
+///
+/// # Safety
+/// `is_wow64` must be a valid pointer to an `i32` or NULL.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_IsWow64Process(
+    _process: *mut core::ffi::c_void,
+    is_wow64: *mut i32,
+) -> i32 {
+    if !is_wow64.is_null() {
+        // SAFETY: is_wow64 is checked non-null above.
+        unsafe { *is_wow64 = 0 };
+    }
+    1 // TRUE – call succeeded; WOW64 = FALSE
+}
+
+/// `GetNativeSystemInfo` — retrieve information about the native system.
+///
+/// Delegates to `GetSystemInfo` since we run natively on x86-64.
+///
+/// # Safety
+/// `system_info` must point to a writable buffer large enough for a SYSTEM_INFO structure.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_GetNativeSystemInfo(system_info: *mut u8) {
+    // SAFETY: Delegating with the same pointer contract.
+    unsafe { kernel32_GetSystemInfo(system_info) }
 }
 
 #[cfg(test)]

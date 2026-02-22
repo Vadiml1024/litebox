@@ -1870,6 +1870,146 @@ pub fn get_function_table() -> Vec<FunctionImpl> {
             num_params: 4,
             impl_address: crate::gdi32::gdi32_GetTextExtentPoint32W as *const () as usize,
         },
+        // KERNEL32 — Time APIs
+        FunctionImpl {
+            name: "GetSystemTime",
+            dll_name: "KERNEL32.dll",
+            num_params: 1,
+            impl_address: crate::kernel32::kernel32_GetSystemTime as *const () as usize,
+        },
+        FunctionImpl {
+            name: "GetLocalTime",
+            dll_name: "KERNEL32.dll",
+            num_params: 1,
+            impl_address: crate::kernel32::kernel32_GetLocalTime as *const () as usize,
+        },
+        FunctionImpl {
+            name: "SystemTimeToFileTime",
+            dll_name: "KERNEL32.dll",
+            num_params: 2,
+            impl_address: crate::kernel32::kernel32_SystemTimeToFileTime as *const () as usize,
+        },
+        FunctionImpl {
+            name: "FileTimeToSystemTime",
+            dll_name: "KERNEL32.dll",
+            num_params: 2,
+            impl_address: crate::kernel32::kernel32_FileTimeToSystemTime as *const () as usize,
+        },
+        FunctionImpl {
+            name: "GetTickCount",
+            dll_name: "KERNEL32.dll",
+            num_params: 0,
+            impl_address: crate::kernel32::kernel32_GetTickCount as *const () as usize,
+        },
+        // KERNEL32 — Local memory management
+        FunctionImpl {
+            name: "LocalAlloc",
+            dll_name: "KERNEL32.dll",
+            num_params: 2,
+            impl_address: crate::kernel32::kernel32_LocalAlloc as *const () as usize,
+        },
+        FunctionImpl {
+            name: "LocalFree",
+            dll_name: "KERNEL32.dll",
+            num_params: 1,
+            impl_address: crate::kernel32::kernel32_LocalFree as *const () as usize,
+        },
+        // KERNEL32 — Interlocked atomic operations
+        FunctionImpl {
+            name: "InterlockedIncrement",
+            dll_name: "KERNEL32.dll",
+            num_params: 1,
+            impl_address: crate::kernel32::kernel32_InterlockedIncrement as *const () as usize,
+        },
+        FunctionImpl {
+            name: "InterlockedDecrement",
+            dll_name: "KERNEL32.dll",
+            num_params: 1,
+            impl_address: crate::kernel32::kernel32_InterlockedDecrement as *const () as usize,
+        },
+        FunctionImpl {
+            name: "InterlockedExchange",
+            dll_name: "KERNEL32.dll",
+            num_params: 2,
+            impl_address: crate::kernel32::kernel32_InterlockedExchange as *const () as usize,
+        },
+        FunctionImpl {
+            name: "InterlockedExchangeAdd",
+            dll_name: "KERNEL32.dll",
+            num_params: 2,
+            impl_address: crate::kernel32::kernel32_InterlockedExchangeAdd as *const () as usize,
+        },
+        FunctionImpl {
+            name: "InterlockedCompareExchange",
+            dll_name: "KERNEL32.dll",
+            num_params: 3,
+            impl_address: crate::kernel32::kernel32_InterlockedCompareExchange as *const ()
+                as usize,
+        },
+        FunctionImpl {
+            name: "InterlockedCompareExchange64",
+            dll_name: "KERNEL32.dll",
+            num_params: 3,
+            impl_address: crate::kernel32::kernel32_InterlockedCompareExchange64 as *const ()
+                as usize,
+        },
+        // KERNEL32 — System info
+        FunctionImpl {
+            name: "IsWow64Process",
+            dll_name: "KERNEL32.dll",
+            num_params: 2,
+            impl_address: crate::kernel32::kernel32_IsWow64Process as *const () as usize,
+        },
+        FunctionImpl {
+            name: "GetNativeSystemInfo",
+            dll_name: "KERNEL32.dll",
+            num_params: 1,
+            impl_address: crate::kernel32::kernel32_GetNativeSystemInfo as *const () as usize,
+        },
+        // SHELL32.dll functions
+        FunctionImpl {
+            name: "CommandLineToArgvW",
+            dll_name: "SHELL32.dll",
+            num_params: 2,
+            impl_address: crate::shell32::shell32_CommandLineToArgvW as *const () as usize,
+        },
+        FunctionImpl {
+            name: "SHGetFolderPathW",
+            dll_name: "SHELL32.dll",
+            num_params: 5,
+            impl_address: crate::shell32::shell32_SHGetFolderPathW as *const () as usize,
+        },
+        FunctionImpl {
+            name: "ShellExecuteW",
+            dll_name: "SHELL32.dll",
+            num_params: 6,
+            impl_address: crate::shell32::shell32_ShellExecuteW as *const () as usize,
+        },
+        FunctionImpl {
+            name: "SHCreateDirectoryExW",
+            dll_name: "SHELL32.dll",
+            num_params: 3,
+            impl_address: crate::shell32::shell32_SHCreateDirectoryExW as *const () as usize,
+        },
+        // VERSION.dll functions
+        FunctionImpl {
+            name: "GetFileVersionInfoSizeW",
+            dll_name: "VERSION.dll",
+            num_params: 2,
+            impl_address: crate::version::version_GetFileVersionInfoSizeW as *const () as usize,
+        },
+        FunctionImpl {
+            name: "GetFileVersionInfoW",
+            dll_name: "VERSION.dll",
+            num_params: 4,
+            impl_address: crate::version::version_GetFileVersionInfoW as *const () as usize,
+        },
+        FunctionImpl {
+            name: "VerQueryValueW",
+            dll_name: "VERSION.dll",
+            num_params: 4,
+            impl_address: crate::version::version_VerQueryValueW as *const () as usize,
+        },
     ]
 }
 

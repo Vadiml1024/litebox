@@ -13,8 +13,10 @@ pub mod gdi32;
 pub mod kernel32;
 pub mod msvcrt;
 pub mod ntdll_impl;
+pub mod shell32;
 pub mod trampoline;
 pub mod user32;
+pub mod version;
 pub mod ws2_32;
 
 pub use kernel32::register_dynamic_exports;
