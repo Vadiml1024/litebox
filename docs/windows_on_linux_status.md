@@ -152,11 +152,11 @@
 
 ## Test Coverage
 
-**317 tests total (all passing):**
+**321 tests total (all passing):**
 
 | Package | Tests | Notes |
 |---|---|---|
-| `litebox_platform_linux_for_windows` | 249 | KERNEL32, MSVCRT, WS2_32, advapi32, user32, platform APIs (+7 new) |
+| `litebox_platform_linux_for_windows` | 253 | KERNEL32, MSVCRT, WS2_32, advapi32, user32, platform APIs |
 | `litebox_shim_windows` | 47 | ABI translation, PE loader, tracing |
 | `litebox_runner_windows_on_linux_userland` | 16 | 9 tracing + 7 integration tests |
 
@@ -169,15 +169,16 @@
 6. Error handling APIs (`GetLastError` / `SetLastError`)
 7. DLL exports validation (all critical KERNEL32 and WS2_32 exports)
 
-**MinGW-gated integration tests (6, require `--include-ignored`):**
+**MinGW-gated integration tests (7, require `--include-ignored`):**
 - `test_hello_cli_program_exists` — checks hello_cli.exe is present
 - `test_math_test_program_exists` — checks math_test.exe is present
 - `test_env_test_program_exists` — checks env_test.exe is present
 - `test_args_test_program_exists` — checks args_test.exe is present
 - `test_file_io_test_program_exists` — **runs** file_io_test.exe end-to-end; verifies exit 0 and test header/completion output
 - `test_string_test_program_exists` — **runs** string_test.exe end-to-end; verifies exit 0, test header, and 0 failures
+- `test_getprocaddress_c_program` — **runs** getprocaddress_test.exe end-to-end; verifies exit 0 and 0 failures
 
-**CI-validated test programs (6):**
+**CI-validated test programs (7):**
 
 | Program | What it tests | CI status |
 |---|---|---|
@@ -187,6 +188,7 @@
 | `args_test.exe` | `GetCommandLineW` / `CommandLineToArgvW` | ✅ Passing |
 | `file_io_test.exe` | `CreateFileW`, `ReadFile`, `WriteFile`, directory operations | ✅ Passing |
 | `string_test.exe` | Rust `String` operations (allocations, comparisons, Unicode) | ✅ Passing |
+| `getprocaddress_test.exe` (C) | `GetModuleHandleA/W`, `GetProcAddress`, `LoadLibraryA`, `FreeLibrary` | ✅ Passing |
 
 ---
 
@@ -229,7 +231,7 @@ litebox_runner_windows_on_linux_userland \
 
 ## Code Quality
 
-- **All 317 tests passing**
+- **All 321 tests passing**
 - `RUSTFLAGS=-Dwarnings cargo clippy --all-targets --all-features` — clean
 - `cargo fmt --check` — clean
 - All `unsafe` blocks have detailed safety comments

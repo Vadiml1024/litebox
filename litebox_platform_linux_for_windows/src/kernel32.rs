@@ -350,6 +350,25 @@ pub fn register_dynamic_exports(exports: &[(String, String, usize)]) {
 /// LPTHREAD_START_ROUTINE = DWORD (WINAPI *)(LPVOID lpThreadParameter)
 type WindowsThreadStart = unsafe extern "win64" fn(*mut core::ffi::c_void) -> u32;
 
+/// Extract the DLL basename from a Windows-style or POSIX path.
+///
+/// `std::path::Path::file_name()` only understands the *host* OS separator.
+/// On Linux that means `C:\Windows\System32\kernel32.dll` is treated as a
+/// single component, so the lookup would fail for any caller that passes a
+/// full Windows path.  This function handles both `\\` and `/` separators and
+/// also strips a trailing separator, giving consistent results regardless of
+/// whether the caller supplies a bare name or a full path.
+fn dll_basename(path: &str) -> &str {
+    // Trim trailing separators first (e.g. "dir\\" → "dir")
+    let trimmed = path.trim_end_matches(['\\', '/']);
+    // Then split on both Windows and POSIX separators and take the last component.
+    trimmed
+        .rsplit(['\\', '/'])
+        .next()
+        .filter(|s| !s.is_empty())
+        .unwrap_or(trimmed)
+}
+
 /// Simple glob pattern matching (Windows-style: `*` = any substring, `?` = any char).
 /// Comparison is case-insensitive (ASCII).
 fn find_matches_pattern(name: &str, pattern: &str) -> bool {
@@ -3312,10 +3331,7 @@ pub unsafe extern "C" fn kernel32_GetModuleHandleW(
         return 0x400000 as *mut core::ffi::c_void;
     }
     let name = wide_str_to_string(module_name);
-    let basename_opt = std::path::Path::new(&name)
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned());
-    let upper = basename_opt.unwrap_or(name).to_uppercase();
+    let upper = dll_basename(&name).to_uppercase();
     let handle = with_dll_handles(|reg| reg.by_name.get(&upper).copied());
     if let Some(h) = handle {
         h as *mut core::ffi::c_void
@@ -3510,12 +3526,7 @@ pub unsafe extern "C" fn kernel32_LoadLibraryA(lib_file_name: *const u8) -> *mut
     }
     // SAFETY: caller guarantees lib_file_name is a valid null-terminated C string.
     let name = std::ffi::CStr::from_ptr(lib_file_name.cast::<i8>()).to_string_lossy();
-    let basename_opt = std::path::Path::new(name.as_ref())
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned());
-    let upper = basename_opt
-        .unwrap_or_else(|| name.into_owned())
-        .to_uppercase();
+    let upper = dll_basename(name.as_ref()).to_uppercase();
     let handle = with_dll_handles(|reg| reg.by_name.get(&upper).copied());
     if let Some(h) = handle {
         h as *mut core::ffi::c_void
@@ -3545,10 +3556,7 @@ pub unsafe extern "C" fn kernel32_LoadLibraryW(
         return core::ptr::null_mut();
     }
     let name = wide_str_to_string(lib_file_name);
-    let basename_opt = std::path::Path::new(&name)
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned());
-    let upper = basename_opt.unwrap_or(name).to_uppercase();
+    let upper = dll_basename(&name).to_uppercase();
     let handle = with_dll_handles(|reg| reg.by_name.get(&upper).copied());
     if let Some(h) = handle {
         h as *mut core::ffi::c_void
@@ -4654,12 +4662,7 @@ pub unsafe extern "C" fn kernel32_GetModuleHandleA(
     }
     // SAFETY: caller guarantees module_name is a valid null-terminated C string.
     let name = std::ffi::CStr::from_ptr(module_name.cast::<i8>()).to_string_lossy();
-    let basename_opt = std::path::Path::new(name.as_ref())
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned());
-    let upper = basename_opt
-        .unwrap_or_else(|| name.into_owned())
-        .to_uppercase();
+    let upper = dll_basename(name.as_ref()).to_uppercase();
     let handle = with_dll_handles(|reg| reg.by_name.get(&upper).copied());
     if let Some(h) = handle {
         h as *mut core::ffi::c_void
@@ -8355,6 +8358,44 @@ mod tests {
         );
     }
 
+    /// Verify that `dll_basename` correctly extracts filenames from Windows-style
+    /// paths, POSIX paths, bare names, and edge cases.
+    #[test]
+    fn test_dll_basename() {
+        assert_eq!(dll_basename("kernel32.dll"), "kernel32.dll");
+        assert_eq!(
+            dll_basename("C:\\Windows\\System32\\kernel32.dll"),
+            "kernel32.dll"
+        );
+        assert_eq!(
+            dll_basename("C:\\Windows\\System32\\kernel32.dll\\"),
+            "kernel32.dll"
+        );
+        assert_eq!(dll_basename("/usr/local/lib/foo.dll"), "foo.dll");
+        assert_eq!(dll_basename("foo.dll\\"), "foo.dll");
+        assert_eq!(dll_basename("foo.dll"), "foo.dll");
+    }
+
+    /// Verify that `LoadLibraryA` strips a full Windows-style path down to the
+    /// basename before doing the registry lookup.
+    #[test]
+    fn test_load_library_a_with_windows_path() {
+        let exports = vec![(
+            "WINPATHDLL.DLL".to_string(),
+            "WinFunc".to_string(),
+            0xABCD_1234_usize,
+        )];
+        register_dynamic_exports(&exports);
+
+        // Pass a full Windows-style path; only the basename should be looked up.
+        let name = b"C:\\Windows\\System32\\winpathdll.dll\0";
+        let handle = unsafe { kernel32_LoadLibraryA(name.as_ptr()) } as usize;
+        assert_ne!(
+            handle, 0,
+            "LoadLibraryA should return a non-null handle for a full Windows path"
+        );
+    }
+
     #[test]
     fn test_load_library_and_get_proc_address() {
         // Register a fake DLL with one export
@@ -8412,10 +8453,17 @@ mod tests {
         )];
         register_dynamic_exports(&exports);
 
-        // LoadLibraryW should work with a bare name (wide string)
-        let wide_name: Vec<u16> = "pathdll.dll\0".encode_utf16().collect();
+        // LoadLibraryW should strip the path and find the DLL by basename.
+        // Test with a full Windows-style path (uses '\\' separators) to verify
+        // that the Windows-aware basename extraction works on Linux.
+        let wide_name: Vec<u16> = "C:\\Windows\\System32\\pathdll.dll\0"
+            .encode_utf16()
+            .collect();
         let handle = unsafe { kernel32_LoadLibraryW(wide_name.as_ptr()) } as usize;
-        assert_ne!(handle, 0, "LoadLibraryW should return a non-null handle");
+        assert_ne!(
+            handle, 0,
+            "LoadLibraryW should return a non-null handle for a full Windows path"
+        );
     }
 
     #[test]
