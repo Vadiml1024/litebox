@@ -8548,8 +8548,9 @@ mod tests {
     fn test_get_proc_address_ordinal() {
         // Use any non-null handle; the ordinal path exits before the handle lookup.
         let fake_handle = 0x1_0000 as *mut core::ffi::c_void;
-        // Ordinal 1 as a pointer value (< 0x10000).
-        let ordinal_ptr = 1_usize as *const u8;
+        // Ordinal 1 as a pointer value (< 0x10000). Using dangling() gives value 1
+        // (align_of::<u8>() == 1) without triggering the manual_dangling_ptr lint.
+        let ordinal_ptr = std::ptr::dangling::<u8>();
         let result = unsafe { kernel32_GetProcAddress(fake_handle, ordinal_ptr) };
         assert!(
             result.is_null(),
