@@ -2892,16 +2892,26 @@ pub unsafe extern "C" fn kernel32_GetCurrentDirectoryW(
     (utf16.len() - 1) as u32
 }
 
-/// GetExitCodeProcess stub - gets the exit code of a process
+/// GetExitCodeProcess — retrieves the termination status of a process.
+///
+/// For the current-process pseudo-handle (`-1 / 0xFFFF…`) this reports
+/// `STILL_ACTIVE` (259), which is the correct value for a running process.
+/// Any other handle is not tracked in our emulation layer, so we also
+/// return `STILL_ACTIVE` as the most safe default.
 ///
 /// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
+/// `exit_code` must be null or point to a writable `u32`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_GetExitCodeProcess(
     _process: *mut core::ffi::c_void,
-    _exit_code: *mut u32,
+    exit_code: *mut u32,
 ) -> i32 {
-    0 // FALSE - not implemented
+    const STILL_ACTIVE: u32 = 259;
+    if !exit_code.is_null() {
+        // SAFETY: Caller guarantees exit_code is valid and non-null (checked above).
+        *exit_code = STILL_ACTIVE;
+    }
+    1 // TRUE
 }
 
 /// GetFileAttributesW - gets file attributes
@@ -3996,16 +4006,55 @@ pub unsafe extern "C" fn kernel32_SetCurrentDirectoryW(path_name: *const u16) ->
     }
 }
 
-/// SetFileAttributesW stub
+/// SetFileAttributesW — sets the attributes of a file or directory.
+///
+/// Maps Windows `FILE_ATTRIBUTE_READONLY (0x1)` to the Linux read-only
+/// permission model via `chmod`. Other attribute bits (hidden, system, etc.)
+/// have no direct Linux equivalent and are silently accepted so that programs
+/// that set them do not fail.
+///
+/// Returns TRUE on success, FALSE on failure (sets last error).
 ///
 /// # Safety
-/// This function is a stub that returns a safe default value without dereferencing any pointers.
+/// `file_name` must be a valid null-terminated UTF-16 string or null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_SetFileAttributesW(
-    _file_name: *const u16,
-    _file_attributes: u32,
+    file_name: *const u16,
+    file_attributes: u32,
 ) -> i32 {
-    0 // FALSE
+    const FILE_ATTRIBUTE_READONLY: u32 = 0x0001;
+
+    if file_name.is_null() {
+        kernel32_SetLastError(87); // ERROR_INVALID_PARAMETER
+        return 0;
+    }
+    let path_str = wide_path_to_linux(file_name);
+    if path_str.is_empty() {
+        kernel32_SetLastError(87); // ERROR_INVALID_PARAMETER
+        return 0;
+    }
+    let path = std::path::Path::new(&path_str);
+    match std::fs::metadata(path) {
+        Ok(meta) => {
+            let mut perms = meta.permissions();
+            if (file_attributes & FILE_ATTRIBUTE_READONLY) != 0 {
+                perms.set_readonly(true);
+            } else {
+                perms.set_readonly(false);
+            }
+            match std::fs::set_permissions(path, perms) {
+                Ok(()) => 1, // TRUE
+                Err(_) => {
+                    kernel32_SetLastError(5); // ERROR_ACCESS_DENIED
+                    0
+                }
+            }
+        }
+        Err(_) => {
+            kernel32_SetLastError(2); // ERROR_FILE_NOT_FOUND
+            0
+        }
+    }
 }
 
 /// SetFileInformationByHandle stub
@@ -4364,18 +4413,40 @@ pub unsafe extern "C" fn kernel32_GetModuleHandleA(
     0x400000_usize as *mut core::ffi::c_void
 }
 
-/// GetModuleFileNameW - retrieves the fully qualified path for the file that contains a module
+/// GetModuleFileNameW — retrieves the fully qualified path for the executable
+/// that contains the specified module.
+///
+/// When `module` is null (i.e. the main executable), reads the path from
+/// `/proc/self/exe` and returns it as a UTF-16 string in `filename`.
+/// Non-null module handles refer to loaded DLLs; for those we currently
+/// return an empty string (unimplemented).
+///
+/// Returns the number of UTF-16 characters written, excluding the null
+/// terminator.  Returns 0 on failure (buffer too small or unresolvable path).
 ///
 /// # Safety
-/// Caller must ensure `filename` points to a valid buffer of at least `size` u16 elements
-/// when it is non-null.
+/// `filename` must point to a valid buffer of at least `size` `u16` elements,
+/// or be null.  `size` of 0 is treated as a null buffer.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_GetModuleFileNameW(
-    _module: *mut core::ffi::c_void,
-    _filename: *mut u16,
-    _size: u32,
+    module: *mut core::ffi::c_void,
+    filename: *mut u16,
+    size: u32,
 ) -> u32 {
-    0 // Failure - not implemented
+    // Only handle the "current executable" case (module == NULL).
+    if !module.is_null() {
+        kernel32_SetLastError(31); // ERROR_GEN_FAILURE - DLL handle not tracked
+        return 0;
+    }
+    let exe_path = match std::fs::read_link("/proc/self/exe") {
+        Ok(p) => p.to_string_lossy().into_owned(),
+        Err(_) => {
+            kernel32_SetLastError(31); // ERROR_GEN_FAILURE
+            return 0;
+        }
+    };
+    // SAFETY: filename and size are validated by copy_utf8_to_wide.
+    copy_utf8_to_wide(&exe_path, filename, size)
 }
 
 /// Windows SYSTEM_INFO structure (x86_64 layout).
@@ -7877,6 +7948,96 @@ mod tests {
         assert_eq!(
             reset_result, 0,
             "ResetEvent on invalid handle should return FALSE"
+        );
+    }
+
+    #[test]
+    fn test_get_exit_code_process_still_active() {
+        let mut exit_code: u32 = 0;
+        // NULL handle → current process pseudo-handle
+        let result =
+            unsafe { kernel32_GetExitCodeProcess(core::ptr::null_mut(), &raw mut exit_code) };
+        assert_eq!(result, 1, "GetExitCodeProcess should return TRUE");
+        assert_eq!(exit_code, 259, "exit code should be STILL_ACTIVE (259)");
+    }
+
+    #[test]
+    fn test_get_exit_code_process_null_out_ptr() {
+        // NULL output pointer should not crash
+        let result =
+            unsafe { kernel32_GetExitCodeProcess(core::ptr::null_mut(), core::ptr::null_mut()) };
+        assert_eq!(
+            result, 1,
+            "GetExitCodeProcess should return TRUE even with null exit_code"
+        );
+    }
+
+    #[test]
+    fn test_set_file_attributes_w_readonly() {
+        use std::io::Write;
+        let dir = std::env::temp_dir().join(format!("litebox_attr_test_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file_path = dir.join("test_attr.txt");
+        let mut f = std::fs::File::create(&file_path).unwrap();
+        f.write_all(b"hello").unwrap();
+        drop(f);
+
+        // Build wide path
+        let path_str = file_path.to_string_lossy();
+        let wide: Vec<u16> = path_str.encode_utf16().chain(std::iter::once(0)).collect();
+
+        // Set read-only
+        let r = unsafe { kernel32_SetFileAttributesW(wide.as_ptr(), 0x0001) }; // FILE_ATTRIBUTE_READONLY
+        assert_eq!(r, 1, "SetFileAttributesW(READONLY) should return TRUE");
+        let meta = std::fs::metadata(&file_path).unwrap();
+        assert!(
+            meta.permissions().readonly(),
+            "file should be read-only after SetFileAttributesW"
+        );
+
+        // Restore writable so cleanup works
+        unsafe { kernel32_SetFileAttributesW(wide.as_ptr(), 0x0080) }; // FILE_ATTRIBUTE_NORMAL
+        let _ = std::fs::remove_file(&file_path);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_set_file_attributes_w_nonexistent() {
+        let wide: Vec<u16> = "/nonexistent_litebox_xyz/file.txt\0"
+            .encode_utf16()
+            .collect();
+        let r = unsafe { kernel32_SetFileAttributesW(wide.as_ptr(), 0x0001) };
+        assert_eq!(
+            r, 0,
+            "SetFileAttributesW on nonexistent path should return FALSE"
+        );
+    }
+
+    #[test]
+    fn test_get_module_file_name_w_current_exe() {
+        let mut buf = vec![0u16; 1024];
+        let written = unsafe {
+            kernel32_GetModuleFileNameW(core::ptr::null_mut(), buf.as_mut_ptr(), buf.len() as u32)
+        };
+        assert!(
+            written > 0,
+            "GetModuleFileNameW should return > 0 chars for current exe"
+        );
+        // Null-terminated at `written`
+        assert_eq!(buf[written as usize], 0, "buffer should be null-terminated");
+        let path = String::from_utf16_lossy(&buf[..written as usize]);
+        assert!(!path.is_empty(), "exe path should not be empty");
+    }
+
+    #[test]
+    fn test_get_module_file_name_w_null_buffer() {
+        // NULL buffer → return required size (no crash)
+        let required =
+            unsafe { kernel32_GetModuleFileNameW(core::ptr::null_mut(), core::ptr::null_mut(), 0) };
+        // Should return a non-zero required length when module is the current exe
+        assert!(
+            required > 0,
+            "GetModuleFileNameW with null buffer should return required size"
         );
     }
 }
