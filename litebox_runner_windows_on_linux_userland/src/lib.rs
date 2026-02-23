@@ -182,11 +182,11 @@ pub fn run(cli_args: CliArgs) -> Result<()> {
     // SAFETY: This allocates executable memory for calling convention translation
     unsafe {
         platform
-            .initialize_trampolines()
+            .initialize_trampolines(verbose)
             .map_err(|e| anyhow!("Failed to initialize trampolines: {e}"))?;
     }
     platform
-        .link_trampolines_to_dll_manager()
+        .link_trampolines_to_dll_manager(verbose)
         .map_err(|e| anyhow!("Failed to link trampolines to DLL manager: {e}"))?;
 
     // Link data exports to actual memory addresses

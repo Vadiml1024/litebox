@@ -2398,6 +2398,9 @@ impl LinuxPlatformForWindows {
     /// This generates trampolines that bridge the Windows x64 calling convention
     /// to the System V AMD64 calling convention used by our platform implementations.
     ///
+    /// When `verbose` is `true`, logs each trampoline address to stderr as it is
+    /// allocated.  Pass `false` to suppress this output.
+    ///
     /// # Safety
     /// This function allocates executable memory and writes machine code to it.
     /// The generated trampolines must only be called from Windows x64 calling
@@ -2405,7 +2408,7 @@ impl LinuxPlatformForWindows {
     ///
     /// # Panics
     /// Panics if the internal mutex is poisoned.
-    pub unsafe fn initialize_trampolines(&self) -> Result<()> {
+    pub unsafe fn initialize_trampolines(&self, verbose: bool) -> Result<()> {
         let function_table = get_function_table();
         let state = self.state.lock().unwrap();
 
@@ -2414,7 +2417,6 @@ impl LinuxPlatformForWindows {
             let trampoline_code = generate_trampoline(func.num_params, func.impl_address as u64);
 
             // Allocate and write the trampoline
-            #[cfg_attr(not(debug_assertions), allow(unused_variables))]
             let trampoline_addr = unsafe {
                 state.trampoline_manager.allocate_trampoline(
                     format!("{}::{}", func.dll_name, func.name),
@@ -2422,12 +2424,12 @@ impl LinuxPlatformForWindows {
                 )?
             };
 
-            // Log successful initialization (in debug builds)
-            #[cfg(debug_assertions)]
-            eprintln!(
-                "Initialized trampoline for {}::{} at 0x{:X}",
-                func.dll_name, func.name, trampoline_addr
-            );
+            if verbose {
+                eprintln!(
+                    "Initialized trampoline for {}::{} at 0x{:X}",
+                    func.dll_name, func.name, trampoline_addr
+                );
+            }
         }
 
         Ok(())
@@ -2438,9 +2440,12 @@ impl LinuxPlatformForWindows {
     /// This updates the DLL export addresses to use actual trampoline addresses
     /// instead of stub addresses. Must be called after `initialize_trampolines()`.
     ///
+    /// When `verbose` is `true`, logs each linked address to stderr.
+    /// Pass `false` to suppress this output.
+    ///
     /// # Panics
     /// Panics if the internal mutex is poisoned.
-    pub fn link_trampolines_to_dll_manager(&self) -> Result<()> {
+    pub fn link_trampolines_to_dll_manager(&self, verbose: bool) -> Result<()> {
         let function_table = get_function_table();
         let mut state = self.state.lock().unwrap();
 
@@ -2456,12 +2461,12 @@ impl LinuxPlatformForWindows {
                     .update_export_address(func.dll_name, func.name, trampoline_addr)
                     .ok(); // Ignore errors - function may not be in DLL exports yet
 
-                // Log successful linking (in debug builds)
-                #[cfg(debug_assertions)]
-                eprintln!(
-                    "Linked trampoline for {}::{} at 0x{:X}",
-                    func.dll_name, func.name, trampoline_addr
-                );
+                if verbose {
+                    eprintln!(
+                        "Linked trampoline for {}::{} at 0x{:X}",
+                        func.dll_name, func.name, trampoline_addr
+                    );
+                }
             }
         }
 
@@ -2573,7 +2578,7 @@ mod tests {
         let platform = LinuxPlatformForWindows::new();
 
         // SAFETY: We're testing trampoline initialization
-        let result = unsafe { platform.initialize_trampolines() };
+        let result = unsafe { platform.initialize_trampolines(false) };
         assert!(result.is_ok());
 
         // Verify we can retrieve trampoline addresses
@@ -2594,7 +2599,7 @@ mod tests {
         let platform = LinuxPlatformForWindows::new();
 
         // SAFETY: We're testing trampoline initialization
-        let _ = unsafe { platform.initialize_trampolines() };
+        let _ = unsafe { platform.initialize_trampolines(false) };
 
         let addr = platform.get_trampoline_address("KERNEL32.dll", "NonExistentFunction");
         assert!(addr.is_none());
@@ -2606,9 +2611,9 @@ mod tests {
 
         // SAFETY: We're testing trampoline initialization and linking
         unsafe {
-            platform.initialize_trampolines().unwrap();
+            platform.initialize_trampolines(false).unwrap();
         }
-        platform.link_trampolines_to_dll_manager().unwrap();
+        platform.link_trampolines_to_dll_manager(false).unwrap();
 
         // Verify that MSVCRT exports now have trampoline addresses
         let mut state = platform.state.lock().unwrap();
