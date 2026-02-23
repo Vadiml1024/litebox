@@ -2030,6 +2030,9 @@ pub unsafe extern "C" fn kernel32_RtlUnwindEx(
     //   • Rip  ← target_ip  (landing pad address)
     //   • Rax  ← return_value (_Unwind_Exception* — read by the landing pad)
     //   • Rsp  ← target_frame (establisher frame RSP of the catching function)
+    //   • Rdx  ← ExceptionInformation[3] (type selector set during Phase 1 by
+    //             _GCC_specific_handler; equivalent to what EXCEPTION_TARGET_UNWIND
+    //             would cause the handler to write into ctx->Rdx)
     if !target_ip.is_null() {
         // SAFETY: ctx is a valid, writable CONTEXT buffer.
         unsafe { ctx_write(ctx, CTX_RIP, target_ip as u64) };
@@ -2039,6 +2042,16 @@ pub unsafe extern "C" fn kernel32_RtlUnwindEx(
     if !target_frame.is_null() {
         // SAFETY: ctx is a valid, writable CONTEXT buffer.
         unsafe { ctx_write(ctx, CTX_RSP, target_frame as u64) };
+    }
+    // ExceptionInformation[3] = gcc_context.reg[1] = the C++ type-selector index.
+    // _GCC_specific_handler sets this during Phase 1 before calling RtlUnwindEx,
+    // and reads it back into ctx->Rdx when called with EXCEPTION_TARGET_UNWIND.
+    // We replicate that effect directly to avoid a full target-frame handler call.
+    if !exception_record.is_null() {
+        // SAFETY: caller guarantees exception_record is a valid ExceptionRecord.
+        let selector = unsafe { (*exception_record.cast::<ExceptionRecord>()).exception_information[3] };
+        // SAFETY: ctx is a valid, writable CONTEXT buffer.
+        unsafe { ctx_write(ctx, CTX_RDX, selector as u64) };
     }
 
     // Restore registers and jump to the landing pad.

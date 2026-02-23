@@ -1,4 +1,251 @@
-# Windows-on-Linux Support — Session Summary (Phase 28)
+# Windows-on-Linux Support — Session Summary (C++ Exception Handling / Phase 29)
+
+## ⚡ CURRENT WORK IN PROGRESS — READ THIS FIRST FOR RESUMPTION ⚡
+
+**Branch:** `copilot/implement-windows-on-linux-features`  
+**Goal:** Make `seh_cpp_test.exe` pass all 12 C++ exception tests.
+
+### Status at last checkpoint
+
+| Component | State |
+|-----------|-------|
+| `seh_c_test.exe` | ✅ **21/21 PASS** |
+| `seh_cpp_test.exe` | ❌ **FAILS** — `RaiseException` aborts instead of dispatching |
+| New MSVCRT functions (`fputs`, `_read`, `realloc`) | ✅ Added |
+| New KERNEL32 function (`GetThreadId`) | ✅ Added |
+| `DispatcherContext` / `ExceptionRecord` structs | ✅ Added (kernel32.rs ~line 1392) |
+| GCC SEH constants (`STATUS_GCC_THROW`, etc.) | ✅ Added (kernel32.rs ~line 1375) |
+| `RaiseException` — two-phase SEH dispatch | ❌ **NOT YET IMPLEMENTED** — still aborts |
+| `RtlUnwindEx` — stack walk + context jump | ❌ **NOT YET IMPLEMENTED** — still no-op |
+| `seh_restore_context_and_jump` assembly helper | ❌ **NOT YET IMPLEMENTED** |
+| Integration test `test_seh_cpp_program` | ❌ **NOT YET ADDED** |
+
+### Files changed in this PR
+- `litebox_platform_linux_for_windows/src/kernel32.rs` — `GetThreadId`, structs, constants
+- `litebox_platform_linux_for_windows/src/msvcrt.rs` — `fputs`, `_read`, `realloc`
+- `litebox_platform_linux_for_windows/src/function_table.rs` — new entries for above
+- `docs/cpp-exception-status.md` — current status document
+- `docs/cpp-exceptions-status-plan.md` — **10-step R&D plan (READ THIS)**
+
+### What the next session must implement
+
+**1. Replace `kernel32_RaiseException` (around line 1704)**
+
+The current implementation just calls `std::process::abort()`. It must be replaced with two-phase SEH dispatch. See `docs/cpp-exceptions-status-plan.md` Steps 3–5 for the full algorithm. The key insight from GDB:
+
+- When called, `rdi` (SysV arg1) = exception code = `0x20474343` (`STATUS_GCC_THROW`)
+- `rcx` (SysV arg4) = `args_ptr` → `args[0]` = `_Unwind_Exception*` at `0x5555559454e0`
+- The `_Unwind_Exception.exception_class` = `0x474e5543432b2b00` ("GNUCC++\0")
+- `private_[1..3]` are all zero (Phase 1 not yet run)
+
+**Algorithm for `kernel32_RaiseException`:**
+```
+1. Allocate EXCEPTION_RECORD (on heap, zeroed) and fill with args
+2. Get current Rust RSP via inline asm
+3. Scan stack for first address in PE image range → that is guest_rip
+4. guest_rsp = scan_address + 8
+5. Allocate CONTEXT (1232 bytes, zeroed), fill RIP+RSP from guest frame
+6. Phase 1 loop:
+   while control_pc in PE image:
+     fe = RtlLookupFunctionEntry(control_pc, &image_base, null)
+     if fe == null: break
+     handler = RtlVirtualUnwind(UNW_FLAG_EHANDLER=1, image_base, control_pc, fe,
+                                 ctx, &handler_data, &establisher_frame, null)
+     if handler != null:
+       fill DispatcherContext{control_pc, image_base, fe, establisher_frame,
+                              target_ip=0, ctx_ptr, handler, handler_data, null, 0, 0}
+       result = call_handler_win64(handler, exc_rec, establisher_frame, ctx, &disp_ctx)
+       // handler internally calls RtlUnwindEx if it found the catch frame
+     control_pc = ctx_read(ctx, CTX_RIP)  // updated by RtlVirtualUnwind
+7. If no handler found: eprintln + abort
+```
+
+**2. Implement `kernel32_RtlUnwindEx` (around line 1879)**
+
+Currently a no-op. Must:
+```
+1. Set EXCEPTION_UNWINDING | EXCEPTION_EXIT_UNWIND in exc_rec.ExceptionFlags
+2. Walk stack same as Phase 1 loop above, but:
+   a. For each frame, call handler with EXCEPTION_UNWINDING set
+   b. When establisher_frame == target_frame: set EXCEPTION_TARGET_UNWIND,
+      call handler one final time, then restore context and jump
+3. At landing pad: rax=return_value, rdx=selector(from ctx), rsp=target_rsp, rip=target_ip
+4. Use seh_restore_context_and_jump to perform the noreturn context switch
+```
+
+**3. Add `seh_restore_context_and_jump` assembly**
+
+Add this `global_asm!` near the top of the SEH section:
+```rust
+core::arch::global_asm!(
+    ".globl seh_restore_context_and_jump",
+    ".type seh_restore_context_and_jump, @function",
+    "seh_restore_context_and_jump:",
+    "mov rsp, QWORD PTR [rdi + 0x98]",  // RSP (switch stack first)
+    "push QWORD PTR [rdi + 0xF8]",       // push RIP (landing pad)
+    "mov r15, QWORD PTR [rdi + 0xF0]",
+    "mov r14, QWORD PTR [rdi + 0xE8]",
+    "mov r13, QWORD PTR [rdi + 0xE0]",
+    "mov r12, QWORD PTR [rdi + 0xD8]",
+    "mov rbp, QWORD PTR [rdi + 0xA0]",
+    "mov rbx, QWORD PTR [rdi + 0x90]",
+    "mov rdx, QWORD PTR [rdi + 0x88]",
+    "mov rcx, QWORD PTR [rdi + 0x80]",
+    "mov rax, QWORD PTR [rdi + 0x78]",
+    "mov rsi, QWORD PTR [rdi + 0xA8]",
+    "mov r8,  QWORD PTR [rdi + 0xB8]",
+    "mov r9,  QWORD PTR [rdi + 0xC0]",
+    "mov r10, QWORD PTR [rdi + 0xC8]",
+    "mov r11, QWORD PTR [rdi + 0xD0]",
+    "mov rdi, QWORD PTR [rdi + 0xB0]",  // RDI last
+    "ret",                               // pops landing pad address
+);
+```
+
+**4. Calling PE language handlers with Windows x64 ABI**
+
+Language handlers inside the PE use Windows calling convention. Call them with:
+```rust
+type ExceptionRoutine = unsafe extern "win64" fn(
+    *mut ExceptionRecord,       // rcx
+    u64,                         // rdx - EstablisherFrame  
+    *mut u8,                     // r8  - CONTEXT*
+    *mut DispatcherContext,      // r9
+) -> i32;
+let handler_fn: ExceptionRoutine = core::mem::transmute(handler_addr);
+let result = handler_fn(exc_rec, establisher_frame, ctx_ptr, &mut disp_ctx);
+```
+
+**5. Finding the guest stack frame**
+
+The trampoline layout means:
+```
+At entry to kernel32_RaiseException (Rust):
+  [rsp+0]  = ret-into-trampoline (epilogue)
+  [rsp+8]  = alignment gap
+  [rsp+16] = saved rsi
+  [rsp+24] = saved rdi
+  [rsp+32] = GUEST RETURN ADDRESS (address in PE after "call RaiseException")
+  [rsp+40] = guest shadow[0] / more stack...
+```
+BUT Rust's prologue may add more pushes. Safer: scan the stack forward from RSP
+for the first value that falls within `PE_image_base <= val < PE_image_base + 0x40000`.
+
+```rust
+fn find_guest_frame_on_stack() -> Option<(u64, u64)> {
+    let mut rsp: u64;
+    unsafe { core::arch::asm!("mov {}, rsp", out(reg) rsp) };
+    let guard = EXCEPTION_TABLE.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(ref tbl) = *guard else { return None; };
+    let pe_base = tbl.image_base;
+    let pe_end  = pe_base + tbl.pdata_rva as u64 + tbl.pdata_size as u64 + 0x10000;
+    drop(guard);
+    for slot in 0..512u64 {
+        let addr = rsp + slot * 8;
+        let candidate = unsafe { (addr as *const u64).read_unaligned() };
+        if candidate >= pe_base && candidate < pe_end {
+            return Some((candidate, addr + 8)); // (rip, guest_rsp)
+        }
+    }
+    None
+}
+```
+
+### GDB commands for debugging the new implementation
+
+```bash
+cat > /tmp/gdb_seh.py << 'EOF'
+import gdb, struct
+gdb.execute("set pagination off")
+gdb.execute("set confirm off")
+gdb.execute("handle SIGABRT nostop noprint pass")
+
+def rd64(a):
+    try: return struct.unpack_from('<Q',bytes(gdb.inferiors()[0].read_memory(a,8)))[0]
+    except: return 0
+
+class RaiseBreak(gdb.Breakpoint):
+    def stop(self):
+        code = int(gdb.parse_and_eval("$rdi"))
+        rsp  = int(gdb.parse_and_eval("$rsp"))
+        print(f"RAISE 0x{code:08x} rsp=0x{rsp:x}")
+        print(f"  [rsp+32]=0x{rd64(rsp+32):x} (expected: guest ret)")
+        gdb.execute("bt 8")
+        return False
+
+class UnwindBreak(gdb.Breakpoint):
+    def stop(self):
+        print(f"UNWINDEX tgt=0x{int(gdb.parse_and_eval('$rdi')):x} ip=0x{int(gdb.parse_and_eval('$rsi')):x}")
+        return False
+
+RaiseBreak("kernel32_RaiseException")
+UnwindBreak("kernel32_RtlUnwindEx")
+gdb.execute("run windows_test_programs/seh_test/seh_cpp_test.exe")
+gdb.execute("quit")
+EOF
+
+cd /home/runner/work/litebox/litebox
+cargo build -p litebox_runner_windows_on_linux_userland
+timeout 20 gdb -batch -x /tmp/gdb_seh.py target/debug/litebox_runner_windows_on_linux_userland 2>&1 | grep -v "^warning\|^Using\|auto-load\|^of file"
+```
+
+### Build & test commands
+
+```bash
+cd /home/runner/work/litebox/litebox
+
+# Quick build
+cargo build -p litebox_platform_linux_for_windows
+
+# Full build
+cargo build -p litebox_runner_windows_on_linux_userland
+
+# Run C test (should still pass 21/21)
+timeout 5 ./target/debug/litebox_runner_windows_on_linux_userland \
+  windows_test_programs/seh_test/seh_c_test.exe
+
+# Run C++ test (goal: pass 12/12)
+timeout 10 ./target/debug/litebox_runner_windows_on_linux_userland \
+  windows_test_programs/seh_test/seh_cpp_test.exe
+
+# Lint
+RUSTFLAGS="-Dwarnings" cargo clippy \
+  -p litebox_platform_linux_for_windows \
+  -p litebox_runner_windows_on_linux_userland 2>&1 | head -30
+
+# Unit tests
+cargo nextest run -p litebox_platform_linux_for_windows 2>&1 | tail -10
+```
+
+### Key source locations
+
+| What | File | ~Line |
+|------|------|-------|
+| `kernel32_RaiseException` | `litebox_platform_linux_for_windows/src/kernel32.rs` | 1704 |
+| `kernel32_RtlUnwindEx` | same | 1879 |
+| `kernel32_RtlLookupFunctionEntry` | same | 1774 |
+| `kernel32_RtlVirtualUnwind` | same | 1837 |
+| `apply_unwind_info` | same | 1398 |
+| `DispatcherContext` struct | same | ~1392 |
+| `ExceptionRecord` struct | same | ~1410 |
+| GCC SEH constants | same | ~1375 |
+| `EXCEPTION_TABLE` static | same | 1284 |
+| CTX_* constants | same | 1310 |
+| Function table | `litebox_platform_linux_for_windows/src/function_table.rs` | — |
+| Trampoline generator | `litebox_shim_windows/src/loader/dispatch.rs` | 100 |
+
+### Reference documents (STUDY THESE)
+
+- `docs/cpp-exceptions-status-plan.md` — 10-step R&D plan with all algorithm details
+- `docs/cpp-exception-status.md` — current status with GDB findings
+- `libgcc/unwind-seh.c` (GCC source, already fetched in plan doc)
+- Wine `dlls/ntdll/signal_x86_64.c` for RtlUnwindEx reference
+
+---
+
+## Phase 28 Work (Completed)
+
+
 
 ## Work Completed ✅
 
