@@ -65,6 +65,11 @@ pub struct CliArgs {
     /// When omitted a value is generated randomly from the process ID and time.
     #[arg(long = "volume-serial", value_parser = parse_volume_serial)]
     pub volume_serial: Option<u32>,
+
+    /// Show verbose PE loader diagnostic output.
+    /// When not set, loader logs are suppressed and only the program's own output is shown.
+    #[arg(long = "verbose")]
+    pub verbose: bool,
 }
 
 /// Parse a u32 from either a decimal string or a `0x`-prefixed hex string.
@@ -79,23 +84,33 @@ fn parse_volume_serial(s: &str) -> Result<u32, String> {
 
 /// Run Windows programs with LiteBox on unmodified Linux
 pub fn run(cli_args: CliArgs) -> Result<()> {
+    let verbose = cli_args.verbose;
+    // Emit a PE-loader diagnostic line only when --verbose is set.
+    macro_rules! loader_log {
+        ($($arg:tt)*) => {
+            if verbose {
+                println!($($arg)*);
+            }
+        };
+    }
+
     // Read the PE binary
     let pe_data = std::fs::read(&cli_args.program)?;
 
     // Load and parse the PE binary
     let pe_loader = PeLoader::new(pe_data).map_err(|e| anyhow!("Failed to load PE binary: {e}"))?;
 
-    println!("Loaded PE binary: {}", cli_args.program);
-    println!("  Entry point: 0x{:X}", pe_loader.entry_point());
-    println!("  Image base: 0x{:X}", pe_loader.image_base());
-    println!("  Sections: {}", pe_loader.section_count());
+    loader_log!("Loaded PE binary: {}", cli_args.program);
+    loader_log!("  Entry point: 0x{:X}", pe_loader.entry_point());
+    loader_log!("  Image base: 0x{:X}", pe_loader.image_base());
+    loader_log!("  Sections: {}", pe_loader.section_count());
 
     // Get section information
     let sections = pe_loader
         .sections()
         .map_err(|e| anyhow!("Failed to get sections: {e}"))?;
 
-    println!("\nSections:");
+    loader_log!("\nSections:");
     for section in &sections {
         let is_bss = section.virtual_size > 0 && section.data.is_empty();
         let section_type = if is_bss {
@@ -105,7 +120,7 @@ pub fn run(cli_args: CliArgs) -> Result<()> {
         } else {
             ""
         };
-        println!(
+        loader_log!(
             "  {} - VA: 0x{:X}, VSize: {} bytes, RawSize: {} bytes, Characteristics: 0x{:X}{}",
             section.name,
             section.virtual_address,
@@ -167,11 +182,11 @@ pub fn run(cli_args: CliArgs) -> Result<()> {
     // SAFETY: This allocates executable memory for calling convention translation
     unsafe {
         platform
-            .initialize_trampolines()
+            .initialize_trampolines(verbose)
             .map_err(|e| anyhow!("Failed to initialize trampolines: {e}"))?;
     }
     platform
-        .link_trampolines_to_dll_manager()
+        .link_trampolines_to_dll_manager(verbose)
         .map_err(|e| anyhow!("Failed to link trampolines to DLL manager: {e}"))?;
 
     // Link data exports to actual memory addresses
@@ -186,7 +201,7 @@ pub fn run(cli_args: CliArgs) -> Result<()> {
     // This must be done after trampolines are linked so the addresses are valid.
     register_dynamic_exports(&platform.export_dll_addresses());
 
-    println!("Initialized function trampolines for MSVCRT");
+    loader_log!("Initialized function trampolines for MSVCRT");
 
     let mut platform = TracedNtdllApi::new(platform, tracer);
 
@@ -197,8 +212,8 @@ pub fn run(cli_args: CliArgs) -> Result<()> {
         .max()
         .ok_or_else(|| anyhow!("Failed to calculate image size: overflow or no sections"))?;
 
-    println!("\nAllocating memory for PE image:");
-    println!(
+    loader_log!("\nAllocating memory for PE image:");
+    loader_log!(
         "  Image size: {} bytes ({} KB)",
         image_size,
         image_size / 1024
@@ -208,29 +223,29 @@ pub fn run(cli_args: CliArgs) -> Result<()> {
     let base_address = platform
         .nt_allocate_virtual_memory(image_size, memory_protection::PAGE_EXECUTE_READWRITE)?;
 
-    println!("  Allocated at: 0x{base_address:X}");
+    loader_log!("  Allocated at: 0x{base_address:X}");
 
     // Load sections into the allocated memory
-    println!("\nLoading sections into memory...");
+    loader_log!("\nLoading sections into memory...");
     // SAFETY: We just allocated memory of the correct size with the platform
     let loaded_size = unsafe {
         pe_loader
             .load_sections(base_address)
             .map_err(|e| anyhow!("Failed to load sections: {e}"))?
     };
-    println!("  Loaded {loaded_size} bytes");
+    loader_log!("  Loaded {loaded_size} bytes");
 
     // Apply relocations if needed
-    println!("\nApplying relocations...");
+    loader_log!("\nApplying relocations...");
     let image_base = pe_loader.image_base();
     if base_address == image_base {
-        println!("  No relocations needed (loaded at preferred base)");
+        loader_log!("  No relocations needed (loaded at preferred base)");
     } else {
-        println!("  Rebasing from 0x{image_base:X} to 0x{base_address:X}");
+        loader_log!("  Rebasing from 0x{image_base:X} to 0x{base_address:X}");
 
         // Get relocation count for debugging
         let reloc_count = pe_loader.relocations().map(|r| r.len()).unwrap_or(0);
-        println!("  Found {reloc_count} relocation entries");
+        loader_log!("  Found {reloc_count} relocation entries");
 
         // SAFETY: We allocated the memory and just loaded the sections
         unsafe {
@@ -238,36 +253,36 @@ pub fn run(cli_args: CliArgs) -> Result<()> {
                 .apply_relocations(image_base, base_address)
                 .map_err(|e| anyhow!("Failed to apply relocations: {e}"))?;
         }
-        println!("  Relocations applied successfully");
+        loader_log!("  Relocations applied successfully");
     }
 
     // Patch __CTOR_LIST__ after relocations to fix MinGW constructor sentinel issues
     // Must be done after relocations so pointer values are correct
-    println!("\nPatching __CTOR_LIST__ for MinGW compatibility...");
+    loader_log!("\nPatching __CTOR_LIST__ for MinGW compatibility...");
     // SAFETY: Sections are loaded and relocations are applied
     unsafe {
         pe_loader
             .patch_ctor_list(base_address)
             .map_err(|e| anyhow!("Failed to patch __CTOR_LIST__: {e}"))?;
     }
-    println!("  __CTOR_LIST__ patching complete");
+    loader_log!("  __CTOR_LIST__ patching complete");
 
     // Resolve imports
-    println!("\nResolving imports...");
+    loader_log!("\nResolving imports...");
     let imports = pe_loader
         .imports()
         .map_err(|e| anyhow!("Failed to get imports: {e}"))?;
 
     if imports.is_empty() {
-        println!("  No imports found");
+        loader_log!("  No imports found");
     } else {
         for import_dll in &imports {
-            println!("  DLL: {}", import_dll.name);
-            println!("    Functions: {}", import_dll.functions.len());
+            loader_log!("  DLL: {}", import_dll.name);
+            loader_log!("    Functions: {}", import_dll.functions.len());
 
             // Print all function names first
             for func_name in &import_dll.functions {
-                println!("      {func_name}");
+                loader_log!("      {func_name}");
             }
 
             // Load the DLL and resolve function addresses
@@ -280,10 +295,10 @@ pub fn run(cli_args: CliArgs) -> Result<()> {
                 match platform.get_proc_address(dll_handle, func_name) {
                     Ok(addr) => {
                         resolved_addresses.push(addr);
-                        println!("      {func_name} -> 0x{addr:X}");
+                        loader_log!("      {func_name} -> 0x{addr:X}");
                     }
                     Err(e) => {
-                        println!("      {func_name} -> NOT FOUND ({e})");
+                        loader_log!("      {func_name} -> NOT FOUND ({e})");
                         // Use a stub address (0) for missing functions
                         resolved_addresses.push(0);
                     }
@@ -303,26 +318,26 @@ pub fn run(cli_args: CliArgs) -> Result<()> {
                     .map_err(|e| anyhow!("Failed to write IAT: {e}"))?;
             }
         }
-        println!("  Import resolution complete");
+        loader_log!("  Import resolution complete");
     }
 
     // Parse and initialize TLS (Thread Local Storage)
-    println!("\nChecking for TLS directory...");
+    loader_log!("\nChecking for TLS directory...");
     let tls_info = pe_loader
         .tls_info()
         .map_err(|e| anyhow!("Failed to parse TLS directory: {e}"))?;
 
     // Set up execution context (TEB/PEB)
-    println!("\nSetting up execution context...");
+    loader_log!("\nSetting up execution context...");
     let mut execution_context =
         ExecutionContext::new(base_address, 0) // Use default stack size
             .map_err(|e| anyhow!("Failed to create execution context: {e}"))?;
-    println!("  TEB created at: 0x{:X}", execution_context.teb_address);
-    println!(
+    loader_log!("  TEB created at: 0x{:X}", execution_context.teb_address);
+    loader_log!(
         "  PEB created with image base: 0x{:X}",
         execution_context.peb.image_base_address
     );
-    println!(
+    loader_log!(
         "  Stack range: 0x{:X} - 0x{:X} ({} KB)",
         execution_context.stack_base,
         execution_context.stack_base - execution_context.stack_size,
@@ -331,13 +346,14 @@ pub fn run(cli_args: CliArgs) -> Result<()> {
 
     // Initialize TLS if present
     if let Some(tls) = tls_info {
-        println!("\nInitializing TLS (Thread Local Storage)...");
-        println!(
+        loader_log!("\nInitializing TLS (Thread Local Storage)...");
+        loader_log!(
             "  TLS data range (VA): 0x{:X} - 0x{:X}",
-            tls.start_address, tls.end_address
+            tls.start_address,
+            tls.end_address
         );
-        println!("  TLS index address (VA): 0x{:X}", tls.address_of_index);
-        println!("  Size of zero fill: {} bytes", tls.size_of_zero_fill);
+        loader_log!("  TLS index address (VA): 0x{:X}", tls.address_of_index);
+        loader_log!("  Size of zero fill: {} bytes", tls.size_of_zero_fill);
 
         // The TLS directory contains VAs (virtual addresses), which include the image base.
         // Since the image might be loaded at a different address, we need to calculate
@@ -347,8 +363,8 @@ pub fn run(cli_args: CliArgs) -> Result<()> {
         let actual_end = tls.end_address.wrapping_add(delta);
         let actual_index = tls.address_of_index.wrapping_add(delta);
 
-        println!("  TLS data range (relocated): 0x{actual_start:X} - 0x{actual_end:X}");
-        println!("  TLS index address (relocated): 0x{actual_index:X}");
+        loader_log!("  TLS data range (relocated): 0x{actual_start:X} - 0x{actual_end:X}");
+        loader_log!("  TLS index address (relocated): 0x{actual_index:X}");
 
         // SAFETY: We allocated memory for the image and loaded sections.
         // The TLS addresses are from the TLS directory and point to valid memory.
@@ -363,16 +379,16 @@ pub fn run(cli_args: CliArgs) -> Result<()> {
                 )
                 .map_err(|e| anyhow!("Failed to initialize TLS: {e}"))?;
         }
-        println!(
+        loader_log!(
             "  TLS initialized, slot[0] = 0x{:X}",
             execution_context.teb.tls_slots[0]
         );
     } else {
-        println!("\nNo TLS directory found");
+        loader_log!("\nNo TLS directory found");
     }
 
     // Set up GS segment register to point to TEB for Windows ABI compatibility
-    println!("\nConfiguring GS segment register for TEB access...");
+    loader_log!("\nConfiguring GS segment register for TEB access...");
     // Set GS base to TEB address using the wrgsbase instruction
     // This enables Windows programs to access TEB via gs:[0x60] (PEB pointer offset)
     // SAFETY: We're setting the GS base to a valid TEB address that we just allocated.
@@ -382,7 +398,7 @@ pub fn run(cli_args: CliArgs) -> Result<()> {
     unsafe {
         litebox_common_linux::wrgsbase(execution_context.teb_address as usize);
     }
-    println!(
+    loader_log!(
         "  GS base register set to TEB address: 0x{:X}",
         execution_context.teb_address
     );
@@ -391,14 +407,14 @@ pub fn run(cli_args: CliArgs) -> Result<()> {
     let entry_point_rva = pe_loader.entry_point();
     let entry_point_address = base_address + entry_point_rva;
 
-    println!("\n[Phase 6 Progress]");
-    println!("  ✓ PE loader");
-    println!("  ✓ Section loading");
-    println!("  ✓ Relocation processing");
-    println!("  ✓ Import resolution");
-    println!("  ✓ IAT patching");
-    println!("  ✓ TEB/PEB setup");
-    println!("  → Entry point at: 0x{entry_point_address:X}");
+    loader_log!("\n[Phase 6 Progress]");
+    loader_log!("  ✓ PE loader");
+    loader_log!("  ✓ Section loading");
+    loader_log!("  ✓ Relocation processing");
+    loader_log!("  ✓ Import resolution");
+    loader_log!("  ✓ IAT patching");
+    loader_log!("  ✓ TEB/PEB setup");
+    loader_log!("  → Entry point at: 0x{entry_point_address:X}");
 
     // Set the process command line so Windows APIs (GetCommandLineW, __getmainargs) return
     // the correct arguments.  Build argv as [program_name, extra_args...].
@@ -409,14 +425,14 @@ pub fn run(cli_args: CliArgs) -> Result<()> {
     // If a sandbox root was requested, configure it now (before any file I/O).
     if let Some(root) = &cli_args.root {
         set_sandbox_root(root);
-        println!("Sandbox root: {root}");
+        loader_log!("Sandbox root: {root}");
     }
 
     // Configure the volume serial number.  When the user supplies --volume-serial
     // we pin that value; otherwise get_volume_serial() will generate one lazily.
     if let Some(serial) = cli_args.volume_serial {
         set_volume_serial(serial);
-        println!("Volume serial: 0x{serial:08X}");
+        loader_log!("Volume serial: 0x{serial:08X}");
     }
 
     // Attempt to call the entry point
@@ -424,23 +440,25 @@ pub fn run(cli_args: CliArgs) -> Result<()> {
     // 1. We don't have actual Windows DLL implementations (only stubs)
     // 2. Stack setup is minimal
     // 3. ABI translation is incomplete
-    println!("\nAttempting to call entry point...");
-    println!("WARNING: Entry point execution is experimental and may crash!");
-    println!("         Most Windows programs will fail due to missing DLL implementations.");
+    loader_log!("\nAttempting to call entry point...");
+    loader_log!("WARNING: Entry point execution is experimental and may crash!");
+    loader_log!("         Most Windows programs will fail due to missing DLL implementations.");
 
     // Debug: Print first 16 bytes at entry point
-    println!("\nDebug: First 16 bytes at entry point:");
-    #[allow(clippy::cast_possible_truncation)]
-    unsafe {
-        let entry_bytes = core::slice::from_raw_parts(entry_point_address as *const u8, 16);
-        print!("  ");
-        for (i, byte) in entry_bytes.iter().enumerate() {
-            print!("{byte:02X} ");
-            if i == 7 {
-                print!(" ");
+    if verbose {
+        loader_log!("\nDebug: First 16 bytes at entry point:");
+        #[allow(clippy::cast_possible_truncation)]
+        unsafe {
+            let entry_bytes = core::slice::from_raw_parts(entry_point_address as *const u8, 16);
+            print!("  ");
+            for (i, byte) in entry_bytes.iter().enumerate() {
+                print!("{byte:02X} ");
+                if i == 7 {
+                    print!(" ");
+                }
             }
+            println!();
         }
-        println!();
     }
 
     // Try to call the entry point
@@ -450,13 +468,13 @@ pub fn run(cli_args: CliArgs) -> Result<()> {
     #[allow(clippy::cast_possible_truncation)]
     match unsafe { call_entry_point(entry_point_address as usize, &execution_context) } {
         Ok(exit_code) => {
-            println!("\n✓ Entry point executed successfully!");
-            println!("  Exit code: {exit_code}");
+            loader_log!("\n✓ Entry point executed successfully!");
+            loader_log!("  Exit code: {exit_code}");
         }
         Err(e) => {
-            println!("\n✗ Entry point execution failed: {e}");
-            println!("  This is expected for most Windows programs at this stage.");
-            println!("  Full Windows API implementations are needed for actual execution.");
+            loader_log!("\n✗ Entry point execution failed: {e}");
+            loader_log!("  This is expected for most Windows programs at this stage.");
+            loader_log!("  Full Windows API implementations are needed for actual execution.");
         }
     }
 
@@ -466,13 +484,13 @@ pub fn run(cli_args: CliArgs) -> Result<()> {
 
     // Clean up allocated memory
     platform.nt_free_virtual_memory(base_address, image_size)?;
-    println!("\nMemory deallocated successfully.");
+    loader_log!("\nMemory deallocated successfully.");
 
-    println!(
+    loader_log!(
         "\n[Progress: PE loader, section loading, basic NTDLL APIs, API tracing, and DLL loading implemented]"
     );
     if cli_args.trace_apis {
-        println!(
+        loader_log!(
             "Tracing enabled: format={}, output={:?}",
             cli_args.trace_format,
             cli_args
