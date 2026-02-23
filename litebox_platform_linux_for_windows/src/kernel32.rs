@@ -1403,7 +1403,7 @@ struct DispatcherContext {
     function_entry: *mut core::ffi::c_void, // PRUNTIME_FUNCTION
     establisher_frame: u64,
     target_ip: u64,
-    context_record: *mut u8,               // PCONTEXT
+    context_record: *mut u8,                  // PCONTEXT
     language_handler: *mut core::ffi::c_void, // PEXCEPTION_ROUTINE
     handler_data: *mut core::ffi::c_void,
     history_table: *mut core::ffi::c_void, // PUNWIND_HISTORY_TABLE
@@ -1413,6 +1413,7 @@ struct DispatcherContext {
 
 /// Windows x64 EXCEPTION_RECORD (total 152 bytes for 15 ExceptionInformation entries)
 #[repr(C)]
+#[allow(clippy::struct_field_names)]
 struct ExceptionRecord {
     exception_code: u32,
     exception_flags: u32,
@@ -1518,9 +1519,8 @@ unsafe fn apply_unwind_info(
 
         // Number of additional u16 slots consumed by this code entry
         let extra_slots: usize = match (unwind_op, op_info) {
-            (UWOP_ALLOC_LARGE, 0) => 1,
-            (UWOP_ALLOC_LARGE, _) | (UWOP_SAVE_NONVOL_FAR, _) | (UWOP_SAVE_XMM128_FAR, _) => 2,
-            (UWOP_SAVE_NONVOL, _) | (UWOP_SAVE_XMM128, _) => 1,
+            (UWOP_ALLOC_LARGE, 0) | (UWOP_SAVE_NONVOL | UWOP_SAVE_XMM128, _) => 1,
+            (UWOP_ALLOC_LARGE, 1..) | (UWOP_SAVE_NONVOL_FAR | UWOP_SAVE_XMM128_FAR, _) => 2,
             _ => 0,
         };
 
@@ -1761,6 +1761,7 @@ pub unsafe extern "C" fn kernel32_SetUnhandledExceptionFilter(
 /// Never returns normally; either control is transferred to a catch landing
 /// pad or the process aborts.
 #[unsafe(no_mangle)]
+#[allow(clippy::similar_names)]
 pub unsafe extern "C" fn kernel32_RaiseException(
     exception_code: u32,
     exception_flags: u32,
@@ -1782,17 +1783,62 @@ pub unsafe extern "C" fn kernel32_RaiseException(
     // above our current RSP.  We scan upward for the first pointer that falls
     // within the loaded PE image.
     let rust_rsp: usize;
-    // SAFETY: Reading RSP into a local variable; nostack so the compiler
-    // doesn't insert any stack-adjusting code around this asm block.
+    let nv_rbx: u64;
+    let nv_r12: u64;
+    let nv_r13: u64;
+    let nv_r14: u64;
+    let nv_r15: u64;
+    // SAFETY: Capturing RSP and callee-saved registers (SysV ABI: RBX, R12-R15).
+    // These registers are callee-saved in both Windows x64 and SysV ABIs, so
+    // their values match the guest PE's values at the RaiseException call site.
+    // RBP, RSI, and RDI are captured separately from the trampoline frame
+    // because they may have been modified by the Rust prologue / trampoline.
     unsafe {
-        core::arch::asm!("mov {}, rsp", out(reg) rust_rsp, options(nostack, nomem));
+        core::arch::asm!(
+            "mov {rsp_out}, rsp",
+            "mov {rbx_out}, rbx",
+            "mov {r12_out}, r12",
+            "mov {r13_out}, r13",
+            "mov {r14_out}, r14",
+            "mov {r15_out}, r15",
+            rsp_out = out(reg) rust_rsp,
+            rbx_out = out(reg) nv_rbx,
+            r12_out = out(reg) nv_r12,
+            r13_out = out(reg) nv_r13,
+            r14_out = out(reg) nv_r14,
+            r15_out = out(reg) nv_r15,
+            options(nostack, nomem),
+        );
     }
 
-    let Some((initial_rip, initial_rsp)) = seh_find_pe_frame_on_stack(rust_rsp) else {
+    let Some(pe_frame) = seh_find_pe_frame_on_stack(rust_rsp) else {
         eprintln!(
             "RaiseException(0x{exception_code:08x}): could not find PE frame on stack – aborting"
         );
         std::process::abort();
+    };
+    let start_rip = pe_frame.control_pc;
+    let start_rsp = pe_frame.guest_rsp;
+
+    // Read the guest's saved RBP from the PE stack.
+    // The trampoline preserved RBP (callee-saved in SysV).  After the
+    // Rust function's prologue, the original guest RBP was pushed and is
+    // reachable from the stack.  However, the Rust compiler may use RBP
+    // as a general-purpose register, so we cannot trust the inline-asm
+    // captured value.  Instead, we read it from the PE stack: the
+    // _Unwind_RaiseException function (or whichever PE function made the
+    // RaiseException call) saved the guest RBP in its prolog, and
+    // RtlVirtualUnwind will restore it during the walk.  We initialise
+    // nv_rbp to 0; the walk's unwind codes will fix it up.
+    let nv_regs = NonVolatileRegs {
+        rbx: nv_rbx,
+        rbp: 0, // restored during walk via UWOP_PUSH_NONVOL
+        rsi: pe_frame.guest_rsi,
+        rdi: pe_frame.guest_rdi,
+        r12: nv_r12,
+        r13: nv_r13,
+        r14: nv_r14,
+        r15: nv_r15,
     };
 
     // ── Build the EXCEPTION_RECORD ──────────────────────────────────────────
@@ -1807,7 +1853,7 @@ pub unsafe extern "C" fn kernel32_RaiseException(
         (*exc_ptr).exception_code = exception_code;
         (*exc_ptr).exception_flags = exception_flags & !EXCEPTION_UNWINDING;
         (*exc_ptr).exception_record = core::ptr::null_mut();
-        (*exc_ptr).exception_address = initial_rip as *mut core::ffi::c_void;
+        (*exc_ptr).exception_address = start_rip as *mut core::ffi::c_void;
         (*exc_ptr).number_parameters = number_parameters.min(15);
         if !arguments.is_null() {
             let n = (*exc_ptr).number_parameters as usize;
@@ -1818,7 +1864,7 @@ pub unsafe extern "C" fn kernel32_RaiseException(
     }
 
     // ── Phase 1: search for a handler ──────────────────────────────────────
-    let found = unsafe { seh_walk_stack_dispatch(exc_ptr, initial_rip, initial_rsp, 1) };
+    let found = unsafe { seh_walk_stack_dispatch(exc_ptr, start_rip, start_rsp, 1, &nv_regs) };
 
     // SAFETY: exc_ptr was allocated above.
     unsafe { alloc::dealloc(exc_ptr.cast::<u8>(), exc_layout) };
@@ -1993,12 +2039,14 @@ pub unsafe extern "C" fn kernel32_RtlVirtualUnwind(
 ///
 /// Called by language-specific handlers (e.g. `__gxx_personality_seh0`) when
 /// a catch clause has been selected.  Sets `EXCEPTION_UNWINDING` on the
-/// exception record, fixes up `context_record` with the target RSP, RIP, and
+/// exception record, fixes up `context_record` with the target RIP and
 /// return value, then restores the CPU state and jumps to the landing pad.
 ///
 /// The supplied `context_record` must have been prepared by the caller (the
-/// personality function) with the landing-pad state.  `RtlUnwindEx` sets
-/// `Rsp` from `target_frame` and `Rip` from `target_ip` before the jump.
+/// personality function) with the landing-pad state.  The context's RSP is
+/// preserved as-is (it already contains the function's body RSP from the
+/// Phase 1 walk).  `RtlUnwindEx` sets `Rip` from `target_ip` before the
+/// jump.
 ///
 /// # Safety
 /// - `context_record` must be non-NULL and point to a valid, writable `CONTEXT`.
@@ -2007,7 +2055,7 @@ pub unsafe extern "C" fn kernel32_RtlVirtualUnwind(
 /// - All pointer arguments may be NULL except `context_record`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_RtlUnwindEx(
-    target_frame: *mut core::ffi::c_void,
+    _target_frame: *mut core::ffi::c_void,
     target_ip: *mut core::ffi::c_void,
     exception_record: *mut core::ffi::c_void,
     return_value: *mut core::ffi::c_void,
@@ -2033,7 +2081,6 @@ pub unsafe extern "C" fn kernel32_RtlUnwindEx(
     // Fix up the context for the landing pad:
     //   • Rip  ← target_ip  (landing pad address)
     //   • Rax  ← return_value (_Unwind_Exception* — read by the landing pad)
-    //   • Rsp  ← target_frame (establisher frame RSP of the catching function)
     //   • Rdx  ← ExceptionInformation[3] (type selector set during Phase 1 by
     //             _GCC_specific_handler; equivalent to what EXCEPTION_TARGET_UNWIND
     //             would cause the handler to write into ctx->Rdx)
@@ -2043,17 +2090,19 @@ pub unsafe extern "C" fn kernel32_RtlUnwindEx(
     }
     // SAFETY: ctx is a valid, writable CONTEXT buffer.
     unsafe { ctx_write(ctx, CTX_RAX, return_value as u64) };
-    if !target_frame.is_null() {
-        // SAFETY: ctx is a valid, writable CONTEXT buffer.
-        unsafe { ctx_write(ctx, CTX_RSP, target_frame as u64) };
-    }
+    // NOTE: We do NOT set RSP = target_frame here.  The context_record
+    // already contains the function's BODY RSP (set by the Phase 1 walk
+    // before RtlVirtualUnwind unwound the frame).  Setting RSP to
+    // target_frame (which is the function's ENTRY RSP / CFA) would be
+    // wrong because the landing pad expects the function body stack layout.
     // ExceptionInformation[3] = gcc_context.reg[1] = the C++ type-selector index.
     // _GCC_specific_handler sets this during Phase 1 before calling RtlUnwindEx,
     // and reads it back into ctx->Rdx when called with EXCEPTION_TARGET_UNWIND.
     // We replicate that effect directly to avoid a full target-frame handler call.
     if !exception_record.is_null() {
         // SAFETY: caller guarantees exception_record is a valid ExceptionRecord.
-        let selector = unsafe { (*exception_record.cast::<ExceptionRecord>()).exception_information[3] };
+        let selector =
+            unsafe { (*exception_record.cast::<ExceptionRecord>()).exception_information[3] };
         // SAFETY: ctx is a valid, writable CONTEXT buffer.
         unsafe { ctx_write(ctx, CTX_RDX, selector as u64) };
     }
@@ -8928,8 +8977,8 @@ core::arch::global_asm!(
     ".globl seh_restore_context_and_jump",
     "seh_restore_context_and_jump:",
     // Switch to the target stack; push the target RIP so we can `ret` to it.
-    "mov rsp, QWORD PTR [rdi + 0x98]",   // ctx->Rsp  → rsp
-    "push QWORD PTR [rdi + 0xF8]",        // ctx->Rip  → [rsp]
+    "mov rsp, QWORD PTR [rdi + 0x98]", // ctx->Rsp  → rsp
+    "push QWORD PTR [rdi + 0xF8]",     // ctx->Rip  → [rsp]
     // Restore GPRs (order does not matter except rdi must be last).
     "mov r15, QWORD PTR [rdi + 0xF0]",
     "mov r14, QWORD PTR [rdi + 0xE8]",
@@ -8945,7 +8994,7 @@ core::arch::global_asm!(
     "mov rcx, QWORD PTR [rdi + 0x80]",
     "mov rdx, QWORD PTR [rdi + 0x88]",
     "mov rax, QWORD PTR [rdi + 0x78]",
-    "mov rdi, QWORD PTR [rdi + 0xB0]",  // clobbers ctx ptr – must be last
+    "mov rdi, QWORD PTR [rdi + 0xB0]", // clobbers ctx ptr – must be last
     "ret",
 );
 
@@ -8982,21 +9031,58 @@ core::arch::global_asm!(
 /// the *highest* such offset because stale trampoline addresses live within
 /// the Rust frame body (lower offsets).
 ///
-/// Returns `(control_pc, guest_rsp)` where:
-/// - `control_pc` is the validated PE return address (covered by pdata), and
-/// - `guest_rsp` is the PE stack pointer at that call site (slot + 8).
-fn seh_find_pe_frame_on_stack(rust_rsp: usize) -> Option<(u64, u64)> {
+/// Returns a [`PeFrameInfo`] with the validated PE return address, guest RSP,
+/// and the guest's saved RSI/RDI from the trampoline.
+///
+/// Information about a PE frame found on the stack.
+struct PeFrameInfo {
+    /// PC inside the PE function (return address from the PE's `call [IAT]`).
+    control_pc: u64,
+    /// Guest RSP at the PE call site (RSP before the `call [IAT]`).
+    guest_rsp: u64,
+    /// Guest RSI saved by the trampoline's prolog.
+    guest_rsi: u64,
+    /// Guest RDI saved by the trampoline's prolog.
+    guest_rdi: u64,
+}
+
+fn seh_find_pe_frame_on_stack(rust_rsp: usize) -> Option<PeFrameInfo> {
     let pe_base = {
         let guard = EXCEPTION_TABLE
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let Some(ref tbl) = *guard else {
-            return None;
-        };
+        let tbl = (*guard).as_ref()?;
         tbl.image_base
     };
 
-    // Any valid PE code RVA is between 0x1000 (past the PE header) and 16 MB.
+    // Scan upward from rust_rsp for trampoline frames.
+    //
+    // The call chain is:
+    //   PE code → [call IAT] → trampoline → [call rax] → this Rust function
+    //
+    // We look for (non-pdata, pdata) pairs at 32-byte spacing, where the
+    // non-pdata value is a trampoline return address and the pdata value
+    // is a PE return address.
+    //
+    // We use the LAST match (highest offset) because earlier matches may
+    // be stale data from Rust local variables.
+    let mut best: Option<PeFrameInfo> = None;
+
+    for offset in (0..1024_usize).step_by(8) {
+        if let Some(info) = try_trampoline_at_offset(rust_rsp, offset, pe_base) {
+            best = Some(info);
+        }
+    }
+
+    best
+}
+
+/// Try to extract a PE frame from a specific stack offset.
+///
+/// Returns `Some(PeFrameInfo)` if `[rust_rsp + offset]` is a non-pdata PE
+/// address and `[rust_rsp + offset + 32]` is a valid pdata PE address.
+#[allow(clippy::similar_names)]
+fn try_trampoline_at_offset(rust_rsp: usize, offset: usize, pe_base: u64) -> Option<PeFrameInfo> {
     const PE_MAX_SIZE: u64 = 16 * 1024 * 1024;
 
     #[inline]
@@ -9005,67 +9091,128 @@ fn seh_find_pe_frame_on_stack(rust_rsp: usize) -> Option<(u64, u64)> {
         rva > 0x1000 && rva < PE_MAX_SIZE
     }
 
-    #[inline]
-    unsafe fn is_pdata(candidate: u64) -> bool {
-        // SAFETY: null image_base output pointer is accepted.
-        unsafe {
-            !kernel32_RtlLookupFunctionEntry(
-                candidate,
-                core::ptr::null_mut(),
-                core::ptr::null_mut(),
-            )
+    let slot = rust_rsp + offset;
+    // SAFETY: Reading from our own live call stack.
+    let candidate = unsafe { (slot as *const u64).read_unaligned() };
+
+    if !in_range(candidate, pe_base) {
+        return None;
+    }
+
+    // If the candidate itself is in pdata, it's a PE function address
+    // (not a trampoline return address).
+    // SAFETY: candidate is a valid PE address.
+    if unsafe {
+        !kernel32_RtlLookupFunctionEntry(candidate, core::ptr::null_mut(), core::ptr::null_mut())
             .is_null()
-        }
+    } {
+        return None;
     }
 
-    // Scan for all NULL-then-non-NULL pairs exactly 32 bytes apart.
-    // Keep only the LAST (highest-offset) pair – that is the live trampoline
-    // frame; any earlier pairs are stale data inside the Rust frame body.
-    let mut best: Option<(u64, u64)> = None; // (control_pc, guest_rsp)
+    // Ensure all reads within the trampoline frame stay inside the
+    // 1024-byte scan window.  The largest read is a u64 at `slot + 32`,
+    // which spans bytes [offset+32 .. offset+40).
+    if offset + 40 > 1024 {
+        return None;
+    }
+    let pe_slot = slot + 32;
+    let pe_candidate = unsafe { (pe_slot as *const u64).read_unaligned() };
 
-    for offset in (0..1024_usize).step_by(8) {
-        let slot = rust_rsp + offset;
-        // SAFETY: Reading from our own live call stack.
-        let candidate = unsafe { (slot as *const u64).read_unaligned() };
-
-        if !in_range(candidate, pe_base) {
-            continue;
-        }
-
-        // SAFETY: validated above.
-        if unsafe { is_pdata(candidate) } {
-            // This is a PE pdata address – not a trampoline ret addr itself,
-            // but check if 32 bytes BELOW it is a NULL (trampoline ret addr).
-            // i.e. check if this is the "+32" slot for some NULL at offset-32.
-            // This is handled implicitly by the pass below.
-            continue;
-        }
-
-        // candidate is in range but NOT in pdata → potential trampoline ret addr.
-        // Check if [offset+32] is a valid pdata PE address.
-        if offset + 32 >= 1024 {
-            break;
-        }
-        let pe_slot = slot + 32;
-        // SAFETY: Reading from our own live call stack.
-        let pe_candidate = unsafe { (pe_slot as *const u64).read_unaligned() };
-
-        if !in_range(pe_candidate, pe_base) {
-            continue;
-        }
-        // SAFETY: validated above.
-        if unsafe { is_pdata(pe_candidate) } {
-            // Valid pair! Record it – we'll use the last one found.
-            best = Some((pe_candidate, pe_slot as u64 + 8));
-        }
+    if !in_range(pe_candidate, pe_base) {
+        return None;
+    }
+    // SAFETY: pe_candidate is a valid PE address.
+    if unsafe {
+        kernel32_RtlLookupFunctionEntry(pe_candidate, core::ptr::null_mut(), core::ptr::null_mut())
+            .is_null()
+    } {
+        return None;
     }
 
-    best
+    // Extract saved RSI and RDI from the trampoline frame.
+    // Layout: [slot+0]=tramp_ret, [slot+8]=padding, [slot+16]=saved RSI,
+    //         [slot+24]=saved RDI, [slot+32]=PE return address
+    let guest_rsi = unsafe { ((slot + 16) as *const u64).read_unaligned() };
+    let guest_rdi = unsafe { ((slot + 24) as *const u64).read_unaligned() };
+
+    Some(PeFrameInfo {
+        control_pc: pe_candidate,
+        guest_rsp: pe_slot as u64 + 8,
+        guest_rsi,
+        guest_rdi,
+    })
 }
 
 // ── SEH helper: walk the PE call stack dispatching language handlers ─────────
 
-/// Walk the PE call stack starting at `(initial_rip, initial_rsp)` and
+/// Non-volatile register snapshot captured at `RaiseException` entry.
+///
+/// These registers are callee-saved across both the Windows x64 and SysV
+/// calling conventions, so their values inside `kernel32_RaiseException`
+/// reflect the guest PE's register state at the `call RaiseException` site.
+struct NonVolatileRegs {
+    rbx: u64,
+    rbp: u64,
+    rsi: u64,
+    rdi: u64,
+    r12: u64,
+    r13: u64,
+    r14: u64,
+    r15: u64,
+}
+
+/// Read the UNWIND_INFO for a function and compute the body frame-pointer
+/// register value.
+///
+/// Many Windows x64 functions set `UWOP_SET_FPREG` in their prolog, which
+/// establishes a frame register (usually `RBP`) as:
+///
+/// ```text
+/// frame_reg = body_RSP + frame_offset * 16
+/// ```
+///
+/// This function reads the UNWIND_INFO header for the given RUNTIME_FUNCTION,
+/// extracts `frame_register` and `frame_offset`, and returns
+/// `Some((reg_offset, value))` when a frame register is used, or `None` if the
+/// function does not set a frame register.
+///
+/// # Safety
+/// `image_base` must be the PE's load address and `function_entry` must point
+/// to a valid RUNTIME_FUNCTION within the image.
+unsafe fn compute_body_frame_reg(
+    image_base: u64,
+    function_entry: *mut core::ffi::c_void,
+    body_rsp: u64,
+) -> Option<(usize, u64)> {
+    /// Maximum plausible PE image size for RVA validation.
+    const MAX_PE_IMAGE_SIZE: u64 = 64 * 1024 * 1024;
+
+    if function_entry.is_null() || image_base == 0 {
+        return None;
+    }
+    let rf = function_entry.cast::<u32>();
+    // SAFETY: function_entry is a valid RUNTIME_FUNCTION (at least 12 bytes).
+    let unwind_info_rva = unsafe { rf.add(2).read_unaligned() };
+    // Reject obviously invalid RVAs (0 or exceeding any plausible PE size).
+    if unwind_info_rva == 0 || u64::from(unwind_info_rva) > MAX_PE_IMAGE_SIZE {
+        return None;
+    }
+    let ui = (image_base + u64::from(unwind_info_rva)) as *const u8;
+    // SAFETY: image_base + unwind_info_rva is within the loaded image;
+    // UNWIND_INFO is at least 4 bytes, so reading byte 3 is valid.
+    let frame_reg_and_offset = unsafe { ui.add(3).read() };
+    let frame_register = frame_reg_and_offset & 0x0F;
+    let frame_offset = (frame_reg_and_offset >> 4) & 0x0F;
+    if frame_register != 0 {
+        let reg_off = ctx_reg_offset(frame_register);
+        let value = body_rsp + u64::from(frame_offset) * 16;
+        Some((reg_off, value))
+    } else {
+        None
+    }
+}
+
+/// Walk the PE call stack starting at `(start_pc, start_sp)` and
 /// dispatch language-specific exception handlers.
 ///
 /// `phase`:
@@ -9080,26 +9227,41 @@ fn seh_find_pe_frame_on_stack(rust_rsp: usize) -> Option<(u64, u64)> {
 ///
 /// # Safety
 /// `exc_rec` must point to a valid, writable `ExceptionRecord`.
+#[allow(clippy::similar_names)]
 unsafe fn seh_walk_stack_dispatch(
     exc_rec: *mut ExceptionRecord,
-    initial_rip: u64,
-    initial_rsp: u64,
+    start_pc: u64,
+    start_sp: u64,
     phase: u32,
+    nv_regs: &NonVolatileRegs,
 ) -> bool {
+    // Language handler function type (Windows x64 ABI).
+    type ExceptionRoutine =
+        unsafe extern "win64" fn(*mut ExceptionRecord, u64, *mut u8, *mut DispatcherContext) -> i32;
+
     // Allocate a CONTEXT on the heap (1232 bytes) — too large for the stack.
-    let ctx_layout = alloc::Layout::from_size_align(CTX_SIZE, 16)
-        .expect("CTX layout is valid");
+    let ctx_layout = alloc::Layout::from_size_align(CTX_SIZE, 16).expect("CTX layout is valid");
     // SAFETY: layout is non-zero.
     let ctx_ptr = unsafe { alloc::alloc_zeroed(ctx_layout) };
     if ctx_ptr.is_null() {
         return false;
     }
 
-    // Seed the context with the guest's initial PC and SP.
+    // Seed the context with the guest's initial PC, SP, and non-volatile
+    // registers.  These registers are callee-saved across the trampoline
+    // and Rust frames, so they match the guest PE state at the throw site.
     // SAFETY: ctx_ptr is a freshly zeroed CTX_SIZE-byte allocation.
     unsafe {
-        ctx_write(ctx_ptr, CTX_RIP, initial_rip);
-        ctx_write(ctx_ptr, CTX_RSP, initial_rsp);
+        ctx_write(ctx_ptr, CTX_RIP, start_pc);
+        ctx_write(ctx_ptr, CTX_RSP, start_sp);
+        ctx_write(ctx_ptr, CTX_RBX, nv_regs.rbx);
+        ctx_write(ctx_ptr, CTX_RBP, nv_regs.rbp);
+        ctx_write(ctx_ptr, CTX_RSI, nv_regs.rsi);
+        ctx_write(ctx_ptr, CTX_RDI, nv_regs.rdi);
+        ctx_write(ctx_ptr, CTX_R12, nv_regs.r12);
+        ctx_write(ctx_ptr, CTX_R13, nv_regs.r13);
+        ctx_write(ctx_ptr, CTX_R14, nv_regs.r14);
+        ctx_write(ctx_ptr, CTX_R15, nv_regs.r15);
     }
 
     let handler_flag = if phase == 2 {
@@ -9117,6 +9279,19 @@ unsafe fn seh_walk_stack_dispatch(
     let mut found = false;
     let mut max_frames: u32 = 256; // guard against infinite loops
 
+    // Allocate a second CONTEXT buffer to save the pre-unwind state.
+    // The language handler must receive the context as it was BEFORE
+    // `RtlVirtualUnwind` modifies it (i.e. with the function body RSP,
+    // not the caller's RSP).  Wine's `RtlDispatchException` does the same:
+    // it passes the pre-unwind context to the handler while advancing a
+    // separate copy.
+    // SAFETY: layout is non-zero.
+    let saved_ctx = unsafe { alloc::alloc_zeroed(ctx_layout) };
+    if saved_ctx.is_null() {
+        unsafe { alloc::dealloc(ctx_ptr, ctx_layout) };
+        return false;
+    }
+
     loop {
         max_frames -= 1;
         if max_frames == 0 {
@@ -9133,11 +9308,7 @@ unsafe fn seh_walk_stack_dispatch(
         // SAFETY: RtlLookupFunctionEntry is safe to call with a valid PC and
         // a pointer to a u64 output.
         let fe = unsafe {
-            kernel32_RtlLookupFunctionEntry(
-                control_pc,
-                &mut image_base,
-                core::ptr::null_mut(),
-            )
+            kernel32_RtlLookupFunctionEntry(control_pc, &raw mut image_base, core::ptr::null_mut())
         };
         if fe.is_null() {
             // control_pc is outside the registered PE — no more frames to walk.
@@ -9146,6 +9317,15 @@ unsafe fn seh_walk_stack_dispatch(
 
         let mut handler_data: *mut core::ffi::c_void = core::ptr::null_mut();
         let mut establisher_frame: u64 = 0;
+
+        // Save the pre-unwind context (function body state) before
+        // `RtlVirtualUnwind` advances ctx_ptr to the caller's frame.
+        // The handler needs the body RSP (before prolog unwind) so the
+        // landing pad finds the correct stack layout.
+        // SAFETY: both buffers are CTX_SIZE bytes.
+        unsafe {
+            core::ptr::copy_nonoverlapping(ctx_ptr, saved_ctx, CTX_SIZE);
+        }
 
         // SAFETY: fe and ctx_ptr are valid; establisher_frame and handler_data
         // are valid output slots.
@@ -9156,21 +9336,50 @@ unsafe fn seh_walk_stack_dispatch(
                 control_pc,
                 fe,
                 ctx_ptr.cast::<core::ffi::c_void>(),
-                &mut handler_data,
-                &mut establisher_frame,
+                &raw mut handler_data,
+                &raw mut establisher_frame,
                 core::ptr::null_mut(),
             )
         };
 
         if !lang_handler.is_null() {
+            // The handler context must reflect the function BODY state (before
+            // its prolog is unwound).  `saved_ctx` was copied from `ctx_ptr`
+            // BEFORE `RtlVirtualUnwind` modified it, so it contains:
+            //   - RSP/RIP: the function body values (correct)
+            //   - Non-volatile registers: accumulated from the initial context
+            //     plus all preceding unwinds.  Since the initial context was
+            //     seeded with the guest's callee-saved registers (from the
+            //     trampoline frame), and each unwind restores registers from
+            //     the PE stack, `saved_ctx` has the correct function-entry
+            //     register values for this frame.
+            //
+            // If the function sets a frame register via UWOP_SET_FPREG
+            // (typically RBP), we recompute its body value from the body RSP
+            // and the UNWIND_INFO header, since the prolog modifies it after
+            // saving the caller's value.
+            let body_rsp = unsafe { ctx_read(saved_ctx, CTX_RSP) };
+
+            // If the function uses a frame register (e.g. RBP), recompute
+            // its body value: frame_reg = body_RSP + frame_offset * 16.
+            // SAFETY: image_base and fe are valid.
+            if let Some((reg_off, val)) =
+                unsafe { compute_body_frame_reg(image_base, fe, body_rsp) }
+            {
+                unsafe { ctx_write(saved_ctx, reg_off, val) };
+            }
+
             // Build a DISPATCHER_CONTEXT for this frame.
+            // Use saved_ctx (pre-unwind body context with corrected registers)
+            // so the handler (and any `RtlUnwindEx` call it makes) sees the
+            // function BODY RSP — not the caller's RSP.
             let mut dc = DispatcherContext {
                 control_pc,
                 image_base,
                 function_entry: fe,
                 establisher_frame,
                 target_ip: 0,
-                context_record: ctx_ptr,
+                context_record: saved_ctx,
                 language_handler: lang_handler,
                 handler_data,
                 history_table: core::ptr::null_mut(),
@@ -9184,21 +9393,15 @@ unsafe fn seh_walk_stack_dispatch(
             //   rdx = EstablisherFrame (u64)
             //   r8  = CONTEXT*
             //   r9  = DISPATCHER_CONTEXT*
-            type ExceptionRoutine = unsafe extern "win64" fn(
-                *mut ExceptionRecord,
-                u64,
-                *mut u8,
-                *mut DispatcherContext,
-            ) -> i32;
 
             // SAFETY: lang_handler is a valid PE function pointer with the
             // EXCEPTION_ROUTINE signature.
-            let handler_fn: ExceptionRoutine =
-                unsafe { core::mem::transmute(lang_handler) };
+            let handler_fn: ExceptionRoutine = unsafe { core::mem::transmute(lang_handler) };
 
+            // Pass saved_ctx (pre-unwind body context) to the handler.
             // SAFETY: all pointers are valid for their respective types.
             let disposition =
-                unsafe { handler_fn(exc_rec, establisher_frame, ctx_ptr, &mut dc) };
+                unsafe { handler_fn(exc_rec, establisher_frame, saved_ctx, &raw mut dc) };
 
             if disposition == EXCEPTION_CONTINUE_EXECUTION {
                 found = true;
@@ -9211,8 +9414,11 @@ unsafe fn seh_walk_stack_dispatch(
         // the next iteration processes the caller.
     }
 
-    // SAFETY: ctx_ptr was allocated above with ctx_layout.
-    unsafe { alloc::dealloc(ctx_ptr, ctx_layout) };
+    // SAFETY: ctx_ptr and saved_ctx were allocated above with ctx_layout.
+    unsafe {
+        alloc::dealloc(ctx_ptr, ctx_layout);
+        alloc::dealloc(saved_ctx, ctx_layout);
+    }
     found
 }
 
@@ -9522,7 +9728,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::similar_names)]
     fn test_seh_virtual_unwind_basic() {
+        const RETURN_ADDR: u64 = 0xDEAD_BEEF_1234_5678;
+
         // Build a minimal PE in memory:
         //
         //  image_base (fake):  start of image_mem
@@ -9575,7 +9784,6 @@ mod tests {
         //
         // After ALLOC_SMALL unwind: RSP += 32 → points at return address
         // After pop return address: RSP += 8  → fake_rsp + 40
-        const RETURN_ADDR: u64 = 0xDEAD_BEEF_1234_5678;
         // 5 slots: 4 × local + 1 × return address
         let fake_stack: Vec<u64> = vec![0u64, 0u64, 0u64, 0u64, RETURN_ADDR];
         let fake_rsp = fake_stack.as_ptr() as u64;

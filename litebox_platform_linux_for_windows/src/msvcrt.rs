@@ -1299,7 +1299,6 @@ pub unsafe extern "C" fn msvcrt_realloc(ptr: *mut u8, new_size: usize) -> *mut u
     new_ptr
 }
 
-
 ///
 /// Returns a pointer to a static `lconv`-compatible structure initialised
 /// for the "C" locale (decimal point = '.', everything else empty or CHAR_MAX).
