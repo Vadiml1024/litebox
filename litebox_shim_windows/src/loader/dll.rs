@@ -492,6 +492,22 @@ impl DllManager {
             // Phase 26: Computer Name
             ("GetComputerNameW", KERNEL32_BASE + 0xC7),
             ("GetComputerNameExW", KERNEL32_BASE + 0xC8),
+            // Phase 27: Thread Management
+            ("SetThreadPriority", KERNEL32_BASE + 0xC9),
+            ("GetThreadPriority", KERNEL32_BASE + 0xCA),
+            ("SuspendThread", KERNEL32_BASE + 0xCB),
+            ("ResumeThread", KERNEL32_BASE + 0xCC),
+            ("OpenThread", KERNEL32_BASE + 0xCD),
+            ("GetExitCodeThread", KERNEL32_BASE + 0xCE),
+            // Phase 27: Process Management
+            ("OpenProcess", KERNEL32_BASE + 0xCF),
+            ("GetProcessTimes", KERNEL32_BASE + 0xD0),
+            // Phase 27: File Times
+            ("GetFileTime", KERNEL32_BASE + 0xD1),
+            ("CompareFileTime", KERNEL32_BASE + 0xD2),
+            ("FileTimeToLocalFileTime", KERNEL32_BASE + 0xD3),
+            // Phase 27: Temp File Name
+            ("GetTempFileNameW", KERNEL32_BASE + 0xD4),
         ];
 
         self.register_stub_dll("KERNEL32.dll", exports);
@@ -583,6 +599,7 @@ impl DllManager {
             ("strerror", MSVCRT_BASE + 0x34),
             ("wcslen", MSVCRT_BASE + 0x35),
             ("wcscmp", MSVCRT_BASE + 0x3A),
+            ("wcsstr", MSVCRT_BASE + 0x3B),
             ("fputc", MSVCRT_BASE + 0x36),
             ("localeconv", MSVCRT_BASE + 0x37),
             ("___lc_codepage_func", MSVCRT_BASE + 0x38),
@@ -723,6 +740,24 @@ impl DllManager {
             // Device context
             ("GetDC", USER32_BASE + 25),
             ("ReleaseDC", USER32_BASE + 26),
+            // Phase 27: Character Conversion
+            ("CharUpperW", USER32_BASE + 27),
+            ("CharLowerW", USER32_BASE + 28),
+            ("CharUpperA", USER32_BASE + 29),
+            ("CharLowerA", USER32_BASE + 30),
+            // Phase 27: Character Classification
+            ("IsCharAlphaW", USER32_BASE + 31),
+            ("IsCharAlphaNumericW", USER32_BASE + 32),
+            ("IsCharUpperW", USER32_BASE + 33),
+            ("IsCharLowerW", USER32_BASE + 34),
+            // Phase 27: Window Utilities
+            ("IsWindow", USER32_BASE + 35),
+            ("IsWindowEnabled", USER32_BASE + 36),
+            ("IsWindowVisible", USER32_BASE + 37),
+            ("EnableWindow", USER32_BASE + 38),
+            ("GetWindowTextW", USER32_BASE + 39),
+            ("SetWindowTextW", USER32_BASE + 40),
+            ("GetParent", USER32_BASE + 41),
         ];
 
         self.register_stub_dll("USER32.dll", exports);

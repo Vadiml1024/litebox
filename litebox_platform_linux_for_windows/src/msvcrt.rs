@@ -1147,6 +1147,53 @@ pub unsafe extern "C" fn msvcrt_wcscmp(s1: *const u16, s2: *const u16) -> i32 {
     }
 }
 
+/// `wcsstr` – find the first occurrence of wide string `needle` in `haystack`.
+///
+/// Returns a pointer to the first occurrence of `needle` in `haystack`, or
+/// NULL if `needle` is not found. If `needle` is an empty string, returns
+/// `haystack`.
+///
+/// # Safety
+/// Both `haystack` and `needle` must be valid, null-terminated wide character strings.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_wcsstr(haystack: *const u16, needle: *const u16) -> *const u16 {
+    if haystack.is_null() {
+        return core::ptr::null();
+    }
+    if needle.is_null() {
+        return haystack;
+    }
+    // SAFETY: caller guarantees both pointers are valid null-terminated strings.
+    let needle_first = unsafe { *needle };
+    if needle_first == 0 {
+        return haystack; // empty needle always matches at start
+    }
+    let mut h = haystack;
+    // SAFETY: h stays within the null-terminated haystack.
+    while unsafe { *h } != 0 {
+        if unsafe { *h } == needle_first {
+            // Try to match the rest of needle
+            let mut hi = h;
+            let mut ni = needle;
+            // SAFETY: hi and ni are within their respective null-terminated strings.
+            loop {
+                let nc = unsafe { *ni };
+                if nc == 0 {
+                    return h; // full needle matched
+                }
+                let hc = unsafe { *hi };
+                if hc != nc {
+                    break; // mismatch
+                }
+                hi = unsafe { hi.add(1) };
+                ni = unsafe { ni.add(1) };
+            }
+        }
+        h = unsafe { h.add(1) };
+    }
+    core::ptr::null()
+}
+
 /// `fputc` – write character `c` to the stream `stream`.
 ///
 /// For simplicity this stub forwards to the host file descriptor: fd 1 for

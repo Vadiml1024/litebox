@@ -205,6 +205,12 @@ pub fn get_function_table() -> Vec<FunctionImpl> {
             impl_address: crate::msvcrt::msvcrt_wcscmp as *const () as usize,
         },
         FunctionImpl {
+            name: "wcsstr",
+            dll_name: "MSVCRT.dll",
+            num_params: 2,
+            impl_address: crate::msvcrt::msvcrt_wcsstr as *const () as usize,
+        },
+        FunctionImpl {
             name: "fputc",
             dll_name: "MSVCRT.dll",
             num_params: 2,
@@ -2213,6 +2219,175 @@ pub fn get_function_table() -> Vec<FunctionImpl> {
             dll_name: "VERSION.dll",
             num_params: 4,
             impl_address: crate::version::version_VerQueryValueW as *const () as usize,
+        },
+        // KERNEL32 — Phase 27: Thread Management
+        FunctionImpl {
+            name: "SetThreadPriority",
+            dll_name: "KERNEL32.dll",
+            num_params: 2,
+            impl_address: crate::kernel32::kernel32_SetThreadPriority as *const () as usize,
+        },
+        FunctionImpl {
+            name: "GetThreadPriority",
+            dll_name: "KERNEL32.dll",
+            num_params: 1,
+            impl_address: crate::kernel32::kernel32_GetThreadPriority as *const () as usize,
+        },
+        FunctionImpl {
+            name: "SuspendThread",
+            dll_name: "KERNEL32.dll",
+            num_params: 1,
+            impl_address: crate::kernel32::kernel32_SuspendThread as *const () as usize,
+        },
+        FunctionImpl {
+            name: "ResumeThread",
+            dll_name: "KERNEL32.dll",
+            num_params: 1,
+            impl_address: crate::kernel32::kernel32_ResumeThread as *const () as usize,
+        },
+        FunctionImpl {
+            name: "OpenThread",
+            dll_name: "KERNEL32.dll",
+            num_params: 3,
+            impl_address: crate::kernel32::kernel32_OpenThread as *const () as usize,
+        },
+        FunctionImpl {
+            name: "GetExitCodeThread",
+            dll_name: "KERNEL32.dll",
+            num_params: 2,
+            impl_address: crate::kernel32::kernel32_GetExitCodeThread as *const () as usize,
+        },
+        // KERNEL32 — Phase 27: Process Management
+        FunctionImpl {
+            name: "OpenProcess",
+            dll_name: "KERNEL32.dll",
+            num_params: 3,
+            impl_address: crate::kernel32::kernel32_OpenProcess as *const () as usize,
+        },
+        FunctionImpl {
+            name: "GetProcessTimes",
+            dll_name: "KERNEL32.dll",
+            num_params: 5,
+            impl_address: crate::kernel32::kernel32_GetProcessTimes as *const () as usize,
+        },
+        // KERNEL32 — Phase 27: File Times
+        FunctionImpl {
+            name: "GetFileTime",
+            dll_name: "KERNEL32.dll",
+            num_params: 4,
+            impl_address: crate::kernel32::kernel32_GetFileTime as *const () as usize,
+        },
+        FunctionImpl {
+            name: "CompareFileTime",
+            dll_name: "KERNEL32.dll",
+            num_params: 2,
+            impl_address: crate::kernel32::kernel32_CompareFileTime as *const () as usize,
+        },
+        FunctionImpl {
+            name: "FileTimeToLocalFileTime",
+            dll_name: "KERNEL32.dll",
+            num_params: 2,
+            impl_address: crate::kernel32::kernel32_FileTimeToLocalFileTime as *const () as usize,
+        },
+        // KERNEL32 — Phase 27: Temp File Name
+        FunctionImpl {
+            name: "GetTempFileNameW",
+            dll_name: "KERNEL32.dll",
+            num_params: 4,
+            impl_address: crate::kernel32::kernel32_GetTempFileNameW as *const () as usize,
+        },
+        // USER32 — Phase 27: Character Conversion
+        FunctionImpl {
+            name: "CharUpperW",
+            dll_name: "USER32.dll",
+            num_params: 1,
+            impl_address: crate::user32::user32_CharUpperW as *const () as usize,
+        },
+        FunctionImpl {
+            name: "CharLowerW",
+            dll_name: "USER32.dll",
+            num_params: 1,
+            impl_address: crate::user32::user32_CharLowerW as *const () as usize,
+        },
+        FunctionImpl {
+            name: "CharUpperA",
+            dll_name: "USER32.dll",
+            num_params: 1,
+            impl_address: crate::user32::user32_CharUpperA as *const () as usize,
+        },
+        FunctionImpl {
+            name: "CharLowerA",
+            dll_name: "USER32.dll",
+            num_params: 1,
+            impl_address: crate::user32::user32_CharLowerA as *const () as usize,
+        },
+        // USER32 — Phase 27: Character Classification
+        FunctionImpl {
+            name: "IsCharAlphaW",
+            dll_name: "USER32.dll",
+            num_params: 1,
+            impl_address: crate::user32::user32_IsCharAlphaW as *const () as usize,
+        },
+        FunctionImpl {
+            name: "IsCharAlphaNumericW",
+            dll_name: "USER32.dll",
+            num_params: 1,
+            impl_address: crate::user32::user32_IsCharAlphaNumericW as *const () as usize,
+        },
+        FunctionImpl {
+            name: "IsCharUpperW",
+            dll_name: "USER32.dll",
+            num_params: 1,
+            impl_address: crate::user32::user32_IsCharUpperW as *const () as usize,
+        },
+        FunctionImpl {
+            name: "IsCharLowerW",
+            dll_name: "USER32.dll",
+            num_params: 1,
+            impl_address: crate::user32::user32_IsCharLowerW as *const () as usize,
+        },
+        // USER32 — Phase 27: Window Utilities
+        FunctionImpl {
+            name: "IsWindow",
+            dll_name: "USER32.dll",
+            num_params: 1,
+            impl_address: crate::user32::user32_IsWindow as *const () as usize,
+        },
+        FunctionImpl {
+            name: "IsWindowEnabled",
+            dll_name: "USER32.dll",
+            num_params: 1,
+            impl_address: crate::user32::user32_IsWindowEnabled as *const () as usize,
+        },
+        FunctionImpl {
+            name: "IsWindowVisible",
+            dll_name: "USER32.dll",
+            num_params: 1,
+            impl_address: crate::user32::user32_IsWindowVisible as *const () as usize,
+        },
+        FunctionImpl {
+            name: "EnableWindow",
+            dll_name: "USER32.dll",
+            num_params: 2,
+            impl_address: crate::user32::user32_EnableWindow as *const () as usize,
+        },
+        FunctionImpl {
+            name: "GetWindowTextW",
+            dll_name: "USER32.dll",
+            num_params: 3,
+            impl_address: crate::user32::user32_GetWindowTextW as *const () as usize,
+        },
+        FunctionImpl {
+            name: "SetWindowTextW",
+            dll_name: "USER32.dll",
+            num_params: 2,
+            impl_address: crate::user32::user32_SetWindowTextW as *const () as usize,
+        },
+        FunctionImpl {
+            name: "GetParent",
+            dll_name: "USER32.dll",
+            num_params: 1,
+            impl_address: crate::user32::user32_GetParent as *const () as usize,
         },
     ]
 }

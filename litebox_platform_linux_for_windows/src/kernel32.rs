@@ -7062,6 +7062,10 @@ pub unsafe extern "C" fn kernel32_ReleaseMutex(mutex: *mut core::ffi::c_void) ->
         }
         false
     });
+    if !released {
+        // SAFETY: no pointers are dereferenced.
+        unsafe { kernel32_SetLastError(288) }; // ERROR_NOT_OWNER
+    }
     i32::from(released)
 }
 
@@ -7707,6 +7711,354 @@ fn get_hostname() -> String {
         return s.to_owned();
     }
     "localhost".to_owned()
+}
+
+// ── Phase 27: Thread Management ──────────────────────────────────────────────
+
+/// SetThreadPriority - sets the priority value for the specified thread
+/// In this emulation environment, all threads run at normal priority. This function
+/// accepts the priority value and always returns TRUE (success).
+/// # Safety
+/// `thread` is accepted as an opaque handle; it is not dereferenced.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_SetThreadPriority(
+    _thread: *mut core::ffi::c_void,
+    _priority: i32,
+) -> i32 {
+    1 // TRUE
+}
+
+/// GetThreadPriority - retrieves the priority value for the specified thread
+/// Returns THREAD_PRIORITY_NORMAL (0) for all threads.
+/// # Safety
+/// `thread` is accepted as an opaque handle; it is not dereferenced.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_GetThreadPriority(_thread: *mut core::ffi::c_void) -> i32 {
+    0 // THREAD_PRIORITY_NORMAL
+}
+
+/// SuspendThread - suspends the specified thread
+/// Thread suspension is not implemented; all threads continue executing.
+/// Returns 0 (previous suspend count of 0).
+/// # Safety
+/// `thread` is accepted as an opaque handle; it is not dereferenced.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_SuspendThread(_thread: *mut core::ffi::c_void) -> u32 {
+    0 // previous suspend count
+}
+
+/// ResumeThread - decrements a thread's suspend count
+/// Thread suspension is not implemented. Returns 0 (previous suspend count).
+/// # Safety
+/// `thread` is accepted as an opaque handle; it is not dereferenced.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_ResumeThread(_thread: *mut core::ffi::c_void) -> u32 {
+    0 // previous suspend count
+}
+
+/// OpenThread - opens an existing thread object
+/// Returns a handle for threads managed in THREAD_HANDLES if the thread ID
+/// matches the handle value; otherwise returns NULL with ERROR_INVALID_PARAMETER.
+/// # Safety
+/// `thread_id` is a thread identifier previously returned by CreateThread.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_OpenThread(
+    _desired_access: u32,
+    _inherit_handle: i32,
+    thread_id: u32,
+) -> *mut core::ffi::c_void {
+    // Thread IDs in our implementation are the lower 32 bits of the handle value.
+    // Reconstruct the handle value and check if it's in our registry.
+    let handle_val = thread_id as usize;
+    let exists = with_thread_handles(|map| map.contains_key(&handle_val));
+    if exists {
+        handle_val as *mut core::ffi::c_void
+    } else {
+        // SAFETY: no pointers are dereferenced.
+        unsafe { kernel32_SetLastError(87) }; // ERROR_INVALID_PARAMETER
+        core::ptr::null_mut()
+    }
+}
+
+/// GetExitCodeThread - retrieves the termination status of the specified thread
+/// Returns TRUE and fills `exit_code` with STILL_ACTIVE (259) if the thread is
+/// still running, or with the actual exit code if it has finished.
+/// # Safety
+/// `exit_code` must point to a writable u32, or be null.
+/// # Panics
+/// Panics if the internal thread-handle mutex is poisoned.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_GetExitCodeThread(
+    thread: *mut core::ffi::c_void,
+    exit_code: *mut u32,
+) -> i32 {
+    let handle_val = thread as usize;
+    let code =
+        with_thread_handles(|map| map.get(&handle_val).map(|e| *e.exit_code.lock().unwrap()));
+    let value = match code {
+        Some(Some(c)) => c,
+        Some(None) => 259, // STILL_ACTIVE
+        None => {
+            // SAFETY: no pointers are dereferenced.
+            unsafe { kernel32_SetLastError(6) }; // ERROR_INVALID_HANDLE
+            return 0;
+        }
+    };
+    if !exit_code.is_null() {
+        // SAFETY: exit_code is checked non-null above.
+        unsafe { *exit_code = value };
+    }
+    1 // TRUE
+}
+
+// ── Phase 27: Process Management ─────────────────────────────────────────────
+
+/// OpenProcess - opens an existing local process object
+/// Returns a pseudo-handle representing the current process (matching GetCurrentProcess behavior)
+/// if the process ID matches the current PID; otherwise returns NULL.
+/// # Safety
+/// All arguments are accepted as values; none are dereferenced.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_OpenProcess(
+    _desired_access: u32,
+    _inherit_handle: i32,
+    process_id: u32,
+) -> *mut core::ffi::c_void {
+    if process_id == std::process::id() {
+        // Return pseudo-handle for current process (matches GetCurrentProcess)
+        usize::MAX as *mut core::ffi::c_void
+    } else {
+        // SAFETY: no pointers are dereferenced.
+        unsafe { kernel32_SetLastError(87) }; // ERROR_INVALID_PARAMETER
+        core::ptr::null_mut()
+    }
+}
+
+/// GetProcessTimes - retrieves timing information for the specified process
+/// Returns current wall-clock time as creation time and zeros for CPU times.
+/// # Safety
+/// Output pointers must each be null or point to a valid FileTime (8 bytes).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_GetProcessTimes(
+    _process: *mut core::ffi::c_void,
+    creation_time: *mut FileTime,
+    exit_time: *mut FileTime,
+    kernel_time: *mut FileTime,
+    user_time: *mut FileTime,
+) -> i32 {
+    let mut ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: ts is a valid out-pointer for clock_gettime.
+    unsafe { libc::clock_gettime(libc::CLOCK_REALTIME, &raw mut ts) };
+    // Convert Unix time to Windows FILETIME (100-ns intervals since 1601-01-01).
+    // Use wrapping arithmetic to make overflow behavior explicit.
+    let unix_100ns = (ts.tv_sec as u64)
+        .wrapping_add(EPOCH_DIFF as u64)
+        .wrapping_mul(10_000_000)
+        .wrapping_add(ts.tv_nsec as u64 / 100);
+    let ft = FileTime {
+        low_date_time: unix_100ns as u32,
+        high_date_time: (unix_100ns >> 32) as u32,
+    };
+    if !creation_time.is_null() {
+        // SAFETY: creation_time is checked non-null.
+        unsafe { *creation_time = ft };
+    }
+    if !exit_time.is_null() {
+        // SAFETY: exit_time is checked non-null.
+        unsafe {
+            *exit_time = FileTime {
+                low_date_time: 0,
+                high_date_time: 0,
+            }
+        };
+    }
+    if !kernel_time.is_null() {
+        // SAFETY: kernel_time is checked non-null.
+        unsafe {
+            *kernel_time = FileTime {
+                low_date_time: 0,
+                high_date_time: 0,
+            }
+        };
+    }
+    if !user_time.is_null() {
+        // SAFETY: user_time is checked non-null.
+        unsafe {
+            *user_time = FileTime {
+                low_date_time: 0,
+                high_date_time: 0,
+            }
+        };
+    }
+    1 // TRUE
+}
+
+// ── Phase 27: File Times ──────────────────────────────────────────────────────
+
+/// GetFileTime - retrieves the date and time a file or directory was created, last accessed, and last written
+/// Reads the file's metadata via `fstat` to obtain actual timestamps.
+/// # Safety
+/// `file` must be a valid handle returned by `CreateFileW`. Output pointers
+/// must each be null or point to at least 8 bytes of writable memory.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_GetFileTime(
+    file: *mut core::ffi::c_void,
+    creation_time: *mut FileTime,
+    last_access_time: *mut FileTime,
+    last_write_time: *mut FileTime,
+) -> i32 {
+    use std::os::unix::io::AsRawFd as _;
+    let handle_val = file as usize;
+    let fd = with_file_handles(|map| map.get(&handle_val).map(|e| e.file.as_raw_fd()));
+    let Some(fd) = fd else {
+        // SAFETY: no pointers are dereferenced.
+        unsafe { kernel32_SetLastError(6) }; // ERROR_INVALID_HANDLE
+        return 0;
+    };
+    let mut stat: libc::stat = unsafe { core::mem::zeroed() };
+    // SAFETY: fd is a valid file descriptor; stat is a valid out-pointer.
+    if unsafe { libc::fstat(fd, &raw mut stat) } != 0 {
+        // SAFETY: no pointers are dereferenced.
+        unsafe { kernel32_SetLastError(6) }; // ERROR_INVALID_HANDLE
+        return 0;
+    }
+    let unix_to_filetime = |sec: i64, nsec: i64| -> FileTime {
+        // Add EPOCH_DIFF in i64 to avoid overflow on pre-epoch dates; clamp to 0 if before 1601.
+        let adjusted = sec.saturating_add(EPOCH_DIFF).max(0) as u64;
+        let intervals = adjusted * 10_000_000 + nsec.max(0) as u64 / 100;
+        FileTime {
+            low_date_time: intervals as u32,
+            high_date_time: (intervals >> 32) as u32,
+        }
+    };
+    let write_ft = unix_to_filetime(stat.st_mtime, stat.st_mtime_nsec);
+    let access_ft = unix_to_filetime(stat.st_atime, stat.st_atime_nsec);
+    // Linux doesn't store true creation time; use ctime (metadata change) as approximation
+    let create_ft = unix_to_filetime(stat.st_ctime, stat.st_ctime_nsec);
+    if !creation_time.is_null() {
+        // SAFETY: creation_time is checked non-null.
+        unsafe { *creation_time = create_ft };
+    }
+    if !last_access_time.is_null() {
+        // SAFETY: last_access_time is checked non-null.
+        unsafe { *last_access_time = access_ft };
+    }
+    if !last_write_time.is_null() {
+        // SAFETY: last_write_time is checked non-null.
+        unsafe { *last_write_time = write_ft };
+    }
+    1 // TRUE
+}
+
+/// CompareFileTime - compares two file times
+/// Returns -1 if first < second, 0 if equal, +1 if first > second.
+/// # Safety
+/// Both pointers must point to valid FileTime structures (8 bytes each).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_CompareFileTime(
+    file_time1: *const FileTime,
+    file_time2: *const FileTime,
+) -> i32 {
+    if file_time1.is_null() || file_time2.is_null() {
+        return 0;
+    }
+    // SAFETY: Both pointers are checked non-null above.
+    let ft1 = unsafe { &*file_time1 };
+    let ft2 = unsafe { &*file_time2 };
+    let v1 = u64::from(ft1.low_date_time) | (u64::from(ft1.high_date_time) << 32);
+    let v2 = u64::from(ft2.low_date_time) | (u64::from(ft2.high_date_time) << 32);
+    match v1.cmp(&v2) {
+        std::cmp::Ordering::Less => -1,
+        std::cmp::Ordering::Equal => 0,
+        std::cmp::Ordering::Greater => 1,
+    }
+}
+
+/// FileTimeToLocalFileTime - converts a UTC file time to a local file time
+/// Applies the local timezone offset to the FILETIME value.
+/// # Safety
+/// Both pointers must point to valid FileTime structures (8 bytes each).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_FileTimeToLocalFileTime(
+    utc_file_time: *const FileTime,
+    local_file_time: *mut FileTime,
+) -> i32 {
+    if utc_file_time.is_null() || local_file_time.is_null() {
+        return 0;
+    }
+    // SAFETY: Pointers are checked non-null above.
+    let ft = unsafe { &*utc_file_time };
+    let intervals = u64::from(ft.low_date_time) | (u64::from(ft.high_date_time) << 32);
+    let unix_time = (intervals / 10_000_000) as i64 - EPOCH_DIFF;
+    let mut tm_local: libc::tm = unsafe { core::mem::zeroed() };
+    // SAFETY: unix_time is a valid time_t value; tm_local is a valid out-pointer.
+    unsafe { libc::localtime_r(&raw const unix_time, &raw mut tm_local) };
+    // offset_sec is bounded to ±50400 seconds (±14 hours); multiply by 10M to get
+    // 100-ns intervals, then add to the UTC intervals using signed arithmetic
+    // to correctly handle negative (west-of-UTC) offsets.
+    let offset_100ns = i64::from(tm_local.tm_gmtoff).saturating_mul(10_000_000);
+    let local_intervals = (intervals as i64).saturating_add(offset_100ns).max(0) as u64;
+    // SAFETY: local_file_time is checked non-null above.
+    unsafe {
+        (*local_file_time).low_date_time = local_intervals as u32;
+        (*local_file_time).high_date_time = (local_intervals >> 32) as u32;
+    }
+    1 // TRUE
+}
+
+// ── Phase 27: Temp File Name ──────────────────────────────────────────────────
+
+/// GetTempFileNameW - creates a name for a temporary file
+/// Creates a unique temp file name in the specified path with the given prefix
+/// and a numeric suffix. Returns the number of characters in the name.
+/// # Safety
+/// `path_name` must be a valid null-terminated wide string.
+/// `prefix_string` must be a valid null-terminated wide string, or null.
+/// `temp_file_name` must point to at least MAX_PATH (260) wide characters.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_GetTempFileNameW(
+    path_name: *const u16,
+    prefix_string: *const u16,
+    unique: u32,
+    temp_file_name: *mut u16,
+) -> u32 {
+    if path_name.is_null() || temp_file_name.is_null() {
+        // SAFETY: no pointers are dereferenced.
+        unsafe { kernel32_SetLastError(87) }; // ERROR_INVALID_PARAMETER
+        return 0;
+    }
+    // SAFETY: path_name is checked non-null; caller guarantees valid null-terminated wide string.
+    let path = unsafe { wide_str_to_string(path_name) };
+    let prefix = if prefix_string.is_null() {
+        "tmp".to_string()
+    } else {
+        // SAFETY: prefix_string is checked non-null; caller guarantees valid null-terminated wide string.
+        let p = unsafe { wide_str_to_string(prefix_string) };
+        p.chars().take(3).collect::<String>()
+    };
+    let unique_val = if unique != 0 {
+        unique
+    } else {
+        // SAFETY: GetTickCount64 does not dereference any pointer.
+        (unsafe { kernel32_GetTickCount64() } & 0xFFFF) as u32
+    };
+    let sep = if path.ends_with('\\') || path.ends_with('/') {
+        ""
+    } else {
+        "\\"
+    };
+    let file_name = format!("{path}{sep}{prefix}{unique_val:04x}.tmp");
+    let wide: Vec<u16> = file_name.encode_utf16().collect();
+    let copy_len = wide.len().min(259); // MAX_PATH - 1
+    // SAFETY: temp_file_name must hold at least 260 wide chars; we copy at most 259 + null.
+    unsafe {
+        core::ptr::copy_nonoverlapping(wide.as_ptr(), temp_file_name, copy_len);
+        *temp_file_name.add(copy_len) = 0;
+    }
+    copy_len as u32
 }
 
 #[cfg(test)]
@@ -11251,7 +11603,10 @@ mod tests {
         // OpenMutexW on an unknown name must set ERROR_FILE_NOT_FOUND (2).
         let name: Vec<u16> = "NonExistentMutex999\0".encode_utf16().collect();
         let h = unsafe { kernel32_OpenMutexW(0x001F_0001, 0, name.as_ptr()) };
-        assert!(h.is_null(), "OpenMutexW should return NULL for unknown name");
+        assert!(
+            h.is_null(),
+            "OpenMutexW should return NULL for unknown name"
+        );
         let err = unsafe { kernel32_GetLastError() };
         assert_eq!(err, 2, "Should be ERROR_FILE_NOT_FOUND (2)");
     }
@@ -11410,5 +11765,212 @@ mod tests {
             .map(|&c| char::from_u32(u32::from(c)).unwrap_or('?'))
             .collect();
         assert!(!name.is_empty());
+    }
+
+    // ── Phase 27 tests ────────────────────────────────────────────────────
+    #[test]
+    fn test_set_get_thread_priority() {
+        let result = unsafe { kernel32_SetThreadPriority(core::ptr::null_mut(), 0) };
+        assert_eq!(result, 1);
+        let priority = unsafe { kernel32_GetThreadPriority(core::ptr::null_mut()) };
+        assert_eq!(priority, 0); // THREAD_PRIORITY_NORMAL
+    }
+
+    #[test]
+    fn test_suspend_resume_thread() {
+        let prev_count = unsafe { kernel32_SuspendThread(core::ptr::null_mut()) };
+        assert_eq!(prev_count, 0);
+        let prev_count2 = unsafe { kernel32_ResumeThread(core::ptr::null_mut()) };
+        assert_eq!(prev_count2, 0);
+    }
+
+    #[test]
+    fn test_open_process_current() {
+        let pid = unsafe { kernel32_GetCurrentProcessId() };
+        let handle = unsafe { kernel32_OpenProcess(0x1F0FFF, 0, pid) };
+        assert!(
+            !handle.is_null(),
+            "OpenProcess for current pid should succeed"
+        );
+    }
+
+    #[test]
+    fn test_open_process_unknown() {
+        let handle = unsafe { kernel32_OpenProcess(0x1F0FFF, 0, 0xDEAD) };
+        assert!(handle.is_null(), "OpenProcess for unknown pid should fail");
+    }
+
+    #[test]
+    fn test_get_process_times() {
+        let mut creation = FileTime {
+            low_date_time: 0,
+            high_date_time: 0,
+        };
+        let mut exit = FileTime {
+            low_date_time: 0,
+            high_date_time: 0,
+        };
+        let mut kernel = FileTime {
+            low_date_time: 0,
+            high_date_time: 0,
+        };
+        let mut user = FileTime {
+            low_date_time: 0,
+            high_date_time: 0,
+        };
+        let r = unsafe {
+            kernel32_GetProcessTimes(
+                usize::MAX as *mut _,
+                &raw mut creation,
+                &raw mut exit,
+                &raw mut kernel,
+                &raw mut user,
+            )
+        };
+        assert_eq!(r, 1);
+        let creation_val =
+            u64::from(creation.low_date_time) | (u64::from(creation.high_date_time) << 32);
+        assert!(creation_val > 0, "creation time should be non-zero");
+    }
+
+    #[test]
+    fn test_get_file_time() {
+        use std::io::Write as _;
+        let dir = std::env::temp_dir();
+        let path = dir.join("kernel32_get_file_time_test.tmp");
+        {
+            let mut f = std::fs::File::create(&path).unwrap();
+            f.write_all(b"hello").unwrap();
+        }
+        let wide: Vec<u16> = path
+            .to_str()
+            .unwrap()
+            .encode_utf16()
+            .chain(core::iter::once(0))
+            .collect();
+        let h = unsafe {
+            kernel32_CreateFileW(
+                wide.as_ptr(),
+                0x8000_0000u32, // GENERIC_READ
+                1,
+                core::ptr::null_mut(),
+                3, // OPEN_EXISTING
+                0,
+                core::ptr::null_mut(),
+            )
+        };
+        assert!(!h.is_null());
+        assert_ne!(h as usize, usize::MAX);
+        let mut write_time = FileTime {
+            low_date_time: 0,
+            high_date_time: 0,
+        };
+        let r = unsafe {
+            kernel32_GetFileTime(
+                h,
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+                &raw mut write_time,
+            )
+        };
+        assert_eq!(r, 1, "GetFileTime should succeed");
+        let wt_val =
+            u64::from(write_time.low_date_time) | (u64::from(write_time.high_date_time) << 32);
+        assert!(wt_val > 0, "write time should be non-zero");
+        unsafe { kernel32_CloseHandle(h) };
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_compare_file_time() {
+        let earlier = FileTime {
+            low_date_time: 100,
+            high_date_time: 0,
+        };
+        let later = FileTime {
+            low_date_time: 200,
+            high_date_time: 0,
+        };
+        let same = FileTime {
+            low_date_time: 100,
+            high_date_time: 0,
+        };
+        assert_eq!(
+            unsafe { kernel32_CompareFileTime(&raw const earlier, &raw const later) },
+            -1
+        );
+        assert_eq!(
+            unsafe { kernel32_CompareFileTime(&raw const later, &raw const earlier) },
+            1
+        );
+        assert_eq!(
+            unsafe { kernel32_CompareFileTime(&raw const earlier, &raw const same) },
+            0
+        );
+    }
+
+    #[test]
+    fn test_file_time_to_local() {
+        let utc = FileTime {
+            low_date_time: 0xD53E_8000,
+            high_date_time: 0x01D9_E2A4,
+        };
+        let mut local = FileTime {
+            low_date_time: 0,
+            high_date_time: 0,
+        };
+        let r = unsafe { kernel32_FileTimeToLocalFileTime(&raw const utc, &raw mut local) };
+        assert_eq!(r, 1);
+        let local_val = u64::from(local.low_date_time) | (u64::from(local.high_date_time) << 32);
+        assert!(local_val > 0);
+    }
+
+    #[test]
+    fn test_get_system_directory() {
+        let mut buf = vec![0u16; 260];
+        let result = unsafe { kernel32_GetSystemDirectoryW(buf.as_mut_ptr(), 260) };
+        assert!(result > 0);
+        let s: String = buf[..result as usize]
+            .iter()
+            .map(|&c| char::from_u32(u32::from(c)).unwrap_or('?'))
+            .collect();
+        assert!(
+            s.contains("System32") || s.contains("system32"),
+            "Should contain System32, got: {s}"
+        );
+    }
+
+    #[test]
+    fn test_get_windows_directory() {
+        let mut buf = vec![0u16; 260];
+        let result = unsafe { kernel32_GetWindowsDirectoryW(buf.as_mut_ptr(), 260) };
+        assert!(result > 0);
+        let s: String = buf[..result as usize]
+            .iter()
+            .map(|&c| char::from_u32(u32::from(c)).unwrap_or('?'))
+            .collect();
+        assert!(s.contains("Windows"), "Should contain Windows, got: {s}");
+    }
+
+    #[test]
+    fn test_get_temp_file_name() {
+        let path: Vec<u16> = "C:\\Temp\0".encode_utf16().collect();
+        let prefix: Vec<u16> = "tmp\0".encode_utf16().collect();
+        let mut out = vec![0u16; 260];
+        let result = unsafe {
+            kernel32_GetTempFileNameW(path.as_ptr(), prefix.as_ptr(), 0x1234, out.as_mut_ptr())
+        };
+        assert!(result > 0);
+        let s: String = out[..result as usize]
+            .iter()
+            .map(|&c| char::from_u32(u32::from(c)).unwrap_or('?'))
+            .collect();
+        assert!(s.contains("tmp"), "Should contain prefix, got: {s}");
+        assert!(
+            std::path::Path::new(&s)
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("tmp")),
+            "Should end with .tmp, got: {s}"
+        );
     }
 }
