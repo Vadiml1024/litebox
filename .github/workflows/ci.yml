@@ -560,6 +560,7 @@ jobs:
           echo "=== Testing hello_cli.exe PE Loading ==="
           set +e
           ./target/debug/litebox_runner_windows_on_linux_userland \
+            --verbose \
             ./windows_test_programs/target/x86_64-pc-windows-gnu/release/hello_cli.exe \
             > /tmp/pe_test_output.txt 2>&1
           EXIT_CODE=$?
@@ -582,6 +583,7 @@ jobs:
           ./target/debug/litebox_runner_windows_on_linux_userland \
             --trace-apis \
             --trace-format text \
+            --verbose \
             ./windows_test_programs/target/x86_64-pc-windows-gnu/release/hello_cli.exe \
             > /tmp/trace_test_output.txt 2>&1
           EXIT_CODE=$?
@@ -600,6 +602,7 @@ jobs:
           echo "=== Testing hello_gui.exe PE Loading ==="
           set +e
           ./target/debug/litebox_runner_windows_on_linux_userland \
+            --verbose \
             ./windows_test_programs/target/x86_64-pc-windows-gnu/release/hello_gui.exe \
             > /tmp/gui_test_output.txt 2>&1
           EXIT_CODE=$?
@@ -617,6 +620,7 @@ jobs:
           echo "=== Testing file_io_test.exe PE Loading ==="
           set +e
           ./target/debug/litebox_runner_windows_on_linux_userland \
+            --verbose \
             ./windows_test_programs/target/x86_64-pc-windows-gnu/release/file_io_test.exe \
             > /tmp/file_io_test_output.txt 2>&1
           EXIT_CODE=$?
@@ -634,6 +638,7 @@ jobs:
           echo "=== Testing args_test.exe PE Loading ==="
           set +e
           ./target/debug/litebox_runner_windows_on_linux_userland \
+            --verbose \
             ./windows_test_programs/target/x86_64-pc-windows-gnu/release/args_test.exe \
             > /tmp/args_test_output.txt 2>&1
           EXIT_CODE=$?
@@ -651,6 +656,7 @@ jobs:
           echo "=== Testing env_test.exe PE Loading ==="
           set +e
           ./target/debug/litebox_runner_windows_on_linux_userland \
+            --verbose \
             ./windows_test_programs/target/x86_64-pc-windows-gnu/release/env_test.exe \
             > /tmp/env_test_output.txt 2>&1
           EXIT_CODE=$?
@@ -668,6 +674,7 @@ jobs:
           echo "=== Testing string_test.exe PE Loading ==="
           set +e
           ./target/debug/litebox_runner_windows_on_linux_userland \
+            --verbose \
             ./windows_test_programs/target/x86_64-pc-windows-gnu/release/string_test.exe \
             > /tmp/string_test_output.txt 2>&1
           EXIT_CODE=$?
@@ -685,6 +692,7 @@ jobs:
           echo "=== Testing math_test.exe PE Loading ==="
           set +e
           ./target/debug/litebox_runner_windows_on_linux_userland \
+            --verbose \
             ./windows_test_programs/target/x86_64-pc-windows-gnu/release/math_test.exe \
             > /tmp/math_test_output.txt 2>&1
           EXIT_CODE=$?
