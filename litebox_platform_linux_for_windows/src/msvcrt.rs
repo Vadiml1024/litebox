@@ -1426,11 +1426,11 @@ pub unsafe extern "C" fn msvcrt__itoa(value: i32, buffer: *mut i8, radix: i32) -
     let s = if radix == 10 {
         format!("{value}")
     } else if radix == 16 {
-        format!("{value:x}")
+        format!("{:x}", value as u32)
     } else if radix == 8 {
-        format!("{value:o}")
+        format!("{:o}", value as u32)
     } else if radix == 2 {
-        format!("{value:b}")
+        format!("{:b}", value as u32)
     } else {
         format!("{value}")
     };
@@ -1451,11 +1451,11 @@ pub unsafe extern "C" fn msvcrt__ltoa(value: i64, buffer: *mut i8, radix: i32) -
     let s = if radix == 10 {
         format!("{value}")
     } else if radix == 16 {
-        format!("{value:x}")
+        format!("{:x}", value as u64)
     } else if radix == 8 {
-        format!("{value:o}")
+        format!("{:o}", value as u64)
     } else if radix == 2 {
-        format!("{value:b}")
+        format!("{:b}", value as u64)
     } else {
         format!("{value}")
     };
@@ -1526,7 +1526,11 @@ pub unsafe extern "C" fn msvcrt__stricmp(s1: *const i8, s2: *const i8) -> i32 {
     let b = core::ffi::CStr::from_ptr(s2.cast()).to_str().unwrap_or("");
     let al: std::string::String = a.chars().map(|c| c.to_ascii_lowercase()).collect();
     let bl: std::string::String = b.chars().map(|c| c.to_ascii_lowercase()).collect();
-    al.cmp(&bl) as i32
+    match al.cmp(&bl) {
+        core::cmp::Ordering::Less => -1,
+        core::cmp::Ordering::Equal => 0,
+        core::cmp::Ordering::Greater => 1,
+    }
 }
 
 /// # Safety

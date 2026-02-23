@@ -277,7 +277,7 @@ pub unsafe extern "C" fn shlwapi_StrToIntW(str_val: *const u16) -> i32 {
         return 0;
     }
     let s = wide_to_string(str_val);
-    let trimmed = s.trim_ascii_start();
+    let trimmed = s.trim_start_matches(|c: char| c.is_ascii_whitespace());
     let (trimmed, neg) = if let Some(t) = trimmed.strip_prefix('-') {
         (t, true)
     } else if let Some(t) = trimmed.strip_prefix('+') {
@@ -305,7 +305,11 @@ pub unsafe extern "C" fn shlwapi_StrCmpIW(s1: *const u16, s2: *const u16) -> i32
     let b = wide_to_string(s2);
     let al: String = a.chars().map(|c| c.to_ascii_lowercase()).collect();
     let bl: String = b.chars().map(|c| c.to_ascii_lowercase()).collect();
-    al.cmp(&bl) as i32
+    match al.cmp(&bl) {
+        core::cmp::Ordering::Less => -1,
+        core::cmp::Ordering::Equal => 0,
+        core::cmp::Ordering::Greater => 1,
+    }
 }
 
 #[cfg(test)]
