@@ -217,6 +217,24 @@ pub fn get_function_table() -> Vec<FunctionImpl> {
             impl_address: crate::msvcrt::msvcrt_fputc as *const () as usize,
         },
         FunctionImpl {
+            name: "fputs",
+            dll_name: "MSVCRT.dll",
+            num_params: 2,
+            impl_address: crate::msvcrt::msvcrt_fputs as *const () as usize,
+        },
+        FunctionImpl {
+            name: "_read",
+            dll_name: "MSVCRT.dll",
+            num_params: 3,
+            impl_address: crate::msvcrt::msvcrt__read as *const () as usize,
+        },
+        FunctionImpl {
+            name: "realloc",
+            dll_name: "MSVCRT.dll",
+            num_params: 2,
+            impl_address: crate::msvcrt::msvcrt_realloc as *const () as usize,
+        },
+        FunctionImpl {
             name: "localeconv",
             dll_name: "MSVCRT.dll",
             num_params: 0,
@@ -246,6 +264,12 @@ pub fn get_function_table() -> Vec<FunctionImpl> {
             dll_name: "KERNEL32.dll",
             num_params: 0,
             impl_address: crate::kernel32::kernel32_GetCurrentThreadId as *const () as usize,
+        },
+        FunctionImpl {
+            name: "GetThreadId",
+            dll_name: "KERNEL32.dll",
+            num_params: 1,
+            impl_address: crate::kernel32::kernel32_GetThreadId as *const () as usize,
         },
         FunctionImpl {
             name: "GetCurrentProcessId",

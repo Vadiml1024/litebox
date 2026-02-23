@@ -1218,7 +1218,76 @@ pub unsafe extern "C" fn msvcrt_fputc(c: i32, stream: *mut core::ffi::c_void) ->
     }
 }
 
-/// `localeconv` – return locale-specific numeric formatting information.
+/// `fputs` – write a string to a stream.
+///
+/// Writes the null-terminated string `s` to `stream`.  Returns a non-negative
+/// value on success, `EOF` (-1) on error.
+///
+/// # Safety
+/// `s` must be a valid null-terminated C string.  `stream` is treated only as
+/// a discriminator to choose between stdout (1) and stderr (2).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_fputs(s: *const i8, stream: *mut core::ffi::c_void) -> i32 {
+    if s.is_null() {
+        return -1;
+    }
+    let fd: libc::c_int = if stream as usize == 2 { 2 } else { 1 };
+    // SAFETY: caller guarantees s is a valid null-terminated C string.
+    let len = unsafe { libc::strlen(s.cast()) };
+    if len == 0 {
+        return 0;
+    }
+    // SAFETY: s points to a valid buffer of at least `len` bytes.
+    let written = unsafe { libc::write(fd, s.cast(), len) };
+    if written < 0 { -1 } else { 0 }
+}
+
+/// `_read` – read bytes from a file descriptor.
+///
+/// Reads up to `count` bytes from file descriptor `fd` into `buf`.
+/// Returns the number of bytes read, 0 for EOF, or -1 on error.
+///
+/// # Safety
+/// `buf` must be writable for at least `count` bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt__read(fd: i32, buf: *mut core::ffi::c_void, count: u32) -> i32 {
+    if buf.is_null() || count == 0 {
+        return 0;
+    }
+    // SAFETY: caller guarantees buf is writable for count bytes.
+    let n = unsafe { libc::read(fd, buf, count as libc::size_t) };
+    #[allow(clippy::cast_possible_truncation)]
+    if n < 0 { -1 } else { n as i32 }
+}
+
+/// `realloc` – resize a previously allocated memory block.
+///
+/// Resizes the memory block pointed to by `ptr` to `new_size` bytes.
+/// If `ptr` is null, behaves like `malloc`.  If `new_size` is 0 and `ptr`
+/// is non-null, behaves like `free` and returns null.
+///
+/// # Safety
+/// `ptr` must have been allocated by `msvcrt_malloc`, `msvcrt_calloc`, or
+/// `msvcrt_realloc`, and must not be used again after a successful call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_realloc(ptr: *mut u8, new_size: usize) -> *mut u8 {
+    if ptr.is_null() {
+        return unsafe { msvcrt_malloc(new_size) };
+    }
+    if new_size == 0 {
+        unsafe { msvcrt_free(ptr) };
+        return ptr::null_mut();
+    }
+    // Allocate a new block, copy the minimum of old/new sizes, then free old.
+    // We don't know the original size, so we use libc realloc which does.
+    // SAFETY: ptr was allocated by our malloc (which uses the global allocator).
+    // For maximum compatibility we use libc's realloc here; on glibc this is
+    // the same underlying allocator as Rust's global allocator.
+    let new_ptr = unsafe { libc::realloc(ptr.cast(), new_size) };
+    new_ptr.cast()
+}
+
+
 ///
 /// Returns a pointer to a static `lconv`-compatible structure initialised
 /// for the "C" locale (decimal point = '.', everything else empty or CHAR_MAX).

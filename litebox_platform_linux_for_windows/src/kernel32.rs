@@ -877,6 +877,19 @@ pub unsafe extern "C" fn kernel32_GetCurrentThreadId() -> u32 {
     (tid as u32)
 }
 
+/// Get the thread ID of a given thread handle (GetThreadId)
+///
+/// Returns the thread ID for the given thread handle. Since LiteBox is
+/// single-threaded, any valid handle is treated as the current thread.
+///
+/// # Safety
+/// Marked unsafe for FFI compatibility. `_thread` may be any value.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_GetThreadId(_thread: *mut core::ffi::c_void) -> u32 {
+    // Single-threaded emulation: return the current thread ID
+    unsafe { kernel32_GetCurrentThreadId() }
+}
+
 /// Get the current process ID (GetCurrentProcessId)
 ///
 /// Returns the unique identifier for the current process.
