@@ -1461,6 +1461,13 @@ unsafe fn apply_unwind_info(
             _ => 0,
         };
 
+        // Bounds check: ensure the extra slots are within the codes array.
+        // Malformed unwind info could otherwise cause out-of-bounds reads.
+        if i + extra_slots >= count_of_codes && extra_slots > 0 {
+            // Malformed unwind info; skip the rest of the codes and return no handler.
+            break;
+        }
+
         // In the prolog, skip codes for instructions not yet executed
         // (code_offset is the offset of the *next* instruction after this one,
         //  so the instruction has executed when prolog_offset >= code_offset).
@@ -1504,7 +1511,13 @@ unsafe fn apply_unwind_info(
             UWOP_SET_FPREG => {
                 // Prolog: lea frame_reg, [rsp + frame_offset*16]
                 // Unwind: RSP = frame_reg - frame_offset*16
-                unsafe { ctx_write(ctx, CTX_RSP, fp_rsp_base) };
+                //
+                // Only apply when a valid frame pointer exists (frame_register != 0).
+                // If fp_rsp_base is 0 the UNWIND_INFO is malformed; skip to avoid
+                // setting RSP to 0 and crashing on the subsequent return-address pop.
+                if fp_rsp_base != 0 {
+                    unsafe { ctx_write(ctx, CTX_RSP, fp_rsp_base) };
+                }
                 i += 1;
             }
             UWOP_SAVE_NONVOL => {
@@ -1529,10 +1542,20 @@ unsafe fn apply_unwind_info(
                 i += 3;
             }
             UWOP_SAVE_XMM128 => {
-                // XMM register saves do not affect integer registers; skip.
+                // On Windows x64, XMM6–XMM15 are non-volatile and their saves are
+                // described via UWOP_SAVE_XMM128 / UWOP_SAVE_XMM128_FAR entries.
+                //
+                // This unwinder reconstructs only integer register state (general-purpose
+                // registers, RIP, RSP) and intentionally does not restore XMM register
+                // contents into the CONTEXT.  XMM state in the produced CONTEXT may
+                // therefore be inaccurate.  For stack-frame reconstruction and exception
+                // dispatch this is acceptable; correct XMM state would only matter for
+                // a full context-restore to resume execution mid-function.
                 i += 2;
             }
             UWOP_SAVE_XMM128_FAR => {
+                // See UWOP_SAVE_XMM128 above: XMM register state is intentionally not
+                // restored; we only advance past the opcode and its two-slot offset.
                 i += 3;
             }
             UWOP_PUSH_MACHFRAME => {
@@ -1754,6 +1777,10 @@ pub unsafe extern "C" fn kernel32_RtlLookupFunctionEntry(
     let Some(rva) = control_pc.checked_sub(tbl.image_base) else {
         return core::ptr::null_mut();
     };
+    // PE RVAs are 32-bit; if the delta exceeds u32::MAX the PC is outside this image.
+    if rva > u64::from(u32::MAX) {
+        return core::ptr::null_mut();
+    }
     let rva = rva as u32;
 
     let num_entries = tbl.pdata_size / RF_SIZE;
@@ -8965,6 +8992,17 @@ mod tests {
             )
         };
         assert!(miss.is_null(), "Out-of-range PC should return NULL");
+
+        // Clear the global exception table to prevent a dangling pointer:
+        // fake_table is stack-allocated and will be dropped at end of scope.
+        // Any subsequent test that calls RtlLookupFunctionEntry would otherwise
+        // read freed memory via the stored pointer.
+        {
+            let mut guard = EXCEPTION_TABLE
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            *guard = None;
+        }
     }
 
     #[test]
@@ -8984,11 +9022,10 @@ mod tests {
         //     → unwind effect: RSP += 32
 
         let image_size = 0x6000usize;
-        let image_mem = vec![0u8; image_size];
-        let image_base = image_mem.as_ptr() as u64;
+        let mut image_mem = vec![0u8; image_size];
 
         // Write RUNTIME_FUNCTION at offset 0 (used as pdata)
-        let rf_ptr = image_mem.as_ptr() as *mut u32;
+        let rf_ptr = image_mem.as_mut_ptr().cast::<u32>();
         unsafe {
             rf_ptr.write_unaligned(0x1000); // BeginAddress
             rf_ptr.add(1).write_unaligned(0x1100); // EndAddress
@@ -8996,7 +9033,7 @@ mod tests {
         }
 
         // Write UNWIND_INFO at offset 0x5000
-        let ui_ptr = unsafe { image_mem.as_ptr().add(0x5000) as *mut u8 };
+        let ui_ptr = unsafe { image_mem.as_mut_ptr().add(0x5000) };
         // UWOP_ALLOC_SMALL: code_offset=8, op=2, op_info=3
         let alloc_small_code: u16 = 0x08 | (2u16 << 8) | (3u16 << 12);
         unsafe {
@@ -9004,8 +9041,14 @@ mod tests {
             ui_ptr.add(1).write(0x08); // SizeOfProlog=8
             ui_ptr.add(2).write(0x01); // CountOfCodes=1
             ui_ptr.add(3).write(0x00); // FrameRegister=0, FrameOffset=0
-            (ui_ptr.add(4) as *mut u16).write_unaligned(alloc_small_code);
+            ui_ptr
+                .add(4)
+                .cast::<u16>()
+                .write_unaligned(alloc_small_code);
         }
+
+        // All writes are done; obtain the image base for use in RtlVirtualUnwind.
+        let image_base = image_mem.as_ptr() as u64;
 
         // Build a fake stack.  The prolog executed "sub rsp, 32", so at the time
         // the context is captured (after prolog), RSP is 32 bytes below where it
@@ -9025,7 +9068,7 @@ mod tests {
         let mut ctx = vec![0u8; 1232usize];
         ctx[0x98..0xA0].copy_from_slice(&fake_rsp.to_le_bytes());
 
-        let function_entry = image_mem.as_ptr() as *mut core::ffi::c_void;
+        let function_entry = image_mem.as_mut_ptr().cast::<core::ffi::c_void>();
         let mut handler_data: *mut core::ffi::c_void = core::ptr::null_mut();
         let mut establisher_frame = 0u64;
 

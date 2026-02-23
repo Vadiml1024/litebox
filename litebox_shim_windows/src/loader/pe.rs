@@ -919,11 +919,32 @@ impl PeLoader {
     /// `RtlLookupFunctionEntry` to locate unwind information for a given program counter.
     ///
     /// Returns `None` if no exception directory exists in the PE binary.
+    /// Returns an error if the exception directory range is outside the loaded sections.
     pub fn exception_directory(&self) -> Result<Option<ExceptionDirectoryInfo>> {
         let dir = self.get_data_directory(IMAGE_DIRECTORY_ENTRY_EXCEPTION)?;
 
         if dir.virtual_address == 0 || dir.size == 0 {
             return Ok(None);
+        }
+
+        // Validate that [virtual_address, virtual_address + size) lies within
+        // a known section, preventing malformed PEs from advertising an out-of-range
+        // .pdata RVA that could cause RtlLookupFunctionEntry to read unmapped memory.
+        let end_rva = dir.virtual_address.checked_add(dir.size).ok_or_else(|| {
+            WindowsShimError::InvalidPeBinary(
+                "Exception directory range overflows RVA space".to_string(),
+            )
+        })?;
+
+        let sections = self.sections()?;
+        let in_section = sections.iter().any(|s| {
+            let sec_end = s.virtual_address.saturating_add(s.virtual_size);
+            dir.virtual_address >= s.virtual_address && end_rva <= sec_end
+        });
+        if !in_section {
+            return Err(WindowsShimError::InvalidPeBinary(
+                "Exception directory not contained within any section".to_string(),
+            ));
         }
 
         Ok(Some(ExceptionDirectoryInfo {
