@@ -9184,14 +9184,17 @@ unsafe fn compute_body_frame_reg(
     function_entry: *mut core::ffi::c_void,
     body_rsp: u64,
 ) -> Option<(usize, u64)> {
+    /// Maximum plausible PE image size for RVA validation.
+    const MAX_PE_IMAGE_SIZE: u64 = 64 * 1024 * 1024;
+
     if function_entry.is_null() || image_base == 0 {
         return None;
     }
     let rf = function_entry.cast::<u32>();
     // SAFETY: function_entry is a valid RUNTIME_FUNCTION (at least 12 bytes).
     let unwind_info_rva = unsafe { rf.add(2).read_unaligned() };
-    // Reject obviously invalid RVAs (0 or very large).
-    if unwind_info_rva == 0 || u64::from(unwind_info_rva) > 64 * 1024 * 1024 {
+    // Reject obviously invalid RVAs (0 or exceeding any plausible PE size).
+    if unwind_info_rva == 0 || u64::from(unwind_info_rva) > MAX_PE_IMAGE_SIZE {
         return None;
     }
     let ui = (image_base + u64::from(unwind_info_rva)) as *const u8;
