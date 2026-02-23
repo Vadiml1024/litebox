@@ -1426,11 +1426,11 @@ pub unsafe extern "C" fn msvcrt__itoa(value: i32, buffer: *mut i8, radix: i32) -
     let s = if radix == 10 {
         format!("{value}")
     } else if radix == 16 {
-        format!("{:x}", value as u32)
+        format!("{:x}", value.cast_unsigned())
     } else if radix == 8 {
-        format!("{:o}", value as u32)
+        format!("{:o}", value.cast_unsigned())
     } else if radix == 2 {
-        format!("{:b}", value as u32)
+        format!("{:b}", value.cast_unsigned())
     } else {
         format!("{value}")
     };
@@ -1451,11 +1451,11 @@ pub unsafe extern "C" fn msvcrt__ltoa(value: i64, buffer: *mut i8, radix: i32) -
     let s = if radix == 10 {
         format!("{value}")
     } else if radix == 16 {
-        format!("{:x}", value as u64)
+        format!("{:x}", value.cast_unsigned())
     } else if radix == 8 {
-        format!("{:o}", value as u64)
+        format!("{:o}", value.cast_unsigned())
     } else if radix == 2 {
-        format!("{:b}", value as u64)
+        format!("{:b}", value.cast_unsigned())
     } else {
         format!("{value}")
     };
@@ -1639,7 +1639,8 @@ pub unsafe extern "C" fn msvcrt_clock() -> i64 {
         tv_sec: 0,
         tv_nsec: 0,
     };
-    unsafe { libc::clock_gettime(libc::CLOCK_PROCESS_CPUTIME_ID, core::ptr::addr_of_mut!(ts)) };
+    // SAFETY: ts is a valid, initialized timespec on the stack; CLOCK_PROCESS_CPUTIME_ID is always valid
+    libc::clock_gettime(libc::CLOCK_PROCESS_CPUTIME_ID, core::ptr::addr_of_mut!(ts));
     ts.tv_sec * 1_000_000 + ts.tv_nsec / 1_000
 }
 

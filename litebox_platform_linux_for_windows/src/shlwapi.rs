@@ -67,7 +67,7 @@ pub unsafe extern "C" fn shlwapi_PathFileExistsW(path: *const u16) -> i32 {
         return 0;
     }
     let s = wide_to_string(path);
-    i32::from(std::fs::metadata(&s).is_ok())
+    i32::from(std::path::Path::new(&s).exists())
 }
 
 /// PathCombineW - combine a directory path and a file name into a single path
