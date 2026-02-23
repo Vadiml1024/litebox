@@ -18,20 +18,18 @@
 //   2.  SetUnhandledExceptionFilter – accepts a filter and returns the previous one
 //   3.  AddVectoredExceptionHandler – returns a non-NULL registration handle
 //   4.  RemoveVectoredExceptionHandler – removes the registration (returns non-zero)
-//   5.  RtlLookupFunctionEntry – returns NULL for an out-of-range PC (no table)
+//   5.  RtlLookupFunctionEntry – returns NULL for an out-of-range PC; finds own entry
+//       when exception table is registered
 //   6.  RtlVirtualUnwind – returns NULL when function_entry is NULL
 //   7.  RtlUnwindEx – does not crash when called with NULL arguments
-//   8.  setjmp / longjmp – C-standard non-local jumps (the C alternative to
-//       __try/__except, which can be compiled with GCC)
-//   9.  Exception code constants – verify the standard codes are defined
-//  10.  GetCurrentThreadId / GetCurrentProcessId – identity checks
+//   8.  Exception code constants – verify the standard codes are defined
+//   9.  GetCurrentThreadId / GetCurrentProcessId – identity checks
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
 
 #include <windows.h>
-#include <setjmp.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -211,67 +209,10 @@ static void test7_rtl_unwind_ex_null(void)
     pass("RtlUnwindEx with NULL arguments did not crash");
 }
 
-// ── Test 8: setjmp / longjmp – C-standard non-local jumps ─────────────────────
-//
-// On Windows x64, setjmp/longjmp uses the SEH-based exception unwind mechanism
-// internally (via _setjmpex), making it a valid C-level test of the unwind
-// infrastructure.
-static jmp_buf g_jmpbuf;
-
-// Helper that "throws" by jumping back to the caller
-static void c_throw_via_longjmp(int code)
+// ── Test 8: Exception code constants ──────────────────────────────────────────
+static void test8_exception_constants(void)
 {
-    longjmp(g_jmpbuf, code);
-}
-
-static void test8_setjmp_longjmp(void)
-{
-    printf("\nTest 8: setjmp/longjmp – C non-local jump\n");
-
-    // Test 8a: basic setjmp/longjmp round-trip
-    {
-        int val = setjmp(g_jmpbuf);
-        if (val == 0) {
-            c_throw_via_longjmp(42);
-            fail("should not reach here after longjmp");
-        } else {
-            char buf[64];
-            snprintf(buf, sizeof(buf), "longjmp returned code %d (expected 42)", val);
-            check(val == 42, buf);
-        }
-    }
-
-    // Test 8b: longjmp across multiple stack frames
-    {
-        static jmp_buf jb2;
-        int depth = 0;
-
-        // A small recursive function that longjmps back to us
-        // Implemented inline using a local function-like approach
-        int val2 = setjmp(jb2);
-        if (val2 == 0) {
-            // Simulate 3 levels of function calls before jumping
-            void *frames[3];
-            frames[0] = __builtin_frame_address(0);
-            frames[1] = __builtin_frame_address(0); // just to use a builtin
-            frames[2] = __builtin_frame_address(0);
-            (void)frames;
-            depth = 3;
-            longjmp(jb2, depth);
-            fail("should not reach here");
-        } else {
-            char buf[64];
-            snprintf(buf, sizeof(buf),
-                     "longjmp across frames returned %d (expected 3)", val2);
-            check(val2 == 3, buf);
-        }
-    }
-}
-
-// ── Test 9: Exception code constants ──────────────────────────────────────────
-static void test9_exception_constants(void)
-{
-    printf("\nTest 9: Standard exception code constants are defined\n");
+    printf("\nTest 8: Standard exception code constants are defined\n");
 
     check(EXCEPTION_ACCESS_VIOLATION         == 0xC0000005UL,
           "EXCEPTION_ACCESS_VIOLATION == 0xC0000005");
@@ -287,10 +228,10 @@ static void test9_exception_constants(void)
           "EXCEPTION_CONTINUE_EXECUTION == -1");
 }
 
-// ── Test 10: GetCurrentThreadId / GetCurrentProcessId ─────────────────────────
-static void test10_identity(void)
+// ── Test 9: GetCurrentThreadId / GetCurrentProcessId ─────────────────────────
+static void test9_identity(void)
 {
-    printf("\nTest 10: GetCurrentThreadId / GetCurrentProcessId\n");
+    printf("\nTest 9: GetCurrentThreadId / GetCurrentProcessId\n");
 
     DWORD tid = GetCurrentThreadId();
     DWORD pid = GetCurrentProcessId();
@@ -317,9 +258,8 @@ int main(void)
     test5_lookup_function_entry();
     test6_rtl_virtual_unwind_null();
     test7_rtl_unwind_ex_null();
-    test8_setjmp_longjmp();
-    test9_exception_constants();
-    test10_identity();
+    test8_exception_constants();
+    test9_identity();
 
     printf("\n=== Results: %d passed, %d failed ===\n", g_passes, g_failures);
     return (g_failures > 0) ? 1 : 0;

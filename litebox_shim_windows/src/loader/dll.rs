@@ -521,6 +521,7 @@ impl DllManager {
             ("GetUserDefaultLangID", KERNEL32_BASE + 0xDA),
             ("GetSystemDefaultLCID", KERNEL32_BASE + 0xDB),
             ("GetUserDefaultLCID", KERNEL32_BASE + 0xDC),
+            ("RemoveVectoredExceptionHandler", KERNEL32_BASE + 0xDD),
         ];
 
         self.register_stub_dll("KERNEL32.dll", exports);

@@ -328,6 +328,13 @@ pub fn get_function_table() -> Vec<FunctionImpl> {
             impl_address: crate::kernel32::kernel32_AddVectoredExceptionHandler as *const ()
                 as usize,
         },
+        FunctionImpl {
+            name: "RemoveVectoredExceptionHandler",
+            dll_name: "KERNEL32.dll",
+            num_params: 1,
+            impl_address: crate::kernel32::kernel32_RemoveVectoredExceptionHandler as *const ()
+                as usize,
+        },
         // Phase 8.2: Critical Sections
         FunctionImpl {
             name: "InitializeCriticalSection",

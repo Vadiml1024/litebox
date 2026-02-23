@@ -1891,6 +1891,22 @@ pub unsafe extern "C" fn kernel32_AddVectoredExceptionHandler(
     0x1000 as *mut core::ffi::c_void
 }
 
+/// Remove a vectored exception handler previously added via
+/// `AddVectoredExceptionHandler`.
+///
+/// Returns non-zero on success, 0 on failure.
+///
+/// # Safety
+/// Safe to call with any non-NULL handle value.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_RemoveVectoredExceptionHandler(
+    _handler: *mut core::ffi::c_void,
+) -> u32 {
+    // The stub in AddVectoredExceptionHandler returns a fake handle.
+    // Removal always succeeds.
+    1
+}
+
 //
 // Phase 8.3: String Operations
 //
