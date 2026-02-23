@@ -1520,7 +1520,7 @@ unsafe fn apply_unwind_info(
         // Number of additional u16 slots consumed by this code entry
         let extra_slots: usize = match (unwind_op, op_info) {
             (UWOP_ALLOC_LARGE, 0) | (UWOP_SAVE_NONVOL | UWOP_SAVE_XMM128, _) => 1,
-            (UWOP_ALLOC_LARGE | UWOP_SAVE_NONVOL_FAR | UWOP_SAVE_XMM128_FAR, _) => 2,
+            (UWOP_ALLOC_LARGE, 1..) | (UWOP_SAVE_NONVOL_FAR | UWOP_SAVE_XMM128_FAR, _) => 2,
             _ => 0,
         };
 
@@ -2039,12 +2039,14 @@ pub unsafe extern "C" fn kernel32_RtlVirtualUnwind(
 ///
 /// Called by language-specific handlers (e.g. `__gxx_personality_seh0`) when
 /// a catch clause has been selected.  Sets `EXCEPTION_UNWINDING` on the
-/// exception record, fixes up `context_record` with the target RSP, RIP, and
+/// exception record, fixes up `context_record` with the target RIP and
 /// return value, then restores the CPU state and jumps to the landing pad.
 ///
 /// The supplied `context_record` must have been prepared by the caller (the
-/// personality function) with the landing-pad state.  `RtlUnwindEx` sets
-/// `Rsp` from `target_frame` and `Rip` from `target_ip` before the jump.
+/// personality function) with the landing-pad state.  The context's RSP is
+/// preserved as-is (it already contains the function's body RSP from the
+/// Phase 1 walk).  `RtlUnwindEx` sets `Rip` from `target_ip` before the
+/// jump.
 ///
 /// # Safety
 /// - `context_record` must be non-NULL and point to a valid, writable `CONTEXT`.
@@ -9045,9 +9047,6 @@ struct PeFrameInfo {
 }
 
 fn seh_find_pe_frame_on_stack(rust_rsp: usize) -> Option<PeFrameInfo> {
-    static CACHED_TRAMP_OFFSET: std::sync::atomic::AtomicUsize =
-        std::sync::atomic::AtomicUsize::new(usize::MAX);
-
     let pe_base = {
         let guard = EXCEPTION_TABLE
             .lock()
@@ -9065,36 +9064,17 @@ fn seh_find_pe_frame_on_stack(rust_rsp: usize) -> Option<PeFrameInfo> {
     // non-pdata value is a trampoline return address and the pdata value
     // is a PE return address.
     //
-    // On the first call, we use the LAST match (highest offset) because
-    // earlier matches may be stale from Rust local variables.  We then
-    // cache the winning offset.  On subsequent calls, we use the cached
-    // offset directly to avoid being confused by stale trampoline frames
-    // from API calls that happened between exception throws.
-    let cached = CACHED_TRAMP_OFFSET.load(std::sync::atomic::Ordering::Relaxed);
-
-    // If we have a cached offset, try it first.
-    if cached != usize::MAX
-        && let Some(info) = try_trampoline_at_offset(rust_rsp, cached, pe_base)
-    {
-        return Some(info);
-    }
-
-    // Full scan: find all valid matches and pick the last one.
-    let mut best: Option<(PeFrameInfo, usize)> = None;
+    // We use the LAST match (highest offset) because earlier matches may
+    // be stale data from Rust local variables.
+    let mut best: Option<PeFrameInfo> = None;
 
     for offset in (0..1024_usize).step_by(8) {
         if let Some(info) = try_trampoline_at_offset(rust_rsp, offset, pe_base) {
-            best = Some((info, offset));
+            best = Some(info);
         }
     }
 
-    if let Some((info, off)) = best {
-        // Cache the offset for subsequent calls.
-        CACHED_TRAMP_OFFSET.store(off, std::sync::atomic::Ordering::Relaxed);
-        Some(info)
-    } else {
-        None
-    }
+    best
 }
 
 /// Try to extract a PE frame from a specific stack offset.
@@ -9129,8 +9109,10 @@ fn try_trampoline_at_offset(rust_rsp: usize, offset: usize, pe_base: u64) -> Opt
         return None;
     }
 
-    // Check if [offset+32] is a valid pdata PE address.
-    if offset + 32 >= 1024 {
+    // Ensure all reads within the trampoline frame stay inside the
+    // 1024-byte scan window.  The largest read is a u64 at `slot + 32`,
+    // which spans bytes [offset+32 .. offset+40).
+    if offset + 40 > 1024 {
         return None;
     }
     let pe_slot = slot + 32;
@@ -9202,14 +9184,19 @@ unsafe fn compute_body_frame_reg(
     function_entry: *mut core::ffi::c_void,
     body_rsp: u64,
 ) -> Option<(usize, u64)> {
-    if function_entry.is_null() {
+    if function_entry.is_null() || image_base == 0 {
         return None;
     }
     let rf = function_entry.cast::<u32>();
-    // SAFETY: function_entry is a valid RUNTIME_FUNCTION.
+    // SAFETY: function_entry is a valid RUNTIME_FUNCTION (at least 12 bytes).
     let unwind_info_rva = unsafe { rf.add(2).read_unaligned() };
+    // Reject obviously invalid RVAs (0 or very large).
+    if unwind_info_rva == 0 || u64::from(unwind_info_rva) > 64 * 1024 * 1024 {
+        return None;
+    }
     let ui = (image_base + u64::from(unwind_info_rva)) as *const u8;
-    // SAFETY: image_base + unwind_info_rva is within the loaded image.
+    // SAFETY: image_base + unwind_info_rva is within the loaded image;
+    // UNWIND_INFO is at least 4 bytes, so reading byte 3 is valid.
     let frame_reg_and_offset = unsafe { ui.add(3).read() };
     let frame_register = frame_reg_and_offset & 0x0F;
     let frame_offset = (frame_reg_and_offset >> 4) & 0x0F;
