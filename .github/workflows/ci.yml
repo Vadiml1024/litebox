@@ -384,6 +384,10 @@ jobs:
             test_dir: windows_test_programs/winsock_test
           - suite: registry
             test_dir: windows_test_programs/registry_test
+          - suite: phase27
+            test_dir: windows_test_programs/phase27_test
+          - suite: sync
+            test_dir: windows_test_programs/sync_test
     steps:
       - name: Check out repo
         uses: actions/checkout@v4
@@ -461,6 +465,32 @@ jobs:
           grep -q "Windows Registry API Tests PASSED" /tmp/registry_test_out.txt \
             || { echo "✗ registry_test FAILED"; exit 1; }
           echo "✓ registry_test PASSED"
+      - name: Run phase27_test
+        if: matrix.suite == 'phase27'
+        run: |
+          echo "=== phase27_test.exe ==="
+          ./target/debug/litebox_runner_windows_on_linux_userland \
+            windows_test_programs/phase27_test/phase27_test.exe \
+            2>&1 | tee /tmp/phase27_test_out.txt
+
+          echo ""
+          echo "--- Verifying test output ---"
+          grep -q "Phase 27 Windows API Tests PASSED" /tmp/phase27_test_out.txt \
+            || { echo "✗ phase27_test FAILED"; exit 1; }
+          echo "✓ phase27_test PASSED"
+      - name: Run sync_test
+        if: matrix.suite == 'sync'
+        run: |
+          echo "=== sync_test.exe ==="
+          ./target/debug/litebox_runner_windows_on_linux_userland \
+            windows_test_programs/sync_test/sync_test.exe \
+            2>&1 | tee /tmp/sync_test_out.txt
+
+          echo ""
+          echo "--- Verifying test output ---"
+          grep -q "Windows Synchronization API Tests PASSED" /tmp/sync_test_out.txt \
+            || { echo "✗ sync_test FAILED"; exit 1; }
+          echo "✓ sync_test PASSED"
       - name: Upload test output on failure
         if: failure()
         uses: actions/upload-artifact@v4

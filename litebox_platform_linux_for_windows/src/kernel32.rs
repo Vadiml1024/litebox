@@ -7062,6 +7062,10 @@ pub unsafe extern "C" fn kernel32_ReleaseMutex(mutex: *mut core::ffi::c_void) ->
         }
         false
     });
+    if !released {
+        // SAFETY: no pointers are dereferenced.
+        unsafe { kernel32_SetLastError(288) }; // ERROR_NOT_OWNER
+    }
     i32::from(released)
 }
 
