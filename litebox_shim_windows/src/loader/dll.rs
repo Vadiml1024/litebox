@@ -599,6 +599,7 @@ impl DllManager {
             ("strerror", MSVCRT_BASE + 0x34),
             ("wcslen", MSVCRT_BASE + 0x35),
             ("wcscmp", MSVCRT_BASE + 0x3A),
+            ("wcsstr", MSVCRT_BASE + 0x3B),
             ("fputc", MSVCRT_BASE + 0x36),
             ("localeconv", MSVCRT_BASE + 0x37),
             ("___lc_codepage_func", MSVCRT_BASE + 0x38),
