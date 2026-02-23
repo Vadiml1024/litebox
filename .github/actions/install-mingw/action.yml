@@ -1,0 +1,21 @@
+name: 'Install MinGW Cross-Compiler'
+description: 'Installs the mingw-w64 cross-compiler and optional extra apt packages'
+
+inputs:
+  extra-packages:
+    description: 'Space-separated list of extra apt packages to install alongside mingw-w64'
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: Install MinGW cross-compiler
+      shell: bash
+      run: |
+        sudo apt-get update -y
+        PACKAGES="mingw-w64"
+        if [ -n "${{ inputs.extra-packages }}" ]; then
+          PACKAGES="${PACKAGES} ${{ inputs.extra-packages }}"
+        fi
+        # shellcheck disable=SC2086
+        sudo apt-get install -y ${PACKAGES}

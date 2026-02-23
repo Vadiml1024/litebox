@@ -35,8 +35,10 @@ jobs:
         with:
           node-version: '20'
       - name: Set up Rust
-        run: |
-          rustup toolchain install $(awk -F'"' '/channel/{print $2}' rust-toolchain.toml) --profile minimal --no-self-update --component rustfmt,clippy --target x86_64-unknown-linux-gnu
+        uses: ./.github/actions/setup-rust
+        with:
+          targets: x86_64-unknown-linux-gnu
+          components: rustfmt,clippy
       - name: Set up Nextest
         uses: taiki-e/install-action@v2
         with:
@@ -93,13 +95,13 @@ jobs:
       # Version alignment: The nightly version should match the stable version (e.g., stable
       # 1.91.x -> nightly 1.91.x). Use `rustc +nightly-YYYY-MM-DD --version` to find a date.
       - name: Set up Rust
-        run: |
-          RUST_CHANNEL=$(awk -F'"' '/channel/{print $2}' litebox_runner_lvbs/rust-toolchain.toml)
-          rustup toolchain install ${RUST_CHANNEL} --profile minimal --no-self-update --component rustfmt,clippy --target x86_64-unknown-none
-          rustup component add rust-src --toolchain ${RUST_CHANNEL}-x86_64-unknown-linux-gnu
-          rustup default ${RUST_CHANNEL}
-          rustup override set ${RUST_CHANNEL}
-          rustup show
+        uses: ./.github/actions/setup-rust
+        with:
+          toolchain-file: litebox_runner_lvbs/rust-toolchain.toml
+          targets: x86_64-unknown-none
+          components: rustfmt,clippy
+          set-default: 'true'
+          add-rust-src: 'true'
       - name: Set up Nextest
         uses: taiki-e/install-action@v2
         with:
@@ -139,8 +141,10 @@ jobs:
       - name: Check out repo
         uses: actions/checkout@v4
       - name: Set up Rust
-        run: |
-          rustup toolchain install $(awk -F'"' '/channel/{print $2}' rust-toolchain.toml) --profile minimal --no-self-update --component rustfmt,clippy --target x86_64-pc-windows-msvc
+        uses: ./.github/actions/setup-rust
+        with:
+          targets: x86_64-pc-windows-msvc
+          components: rustfmt,clippy
       - name: Set up Nextest
         uses: taiki-e/install-action@v2
         with:
@@ -167,11 +171,12 @@ jobs:
       - name: Check out repo
         uses: actions/checkout@v4
       - name: Set up Rust
-        run: |
-          rustup toolchain install $(awk -F'"' '/channel/{print $2}' rust-toolchain.toml) --profile minimal --no-self-update --target x86_64-pc-windows-gnu
+        uses: ./.github/actions/setup-rust
+        with:
+          targets: x86_64-pc-windows-gnu
       - uses: Swatinem/rust-cache@v2
       - name: Install MinGW cross-compiler
-        run: sudo apt-get install -y gcc-mingw-w64-x86-64
+        uses: ./.github/actions/install-mingw
       - name: Build Windows test programs
         working-directory: windows_test_programs
         run: cargo build --release --target x86_64-pc-windows-gnu
@@ -234,13 +239,13 @@ jobs:
       - name: Check out repo
         uses: actions/checkout@v4
       - name: Set up Rust
-        run: |
-          RUST_CHANNEL=$(awk -F'"' '/channel/{print $2}' litebox_runner_snp/rust-toolchain.toml)
-          rustup toolchain install ${RUST_CHANNEL} --profile minimal --no-self-update --component rustfmt,clippy --target x86_64-unknown-none
-          rustup component add rust-src --toolchain ${RUST_CHANNEL}-x86_64-unknown-linux-gnu
-          rustup default ${RUST_CHANNEL}
-          rustup override set ${RUST_CHANNEL}
-          rustup show
+        uses: ./.github/actions/setup-rust
+        with:
+          toolchain-file: litebox_runner_snp/rust-toolchain.toml
+          targets: x86_64-unknown-none
+          components: rustfmt,clippy
+          set-default: 'true'
+          add-rust-src: 'true'
       - uses: Swatinem/rust-cache@v2
       - run: ./.github/tools/github_actions_run_cargo clippy --all-features --target litebox_runner_snp/target.json --manifest-path=litebox_runner_snp/Cargo.toml -Zbuild-std=core,compiler_builtins,alloc
       - run: |
@@ -255,8 +260,9 @@ jobs:
       - name: Check out repo
         uses: actions/checkout@v4
       - name: Set up Rust
-        run: |
-          rustup toolchain install $(awk -F'"' '/channel/{print $2}' rust-toolchain.toml) --profile minimal --no-self-update --target x86_64-unknown-none
+        uses: ./.github/actions/setup-rust
+        with:
+          targets: x86_64-unknown-none
       - uses: Swatinem/rust-cache@v2
       - name: Confirm that we haven't accidentally pulled in std into LiteBox
         run: |
@@ -392,16 +398,11 @@ jobs:
       - name: Check out repo
         uses: actions/checkout@v4
       - name: Set up Rust
-        run: |
-          rustup toolchain install \
-            $(awk -F'"' '/channel/{print $2}' rust-toolchain.toml) \
-            --profile minimal \
-            --no-self-update \
-            --target x86_64-unknown-linux-gnu
+        uses: ./.github/actions/setup-rust
+        with:
+          targets: x86_64-unknown-linux-gnu
       - name: Install MinGW cross-compiler
-        run: |
-          sudo apt-get update -y
-          sudo apt-get install -y mingw-w64
+        uses: ./.github/actions/install-mingw
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: wol-runner
@@ -525,17 +526,13 @@ jobs:
       - name: Check out repo
         uses: actions/checkout@v4
       - name: Set up Rust
-        run: |
-          rustup toolchain install \
-            $(awk -F'"' '/channel/{print $2}' rust-toolchain.toml) \
-            --profile minimal \
-            --no-self-update \
-            --target x86_64-pc-windows-gnu \
-            --target x86_64-unknown-linux-gnu
+        uses: ./.github/actions/setup-rust
+        with:
+          targets: x86_64-pc-windows-gnu x86_64-unknown-linux-gnu
       - name: Install MinGW cross-compiler and gdb
-        run: |
-          sudo apt-get update -y
-          sudo apt-get install -y mingw-w64 gdb
+        uses: ./.github/actions/install-mingw
+        with:
+          extra-packages: gdb
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: wol-runner
