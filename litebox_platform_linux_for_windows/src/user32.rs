@@ -463,7 +463,11 @@ pub unsafe extern "C" fn user32_CharUpperW(lpsz: *mut u16) -> *mut u16 {
     let val = lpsz as usize;
     if (val >> 16) == 0 {
         // Single character mode: the high-order word is zero; the low word is the character.
+        // SAFETY: (val >> 16) == 0 guarantees val < 65536; the u32 cast never truncates
+        // (usize -> u32 is lossless for values < 65536), and the u16 cast is safe for the same reason.
+        #[allow(clippy::cast_possible_truncation)]
         let ch = char::from_u32(val as u32).unwrap_or('\0');
+        #[allow(clippy::cast_possible_truncation)]
         let upper = ch.to_uppercase().next().map_or(val as u16, |c| c as u16);
         upper as usize as *mut u16
     } else {
@@ -496,7 +500,11 @@ pub unsafe extern "C" fn user32_CharLowerW(lpsz: *mut u16) -> *mut u16 {
     let val = lpsz as usize;
     if (val >> 16) == 0 {
         // Single character mode: the high-order word is zero; the low word is the character.
+        // SAFETY: (val >> 16) == 0 guarantees val < 65536; the u32 cast never truncates
+        // (usize -> u32 is lossless for values < 65536), and the u16 cast is safe for the same reason.
+        #[allow(clippy::cast_possible_truncation)]
         let ch = char::from_u32(val as u32).unwrap_or('\0');
+        #[allow(clippy::cast_possible_truncation)]
         let lower = ch.to_lowercase().next().map_or(val as u16, |c| c as u16);
         lower as usize as *mut u16
     } else {
@@ -677,6 +685,175 @@ pub unsafe extern "C" fn user32_SetWindowTextW(_hwnd: *mut c_void, _string: *con
 /// `hwnd` is accepted as an opaque value and is not dereferenced.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn user32_GetParent(_hwnd: *mut c_void) -> *mut c_void {
+    core::ptr::null_mut()
+}
+
+// ── Phase 28: Window utility stubs ────────────────────────────────────────
+
+/// FindWindowW - find a window by class and/or window name. Always returns NULL (headless).
+///
+/// # Safety
+/// Pointer arguments are ignored in this headless stub implementation.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_FindWindowW(
+    _lp_class_name: *const c_void,
+    _lp_window_name: *const c_void,
+) -> *mut c_void {
+    core::ptr::null_mut()
+}
+
+/// FindWindowExW - find a child window. Always returns NULL (headless).
+///
+/// # Safety
+/// Pointer arguments are ignored in this headless stub implementation.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_FindWindowExW(
+    _hwnd_parent: *mut c_void,
+    _hwnd_child_after: *mut c_void,
+    _lp_class: *const c_void,
+    _lp_window: *const c_void,
+) -> *mut c_void {
+    core::ptr::null_mut()
+}
+
+/// GetForegroundWindow - returns the foreground window. Always returns NULL (headless).
+///
+/// # Safety
+/// No preconditions.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_GetForegroundWindow() -> *mut c_void {
+    core::ptr::null_mut()
+}
+
+/// SetForegroundWindow - sets the foreground window. Returns FALSE (headless).
+///
+/// # Safety
+/// No preconditions.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_SetForegroundWindow(_hwnd: *mut c_void) -> i32 {
+    0
+}
+
+/// BringWindowToTop - brings window to top. Returns FALSE (headless).
+///
+/// # Safety
+/// No preconditions.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_BringWindowToTop(_hwnd: *mut c_void) -> i32 {
+    0
+}
+
+/// GetWindowRect - gets window bounding rectangle. Fills rect with zeros, returns TRUE.
+///
+/// # Safety
+/// `rect` if non-null must be writable for 4 i32 values (RECT structure).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_GetWindowRect(_hwnd: *mut c_void, rect: *mut i32) -> i32 {
+    if !rect.is_null() {
+        for i in 0..4 {
+            *rect.add(i) = 0;
+        }
+    }
+    1
+}
+
+/// SetWindowPos - sets window position and size. Returns TRUE (headless).
+///
+/// # Safety
+/// No preconditions.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_SetWindowPos(
+    _hwnd: *mut c_void,
+    _hwnd_insert_after: *mut c_void,
+    _x: i32,
+    _y: i32,
+    _cx: i32,
+    _cy: i32,
+    _flags: u32,
+) -> i32 {
+    1
+}
+
+/// MoveWindow - moves and resizes a window. Returns TRUE (headless).
+///
+/// # Safety
+/// No preconditions.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_MoveWindow(
+    _hwnd: *mut c_void,
+    _x: i32,
+    _y: i32,
+    _w: i32,
+    _h: i32,
+    _repaint: i32,
+) -> i32 {
+    1
+}
+
+/// GetCursorPos - gets cursor position. Sets point to (0,0), returns TRUE.
+///
+/// # Safety
+/// `point` if non-null must be writable for 2 i32 values (POINT structure).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_GetCursorPos(point: *mut i32) -> i32 {
+    if !point.is_null() {
+        *point = 0;
+        *point.add(1) = 0;
+    }
+    1
+}
+
+/// SetCursorPos - sets cursor position. Returns TRUE (headless).
+///
+/// # Safety
+/// No preconditions.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_SetCursorPos(_x: i32, _y: i32) -> i32 {
+    1
+}
+
+/// ScreenToClient - converts screen coordinates to client coordinates. No-op, returns TRUE.
+///
+/// # Safety
+/// `point` must be a valid pointer to a POINT structure if non-null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_ScreenToClient(_hwnd: *mut c_void, _point: *mut i32) -> i32 {
+    1
+}
+
+/// ClientToScreen - converts client coordinates to screen coordinates. No-op, returns TRUE.
+///
+/// # Safety
+/// `point` must be a valid pointer to a POINT structure if non-null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_ClientToScreen(_hwnd: *mut c_void, _point: *mut i32) -> i32 {
+    1
+}
+
+/// ShowCursor - shows or hides the cursor. Returns 1 (cursor display count).
+///
+/// # Safety
+/// No preconditions.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_ShowCursor(_show: i32) -> i32 {
+    1
+}
+
+/// GetFocus - returns the focused window handle. Always returns NULL (headless).
+///
+/// # Safety
+/// No preconditions.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_GetFocus() -> *mut c_void {
+    core::ptr::null_mut()
+}
+
+/// SetFocus - sets focus to a window. Always returns NULL (headless).
+///
+/// # Safety
+/// No preconditions.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_SetFocus(_hwnd: *mut c_void) -> *mut c_void {
     core::ptr::null_mut()
 }
 
@@ -1014,5 +1191,31 @@ mod tests {
         let result = unsafe { user32_GetWindowTextW(fake_hwnd, buf.as_mut_ptr(), 64) };
         assert_eq!(result, 0);
         assert_eq!(buf[0], 0, "Buffer should be null-terminated");
+    }
+
+    #[test]
+    fn test_window_stubs_phase28() {
+        unsafe {
+            let null = core::ptr::null_mut::<c_void>();
+            assert!(user32_FindWindowW(null, null).is_null());
+            assert!(user32_FindWindowExW(null, null, null, null).is_null());
+            assert!(user32_GetForegroundWindow().is_null());
+            assert_eq!(user32_SetForegroundWindow(null), 0);
+            assert_eq!(user32_BringWindowToTop(null), 0);
+            let mut rect = [1i32; 4];
+            assert_eq!(user32_GetWindowRect(null, rect.as_mut_ptr()), 1);
+            assert_eq!(rect, [0i32; 4]);
+            assert_eq!(user32_SetWindowPos(null, null, 0, 0, 100, 100, 0), 1);
+            assert_eq!(user32_MoveWindow(null, 0, 0, 100, 100, 0), 1);
+            let mut pt = [5i32, 10i32];
+            assert_eq!(user32_GetCursorPos(pt.as_mut_ptr()), 1);
+            assert_eq!(pt, [0i32, 0i32]);
+            assert_eq!(user32_SetCursorPos(100, 200), 1);
+            assert_eq!(user32_ScreenToClient(null, pt.as_mut_ptr()), 1);
+            assert_eq!(user32_ClientToScreen(null, pt.as_mut_ptr()), 1);
+            assert_eq!(user32_ShowCursor(1), 1);
+            assert!(user32_GetFocus().is_null());
+            assert!(user32_SetFocus(null).is_null());
+        }
     }
 }

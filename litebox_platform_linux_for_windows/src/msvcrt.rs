@@ -1257,6 +1257,727 @@ pub unsafe extern "C" fn msvcrt____mb_cur_max_func() -> i32 {
     1
 }
 
+// ── Numeric Conversion ────────────────────────────────────────────────────
+
+/// # Safety
+/// `s` must be a valid null-terminated C string or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_atoi(s: *const i8) -> i32 {
+    if s.is_null() {
+        return 0;
+    }
+    let cstr = core::ffi::CStr::from_ptr(s.cast());
+    let str = cstr.to_str().unwrap_or("");
+    let trimmed = str.trim_ascii_start();
+    let (trimmed, neg) = if let Some(t) = trimmed.strip_prefix('-') {
+        (t, true)
+    } else if let Some(t) = trimmed.strip_prefix('+') {
+        (t, false)
+    } else {
+        (trimmed, false)
+    };
+    let valid_len = trimmed.chars().take_while(char::is_ascii_digit).count();
+    let val = trimmed[..valid_len].parse::<i32>().unwrap_or(0);
+    if neg { val.wrapping_neg() } else { val }
+}
+
+/// # Safety
+/// `s` must be a valid null-terminated C string or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_atol(s: *const i8) -> i64 {
+    if s.is_null() {
+        return 0;
+    }
+    let cstr = core::ffi::CStr::from_ptr(s.cast());
+    let str = cstr.to_str().unwrap_or("");
+    let trimmed = str.trim_ascii_start();
+    let (trimmed, neg) = if let Some(t) = trimmed.strip_prefix('-') {
+        (t, true)
+    } else if let Some(t) = trimmed.strip_prefix('+') {
+        (t, false)
+    } else {
+        (trimmed, false)
+    };
+    let valid_len = trimmed.chars().take_while(char::is_ascii_digit).count();
+    let val = trimmed[..valid_len].parse::<i64>().unwrap_or(0);
+    if neg { val.wrapping_neg() } else { val }
+}
+
+/// # Safety
+/// `s` must be a valid null-terminated C string or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_atof(s: *const i8) -> f64 {
+    if s.is_null() {
+        return 0.0;
+    }
+    let cstr = core::ffi::CStr::from_ptr(s.cast());
+    let str = cstr.to_str().unwrap_or("");
+    str.trim().parse::<f64>().unwrap_or(0.0)
+}
+
+/// # Safety
+/// `nptr` must be a valid null-terminated C string; `endptr` if non-null must point to writable memory.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_strtol(nptr: *const i8, endptr: *mut *mut i8, base: i32) -> i64 {
+    if nptr.is_null() {
+        if !endptr.is_null() {
+            *endptr = nptr.cast_mut();
+        }
+        return 0;
+    }
+    let s = core::ffi::CStr::from_ptr(nptr.cast())
+        .to_str()
+        .unwrap_or("");
+    let s_trimmed = s.trim_ascii_start();
+    let (s_signed, negative) = if let Some(t) = s_trimmed.strip_prefix('-') {
+        (t, true)
+    } else if let Some(t) = s_trimmed.strip_prefix('+') {
+        (t, false)
+    } else {
+        (s_trimmed, false)
+    };
+    let radix = if base == 0 {
+        10u32
+    } else {
+        base.unsigned_abs()
+    };
+    let valid_len = s_signed.chars().take_while(|c| c.is_digit(radix)).count();
+    let parsed = i64::from_str_radix(&s_signed[..valid_len], radix).unwrap_or(0);
+    let result = if negative {
+        parsed.wrapping_neg()
+    } else {
+        parsed
+    };
+    if !endptr.is_null() {
+        let leading_ws = s.len() - s_trimmed.len();
+        let sign_len = usize::from(s_trimmed.starts_with(['-', '+']));
+        let consumed = leading_ws + sign_len + valid_len;
+        *endptr = nptr.add(consumed).cast_mut();
+    }
+    result
+}
+
+/// # Safety
+/// `nptr` must be a valid null-terminated C string; `endptr` if non-null must point to writable memory.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_strtoul(nptr: *const i8, endptr: *mut *mut i8, base: i32) -> u64 {
+    if nptr.is_null() {
+        if !endptr.is_null() {
+            *endptr = nptr.cast_mut();
+        }
+        return 0;
+    }
+    let s = core::ffi::CStr::from_ptr(nptr.cast())
+        .to_str()
+        .unwrap_or("");
+    let s_trimmed = s.trim_ascii_start();
+    let s_unsigned = s_trimmed.strip_prefix(['+', '-']).unwrap_or(s_trimmed);
+    let radix = if base == 0 {
+        10u32
+    } else {
+        base.unsigned_abs()
+    };
+    let valid_len = s_unsigned.chars().take_while(|c| c.is_digit(radix)).count();
+    let result = u64::from_str_radix(&s_unsigned[..valid_len], radix).unwrap_or(0);
+    if !endptr.is_null() {
+        let leading_ws = s.len() - s_trimmed.len();
+        let sign_len = usize::from(s_trimmed.starts_with(['+', '-']));
+        let consumed = leading_ws + sign_len + valid_len;
+        *endptr = nptr.add(consumed).cast_mut();
+    }
+    result
+}
+
+/// # Safety
+/// `nptr` must be a valid null-terminated C string; `endptr` if non-null must point to writable memory.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_strtod(nptr: *const i8, endptr: *mut *mut i8) -> f64 {
+    if nptr.is_null() {
+        if !endptr.is_null() {
+            *endptr = nptr.cast_mut();
+        }
+        return 0.0;
+    }
+    let s = core::ffi::CStr::from_ptr(nptr.cast())
+        .to_str()
+        .unwrap_or("");
+    let trimmed = s.trim_ascii_start();
+    let ws_len = s.len() - trimmed.len();
+
+    // Track the longest prefix of `trimmed` that successfully parses as an f64.
+    let mut last_ok_len = 0usize;
+    let mut last_ok_val = 0.0f64;
+    let mut byte_index = 0usize;
+    for ch in trimmed.chars() {
+        byte_index += ch.len_utf8();
+        if let Ok(v) = trimmed[..byte_index].parse::<f64>() {
+            last_ok_len = byte_index;
+            last_ok_val = v;
+        }
+    }
+
+    let val = if last_ok_len > 0 { last_ok_val } else { 0.0 };
+
+    if !endptr.is_null() {
+        if last_ok_len > 0 {
+            let consumed = ws_len + last_ok_len;
+            *endptr = nptr.add(consumed).cast_mut();
+        } else {
+            // No conversion performed: endptr should point to the original nptr.
+            *endptr = nptr.cast_mut();
+        }
+    }
+    val
+}
+
+/// # Safety
+/// `buffer` must be a writable buffer large enough to hold the result; caller is responsible for size.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt__itoa(value: i32, buffer: *mut i8, radix: i32) -> *mut i8 {
+    if buffer.is_null() {
+        return core::ptr::null_mut();
+    }
+    let s = if radix == 10 {
+        format!("{value}")
+    } else if radix == 16 {
+        format!("{:x}", value.cast_unsigned())
+    } else if radix == 8 {
+        format!("{:o}", value.cast_unsigned())
+    } else if radix == 2 {
+        format!("{:b}", value.cast_unsigned())
+    } else {
+        format!("{value}")
+    };
+    let bytes = s.as_bytes();
+    // SAFETY: buffer has enough space per caller contract
+    core::ptr::copy_nonoverlapping(bytes.as_ptr().cast::<i8>(), buffer, bytes.len());
+    *buffer.add(bytes.len()) = 0;
+    buffer
+}
+
+/// # Safety
+/// `buffer` must be a writable buffer large enough to hold the result; caller is responsible for size.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt__ltoa(value: i64, buffer: *mut i8, radix: i32) -> *mut i8 {
+    if buffer.is_null() {
+        return core::ptr::null_mut();
+    }
+    let s = if radix == 10 {
+        format!("{value}")
+    } else if radix == 16 {
+        format!("{:x}", value.cast_unsigned())
+    } else if radix == 8 {
+        format!("{:o}", value.cast_unsigned())
+    } else if radix == 2 {
+        format!("{:b}", value.cast_unsigned())
+    } else {
+        format!("{value}")
+    };
+    let bytes = s.as_bytes();
+    // SAFETY: buffer has enough space per caller contract
+    core::ptr::copy_nonoverlapping(bytes.as_ptr().cast::<i8>(), buffer, bytes.len());
+    *buffer.add(bytes.len()) = 0;
+    buffer
+}
+
+// ── String Extras ─────────────────────────────────────────────────────────
+
+/// # Safety
+/// `dest` must be writable for `n` bytes; `src` must be a valid C string or at least `n` bytes readable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_strncpy(dest: *mut i8, src: *const i8, n: usize) -> *mut i8 {
+    if dest.is_null() || src.is_null() {
+        return dest;
+    }
+    let mut i = 0;
+    let mut found_nul = false;
+    while i < n {
+        let c = *src.add(i);
+        *dest.add(i) = c;
+        if c == 0 {
+            found_nul = true;
+        }
+        if found_nul {
+            *dest.add(i) = 0;
+        }
+        i += 1;
+    }
+    dest
+}
+
+/// # Safety
+/// `dest` must be a valid null-terminated C string with enough space; `src` must be a valid C string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_strncat(dest: *mut i8, src: *const i8, n: usize) -> *mut i8 {
+    if dest.is_null() || src.is_null() {
+        return dest;
+    }
+    let mut dest_end = 0;
+    while *dest.add(dest_end) != 0 {
+        dest_end += 1;
+    }
+    let mut i = 0;
+    while i < n {
+        let c = *src.add(i);
+        if c == 0 {
+            break;
+        }
+        *dest.add(dest_end + i) = c;
+        i += 1;
+    }
+    *dest.add(dest_end + i) = 0;
+    dest
+}
+
+/// # Safety
+/// `s1` and `s2` must be valid null-terminated C strings or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt__stricmp(s1: *const i8, s2: *const i8) -> i32 {
+    if s1.is_null() || s2.is_null() {
+        return if s1 == s2 { 0 } else { -1 };
+    }
+    let a = core::ffi::CStr::from_ptr(s1.cast()).to_str().unwrap_or("");
+    let b = core::ffi::CStr::from_ptr(s2.cast()).to_str().unwrap_or("");
+    let al: std::string::String = a.chars().map(|c| c.to_ascii_lowercase()).collect();
+    let bl: std::string::String = b.chars().map(|c| c.to_ascii_lowercase()).collect();
+    match al.cmp(&bl) {
+        core::cmp::Ordering::Less => -1,
+        core::cmp::Ordering::Equal => 0,
+        core::cmp::Ordering::Greater => 1,
+    }
+}
+
+/// # Safety
+/// `s1` and `s2` must be valid null-terminated C strings or readable for at least `n` bytes; may be null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt__strnicmp(s1: *const i8, s2: *const i8, n: usize) -> i32 {
+    if s1.is_null() || s2.is_null() {
+        return if s1 == s2 { 0 } else { -1 };
+    }
+    let mut i = 0;
+    while i < n {
+        let a = (*s1.add(i)).cast_unsigned().to_ascii_lowercase();
+        let b = (*s2.add(i)).cast_unsigned().to_ascii_lowercase();
+        if a != b {
+            return i32::from(a) - i32::from(b);
+        }
+        if a == 0 {
+            return 0;
+        }
+        i += 1;
+    }
+    0
+}
+
+/// # Safety
+/// `s` must be a valid null-terminated C string or null. Returns heap-allocated copy (caller must free).
+///
+/// # Panics
+/// Panics if the array layout computation overflows (extremely large strings).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt__strdup(s: *const i8) -> *mut i8 {
+    if s.is_null() {
+        return core::ptr::null_mut();
+    }
+    let cstr = core::ffi::CStr::from_ptr(s.cast());
+    let bytes = cstr.to_bytes_with_nul();
+    let layout = Layout::array::<u8>(bytes.len()).unwrap();
+    let ptr = alloc(layout);
+    if ptr.is_null() {
+        return core::ptr::null_mut();
+    }
+    core::ptr::copy_nonoverlapping(bytes.as_ptr(), ptr, bytes.len());
+    ptr.cast::<i8>()
+}
+
+/// # Safety
+/// `s` must be readable for at least `max_len` bytes or until a NUL terminator.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_strnlen(s: *const i8, max_len: usize) -> usize {
+    if s.is_null() {
+        return 0;
+    }
+    let mut i = 0;
+    while i < max_len && *s.add(i) != 0 {
+        i += 1;
+    }
+    i
+}
+
+// ── Random & Time ─────────────────────────────────────────────────────────
+
+use std::sync::atomic::AtomicU32;
+use std::sync::atomic::Ordering;
+
+static RAND_STATE: AtomicU32 = AtomicU32::new(1);
+
+/// # Safety
+/// No preconditions. Returns pseudo-random integer in range [0, 32767].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_rand() -> i32 {
+    let state = RAND_STATE.load(Ordering::Relaxed);
+    let next = state.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+    RAND_STATE.store(next, Ordering::Relaxed);
+    i32::try_from((next >> 16) & 0x7FFF).unwrap_or(0)
+}
+
+/// # Safety
+/// No preconditions. Sets the random seed.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_srand(seed: u32) {
+    RAND_STATE.store(seed, Ordering::Relaxed);
+}
+
+/// # Safety
+/// `timer` if non-null must be a writable pointer to i64.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_time(timer: *mut i64) -> i64 {
+    let mut ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    libc::clock_gettime(libc::CLOCK_REALTIME, core::ptr::addr_of_mut!(ts));
+    let t = ts.tv_sec;
+    if !timer.is_null() {
+        *timer = t;
+    }
+    t
+}
+
+/// # Safety
+/// No preconditions. Returns CPU time used by the process.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_clock() -> i64 {
+    // SAFETY: clock_gettime is safe to call with CLOCK_PROCESS_CPUTIME_ID
+    let mut ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: ts is a valid, initialized timespec on the stack; CLOCK_PROCESS_CPUTIME_ID is always valid
+    libc::clock_gettime(libc::CLOCK_PROCESS_CPUTIME_ID, core::ptr::addr_of_mut!(ts));
+    ts.tv_sec * 1_000_000 + ts.tv_nsec / 1_000
+}
+
+// ── Math Functions ────────────────────────────────────────────────────────
+
+/// # Safety
+/// No preconditions.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_abs(x: i32) -> i32 {
+    if x < 0 { x.wrapping_neg() } else { x }
+}
+
+/// # Safety
+/// No preconditions.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_labs(x: i64) -> i64 {
+    if x < 0 { x.wrapping_neg() } else { x }
+}
+
+/// # Safety
+/// No preconditions.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt__abs64(x: i64) -> i64 {
+    if x < 0 { x.wrapping_neg() } else { x }
+}
+
+/// # Safety
+/// No preconditions.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_fabs(x: f64) -> f64 {
+    x.abs()
+}
+
+/// # Safety
+/// No preconditions.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_sqrt(x: f64) -> f64 {
+    x.sqrt()
+}
+
+/// # Safety
+/// No preconditions.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_pow(x: f64, y: f64) -> f64 {
+    x.powf(y)
+}
+
+/// # Safety
+/// No preconditions.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_log(x: f64) -> f64 {
+    x.ln()
+}
+
+/// # Safety
+/// No preconditions.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_log10(x: f64) -> f64 {
+    x.log10()
+}
+
+/// # Safety
+/// No preconditions.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_exp(x: f64) -> f64 {
+    x.exp()
+}
+
+/// # Safety
+/// No preconditions.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_sin(x: f64) -> f64 {
+    x.sin()
+}
+
+/// # Safety
+/// No preconditions.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_cos(x: f64) -> f64 {
+    x.cos()
+}
+
+/// # Safety
+/// No preconditions.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_tan(x: f64) -> f64 {
+    x.tan()
+}
+
+/// # Safety
+/// No preconditions.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_atan(x: f64) -> f64 {
+    x.atan()
+}
+
+/// # Safety
+/// No preconditions.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_atan2(y: f64, x: f64) -> f64 {
+    y.atan2(x)
+}
+
+/// # Safety
+/// No preconditions.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_ceil(x: f64) -> f64 {
+    x.ceil()
+}
+
+/// # Safety
+/// No preconditions.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_floor(x: f64) -> f64 {
+    x.floor()
+}
+
+/// # Safety
+/// No preconditions.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_fmod(x: f64, y: f64) -> f64 {
+    x % y
+}
+
+// ── Wide-Char Extras ──────────────────────────────────────────────────────
+
+/// # Safety
+/// `dest` must be writable wide string buffer; `src` must be valid null-terminated wide string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_wcscpy(dest: *mut u16, src: *const u16) -> *mut u16 {
+    if dest.is_null() || src.is_null() {
+        return dest;
+    }
+    let mut i = 0;
+    loop {
+        let c = *src.add(i);
+        *dest.add(i) = c;
+        if c == 0 {
+            break;
+        }
+        i += 1;
+    }
+    dest
+}
+
+/// # Safety
+/// `dest` must be a null-terminated wide string with sufficient space; `src` must be valid.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_wcscat(dest: *mut u16, src: *const u16) -> *mut u16 {
+    if dest.is_null() || src.is_null() {
+        return dest;
+    }
+    let mut end = 0;
+    while *dest.add(end) != 0 {
+        end += 1;
+    }
+    let mut i = 0;
+    loop {
+        let c = *src.add(i);
+        *dest.add(end + i) = c;
+        if c == 0 {
+            break;
+        }
+        i += 1;
+    }
+    dest
+}
+
+/// # Safety
+/// `dest` must be writable for `n` wide chars; `src` must be readable for at least `n` wide chars.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_wcsncpy(dest: *mut u16, src: *const u16, n: usize) -> *mut u16 {
+    if dest.is_null() || src.is_null() {
+        return dest;
+    }
+    let mut found_nul = false;
+    for i in 0..n {
+        if found_nul {
+            *dest.add(i) = 0;
+        } else {
+            let c = *src.add(i);
+            *dest.add(i) = c;
+            if c == 0 {
+                found_nul = true;
+            }
+        }
+    }
+    dest
+}
+
+/// # Safety
+/// `s` must be a valid null-terminated wide string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_wcschr(s: *const u16, c: u16) -> *const u16 {
+    if s.is_null() {
+        return core::ptr::null();
+    }
+    let mut i = 0;
+    loop {
+        let ch = *s.add(i);
+        if ch == c {
+            return s.add(i);
+        }
+        if ch == 0 {
+            return core::ptr::null();
+        }
+        i += 1;
+    }
+}
+
+/// # Safety
+/// `s1` and `s2` must be valid null-terminated wide strings or readable for `n` wide chars.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_wcsncmp(s1: *const u16, s2: *const u16, n: usize) -> i32 {
+    if s1.is_null() || s2.is_null() {
+        return if s1 == s2 { 0 } else { -1 };
+    }
+    for i in 0..n {
+        let a = *s1.add(i);
+        let b = *s2.add(i);
+        if a != b {
+            return i32::from(a) - i32::from(b);
+        }
+        if a == 0 {
+            return 0;
+        }
+    }
+    0
+}
+
+/// # Safety
+/// `s1` and `s2` must be valid null-terminated wide strings or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt__wcsicmp(s1: *const u16, s2: *const u16) -> i32 {
+    if s1.is_null() || s2.is_null() {
+        return if s1 == s2 { 0 } else { -1 };
+    }
+    let mut i = 0;
+    loop {
+        let a = *s1.add(i);
+        let b = *s2.add(i);
+        let al = char::from_u32(u32::from(a)).map_or(a, |c| c.to_ascii_lowercase() as u16);
+        let bl = char::from_u32(u32::from(b)).map_or(b, |c| c.to_ascii_lowercase() as u16);
+        if al != bl {
+            return i32::from(al) - i32::from(bl);
+        }
+        if a == 0 {
+            return 0;
+        }
+        i += 1;
+    }
+}
+
+/// # Safety
+/// `s1` and `s2` must be valid null-terminated wide strings or readable for `n` wide chars.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt__wcsnicmp(s1: *const u16, s2: *const u16, n: usize) -> i32 {
+    if s1.is_null() || s2.is_null() {
+        return if s1 == s2 { 0 } else { -1 };
+    }
+    for i in 0..n {
+        let a = *s1.add(i);
+        let b = *s2.add(i);
+        let al = char::from_u32(u32::from(a)).map_or(a, |c| c.to_ascii_lowercase() as u16);
+        let bl = char::from_u32(u32::from(b)).map_or(b, |c| c.to_ascii_lowercase() as u16);
+        if al != bl {
+            return i32::from(al) - i32::from(bl);
+        }
+        if a == 0 {
+            return 0;
+        }
+    }
+    0
+}
+
+/// # Safety
+/// `dest` if non-null must be writable for `n` bytes; `src` must be a valid null-terminated wide string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_wcstombs(dest: *mut i8, src: *const u16, n: usize) -> usize {
+    if src.is_null() {
+        return 0;
+    }
+    let mut len = 0;
+    while *src.add(len) != 0 {
+        len += 1;
+    }
+    let wide_slice = core::slice::from_raw_parts(src, len);
+    let s = std::string::String::from_utf16_lossy(wide_slice);
+    let bytes = s.as_bytes();
+    if dest.is_null() {
+        return bytes.len();
+    }
+    let copy_len = bytes.len().min(n.saturating_sub(1));
+    // SAFETY: dest is non-null (checked above) and bytes[..copy_len] is valid
+    core::ptr::copy_nonoverlapping(bytes.as_ptr().cast::<i8>(), dest, copy_len);
+    if n > 0 {
+        *dest.add(copy_len) = 0;
+    }
+    copy_len
+}
+
+/// # Safety
+/// `dest` if non-null must be writable for `n` wide chars; `src` must be a valid null-terminated C string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_mbstowcs(dest: *mut u16, src: *const i8, n: usize) -> usize {
+    if src.is_null() {
+        return 0;
+    }
+    let cstr = core::ffi::CStr::from_ptr(src.cast());
+    let s = cstr.to_str().unwrap_or("");
+    let wide: Vec<u16> = s.encode_utf16().collect();
+    if dest.is_null() {
+        return wide.len();
+    }
+    let copy_len = wide.len().min(n.saturating_sub(1));
+    // SAFETY: dest is non-null (checked above) and wide[..copy_len] is valid
+    core::ptr::copy_nonoverlapping(wide.as_ptr(), dest, copy_len);
+    if n > 0 {
+        *dest.add(copy_len) = 0;
+    }
+    copy_len
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1606,5 +2327,304 @@ mod tests {
         let ptr = unsafe { msvcrt__acmdln() };
         // Should return a valid pointer (not null)
         assert!(!ptr.is_null());
+    }
+
+    #[test]
+    fn test_atoi() {
+        unsafe {
+            assert_eq!(msvcrt_atoi(c"42".as_ptr(),), 42);
+            assert_eq!(msvcrt_atoi(c"-5".as_ptr()), -5);
+            assert_eq!(msvcrt_atoi(c"  10".as_ptr()), 10);
+            assert_eq!(msvcrt_atoi(core::ptr::null()), 0);
+        }
+    }
+
+    #[test]
+    fn test_atof() {
+        unsafe {
+            let v = msvcrt_atof(c"2.5".as_ptr());
+            assert!((v - 2.5).abs() < 1e-10);
+            assert!((msvcrt_atof(core::ptr::null())).abs() < 1e-15);
+        }
+    }
+
+    #[test]
+    fn test_strtol() {
+        unsafe {
+            let mut end = core::ptr::null_mut::<i8>();
+            let s = c"123abc";
+            let val = msvcrt_strtol(s.as_ptr(), &raw mut end, 10);
+            assert_eq!(val, 123);
+            assert_eq!((*end).cast_unsigned(), b'a');
+        }
+    }
+
+    #[test]
+    fn test_itoa() {
+        unsafe {
+            let mut buf = [0i8; 32];
+            msvcrt__itoa(255, buf.as_mut_ptr(), 16);
+            let s = core::ffi::CStr::from_ptr(buf.as_ptr()).to_str().unwrap();
+            assert_eq!(s, "ff");
+        }
+    }
+
+    #[test]
+    fn test_strncpy() {
+        unsafe {
+            let mut buf = [0i8; 16];
+            msvcrt_strncpy(buf.as_mut_ptr(), c"hello".as_ptr(), 8);
+            let s = core::ffi::CStr::from_ptr(buf.as_ptr()).to_str().unwrap();
+            assert_eq!(s, "hello");
+        }
+    }
+
+    #[test]
+    fn test_stricmp() {
+        unsafe {
+            assert_eq!(msvcrt__stricmp(c"Hello".as_ptr(), c"hello".as_ptr()), 0);
+            assert_ne!(msvcrt__stricmp(c"abc".as_ptr(), c"xyz".as_ptr()), 0);
+        }
+    }
+
+    #[test]
+    fn test_strnlen() {
+        unsafe {
+            assert_eq!(msvcrt_strnlen(c"hello".as_ptr(), 10), 5);
+            assert_eq!(msvcrt_strnlen(c"hello".as_ptr(), 3), 3);
+            assert_eq!(msvcrt_strnlen(core::ptr::null(), 10), 0);
+        }
+    }
+
+    #[test]
+    fn test_rand_srand() {
+        unsafe {
+            msvcrt_srand(42);
+            let r1 = msvcrt_rand();
+            msvcrt_srand(42);
+            let r2 = msvcrt_rand();
+            assert_eq!(r1, r2);
+            assert!((0..=32767).contains(&r1));
+        }
+    }
+
+    #[test]
+    fn test_time() {
+        unsafe {
+            let t = msvcrt_time(core::ptr::null_mut());
+            assert!(t > 0);
+            let mut out: i64 = 0;
+            let t2 = msvcrt_time(&raw mut out);
+            assert_eq!(t2, out);
+        }
+    }
+
+    #[test]
+    fn test_math() {
+        unsafe {
+            assert_eq!(msvcrt_abs(-5), 5);
+            assert_eq!(msvcrt_labs(-100i64), 100i64);
+            assert!((msvcrt_sqrt(4.0) - 2.0).abs() < 1e-10);
+            assert!((msvcrt_pow(2.0, 10.0) - 1024.0).abs() < 1e-6);
+            assert!((msvcrt_floor(3.7) - 3.0).abs() < 1e-10);
+            assert!((msvcrt_ceil(3.2) - 4.0).abs() < 1e-10);
+        }
+    }
+
+    #[test]
+    fn test_wcscpy_wcscat() {
+        unsafe {
+            let src: Vec<u16> = "hello\0".encode_utf16().collect();
+            let mut buf = vec![0u16; 32];
+            msvcrt_wcscpy(buf.as_mut_ptr(), src.as_ptr());
+            let add: Vec<u16> = " world\0".encode_utf16().collect();
+            msvcrt_wcscat(buf.as_mut_ptr(), add.as_ptr());
+            let result =
+                String::from_utf16_lossy(&buf[..buf.iter().position(|&c| c == 0).unwrap()]);
+            assert_eq!(result, "hello world");
+        }
+    }
+
+    #[test]
+    fn test_wcstombs_mbstowcs() {
+        unsafe {
+            let wide: Vec<u16> = "hello\0".encode_utf16().collect();
+            let mut narrow = vec![0i8; 16];
+            let n = msvcrt_wcstombs(narrow.as_mut_ptr(), wide.as_ptr(), 16);
+            assert_eq!(n, 5);
+            let s = core::ffi::CStr::from_ptr(narrow.as_ptr()).to_str().unwrap();
+            assert_eq!(s, "hello");
+        }
+    }
+
+    #[test]
+    fn test_atol() {
+        unsafe {
+            assert_eq!(msvcrt_atol(c"42".as_ptr()), 42);
+            assert_eq!(msvcrt_atol(c"-7".as_ptr()), -7);
+            assert_eq!(msvcrt_atol(c"0".as_ptr()), 0);
+        }
+    }
+
+    #[test]
+    fn test_strtoul() {
+        unsafe {
+            assert_eq!(
+                msvcrt_strtoul(c"255".as_ptr(), core::ptr::null_mut(), 10),
+                255
+            );
+            assert_eq!(
+                msvcrt_strtoul(c"ff".as_ptr(), core::ptr::null_mut(), 16),
+                0xff
+            );
+        }
+    }
+
+    #[test]
+    fn test_strtod() {
+        unsafe {
+            let s = c"2.5abc";
+            let mut end: *mut i8 = core::ptr::null_mut();
+            let val = msvcrt_strtod(s.as_ptr(), &raw mut end);
+            assert!((val - 2.5).abs() < 1e-6, "strtod: got {val}");
+            // endptr should point past the parsed number (at 'a')
+            let end_offset = end.offset_from(s.as_ptr());
+            assert!(end_offset >= 0, "endptr must be after start");
+            assert_eq!(
+                end_offset.cast_unsigned(),
+                3,
+                "endptr offset should be 3, got {end_offset}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_ltoa() {
+        unsafe {
+            let mut buf = [0i8; 32];
+            msvcrt__ltoa(-42, buf.as_mut_ptr(), 10);
+            let s = core::ffi::CStr::from_ptr(buf.as_ptr()).to_str().unwrap();
+            assert_eq!(s, "-42");
+            msvcrt__ltoa(255, buf.as_mut_ptr(), 16);
+            let s = core::ffi::CStr::from_ptr(buf.as_ptr()).to_str().unwrap();
+            assert_eq!(s, "ff");
+        }
+    }
+
+    #[test]
+    fn test_strncat() {
+        unsafe {
+            let mut buf = [0i8; 32];
+            let hello = c"hello";
+            core::ptr::copy_nonoverlapping(hello.as_ptr(), buf.as_mut_ptr(), 6);
+            msvcrt_strncat(buf.as_mut_ptr(), c" world".as_ptr(), 6);
+            let s = core::ffi::CStr::from_ptr(buf.as_ptr()).to_str().unwrap();
+            assert_eq!(s, "hello world");
+        }
+    }
+
+    #[test]
+    fn test_strnicmp() {
+        unsafe {
+            // equal strings (different case)
+            assert_eq!(msvcrt__strnicmp(c"Hello".as_ptr(), c"hello".as_ptr(), 5), 0);
+            // differ before n is reached
+            assert_ne!(msvcrt__strnicmp(c"abc".as_ptr(), c"xyz".as_ptr(), 3), 0);
+            // n=0 always equal
+            assert_eq!(msvcrt__strnicmp(c"abc".as_ptr(), c"xyz".as_ptr(), 0), 0);
+        }
+    }
+
+    #[test]
+    fn test_strdup() {
+        unsafe {
+            let dup = msvcrt__strdup(c"hello".as_ptr());
+            assert!(!dup.is_null());
+            let result = core::ffi::CStr::from_ptr(dup).to_str().unwrap();
+            assert_eq!(result, "hello");
+            msvcrt_free(dup.cast());
+        }
+    }
+
+    #[test]
+    fn test_clock() {
+        unsafe {
+            let t = msvcrt_clock();
+            assert!(t >= 0, "clock should return non-negative value");
+        }
+    }
+
+    #[test]
+    fn test_labs_abs64() {
+        unsafe {
+            assert_eq!(msvcrt_labs(-99i64), 99i64);
+            assert_eq!(msvcrt__abs64(-1_000_000i64), 1_000_000i64);
+            assert_eq!(msvcrt__abs64(0), 0);
+        }
+    }
+
+    #[test]
+    fn test_math_extended() {
+        unsafe {
+            assert!((msvcrt_log(core::f64::consts::E) - 1.0).abs() < 1e-10);
+            assert!((msvcrt_log10(100.0) - 2.0).abs() < 1e-10);
+            assert!((msvcrt_exp(1.0) - core::f64::consts::E).abs() < 1e-10);
+            assert!((msvcrt_sin(0.0)).abs() < 1e-10);
+            assert!((msvcrt_cos(0.0) - 1.0).abs() < 1e-10);
+            assert!((msvcrt_tan(0.0)).abs() < 1e-10);
+            assert!((msvcrt_atan(1.0) - core::f64::consts::FRAC_PI_4).abs() < 1e-10);
+            assert!((msvcrt_atan2(1.0, 1.0) - core::f64::consts::FRAC_PI_4).abs() < 1e-10);
+            assert!((msvcrt_fmod(5.5, 2.0) - 1.5).abs() < 1e-10);
+        }
+    }
+
+    #[test]
+    fn test_wcsncpy() {
+        unsafe {
+            let src: Vec<u16> = "hello world\0".encode_utf16().collect();
+            let mut buf = vec![0u16; 32];
+            msvcrt_wcsncpy(buf.as_mut_ptr(), src.as_ptr(), 5);
+            // wcsncpy copies exactly n chars; no guaranteed NUL if src >= n
+            let result = String::from_utf16_lossy(&buf[..5]);
+            assert_eq!(result, "hello");
+        }
+    }
+
+    #[test]
+    fn test_wcschr() {
+        unsafe {
+            let s: Vec<u16> = "hello\0".encode_utf16().collect();
+            let found = msvcrt_wcschr(s.as_ptr(), u16::from(b'l'));
+            assert!(!found.is_null());
+            // offset to first 'l' is 2
+            assert_eq!(found.offset_from(s.as_ptr()), 2);
+            let not_found = msvcrt_wcschr(s.as_ptr(), u16::from(b'z'));
+            assert!(not_found.is_null());
+        }
+    }
+
+    #[test]
+    fn test_wcsncmp() {
+        unsafe {
+            let a: Vec<u16> = "hello\0".encode_utf16().collect();
+            let b: Vec<u16> = "hellx\0".encode_utf16().collect();
+            assert_eq!(msvcrt_wcsncmp(a.as_ptr(), a.as_ptr(), 5), 0);
+            let r = msvcrt_wcsncmp(a.as_ptr(), b.as_ptr(), 5);
+            assert!(r < 0, "expected negative, got {r}");
+            // only compare 4 chars — should be equal
+            assert_eq!(msvcrt_wcsncmp(a.as_ptr(), b.as_ptr(), 4), 0);
+        }
+    }
+
+    #[test]
+    fn test_wcsicmp_wcsnicmp() {
+        unsafe {
+            let a: Vec<u16> = "Hello\0".encode_utf16().collect();
+            let b: Vec<u16> = "hello\0".encode_utf16().collect();
+            assert_eq!(msvcrt__wcsicmp(a.as_ptr(), b.as_ptr()), 0);
+            assert_eq!(msvcrt__wcsnicmp(a.as_ptr(), b.as_ptr(), 5), 0);
+            let c: Vec<u16> = "world\0".encode_utf16().collect();
+            assert_ne!(msvcrt__wcsicmp(a.as_ptr(), c.as_ptr()), 0);
+        }
     }
 }

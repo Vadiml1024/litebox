@@ -1,8 +1,49 @@
-# Windows-on-Linux Support — Session Summary (2026-02-22 Session 27)
+# Windows-on-Linux Support — Session Summary (Phase 28)
 
 ## Work Completed ✅
 
-### Phase 27 — Thread Management, Process Management, File Times, Character APIs, Window Utilities
+### Phase 28 — MSVCRT Numeric/String/Math/WideChar, KERNEL32 File Utilities, USER32 Window Stubs, SHLWAPI Path Utilities
+
+**Goal:** Add 80+ new Windows API implementations across four areas — MSVCRT numeric conversion/string/math/wide-char, KERNEL32 file utilities, USER32 window stubs, and a new SHLWAPI.dll module.
+
+---
+
+#### 28.1 MSVCRT Numeric Conversion (8)
+`atoi`, `atol`, `atof`, `strtol`, `strtoul`, `strtod`, `_itoa`, `_ltoa`
+
+#### 28.2 MSVCRT String Extras (6)
+`strncpy`, `strncat`, `_stricmp`, `_strnicmp`, `_strdup`, `strnlen`
+
+#### 28.3 MSVCRT Random & Time (4)
+`rand`, `srand` (LCG with `RAND_STATE` static), `time` (via libc clock_gettime), `clock`
+
+#### 28.4 MSVCRT Math (17)
+`abs`, `labs`, `_abs64`, `fabs`, `sqrt`, `pow`, `log`, `log10`, `exp`, `sin`, `cos`, `tan`, `atan`, `atan2`, `ceil`, `floor`, `fmod`
+
+#### 28.5 MSVCRT Wide-Char Extras (9)
+`wcscpy`, `wcscat`, `wcsncpy`, `wcschr`, `wcsncmp`, `_wcsicmp`, `_wcsnicmp`, `wcstombs`, `mbstowcs`
+
+#### 28.6 KERNEL32 File Utility Additions (8)
+`GetFileSize`, `SetFilePointer`, `SetEndOfFile`, `FlushViewOfFile`, `GetSystemDefaultLangID`, `GetUserDefaultLangID`, `GetSystemDefaultLCID`, `GetUserDefaultLCID`
+
+#### 28.7 New SHLWAPI.dll (10)
+`PathFileExistsW`, `PathCombineW`, `PathGetFileNameW`, `PathRemoveFileSpecW`, `PathIsRelativeW`, `PathFindExtensionW`, `PathStripPathW`, `PathAddBackslashW`, `StrToIntW`, `StrCmpIW`
+
+#### 28.8 USER32 Window Stubs (15)
+`FindWindowW`, `FindWindowExW`, `GetForegroundWindow`, `SetForegroundWindow`, `BringWindowToTop`, `GetWindowRect`, `SetWindowPos`, `MoveWindow`, `GetCursorPos`, `SetCursorPos`, `ScreenToClient`, `ClientToScreen`, `ShowCursor`, `GetFocus`, `SetFocus`
+
+## Test Results
+
+- **Total tests: 452** (up from 425, 27 new tests)
+- All 452 tests pass, 0 failures
+
+## Next Steps
+
+- Phase 9 (BSS initialization / CRT global variable support) still needed for actual EXE execution
+
+---
+
+
 
 **Goal:** Add 25 new Windows API implementations across five areas — thread and process management, file-time utilities, character conversion/classification, window utilities, and temp file name generation — enabling a wider range of Windows programs to run without issues.
 

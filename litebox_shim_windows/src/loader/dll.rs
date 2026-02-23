@@ -52,6 +52,9 @@ mod stub_addresses {
 
     /// VERSION.dll function address range: 0xC000-0xCFFF
     pub const VERSION_BASE: usize = 0xC000;
+
+    /// SHLWAPI.dll function address range: 0xD000-0xDFFF
+    pub const SHLWAPI_BASE: usize = 0xD000;
 }
 
 /// Type for a DLL function pointer
@@ -131,6 +134,7 @@ impl DllManager {
         manager.load_stub_gdi32();
         manager.load_stub_shell32();
         manager.load_stub_version();
+        manager.load_stub_shlwapi();
 
         manager
     }
@@ -508,6 +512,15 @@ impl DllManager {
             ("FileTimeToLocalFileTime", KERNEL32_BASE + 0xD3),
             // Phase 27: Temp File Name
             ("GetTempFileNameW", KERNEL32_BASE + 0xD4),
+            // Phase 28
+            ("GetFileSize", KERNEL32_BASE + 0xD5),
+            ("SetFilePointer", KERNEL32_BASE + 0xD6),
+            ("SetEndOfFile", KERNEL32_BASE + 0xD7),
+            ("FlushViewOfFile", KERNEL32_BASE + 0xD8),
+            ("GetSystemDefaultLangID", KERNEL32_BASE + 0xD9),
+            ("GetUserDefaultLangID", KERNEL32_BASE + 0xDA),
+            ("GetSystemDefaultLCID", KERNEL32_BASE + 0xDB),
+            ("GetUserDefaultLCID", KERNEL32_BASE + 0xDC),
         ];
 
         self.register_stub_dll("KERNEL32.dll", exports);
@@ -604,6 +617,55 @@ impl DllManager {
             ("localeconv", MSVCRT_BASE + 0x37),
             ("___lc_codepage_func", MSVCRT_BASE + 0x38),
             ("___mb_cur_max_func", MSVCRT_BASE + 0x39),
+            // Phase 28: numeric conversion
+            ("atoi", MSVCRT_BASE + 0x3C),
+            ("atol", MSVCRT_BASE + 0x3D),
+            ("atof", MSVCRT_BASE + 0x3E),
+            ("strtol", MSVCRT_BASE + 0x3F),
+            ("strtoul", MSVCRT_BASE + 0x40),
+            ("strtod", MSVCRT_BASE + 0x41),
+            ("_itoa", MSVCRT_BASE + 0x42),
+            ("_ltoa", MSVCRT_BASE + 0x43),
+            // Phase 28: string extras
+            ("strncpy", MSVCRT_BASE + 0x44),
+            ("strncat", MSVCRT_BASE + 0x45),
+            ("_stricmp", MSVCRT_BASE + 0x46),
+            ("_strnicmp", MSVCRT_BASE + 0x47),
+            ("_strdup", MSVCRT_BASE + 0x48),
+            ("strnlen", MSVCRT_BASE + 0x49),
+            // Phase 28: random & time
+            ("rand", MSVCRT_BASE + 0x4A),
+            ("srand", MSVCRT_BASE + 0x4B),
+            ("time", MSVCRT_BASE + 0x4C),
+            ("clock", MSVCRT_BASE + 0x4D),
+            // Phase 28: math
+            ("abs", MSVCRT_BASE + 0x4E),
+            ("labs", MSVCRT_BASE + 0x4F),
+            ("_abs64", MSVCRT_BASE + 0x50),
+            ("fabs", MSVCRT_BASE + 0x51),
+            ("sqrt", MSVCRT_BASE + 0x52),
+            ("pow", MSVCRT_BASE + 0x53),
+            ("log", MSVCRT_BASE + 0x54),
+            ("log10", MSVCRT_BASE + 0x55),
+            ("exp", MSVCRT_BASE + 0x56),
+            ("sin", MSVCRT_BASE + 0x57),
+            ("cos", MSVCRT_BASE + 0x58),
+            ("tan", MSVCRT_BASE + 0x59),
+            ("atan", MSVCRT_BASE + 0x5A),
+            ("atan2", MSVCRT_BASE + 0x5B),
+            ("ceil", MSVCRT_BASE + 0x5C),
+            ("floor", MSVCRT_BASE + 0x5D),
+            ("fmod", MSVCRT_BASE + 0x5E),
+            // Phase 28: wide-char extras
+            ("wcscpy", MSVCRT_BASE + 0x5F),
+            ("wcscat", MSVCRT_BASE + 0x60),
+            ("wcsncpy", MSVCRT_BASE + 0x61),
+            ("wcschr", MSVCRT_BASE + 0x62),
+            ("wcsncmp", MSVCRT_BASE + 0x63),
+            ("_wcsicmp", MSVCRT_BASE + 0x64),
+            ("_wcsnicmp", MSVCRT_BASE + 0x65),
+            ("wcstombs", MSVCRT_BASE + 0x66),
+            ("mbstowcs", MSVCRT_BASE + 0x67),
         ];
 
         self.register_stub_dll("MSVCRT.dll", exports);
@@ -758,6 +820,22 @@ impl DllManager {
             ("GetWindowTextW", USER32_BASE + 39),
             ("SetWindowTextW", USER32_BASE + 40),
             ("GetParent", USER32_BASE + 41),
+            // Phase 28
+            ("FindWindowW", USER32_BASE + 42),
+            ("FindWindowExW", USER32_BASE + 43),
+            ("GetForegroundWindow", USER32_BASE + 44),
+            ("SetForegroundWindow", USER32_BASE + 45),
+            ("BringWindowToTop", USER32_BASE + 46),
+            ("GetWindowRect", USER32_BASE + 47),
+            ("SetWindowPos", USER32_BASE + 48),
+            ("MoveWindow", USER32_BASE + 49),
+            ("GetCursorPos", USER32_BASE + 50),
+            ("SetCursorPos", USER32_BASE + 51),
+            ("ScreenToClient", USER32_BASE + 52),
+            ("ClientToScreen", USER32_BASE + 53),
+            ("ShowCursor", USER32_BASE + 54),
+            ("GetFocus", USER32_BASE + 55),
+            ("SetFocus", USER32_BASE + 56),
         ];
 
         self.register_stub_dll("USER32.dll", exports);
@@ -838,6 +916,26 @@ impl DllManager {
 
         self.register_stub_dll("VERSION.dll", exports);
     }
+
+    /// Load stub SHLWAPI.dll (Shell Lightweight Utility APIs)
+    fn load_stub_shlwapi(&mut self) {
+        use stub_addresses::SHLWAPI_BASE;
+
+        let exports = vec![
+            ("PathFileExistsW", SHLWAPI_BASE),
+            ("PathCombineW", SHLWAPI_BASE + 1),
+            ("PathGetFileNameW", SHLWAPI_BASE + 2),
+            ("PathRemoveFileSpecW", SHLWAPI_BASE + 3),
+            ("PathIsRelativeW", SHLWAPI_BASE + 4),
+            ("PathFindExtensionW", SHLWAPI_BASE + 5),
+            ("PathStripPathW", SHLWAPI_BASE + 6),
+            ("PathAddBackslashW", SHLWAPI_BASE + 7),
+            ("StrToIntW", SHLWAPI_BASE + 8),
+            ("StrCmpIW", SHLWAPI_BASE + 9),
+        ];
+
+        self.register_stub_dll("SHLWAPI.dll", exports);
+    }
 }
 
 /// Map Windows API Set DLL names to their real implementation DLLs
@@ -913,9 +1011,9 @@ mod tests {
     #[test]
     fn test_dll_manager_creation() {
         let manager = DllManager::new();
-        // Should have 12 pre-loaded stub DLLs (KERNEL32, NTDLL, MSVCRT, bcrypt, USERENV,
-        // WS2_32, api-ms-win-core-synch, USER32, ADVAPI32, GDI32, SHELL32, VERSION)
-        assert_eq!(manager.dlls.len(), 12);
+        // Should have 13 pre-loaded stub DLLs (KERNEL32, NTDLL, MSVCRT, bcrypt, USERENV,
+        // WS2_32, api-ms-win-core-synch, USER32, ADVAPI32, GDI32, SHELL32, VERSION, SHLWAPI)
+        assert_eq!(manager.dlls.len(), 13);
     }
 
     #[test]

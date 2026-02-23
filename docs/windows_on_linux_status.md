@@ -1,8 +1,8 @@
 # Windows on Linux: Implementation Status
 
-**Last Updated:** 2026-02-22  
-**Total Tests:** 425 passing (357 platform + 47 shim + 16 runner + 5 dev_tests — +23 new thread/file-time/char/window tests added in Phase 27)  
-**Overall Status:** Core infrastructure complete. Seven Rust-based test programs (hello_cli, math_test, env_test, args_test, file_io_test, string_test, getprocaddress_test) run successfully end-to-end through the runner on Linux. **All API stub functions have been fully replaced — stub count is now 0.** Phase 27 adds thread management, process management, file-time utilities, character conversion/classification, window utilities, system directory paths, and temp file name generation.
+**Last Updated:** 2026-02-23  
+**Total Tests:** 452 passing (384 platform + 47 shim + 16 runner + 5 dev_tests — +27 new MSVCRT/KERNEL32/SHLWAPI/USER32 tests added in Phase 28)  
+**Overall Status:** Core infrastructure complete. Seven Rust-based test programs (hello_cli, math_test, env_test, args_test, file_io_test, string_test, getprocaddress_test) run successfully end-to-end through the runner on Linux. **All API stub functions have been fully replaced — stub count is now 0.** Phase 28 adds MSVCRT numeric conversions, string extras, random/time, math, wide-char extensions; KERNEL32 locale/file APIs; new SHLWAPI.dll path utilities; and more USER32 window stubs.
 
 ---
 
@@ -366,7 +366,7 @@ litebox_runner_windows_on_linux_userland \
 
 ## Code Quality
 
-- **All 425 tests passing**
+- **All 452 tests passing**
 - `RUSTFLAGS=-Dwarnings cargo clippy --all-targets --all-features` — clean
 - `cargo fmt --check` — clean
 - All `unsafe` blocks have detailed safety comments
@@ -400,3 +400,4 @@ litebox_runner_windows_on_linux_userland \
 | 26 | Mutex/Semaphore sync objects (`CreateMutexW/A`, `OpenMutexW`, `ReleaseMutex`, `CreateSemaphoreW/A`, `OpenSemaphoreW`, `ReleaseSemaphore`); console extensions (`SetConsoleMode`, `SetConsoleTitleW/A`, `GetConsoleTitleW`, `AllocConsole`, `FreeConsole`, `GetConsoleWindow`); string utilities (`lstrlenA`, `lstrcpyW/A`, `lstrcmpW/A`, `lstrcmpiW/A`, `OutputDebugStringW/A`); drive/volume APIs (`GetDriveTypeW`, `GetLogicalDrives`, `GetLogicalDriveStringsW`, `GetDiskFreeSpaceExW`, `GetVolumeInformationW`); computer/user name (`GetComputerNameW/ExW`, `GetUserNameW/A`); +16 new tests; globals ratchet 39→42 | ✅ Complete |
 | 27 | Thread management (`SetThreadPriority`, `GetThreadPriority`, `SuspendThread`, `ResumeThread`, `OpenThread`, `GetExitCodeThread`); process management (`OpenProcess`, `GetProcessTimes`); file-time utilities (`GetFileTime`, `CompareFileTime`, `FileTimeToLocalFileTime`); temp file name (`GetTempFileNameW`); USER32 character conversion (`CharUpperW/A`, `CharLowerW/A`); character classification (`IsCharAlphaW`, `IsCharAlphaNumericW`, `IsCharUpperW`, `IsCharLowerW`); window utilities (`IsWindow`, `IsWindowEnabled`, `IsWindowVisible`, `EnableWindow`, `GetWindowTextW`, `SetWindowTextW`, `GetParent`); +23 new tests | ✅ Complete |
 
+| 28 | MSVCRT numeric conversions (`atoi`, `atol`, `atof`, `strtol`, `strtoul`, `strtod`, `_itoa`, `_ltoa`); string extras (`strncpy`, `strncat`, `_stricmp`, `_strnicmp`, `_strdup`, `strnlen`); random/time (`rand`, `srand`, `time`, `clock`); math (`abs`, `labs`, `_abs64`, `fabs`, `sqrt`, `pow`, `log`, `log10`, `exp`, `sin`, `cos`, `tan`, `atan`, `atan2`, `ceil`, `floor`, `fmod`); wide-char extras (`wcscpy`, `wcscat`, `wcsncpy`, `wcschr`, `wcsncmp`, `_wcsicmp`, `_wcsnicmp`, `wcstombs`, `mbstowcs`); KERNEL32 (`GetFileSize`, `SetFilePointer`, `SetEndOfFile`, `FlushViewOfFile`, `GetSystemDefaultLangID/LCID`, `GetUserDefaultLangID/LCID`); new SHLWAPI.dll (`PathFileExistsW`, `PathCombineW`, `PathGetFileNameW`, `PathRemoveFileSpecW`, `PathIsRelativeW`, `PathFindExtensionW`, `PathStripPathW`, `PathAddBackslashW`, `StrToIntW`, `StrCmpIW`); USER32 window stubs (`FindWindowW`, `FindWindowExW`, `GetForegroundWindow`, `SetForegroundWindow`, `BringWindowToTop`, `GetWindowRect`, `SetWindowPos`, `MoveWindow`, `GetCursorPos`, `SetCursorPos`, `ScreenToClient`, `ClientToScreen`, `ShowCursor`, `GetFocus`, `SetFocus`); +27 new tests | ✅ Complete |
