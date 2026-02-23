@@ -14,6 +14,7 @@ pub mod kernel32;
 pub mod msvcrt;
 pub mod ntdll_impl;
 pub mod shell32;
+pub mod shlwapi;
 pub mod trampoline;
 pub mod user32;
 pub mod version;

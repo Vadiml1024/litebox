@@ -7999,7 +7999,7 @@ pub unsafe extern "C" fn kernel32_FileTimeToLocalFileTime(
     // offset_sec is bounded to ±50400 seconds (±14 hours); multiply by 10M to get
     // 100-ns intervals, then add to the UTC intervals using signed arithmetic
     // to correctly handle negative (west-of-UTC) offsets.
-    let offset_100ns = i64::from(tm_local.tm_gmtoff).saturating_mul(10_000_000);
+    let offset_100ns = tm_local.tm_gmtoff.saturating_mul(10_000_000);
     let local_intervals = (intervals as i64).saturating_add(offset_100ns).max(0) as u64;
     // SAFETY: local_file_time is checked non-null above.
     unsafe {
@@ -8059,6 +8059,164 @@ pub unsafe extern "C" fn kernel32_GetTempFileNameW(
         *temp_file_name.add(copy_len) = 0;
     }
     copy_len as u32
+}
+
+// ── Phase 28: File utility additions ─────────────────────────────────────
+
+/// GetFileSize - get the size of a file as a 32-bit DWORD pair
+///
+/// Returns the low-order DWORD of the file size. Optionally sets `lp_file_size_high`.
+/// Returns `INVALID_FILE_SIZE` (0xFFFF_FFFF) on error.
+///
+/// # Safety
+/// `file` must be a valid file handle; `lp_file_size_high` if non-null must be writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_GetFileSize(
+    file: *mut core::ffi::c_void,
+    lp_file_size_high: *mut u32,
+) -> u32 {
+    let mut size: i64 = 0;
+    if kernel32_GetFileSizeEx(file, &raw mut size) == 0 {
+        return 0xFFFF_FFFF; // INVALID_FILE_SIZE
+    }
+    let size_u = size as u64;
+    if !lp_file_size_high.is_null() {
+        *lp_file_size_high = (size_u >> 32) as u32;
+    }
+    (size_u & 0xFFFF_FFFF) as u32
+}
+
+/// SetFilePointer - moves the file pointer (32-bit interface)
+///
+/// Combines `distance_to_move` and `*distance_to_move_high` into a 64-bit offset,
+/// then calls `SetFilePointerEx`. Returns the new low DWORD position, or
+/// `INVALID_SET_FILE_POINTER` (0xFFFF_FFFF) on error.
+///
+/// # Safety
+/// `file` must be a valid file handle; `distance_to_move_high` if non-null must be readable/writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_SetFilePointer(
+    file: *mut core::ffi::c_void,
+    distance_to_move: i32,
+    distance_to_move_high: *mut i32,
+    move_method: u32,
+) -> u32 {
+    let high = if distance_to_move_high.is_null() {
+        0i64
+    } else {
+        i64::from(*distance_to_move_high)
+    };
+    let combined = (high << 32) | i64::from(distance_to_move as u32);
+    let mut new_pos: i64 = 0;
+    if kernel32_SetFilePointerEx(file, combined, &raw mut new_pos, move_method) == 0 {
+        return 0xFFFF_FFFF; // INVALID_SET_FILE_POINTER
+    }
+    if !distance_to_move_high.is_null() {
+        *distance_to_move_high = ((new_pos as u64) >> 32) as i32;
+    }
+    (new_pos as u64 & 0xFFFF_FFFF) as u32
+}
+
+/// SetEndOfFile - truncates or extends the file at the current file pointer position
+///
+/// Uses `ftruncate` with the current file position obtained from `lseek`.
+/// Returns 1 (TRUE) on success, 0 (FALSE) on error.
+///
+/// # Safety
+/// `file` must be a valid file handle opened for writing.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_SetEndOfFile(file: *mut core::ffi::c_void) -> i32 {
+    let handle_val = file as usize;
+    let fd_and_pos = with_file_handles(|map| {
+        map.get(&handle_val).map(|entry| {
+            let fd = entry.file.as_raw_fd();
+            // SAFETY: fd is valid for the duration of this closure
+            let pos = unsafe { libc::lseek(fd, 0, libc::SEEK_CUR) };
+            (fd, pos)
+        })
+    });
+    let Some((fd, pos)) = fd_and_pos else {
+        kernel32_SetLastError(6); // ERROR_INVALID_HANDLE
+        return 0;
+    };
+    if pos < 0 {
+        kernel32_SetLastError(6);
+        return 0;
+    }
+    // SAFETY: fd is valid and pos is non-negative
+    if unsafe { libc::ftruncate(fd, pos) } == 0 {
+        1
+    } else {
+        kernel32_SetLastError(5); // ERROR_ACCESS_DENIED
+        0
+    }
+}
+
+/// FlushViewOfFile - flushes a range of mapped view to disk
+///
+/// Calls `msync(base_address, size, MS_SYNC)`. Returns 1 (TRUE) on success.
+///
+/// # Safety
+/// `base_address` must be a valid pointer into a mapped view; must be readable for `number_of_bytes_to_flush` bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_FlushViewOfFile(
+    base_address: *const core::ffi::c_void,
+    number_of_bytes_to_flush: usize,
+) -> i32 {
+    if base_address.is_null() {
+        return 0;
+    }
+    let size = if number_of_bytes_to_flush == 0 {
+        1
+    } else {
+        number_of_bytes_to_flush
+    };
+    // SAFETY: caller guarantees base_address is valid mapped memory
+    i32::from(unsafe { libc::msync(base_address.cast_mut(), size, libc::MS_SYNC) } == 0)
+}
+
+/// GetSystemDefaultLangID - returns the system default language identifier
+///
+/// Always returns 0x0409 (English - United States) in this headless implementation.
+///
+/// # Safety
+/// No preconditions.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_GetSystemDefaultLangID() -> u16 {
+    0x0409
+}
+
+/// GetUserDefaultLangID - returns the user default language identifier
+///
+/// Always returns 0x0409 (English - United States) in this headless implementation.
+///
+/// # Safety
+/// No preconditions.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_GetUserDefaultLangID() -> u16 {
+    0x0409
+}
+
+/// GetSystemDefaultLCID - returns the system default locale identifier
+///
+/// Always returns 0x0409 (English - United States) in this headless implementation.
+///
+/// # Safety
+/// No preconditions.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_GetSystemDefaultLCID() -> u32 {
+    0x0409
+}
+
+/// GetUserDefaultLCID - returns the user default locale identifier
+///
+/// Always returns 0x0409 (English - United States) in this headless implementation.
+///
+/// # Safety
+/// No preconditions.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_GetUserDefaultLCID() -> u32 {
+    0x0409
 }
 
 #[cfg(test)]
@@ -11972,5 +12130,104 @@ mod tests {
                 .is_some_and(|ext| ext.eq_ignore_ascii_case("tmp")),
             "Should end with .tmp, got: {s}"
         );
+    }
+
+    #[test]
+    fn test_get_file_size() {
+        let path = std::env::temp_dir().join("test_get_file_size.bin");
+        std::fs::write(&path, b"hello world").unwrap();
+        let path_wide: Vec<u16> = path
+            .to_str()
+            .unwrap()
+            .encode_utf16()
+            .chain(Some(0))
+            .collect();
+        let h = unsafe {
+            kernel32_CreateFileW(
+                path_wide.as_ptr(),
+                0x8000_0000, // GENERIC_READ
+                0,
+                core::ptr::null_mut(),
+                3, // OPEN_EXISTING
+                0,
+                core::ptr::null_mut(),
+            )
+        };
+        assert!(!h.is_null());
+        let mut high: u32 = 0xDEAD;
+        let low = unsafe { kernel32_GetFileSize(h, &raw mut high) };
+        assert_eq!(low, 11);
+        assert_eq!(high, 0);
+        unsafe { kernel32_CloseHandle(h) };
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_get_set_file_pointer() {
+        let path = std::env::temp_dir().join("test_set_file_pointer.bin");
+        std::fs::write(&path, b"0123456789").unwrap();
+        let path_wide: Vec<u16> = path
+            .to_str()
+            .unwrap()
+            .encode_utf16()
+            .chain(Some(0))
+            .collect();
+        let h = unsafe {
+            kernel32_CreateFileW(
+                path_wide.as_ptr(),
+                0xC000_0000, // GENERIC_READ|GENERIC_WRITE
+                0,
+                core::ptr::null_mut(),
+                3, // OPEN_EXISTING
+                0,
+                core::ptr::null_mut(),
+            )
+        };
+        assert!(!h.is_null());
+        let pos = unsafe { kernel32_SetFilePointer(h, 5, core::ptr::null_mut(), 0) };
+        assert_eq!(pos, 5);
+        unsafe { kernel32_CloseHandle(h) };
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_set_end_of_file() {
+        let path = std::env::temp_dir().join("test_set_end_of_file.bin");
+        std::fs::write(&path, b"hello world").unwrap();
+        let path_wide: Vec<u16> = path
+            .to_str()
+            .unwrap()
+            .encode_utf16()
+            .chain(Some(0))
+            .collect();
+        let h = unsafe {
+            kernel32_CreateFileW(
+                path_wide.as_ptr(),
+                0xC000_0000,
+                0,
+                core::ptr::null_mut(),
+                3, // OPEN_EXISTING
+                0,
+                core::ptr::null_mut(),
+            )
+        };
+        assert!(!h.is_null());
+        unsafe { kernel32_SetFilePointer(h, 5, core::ptr::null_mut(), 0) };
+        let r = unsafe { kernel32_SetEndOfFile(h) };
+        assert_eq!(r, 1);
+        unsafe { kernel32_CloseHandle(h) };
+        let content = std::fs::read(&path).unwrap();
+        assert_eq!(content.len(), 5);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_lang_lcid() {
+        unsafe {
+            assert_eq!(kernel32_GetSystemDefaultLangID(), 0x0409);
+            assert_eq!(kernel32_GetUserDefaultLangID(), 0x0409);
+            assert_eq!(kernel32_GetSystemDefaultLCID(), 0x0409);
+            assert_eq!(kernel32_GetUserDefaultLCID(), 0x0409);
+        }
     }
 }
