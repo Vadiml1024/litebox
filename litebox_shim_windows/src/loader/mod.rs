@@ -16,4 +16,4 @@ pub use execution::{
     ExecutionContext, LdrDataTableEntry, ProcessEnvironmentBlock, ThreadEnvironmentBlock,
     call_entry_point,
 };
-pub use pe::PeLoader;
+pub use pe::{ExceptionDirectoryInfo, PeLoader};
