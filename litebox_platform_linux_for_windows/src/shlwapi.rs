@@ -33,12 +33,18 @@ unsafe fn write_wide_string(dst: *mut u16, s: &str, max_len: usize) {
         return;
     }
     let wide: Vec<u16> = s.encode_utf16().chain(core::iter::once(0)).collect();
-    let copy_len = wide.len().min(max_len);
-    core::ptr::copy_nonoverlapping(wide.as_ptr(), dst, copy_len);
-    // Ensure null termination within bounds
-    if copy_len > 0 {
-        *dst.add(copy_len - 1) = 0;
+    let total_len = wide.len();
+
+    // If the full wide string including its null terminator fits, copy it as-is.
+    if total_len <= max_len {
+        core::ptr::copy_nonoverlapping(wide.as_ptr(), dst, total_len);
+        return;
     }
+
+    // Otherwise, truncate to max_len - 1 characters and ensure null termination.
+    let copy_len = max_len - 1;
+    core::ptr::copy_nonoverlapping(wide.as_ptr(), dst, copy_len);
+    *dst.add(copy_len) = 0;
 }
 
 /// Returns the length of a null-terminated wide string.
@@ -175,9 +181,20 @@ pub unsafe extern "C" fn shlwapi_PathIsRelativeW(path: *const u16) -> i32 {
     if path.is_null() {
         return 1;
     }
-    let s = wide_to_string(path);
-    let is_abs =
-        s.starts_with('\\') || s.starts_with('/') || (s.len() >= 2 && s.as_bytes()[1] == b':');
+    let len = wide_len(path);
+    if len == 0 {
+        return 1;
+    }
+    let first = *path;
+    // UNC / rooted path starts with \ or /
+    let mut is_abs = first == u16::from(b'\\') || first == u16::from(b'/');
+    // Drive-letter path: second character is ':'
+    if !is_abs && len >= 2 {
+        let second = *path.add(1);
+        if second == u16::from(b':') {
+            is_abs = true;
+        }
+    }
     i32::from(!is_abs)
 }
 
@@ -256,12 +273,18 @@ pub unsafe extern "C" fn shlwapi_PathAddBackslashW(path: *mut u16) -> *mut u16 {
         return core::ptr::null_mut();
     }
     let len = wide_len(path.cast_const());
-    if len == 0 || *path.add(len - 1) != u16::from(b'\\') {
+    if len == 0 {
+        // Empty string: unconditionally append backslash and NUL.
+        *path.add(0) = u16::from(b'\\');
+        *path.add(1) = 0;
+        return path.add(1);
+    }
+    if *path.add(len - 1) == u16::from(b'\\') {
+        path.add(len)
+    } else {
         *path.add(len) = u16::from(b'\\');
         *path.add(len + 1) = 0;
         path.add(len + 1)
-    } else {
-        path.add(len)
     }
 }
 

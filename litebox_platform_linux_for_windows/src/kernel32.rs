@@ -12230,4 +12230,69 @@ mod tests {
             assert_eq!(kernel32_GetUserDefaultLCID(), 0x0409);
         }
     }
+
+    #[test]
+    fn test_flush_view_of_file_null() {
+        // Null pointer should return FALSE (0)
+        let result = unsafe { kernel32_FlushViewOfFile(core::ptr::null(), 0) };
+        assert_eq!(result, 0, "FlushViewOfFile(null) should return 0");
+    }
+
+    #[test]
+    fn test_flush_view_of_file_mapped() {
+        use std::io::Write;
+        use std::os::unix::io::AsRawFd;
+
+        let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as usize;
+        let len = page_size.max(4096);
+
+        let dir = std::env::temp_dir();
+        let path = dir.join("kernel32_flush_view_test.tmp");
+
+        // Create file and write initial contents
+        {
+            let mut f = std::fs::File::create(&path).unwrap();
+            f.write_all(&vec![b'A'; len]).unwrap();
+        }
+
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+
+        let fd = file.as_raw_fd();
+        let mapped = unsafe {
+            // SAFETY: fd is valid, len > 0, offset is 0 (page-aligned)
+            libc::mmap(
+                core::ptr::null_mut(),
+                len,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED,
+                fd,
+                0,
+            )
+        };
+        assert_ne!(mapped, libc::MAP_FAILED, "mmap failed");
+
+        // Modify through the mapping
+        unsafe {
+            // SAFETY: mapped is valid for len bytes
+            *mapped.cast::<u8>() = b'B';
+        }
+
+        // Flush using our kernel32 wrapper
+        let result = unsafe { kernel32_FlushViewOfFile(mapped.cast(), len) };
+        assert_eq!(result, 1, "FlushViewOfFile should return 1 (success)");
+
+        // Verify the change persisted
+        let content = std::fs::read(&path).unwrap();
+        assert_eq!(content[0], b'B', "mapped write should be visible in file");
+
+        unsafe {
+            // SAFETY: mapped/len match mmap arguments
+            libc::munmap(mapped, len);
+        }
+        let _ = std::fs::remove_file(&path);
+    }
 }

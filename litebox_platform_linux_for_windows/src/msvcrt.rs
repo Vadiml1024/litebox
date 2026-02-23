@@ -1402,16 +1402,30 @@ pub unsafe extern "C" fn msvcrt_strtod(nptr: *const i8, endptr: *mut *mut i8) ->
         .to_str()
         .unwrap_or("");
     let trimmed = s.trim_ascii_start();
-    let val = trimmed.parse::<f64>().unwrap_or(0.0);
+    let ws_len = s.len() - trimmed.len();
+
+    // Track the longest prefix of `trimmed` that successfully parses as an f64.
+    let mut last_ok_len = 0usize;
+    let mut last_ok_val = 0.0f64;
+    let mut byte_index = 0usize;
+    for ch in trimmed.chars() {
+        byte_index += ch.len_utf8();
+        if let Ok(v) = trimmed[..byte_index].parse::<f64>() {
+            last_ok_len = byte_index;
+            last_ok_val = v;
+        }
+    }
+
+    let val = if last_ok_len > 0 { last_ok_val } else { 0.0 };
+
     if !endptr.is_null() {
-        let ws_len = s.len() - trimmed.len();
-        let num_len = trimmed
-            .chars()
-            .take_while(|&c| {
-                c.is_ascii_digit() || c == '.' || c == '-' || c == '+' || c == 'e' || c == 'E'
-            })
-            .count();
-        *endptr = nptr.add(ws_len + num_len).cast_mut();
+        if last_ok_len > 0 {
+            let consumed = ws_len + last_ok_len;
+            *endptr = nptr.add(consumed).cast_mut();
+        } else {
+            // No conversion performed: endptr should point to the original nptr.
+            *endptr = nptr.cast_mut();
+        }
     }
     val
 }
@@ -1542,12 +1556,12 @@ pub unsafe extern "C" fn msvcrt__strnicmp(s1: *const i8, s2: *const i8, n: usize
     }
     let mut i = 0;
     while i < n {
-        let a = ((*s1.add(i)).cast_unsigned() as char).to_ascii_lowercase();
-        let b = ((*s2.add(i)).cast_unsigned() as char).to_ascii_lowercase();
+        let a = (*s1.add(i)).cast_unsigned().to_ascii_lowercase();
+        let b = (*s2.add(i)).cast_unsigned().to_ascii_lowercase();
         if a != b {
-            return i32::from(a as u8) - i32::from(b as u8);
+            return i32::from(a) - i32::from(b);
         }
-        if a == '\0' {
+        if a == 0 {
             return 0;
         }
         i += 1;
@@ -2318,9 +2332,9 @@ mod tests {
     #[test]
     fn test_atoi() {
         unsafe {
-            assert_eq!(msvcrt_atoi(b"42\0".as_ptr().cast()), 42);
-            assert_eq!(msvcrt_atoi(b"-5\0".as_ptr().cast()), -5);
-            assert_eq!(msvcrt_atoi(b"  10\0".as_ptr().cast()), 10);
+            assert_eq!(msvcrt_atoi(c"42".as_ptr(),), 42);
+            assert_eq!(msvcrt_atoi(c"-5".as_ptr()), -5);
+            assert_eq!(msvcrt_atoi(c"  10".as_ptr()), 10);
             assert_eq!(msvcrt_atoi(core::ptr::null()), 0);
         }
     }
@@ -2328,9 +2342,9 @@ mod tests {
     #[test]
     fn test_atof() {
         unsafe {
-            let v = msvcrt_atof(b"3.14\0".as_ptr().cast());
-            assert!((v - 3.14).abs() < 1e-10);
-            assert_eq!(msvcrt_atof(core::ptr::null()), 0.0);
+            let v = msvcrt_atof(c"2.5".as_ptr());
+            assert!((v - 2.5).abs() < 1e-10);
+            assert!((msvcrt_atof(core::ptr::null())).abs() < 1e-15);
         }
     }
 
@@ -2338,15 +2352,15 @@ mod tests {
     fn test_strtol() {
         unsafe {
             let mut end = core::ptr::null_mut::<i8>();
-            let s = b"123abc\0";
-            let val = msvcrt_strtol(s.as_ptr().cast(), &raw mut end, 10);
+            let s = c"123abc";
+            let val = msvcrt_strtol(s.as_ptr(), &raw mut end, 10);
             assert_eq!(val, 123);
-            assert_eq!(*end as u8, b'a');
+            assert_eq!((*end).cast_unsigned(), b'a');
         }
     }
 
     #[test]
-    fn test__itoa() {
+    fn test_itoa() {
         unsafe {
             let mut buf = [0i8; 32];
             msvcrt__itoa(255, buf.as_mut_ptr(), 16);
@@ -2359,7 +2373,7 @@ mod tests {
     fn test_strncpy() {
         unsafe {
             let mut buf = [0i8; 16];
-            msvcrt_strncpy(buf.as_mut_ptr(), b"hello\0".as_ptr().cast(), 8);
+            msvcrt_strncpy(buf.as_mut_ptr(), c"hello".as_ptr(), 8);
             let s = core::ffi::CStr::from_ptr(buf.as_ptr()).to_str().unwrap();
             assert_eq!(s, "hello");
         }
@@ -2368,22 +2382,16 @@ mod tests {
     #[test]
     fn test_stricmp() {
         unsafe {
-            assert_eq!(
-                msvcrt__stricmp(b"Hello\0".as_ptr().cast(), b"hello\0".as_ptr().cast()),
-                0
-            );
-            assert_ne!(
-                msvcrt__stricmp(b"abc\0".as_ptr().cast(), b"xyz\0".as_ptr().cast()),
-                0
-            );
+            assert_eq!(msvcrt__stricmp(c"Hello".as_ptr(), c"hello".as_ptr()), 0);
+            assert_ne!(msvcrt__stricmp(c"abc".as_ptr(), c"xyz".as_ptr()), 0);
         }
     }
 
     #[test]
     fn test_strnlen() {
         unsafe {
-            assert_eq!(msvcrt_strnlen(b"hello\0".as_ptr().cast(), 10), 5);
-            assert_eq!(msvcrt_strnlen(b"hello\0".as_ptr().cast(), 3), 3);
+            assert_eq!(msvcrt_strnlen(c"hello".as_ptr(), 10), 5);
+            assert_eq!(msvcrt_strnlen(c"hello".as_ptr(), 3), 3);
             assert_eq!(msvcrt_strnlen(core::ptr::null(), 10), 0);
         }
     }
@@ -2446,6 +2454,177 @@ mod tests {
             assert_eq!(n, 5);
             let s = core::ffi::CStr::from_ptr(narrow.as_ptr()).to_str().unwrap();
             assert_eq!(s, "hello");
+        }
+    }
+
+    #[test]
+    fn test_atol() {
+        unsafe {
+            assert_eq!(msvcrt_atol(c"42".as_ptr()), 42);
+            assert_eq!(msvcrt_atol(c"-7".as_ptr()), -7);
+            assert_eq!(msvcrt_atol(c"0".as_ptr()), 0);
+        }
+    }
+
+    #[test]
+    fn test_strtoul() {
+        unsafe {
+            assert_eq!(
+                msvcrt_strtoul(c"255".as_ptr(), core::ptr::null_mut(), 10),
+                255
+            );
+            assert_eq!(
+                msvcrt_strtoul(c"ff".as_ptr(), core::ptr::null_mut(), 16),
+                0xff
+            );
+        }
+    }
+
+    #[test]
+    fn test_strtod() {
+        unsafe {
+            let s = c"2.5abc";
+            let mut end: *mut i8 = core::ptr::null_mut();
+            let val = msvcrt_strtod(s.as_ptr(), &raw mut end);
+            assert!((val - 2.5).abs() < 1e-6, "strtod: got {val}");
+            // endptr should point past the parsed number (at 'a')
+            let end_offset = end.offset_from(s.as_ptr());
+            assert!(end_offset >= 0, "endptr must be after start");
+            assert_eq!(
+                end_offset.cast_unsigned(),
+                3,
+                "endptr offset should be 3, got {end_offset}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_ltoa() {
+        unsafe {
+            let mut buf = [0i8; 32];
+            msvcrt__ltoa(-42, buf.as_mut_ptr(), 10);
+            let s = core::ffi::CStr::from_ptr(buf.as_ptr()).to_str().unwrap();
+            assert_eq!(s, "-42");
+            msvcrt__ltoa(255, buf.as_mut_ptr(), 16);
+            let s = core::ffi::CStr::from_ptr(buf.as_ptr()).to_str().unwrap();
+            assert_eq!(s, "ff");
+        }
+    }
+
+    #[test]
+    fn test_strncat() {
+        unsafe {
+            let mut buf = [0i8; 32];
+            let hello = c"hello";
+            core::ptr::copy_nonoverlapping(hello.as_ptr(), buf.as_mut_ptr(), 6);
+            msvcrt_strncat(buf.as_mut_ptr(), c" world".as_ptr(), 6);
+            let s = core::ffi::CStr::from_ptr(buf.as_ptr()).to_str().unwrap();
+            assert_eq!(s, "hello world");
+        }
+    }
+
+    #[test]
+    fn test_strnicmp() {
+        unsafe {
+            // equal strings (different case)
+            assert_eq!(msvcrt__strnicmp(c"Hello".as_ptr(), c"hello".as_ptr(), 5), 0);
+            // differ before n is reached
+            assert_ne!(msvcrt__strnicmp(c"abc".as_ptr(), c"xyz".as_ptr(), 3), 0);
+            // n=0 always equal
+            assert_eq!(msvcrt__strnicmp(c"abc".as_ptr(), c"xyz".as_ptr(), 0), 0);
+        }
+    }
+
+    #[test]
+    fn test_strdup() {
+        unsafe {
+            let dup = msvcrt__strdup(c"hello".as_ptr());
+            assert!(!dup.is_null());
+            let result = core::ffi::CStr::from_ptr(dup).to_str().unwrap();
+            assert_eq!(result, "hello");
+            msvcrt_free(dup.cast());
+        }
+    }
+
+    #[test]
+    fn test_clock() {
+        unsafe {
+            let t = msvcrt_clock();
+            assert!(t >= 0, "clock should return non-negative value");
+        }
+    }
+
+    #[test]
+    fn test_labs_abs64() {
+        unsafe {
+            assert_eq!(msvcrt_labs(-99i64), 99i64);
+            assert_eq!(msvcrt__abs64(-1_000_000i64), 1_000_000i64);
+            assert_eq!(msvcrt__abs64(0), 0);
+        }
+    }
+
+    #[test]
+    fn test_math_extended() {
+        unsafe {
+            assert!((msvcrt_log(core::f64::consts::E) - 1.0).abs() < 1e-10);
+            assert!((msvcrt_log10(100.0) - 2.0).abs() < 1e-10);
+            assert!((msvcrt_exp(1.0) - core::f64::consts::E).abs() < 1e-10);
+            assert!((msvcrt_sin(0.0)).abs() < 1e-10);
+            assert!((msvcrt_cos(0.0) - 1.0).abs() < 1e-10);
+            assert!((msvcrt_tan(0.0)).abs() < 1e-10);
+            assert!((msvcrt_atan(1.0) - core::f64::consts::FRAC_PI_4).abs() < 1e-10);
+            assert!((msvcrt_atan2(1.0, 1.0) - core::f64::consts::FRAC_PI_4).abs() < 1e-10);
+            assert!((msvcrt_fmod(5.5, 2.0) - 1.5).abs() < 1e-10);
+        }
+    }
+
+    #[test]
+    fn test_wcsncpy() {
+        unsafe {
+            let src: Vec<u16> = "hello world\0".encode_utf16().collect();
+            let mut buf = vec![0u16; 32];
+            msvcrt_wcsncpy(buf.as_mut_ptr(), src.as_ptr(), 5);
+            // wcsncpy copies exactly n chars; no guaranteed NUL if src >= n
+            let result = String::from_utf16_lossy(&buf[..5]);
+            assert_eq!(result, "hello");
+        }
+    }
+
+    #[test]
+    fn test_wcschr() {
+        unsafe {
+            let s: Vec<u16> = "hello\0".encode_utf16().collect();
+            let found = msvcrt_wcschr(s.as_ptr(), u16::from(b'l'));
+            assert!(!found.is_null());
+            // offset to first 'l' is 2
+            assert_eq!(found.offset_from(s.as_ptr()), 2);
+            let not_found = msvcrt_wcschr(s.as_ptr(), u16::from(b'z'));
+            assert!(not_found.is_null());
+        }
+    }
+
+    #[test]
+    fn test_wcsncmp() {
+        unsafe {
+            let a: Vec<u16> = "hello\0".encode_utf16().collect();
+            let b: Vec<u16> = "hellx\0".encode_utf16().collect();
+            assert_eq!(msvcrt_wcsncmp(a.as_ptr(), a.as_ptr(), 5), 0);
+            let r = msvcrt_wcsncmp(a.as_ptr(), b.as_ptr(), 5);
+            assert!(r < 0, "expected negative, got {r}");
+            // only compare 4 chars — should be equal
+            assert_eq!(msvcrt_wcsncmp(a.as_ptr(), b.as_ptr(), 4), 0);
+        }
+    }
+
+    #[test]
+    fn test_wcsicmp_wcsnicmp() {
+        unsafe {
+            let a: Vec<u16> = "Hello\0".encode_utf16().collect();
+            let b: Vec<u16> = "hello\0".encode_utf16().collect();
+            assert_eq!(msvcrt__wcsicmp(a.as_ptr(), b.as_ptr()), 0);
+            assert_eq!(msvcrt__wcsnicmp(a.as_ptr(), b.as_ptr(), 5), 0);
+            let c: Vec<u16> = "world\0".encode_utf16().collect();
+            assert_ne!(msvcrt__wcsicmp(a.as_ptr(), c.as_ptr()), 0);
         }
     }
 }
