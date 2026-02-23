@@ -12,6 +12,7 @@ use anyhow::{Result, anyhow};
 use clap::Parser;
 use litebox_platform_linux_for_windows::LinuxPlatformForWindows;
 use litebox_platform_linux_for_windows::register_dynamic_exports;
+use litebox_platform_linux_for_windows::register_exception_table;
 use litebox_platform_linux_for_windows::set_process_command_line;
 use litebox_platform_linux_for_windows::set_sandbox_root;
 use litebox_platform_linux_for_windows::set_volume_serial;
@@ -326,6 +327,26 @@ pub fn run(cli_args: CliArgs) -> Result<()> {
     let tls_info = pe_loader
         .tls_info()
         .map_err(|e| anyhow!("Failed to parse TLS directory: {e}"))?;
+
+    // Register the exception table (.pdata) for SEH support
+    loader_log!("\nChecking for exception directory (.pdata)...");
+    let exception_dir = pe_loader
+        .exception_directory()
+        .map_err(|e| anyhow!("Failed to parse exception directory: {e}"))?;
+    if let Some(ref exc) = exception_dir {
+        // The .pdata RVAs are relative to the image base; since relocations have
+        // already been applied to the *section data*, we pass the actual load address
+        // and the original RVA so RtlLookupFunctionEntry can add them at lookup time.
+        register_exception_table(base_address, exc.rva, exc.size);
+        loader_log!(
+            "  Exception table registered: {} entries ({} bytes) at RVA 0x{:X}",
+            exc.size / 12,
+            exc.size,
+            exc.rva,
+        );
+    } else {
+        loader_log!("  No exception directory found");
+    }
 
     // Set up execution context (TEB/PEB)
     loader_log!("\nSetting up execution context...");

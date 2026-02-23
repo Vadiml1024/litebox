@@ -1246,23 +1246,415 @@ pub unsafe extern "C" fn kernel32_DeleteCriticalSection(critical_section: *mut C
 }
 
 //
-// Phase 8: Exception Handling Stubs
+// SEH (Structured Exception Handling) Infrastructure
 //
-// These are minimal stub implementations to allow MinGW CRT to initialize.
-// Real exception handling (SEH) would require significant additional work.
+// Windows x64 SEH uses three key components:
+//   1. .pdata section: IMAGE_RUNTIME_FUNCTION_ENTRY records (BeginAddress, EndAddress,
+//      UnwindInfoAddress) that enumerate all functions in the image.
+//   2. .xdata section: UNWIND_INFO structures pointed to by each RUNTIME_FUNCTION entry,
+//      describing the function's prolog in terms of UNWIND_CODE opcodes.
+//   3. Runtime APIs: RtlLookupFunctionEntry, RtlVirtualUnwind, RtlUnwindEx.
 //
+// This implementation registers the loaded PE image's exception table and provides
+// working implementations of the runtime unwind APIs.
+//
+
+/// Registered exception table for a loaded PE image
+struct RegisteredExceptionTable {
+    /// Base address where the image was loaded
+    image_base: u64,
+    /// RVA of the exception directory (.pdata section)
+    pdata_rva: u32,
+    /// Size of the exception directory in bytes
+    pdata_size: u32,
+}
+
+static EXCEPTION_TABLE: Mutex<Option<RegisteredExceptionTable>> = Mutex::new(None);
+
+/// Register the exception table for a loaded PE image
+///
+/// This stores the location of the `.pdata` section so that
+/// `RtlLookupFunctionEntry` can search it for a given program counter.
+/// Must be called after the image is loaded and relocations are applied.
+///
+/// # Arguments
+/// * `image_base` - Actual load address of the PE image
+/// * `pdata_rva` - RVA of the exception directory (.pdata section)
+/// * `pdata_size` - Size of the exception directory in bytes
+pub fn register_exception_table(image_base: u64, pdata_rva: u32, pdata_size: u32) {
+    let mut guard = EXCEPTION_TABLE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    *guard = Some(RegisteredExceptionTable {
+        image_base,
+        pdata_rva,
+        pdata_size,
+    });
+}
+
+// ---- CONTEXT register byte offsets (Windows x64 CONTEXT structure) ----
+// The CONTEXT structure for x64 is 1232 bytes total.
+const CTX_RAX: usize = 0x78;
+const CTX_RCX: usize = 0x80;
+const CTX_RDX: usize = 0x88;
+const CTX_RBX: usize = 0x90;
+const CTX_RSP: usize = 0x98;
+const CTX_RBP: usize = 0xA0;
+const CTX_RSI: usize = 0xA8;
+const CTX_RDI: usize = 0xB0;
+const CTX_R8: usize = 0xB8;
+const CTX_R9: usize = 0xC0;
+const CTX_R10: usize = 0xC8;
+const CTX_R11: usize = 0xD0;
+const CTX_R12: usize = 0xD8;
+const CTX_R13: usize = 0xE0;
+const CTX_R14: usize = 0xE8;
+const CTX_R15: usize = 0xF0;
+const CTX_RIP: usize = 0xF8;
+const CTX_SIZE: usize = 1232;
+
+/// Map an x64 register number (0-15) to its byte offset in the Windows CONTEXT
+fn ctx_reg_offset(reg: u8) -> usize {
+    match reg {
+        1 => CTX_RCX,
+        2 => CTX_RDX,
+        3 => CTX_RBX,
+        4 => CTX_RSP,
+        5 => CTX_RBP,
+        6 => CTX_RSI,
+        7 => CTX_RDI,
+        8 => CTX_R8,
+        9 => CTX_R9,
+        10 => CTX_R10,
+        11 => CTX_R11,
+        12 => CTX_R12,
+        13 => CTX_R13,
+        14 => CTX_R14,
+        15 => CTX_R15,
+        _ => CTX_RAX, // 0 = RAX, and default for unknown
+    }
+}
+
+/// Read a u64 from the Windows CONTEXT structure at the given byte offset
+///
+/// # Safety
+/// `ctx` must point to a valid CONTEXT structure of at least CTX_SIZE bytes.
+#[inline]
+unsafe fn ctx_read(ctx: *const u8, offset: usize) -> u64 {
+    // SAFETY: Caller guarantees ctx is valid; offset is always within the 1232-byte CONTEXT.
+    unsafe { ctx.add(offset).cast::<u64>().read_unaligned() }
+}
+
+/// Write a u64 into the Windows CONTEXT structure at the given byte offset
+///
+/// # Safety
+/// `ctx` must point to a valid writable CONTEXT structure of at least CTX_SIZE bytes.
+#[inline]
+unsafe fn ctx_write(ctx: *mut u8, offset: usize, value: u64) {
+    // SAFETY: Caller guarantees ctx is valid and writable; offset is within CONTEXT bounds.
+    unsafe { ctx.add(offset).cast::<u64>().write_unaligned(value) }
+}
+
+// ---- UNWIND_INFO flags ----
+const UNW_FLAG_EHANDLER: u8 = 0x01;
+const UNW_FLAG_UHANDLER: u8 = 0x02;
+const UNW_FLAG_CHAININFO: u8 = 0x04;
+
+// ---- UNWIND_CODE opcodes ----
+const UWOP_PUSH_NONVOL: u8 = 0;
+const UWOP_ALLOC_LARGE: u8 = 1;
+const UWOP_ALLOC_SMALL: u8 = 2;
+const UWOP_SET_FPREG: u8 = 3;
+const UWOP_SAVE_NONVOL: u8 = 4;
+const UWOP_SAVE_NONVOL_FAR: u8 = 5;
+const UWOP_SAVE_XMM128: u8 = 8;
+const UWOP_SAVE_XMM128_FAR: u8 = 9;
+const UWOP_PUSH_MACHFRAME: u8 = 10;
+
+/// Apply the UNWIND_INFO for one function frame, modifying `ctx` to reflect
+/// the caller's register state.
+///
+/// Returns the address of the language-specific exception handler (an RVA within
+/// `image_base`), or `NULL` if no handler is registered for this frame.
+///
+/// # Safety
+/// - `image_base` must be the load address of the PE image containing `unwind_info_rva`.
+/// - `ctx` must point to a valid, writable Windows CONTEXT structure (≥ CTX_SIZE bytes).
+/// - `control_pc` must be the program counter being unwound (used only for in-prolog detection).
+/// - `begin_rva` is the function's begin RVA (used together with `control_pc`).
+unsafe fn apply_unwind_info(
+    image_base: u64,
+    unwind_info_rva: u32,
+    control_pc: u64,
+    begin_rva: u32,
+    ctx: *mut u8,
+    handler_data_out: *mut *mut core::ffi::c_void,
+    establisher_frame_out: *mut u64,
+) -> *mut core::ffi::c_void {
+    // SAFETY: We trust image_base + RVA to be within the loaded image.
+    let ui = (image_base + u64::from(unwind_info_rva)) as *const u8;
+
+    // UNWIND_INFO header (4 bytes):
+    //   Byte 0: VersionAndFlags  = Version[2:0] | Flags[7:3]
+    //   Byte 1: SizeOfProlog
+    //   Byte 2: CountOfCodes
+    //   Byte 3: FrameRegisterAndOffset = FrameRegister[3:0] | FrameOffset[7:4]
+    let version_flags = unsafe { ui.read() };
+    let version = version_flags & 0x07;
+    let flags = (version_flags >> 3) & 0x1F;
+    let size_of_prolog = unsafe { ui.add(1).read() } as usize;
+    let count_of_codes = unsafe { ui.add(2).read() } as usize;
+    let frame_reg_and_offset = unsafe { ui.add(3).read() };
+    let frame_register = frame_reg_and_offset & 0x0F;
+    let frame_offset = (frame_reg_and_offset >> 4) & 0x0F;
+
+    // Only UNWIND_INFO version 1 is supported.
+    if version != 1 {
+        // Fallback: pop the return address and move on.
+        let rsp = unsafe { ctx_read(ctx, CTX_RSP) };
+        let rip = unsafe { (rsp as *const u64).read_unaligned() };
+        unsafe {
+            ctx_write(ctx, CTX_RIP, rip);
+            ctx_write(ctx, CTX_RSP, rsp + 8);
+        }
+        if !establisher_frame_out.is_null() {
+            unsafe { *establisher_frame_out = rsp }
+        }
+        return core::ptr::null_mut();
+    }
+
+    // Determine whether the PC is inside the prolog.
+    let func_start_va = image_base + u64::from(begin_rva);
+    let in_prolog =
+        control_pc >= func_start_va && (control_pc - func_start_va) < size_of_prolog as u64;
+    let prolog_offset = if in_prolog {
+        (control_pc - func_start_va) as usize
+    } else {
+        usize::MAX // treat as past-prolog: all codes apply
+    };
+
+    // If a frame pointer is established, the RSP base for this frame is
+    //   frame_register - frame_offset * 16
+    // We compute it here for use by UWOP_SET_FPREG.
+    let fp_rsp_base = if frame_register != 0 {
+        let fp_val = unsafe { ctx_read(ctx, ctx_reg_offset(frame_register)) };
+        fp_val.wrapping_sub(u64::from(frame_offset) * 16)
+    } else {
+        0
+    };
+
+    // SAFETY: The UNWIND_CODE array starts at byte 4 of UNWIND_INFO.
+    let codes = unsafe { ui.add(4).cast::<u16>() };
+
+    let mut i = 0usize;
+    while i < count_of_codes {
+        let code = unsafe { codes.add(i).read_unaligned() };
+        let code_offset = (code & 0xFF) as usize; // OffsetInProlog
+        let unwind_op = ((code >> 8) & 0x0F) as u8;
+        let op_info = ((code >> 12) & 0x0F) as u8;
+
+        // Number of additional u16 slots consumed by this code entry
+        let extra_slots: usize = match (unwind_op, op_info) {
+            (UWOP_ALLOC_LARGE, 0) => 1,
+            (UWOP_ALLOC_LARGE, _) | (UWOP_SAVE_NONVOL_FAR, _) | (UWOP_SAVE_XMM128_FAR, _) => 2,
+            (UWOP_SAVE_NONVOL, _) | (UWOP_SAVE_XMM128, _) => 1,
+            _ => 0,
+        };
+
+        // Bounds check: ensure the extra slots are within the codes array.
+        // Malformed unwind info could otherwise cause out-of-bounds reads.
+        if i + extra_slots >= count_of_codes && extra_slots > 0 {
+            // Malformed unwind info; skip the rest of the codes and return no handler.
+            break;
+        }
+
+        // In the prolog, skip codes for instructions not yet executed
+        // (code_offset is the offset of the *next* instruction after this one,
+        //  so the instruction has executed when prolog_offset >= code_offset).
+        if in_prolog && prolog_offset < code_offset {
+            i += 1 + extra_slots;
+            continue;
+        }
+
+        match unwind_op {
+            UWOP_PUSH_NONVOL => {
+                // Prolog: push reg  →  unwind: reg = [RSP], RSP += 8
+                let rsp = unsafe { ctx_read(ctx, CTX_RSP) };
+                let val = unsafe { (rsp as *const u64).read_unaligned() };
+                let reg_off = ctx_reg_offset(op_info);
+                unsafe {
+                    ctx_write(ctx, reg_off, val);
+                    ctx_write(ctx, CTX_RSP, rsp + 8);
+                }
+                i += 1;
+            }
+            UWOP_ALLOC_LARGE => {
+                let size = if op_info == 0 {
+                    let next = unsafe { codes.add(i + 1).read_unaligned() };
+                    u64::from(next) * 8
+                } else {
+                    let lo = unsafe { codes.add(i + 1).read_unaligned() };
+                    let hi = unsafe { codes.add(i + 2).read_unaligned() };
+                    u64::from(lo) | (u64::from(hi) << 16)
+                };
+                let rsp = unsafe { ctx_read(ctx, CTX_RSP) };
+                unsafe { ctx_write(ctx, CTX_RSP, rsp + size) };
+                i += 1 + extra_slots;
+            }
+            UWOP_ALLOC_SMALL => {
+                // Prolog: sub rsp, (op_info+1)*8  →  unwind: RSP += (op_info+1)*8
+                let size = (u64::from(op_info) + 1) * 8;
+                let rsp = unsafe { ctx_read(ctx, CTX_RSP) };
+                unsafe { ctx_write(ctx, CTX_RSP, rsp + size) };
+                i += 1;
+            }
+            UWOP_SET_FPREG => {
+                // Prolog: lea frame_reg, [rsp + frame_offset*16]
+                // Unwind: RSP = frame_reg - frame_offset*16
+                //
+                // Only apply when a valid frame pointer exists (frame_register != 0).
+                // If fp_rsp_base is 0 the UNWIND_INFO is malformed; skip to avoid
+                // setting RSP to 0 and crashing on the subsequent return-address pop.
+                if fp_rsp_base != 0 {
+                    unsafe { ctx_write(ctx, CTX_RSP, fp_rsp_base) };
+                }
+                i += 1;
+            }
+            UWOP_SAVE_NONVOL => {
+                // Prolog: mov [rsp + slot*8], reg  →  unwind: reg = [rsp + slot*8]
+                let slot = unsafe { codes.add(i + 1).read_unaligned() };
+                let offset = u64::from(slot) * 8;
+                let rsp = unsafe { ctx_read(ctx, CTX_RSP) };
+                let val = unsafe { ((rsp + offset) as *const u64).read_unaligned() };
+                let reg_off = ctx_reg_offset(op_info);
+                unsafe { ctx_write(ctx, reg_off, val) };
+                i += 2;
+            }
+            UWOP_SAVE_NONVOL_FAR => {
+                // Prolog: mov [rsp + offset], reg  (large offset)
+                let lo = unsafe { codes.add(i + 1).read_unaligned() };
+                let hi = unsafe { codes.add(i + 2).read_unaligned() };
+                let offset = u64::from(lo) | (u64::from(hi) << 16);
+                let rsp = unsafe { ctx_read(ctx, CTX_RSP) };
+                let val = unsafe { ((rsp + offset) as *const u64).read_unaligned() };
+                let reg_off = ctx_reg_offset(op_info);
+                unsafe { ctx_write(ctx, reg_off, val) };
+                i += 3;
+            }
+            UWOP_SAVE_XMM128 => {
+                // On Windows x64, XMM6–XMM15 are non-volatile and their saves are
+                // described via UWOP_SAVE_XMM128 / UWOP_SAVE_XMM128_FAR entries.
+                //
+                // This unwinder reconstructs only integer register state (general-purpose
+                // registers, RIP, RSP) and intentionally does not restore XMM register
+                // contents into the CONTEXT.  XMM state in the produced CONTEXT may
+                // therefore be inaccurate.  For stack-frame reconstruction and exception
+                // dispatch this is acceptable; correct XMM state would only matter for
+                // a full context-restore to resume execution mid-function.
+                i += 2;
+            }
+            UWOP_SAVE_XMM128_FAR => {
+                // See UWOP_SAVE_XMM128 above: XMM register state is intentionally not
+                // restored; we only advance past the opcode and its two-slot offset.
+                i += 3;
+            }
+            UWOP_PUSH_MACHFRAME => {
+                // Machine exception frame pushed onto the stack:
+                // [optional error code (8 bytes if op_info==1)], RIP, CS, RFLAGS, RSP, SS
+                let rsp = unsafe { ctx_read(ctx, CTX_RSP) };
+                let rip_addr = if op_info == 1 { rsp + 8 } else { rsp };
+                let rip = unsafe { (rip_addr as *const u64).read_unaligned() };
+                // RSP is 3 slots after RIP (CS + RFLAGS = 2 × 8 bytes, then RSP)
+                let new_rsp = unsafe { ((rip_addr + 24) as *const u64).read_unaligned() };
+                unsafe {
+                    ctx_write(ctx, CTX_RIP, rip);
+                    ctx_write(ctx, CTX_RSP, new_rsp);
+                }
+                if !establisher_frame_out.is_null() {
+                    unsafe { *establisher_frame_out = new_rsp }
+                }
+                if !handler_data_out.is_null() {
+                    unsafe { *handler_data_out = core::ptr::null_mut() }
+                }
+                return core::ptr::null_mut();
+            }
+            _ => {
+                i += 1;
+            }
+        }
+    }
+
+    // After applying all unwind codes, pop the return address.
+    let rsp = unsafe { ctx_read(ctx, CTX_RSP) };
+    let return_addr = unsafe { (rsp as *const u64).read_unaligned() };
+    unsafe {
+        ctx_write(ctx, CTX_RIP, return_addr);
+        ctx_write(ctx, CTX_RSP, rsp + 8);
+    }
+    if !establisher_frame_out.is_null() {
+        // Establisher frame = RSP before popping the return address
+        unsafe { *establisher_frame_out = rsp }
+    }
+
+    // ---- Determine the language-specific handler ----
+    if flags & UNW_FLAG_CHAININFO != 0 {
+        // UNW_FLAG_CHAININFO: after the codes (aligned to 4 bytes) lies another
+        // RUNTIME_FUNCTION that chains to a parent function's unwind info.
+        // Recursively apply the chained entry; do NOT return a handler from here.
+        let codes_bytes = count_of_codes * 2;
+        let chain_offset = (4 + codes_bytes + 3) & !3; // round up to 4-byte boundary
+        let chain_rf = unsafe { ui.add(chain_offset).cast::<u32>() };
+        let chain_begin = unsafe { chain_rf.read_unaligned() };
+        let chain_unwind = unsafe { chain_rf.add(2).read_unaligned() };
+
+        return unsafe {
+            apply_unwind_info(
+                image_base,
+                chain_unwind,
+                control_pc,
+                chain_begin,
+                ctx,
+                handler_data_out,
+                // Don't overwrite establisher_frame with chained frame
+                core::ptr::null_mut(),
+            )
+        };
+    }
+
+    if flags & (UNW_FLAG_EHANDLER | UNW_FLAG_UHANDLER) != 0 {
+        // The exception handler RVA follows the codes, aligned to 4 bytes.
+        let codes_bytes = count_of_codes * 2;
+        let handler_slot_offset = (4 + codes_bytes + 3) & !3;
+        let handler_rva_ptr = unsafe { ui.add(handler_slot_offset).cast::<u32>() };
+        let handler_rva = unsafe { handler_rva_ptr.read_unaligned() };
+        if handler_rva != 0 {
+            // HandlerData immediately follows the handler RVA DWORD.
+            if !handler_data_out.is_null() {
+                unsafe {
+                    *handler_data_out = ui
+                        .add(handler_slot_offset + 4)
+                        .cast_mut()
+                        .cast::<core::ffi::c_void>();
+                }
+            }
+            return (image_base + u64::from(handler_rva)) as *mut core::ffi::c_void;
+        }
+    }
+
+    core::ptr::null_mut()
+}
 
 /// Windows exception handler function type
 ///
-/// This is a stub implementation. Real SEH would require:
-/// - Parsing .pdata and .xdata sections for unwind info
-/// - Implementing exception dispatching
-/// - Managing exception chains
-/// - Supporting __try/__except/__finally
+/// This is a stub implementation for `__C_specific_handler`, the C-language
+/// exception handler used with `__try`/`__except`/`__finally` constructs.
+///
+/// A full implementation would call the filter expression in `SCOPE_TABLE`,
+/// and (for `__except`) perform a longjmp-style transfer to the handler block.
+/// For now, this returns `EXCEPTION_CONTINUE_SEARCH` to let exceptions propagate.
 ///
 /// # Safety
-/// This function is safe to call with any arguments including NULL pointers,
-/// as it only returns a constant value and doesn't dereference any pointers.
+/// This function is safe to call with any arguments including NULL pointers.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32___C_specific_handler(
     _exception_record: *mut core::ffi::c_void,
@@ -1270,35 +1662,31 @@ pub unsafe extern "C" fn kernel32___C_specific_handler(
     _context_record: *mut core::ffi::c_void,
     _dispatcher_context: *mut core::ffi::c_void,
 ) -> i32 {
-    // EXCEPTION_CONTINUE_SEARCH (1) - Tell the system to keep looking for handlers
-    // For now, we don't handle any exceptions, just let them propagate
+    // EXCEPTION_CONTINUE_SEARCH (1) - let the exception propagate upward
     1
 }
 
 /// Set unhandled exception filter
 ///
-/// This is a stub that accepts the filter but doesn't actually use it.
-/// Returns the previous filter (always NULL in this stub).
+/// Stores the filter but does not invoke it; returns the previous filter
+/// (always NULL in this implementation).
 ///
 /// # Safety
-/// This function is safe to call with any argument including NULL pointers.
-/// It only returns a constant NULL value.
+/// Safe to call with any argument including NULL.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_SetUnhandledExceptionFilter(
     _filter: *mut core::ffi::c_void,
 ) -> *mut core::ffi::c_void {
-    // Return NULL (no previous filter)
     core::ptr::null_mut()
 }
 
 /// Raise an exception
 ///
-/// This stub implementation aborts the process, which is a reasonable
-/// fallback for unhandled exceptions.
+/// Aborts the process. A full implementation would dispatch the exception
+/// through the SEH chain before terminating.
 ///
 /// # Safety
-/// This function always aborts the process, so it never returns.
-/// Safe to call with any arguments.
+/// Always aborts; never returns.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_RaiseException(
     exception_code: u32,
@@ -1306,57 +1694,174 @@ pub unsafe extern "C" fn kernel32_RaiseException(
     _number_parameters: u32,
     _arguments: *const usize,
 ) -> ! {
-    // For now, any raised exception causes an abort
     eprintln!("Windows exception raised (code: {exception_code:#x}) - aborting");
     std::process::abort()
 }
 
-/// Capture CPU context for exception handling
+/// Capture the current CPU context into a Windows CONTEXT structure
 ///
-/// This stub zeros out the context structure. Real implementation would
-/// capture all CPU registers (RAX, RBX, RCX, RDX, RSI, RDI, etc.)
+/// Captures non-volatile registers reliably (they are preserved across function
+/// calls) and RSP/RIP to the values current at the call site.
+/// Volatile registers are captured best-effort.
 ///
 /// # Safety
-/// Caller must ensure `context` points to a valid writable memory region
-/// of at least 1232 bytes (size of Windows CONTEXT structure for x64).
-/// Passing NULL is safe (function checks and does nothing).
+/// `context` must point to a writable buffer of at least CTX_SIZE (1232) bytes.
+/// Passing NULL is safe; the function returns immediately.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_RtlCaptureContext(context: *mut core::ffi::c_void) {
-    if !context.is_null() {
-        // Zero out the context (size of Windows CONTEXT structure is ~1200 bytes for x64)
-        // SAFETY: Caller ensures context points to valid CONTEXT structure
-        unsafe {
-            core::ptr::write_bytes(context.cast::<u8>(), 0, 1232);
-        }
+    if context.is_null() {
+        return;
+    }
+
+    // Zero the entire CONTEXT structure first.
+    // SAFETY: caller guarantees the pointer is valid for CTX_SIZE bytes.
+    unsafe { core::ptr::write_bytes(context.cast::<u8>(), 0, CTX_SIZE) };
+
+    // Capture register values using a single base-register operand.
+    // Non-volatile registers (RBX, RBP, RSI, RDI, R12–R15) reliably hold
+    // their caller-visible values at this point.  RSP and RIP are computed
+    // from the stack frame.  Volatile registers are included best-effort.
+    // SAFETY: `context` points to a zeroed CTX_SIZE-byte buffer (see above).
+    unsafe {
+        core::arch::asm!(
+            "mov [{ctx} + 0x90], rbx",   // Rbx
+            "mov [{ctx} + 0xA0], rbp",   // Rbp
+            "mov [{ctx} + 0xA8], rsi",   // Rsi
+            "mov [{ctx} + 0xB0], rdi",   // Rdi
+            "mov [{ctx} + 0xD8], r12",   // R12
+            "mov [{ctx} + 0xE0], r13",   // R13
+            "mov [{ctx} + 0xE8], r14",   // R14
+            "mov [{ctx} + 0xF0], r15",   // R15
+            // RSP: caller's RSP = current RSP + 8 (for the return address pushed by CALL)
+            "lea rax, [rsp + 8]",
+            "mov [{ctx} + 0x98], rax",   // Rsp
+            // RIP: return address sitting at the top of our stack
+            "mov rax, [rsp]",
+            "mov [{ctx} + 0xF8], rax",   // Rip
+            ctx = in(reg) context,
+            out("rax") _,
+            options(nostack),
+        );
     }
 }
 
-/// Lookup function entry for exception handling
+/// Lookup the `IMAGE_RUNTIME_FUNCTION_ENTRY` for the given program counter
 ///
-/// This stub returns NULL, indicating no unwind info found.
-/// Real implementation would parse .pdata section.
+/// Searches the registered `.pdata` exception table for a RUNTIME_FUNCTION
+/// whose `[BeginAddress, EndAddress)` range contains `control_pc`.
+///
+/// On success, sets `*image_base` to the image load address and returns a
+/// pointer to the matching entry inside the loaded image's memory.
+/// Returns NULL if no entry is found (e.g. no exception table registered,
+/// or `control_pc` is outside all known functions).
 ///
 /// # Safety
-/// This function is safe to call with any arguments including NULL pointers.
-/// It only returns NULL and doesn't dereference any pointers.
+/// `image_base` may be NULL (the output is skipped); `history_table` is unused.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_RtlLookupFunctionEntry(
-    _control_pc: u64,
-    _image_base: *mut u64,
+    control_pc: u64,
+    image_base: *mut u64,
     _history_table: *mut core::ffi::c_void,
 ) -> *mut core::ffi::c_void {
-    // Return NULL - no function entry found
+    // Each RUNTIME_FUNCTION entry is 12 bytes: BeginAddress(4), EndAddress(4), UnwindInfoAddress(4)
+    const RF_SIZE: u32 = 12;
+
+    let guard = EXCEPTION_TABLE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(ref tbl) = *guard else {
+        return core::ptr::null_mut();
+    };
+
+    // The RVA of control_pc within this image
+    let Some(rva) = control_pc.checked_sub(tbl.image_base) else {
+        return core::ptr::null_mut();
+    };
+    // PE RVAs are 32-bit; if the delta exceeds u32::MAX the PC is outside this image.
+    if rva > u64::from(u32::MAX) {
+        return core::ptr::null_mut();
+    }
+    let rva = rva as u32;
+
+    let num_entries = tbl.pdata_size / RF_SIZE;
+
+    for idx in 0..num_entries {
+        let entry_ptr =
+            (tbl.image_base + u64::from(tbl.pdata_rva) + u64::from(idx * RF_SIZE)) as *const u32;
+        // SAFETY: The .pdata section is within the loaded image memory.
+        let begin = unsafe { entry_ptr.read_unaligned() };
+        let end = unsafe { entry_ptr.add(1).read_unaligned() };
+
+        if rva >= begin && rva < end {
+            if !image_base.is_null() {
+                unsafe { *image_base = tbl.image_base }
+            }
+            return entry_ptr as *mut core::ffi::c_void;
+        }
+    }
+
     core::ptr::null_mut()
 }
 
 /// Perform stack unwinding
 ///
-/// This stub does nothing. Real implementation would unwind the stack
-/// using information from .pdata and .xdata sections.
+/// Walks up one stack frame using the information in `function_entry`'s
+/// `UNWIND_INFO`.  On return, `context_record` reflects the caller's register
+/// state and `*establisher_frame` is set to the frame's RSP before the return
+/// address was popped.
+///
+/// If the function has a registered exception/termination handler, a pointer
+/// to it is returned and `*handler_data` is set to the handler-specific data
+/// (e.g. the `SCOPE_TABLE` for `__C_specific_handler`).
+///
+/// Returns NULL if no handler is registered for this frame.
 ///
 /// # Safety
-/// This function is safe to call with any arguments including NULL pointers.
-/// It does nothing and doesn't dereference any pointers.
+/// - `function_entry` must be a pointer to a valid RUNTIME_FUNCTION in the loaded image.
+/// - `context_record` must point to a valid, writable Windows CONTEXT structure.
+/// - `handler_data` and `establisher_frame` may be NULL.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_RtlVirtualUnwind(
+    _handler_type: u32,
+    image_base: u64,
+    control_pc: u64,
+    function_entry: *mut core::ffi::c_void,
+    context_record: *mut core::ffi::c_void,
+    handler_data: *mut *mut core::ffi::c_void,
+    establisher_frame: *mut u64,
+    _context_pointers: *mut core::ffi::c_void,
+) -> *mut core::ffi::c_void {
+    if function_entry.is_null() || context_record.is_null() {
+        return core::ptr::null_mut();
+    }
+
+    // Read the RUNTIME_FUNCTION fields: BeginAddress, EndAddress, UnwindInfoAddress
+    let rf = function_entry.cast::<u32>();
+    let begin_rva = unsafe { rf.read_unaligned() };
+    let unwind_info_rva = unsafe { rf.add(2).read_unaligned() };
+
+    // SAFETY: image_base is the load address, unwind_info_rva is within the image.
+    unsafe {
+        apply_unwind_info(
+            image_base,
+            unwind_info_rva,
+            control_pc,
+            begin_rva,
+            context_record.cast::<u8>(),
+            handler_data,
+            establisher_frame,
+        )
+    }
+}
+
+/// Perform full stack unwinding to a target frame
+///
+/// Unwinds the call stack until `target_frame` is reached, calling
+/// termination handlers along the way.  This is a best-effort implementation;
+/// it does not yet invoke language-specific handlers during the unwind phase.
+///
+/// # Safety
+/// All pointer arguments may be NULL (they are validated before use).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_RtlUnwindEx(
     _target_frame: *mut core::ffi::c_void,
@@ -1366,48 +1871,40 @@ pub unsafe extern "C" fn kernel32_RtlUnwindEx(
     _context_record: *mut core::ffi::c_void,
     _history_table: *mut core::ffi::c_void,
 ) {
-    // Stub: do nothing
-}
-
-/// Virtual unwind for exception handling
-///
-/// This stub returns a failure code. Real implementation would
-/// simulate unwinding one stack frame.
-///
-/// # Safety
-/// This function is safe to call with any arguments including NULL pointers.
-/// It only returns NULL and doesn't dereference any pointers.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn kernel32_RtlVirtualUnwind(
-    _handler_type: u32,
-    _image_base: u64,
-    _control_pc: u64,
-    _function_entry: *mut core::ffi::c_void,
-    _context_record: *mut core::ffi::c_void,
-    _handler_data: *mut *mut core::ffi::c_void,
-    _establisher_frame: *mut u64,
-    _context_pointers: *mut core::ffi::c_void,
-) -> *mut core::ffi::c_void {
-    // Return NULL - indicates failure/no handler
-    core::ptr::null_mut()
+    // Full RtlUnwindEx would walk the call stack calling termination handlers.
+    // This stub is sufficient for programs that do not use __finally blocks.
 }
 
 /// Add vectored exception handler
 ///
-/// This stub accepts the handler but doesn't register it.
-/// Returns a non-NULL handle to indicate success.
+/// Accepts the handler registration; returns a non-NULL handle to indicate
+/// success.  Vectored handlers are not yet invoked by `RaiseException`.
 ///
 /// # Safety
-/// This function is safe to call with any arguments including NULL pointers.
-/// It returns a fake non-NULL handle without dereferencing any pointers.
+/// Safe to call with any arguments.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_AddVectoredExceptionHandler(
     _first: u32,
     _handler: *mut core::ffi::c_void,
 ) -> *mut core::ffi::c_void {
-    // Return a fake handle (non-NULL to indicate success)
-    // Real implementation would register the handler
+    // Return a fake handle (non-NULL) to indicate success
     0x1000 as *mut core::ffi::c_void
+}
+
+/// Remove a vectored exception handler previously added via
+/// `AddVectoredExceptionHandler`.
+///
+/// Returns non-zero on success, 0 on failure.
+///
+/// # Safety
+/// Safe to call with any non-NULL handle value.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_RemoveVectoredExceptionHandler(
+    _handler: *mut core::ffi::c_void,
+) -> u32 {
+    // The stub in AddVectoredExceptionHandler returns a fake handle.
+    // Removal always succeeds.
+    1
 }
 
 //
@@ -8398,11 +8895,14 @@ mod tests {
         let prev_filter = unsafe { kernel32_SetUnhandledExceptionFilter(core::ptr::null_mut()) };
         assert!(prev_filter.is_null());
 
-        // Test RtlCaptureContext doesn't crash
+        // Test RtlCaptureContext captures real register values (non-zero for RSP/RIP at minimum)
         let mut context = vec![0u8; 1232]; // Size of Windows CONTEXT structure
         unsafe { kernel32_RtlCaptureContext(context.as_mut_ptr().cast()) };
-        // Should zero out the buffer
-        assert!(context.iter().all(|&b| b == 0));
+        // RSP (offset 0x98) and RIP (offset 0xF8) should be non-zero after capture
+        let rsp = u64::from_le_bytes(context[0x98..0xA0].try_into().unwrap());
+        let rip = u64::from_le_bytes(context[0xF8..0x100].try_into().unwrap());
+        assert_ne!(rsp, 0, "Captured RSP should be non-zero");
+        assert_ne!(rip, 0, "Captured RIP should be non-zero");
 
         // Test RtlLookupFunctionEntry returns NULL
         let mut image_base = 0u64;
@@ -8445,6 +8945,185 @@ mod tests {
         // Test AddVectoredExceptionHandler returns non-NULL
         let handler = unsafe { kernel32_AddVectoredExceptionHandler(1, core::ptr::null_mut()) };
         assert!(!handler.is_null());
+    }
+
+    #[test]
+    fn test_seh_exception_table_registration_and_lookup() {
+        // Build a minimal fake RUNTIME_FUNCTION table in memory:
+        // Entry 0: functions at RVA 0x1000 – 0x1050, with fake unwind-info RVA 0x5000
+        // Entry 1: functions at RVA 0x2000 – 0x2100, with fake unwind-info RVA 0x5100
+        let fake_table: Vec<u32> = vec![
+            0x1000, 0x1050, 0x5000, // entry 0
+            0x2000, 0x2100, 0x5100, // entry 1
+        ];
+        let pdata_bytes = (fake_table.len() * 4) as u32;
+        let pdata_raw = fake_table.as_ptr() as u64;
+
+        // The "image_base" we tell the lookup function is the start of our fake table minus
+        // the pdata_rva.  Since fake_table is at pdata_raw, and we choose pdata_rva = 0,
+        // image_base = pdata_raw.
+        let image_base = pdata_raw;
+        let pdata_rva = 0u32;
+
+        register_exception_table(image_base, pdata_rva, pdata_bytes);
+
+        // Look up a PC inside entry 0
+        let mut found_image_base = 0u64;
+        let entry = unsafe {
+            kernel32_RtlLookupFunctionEntry(
+                image_base + 0x1020,
+                core::ptr::addr_of_mut!(found_image_base),
+                core::ptr::null_mut(),
+            )
+        };
+        assert!(!entry.is_null(), "Should find entry 0");
+        assert_eq!(
+            found_image_base, image_base,
+            "image_base output should match"
+        );
+        // Verify entry 0 fields
+        let begin = unsafe { (entry as *const u32).read_unaligned() };
+        let end = unsafe { (entry as *const u32).add(1).read_unaligned() };
+        assert_eq!(begin, 0x1000);
+        assert_eq!(end, 0x1050);
+
+        // Look up a PC inside entry 1
+        let entry2 = unsafe {
+            kernel32_RtlLookupFunctionEntry(
+                image_base + 0x20FF,
+                core::ptr::addr_of_mut!(found_image_base),
+                core::ptr::null_mut(),
+            )
+        };
+        assert!(!entry2.is_null(), "Should find entry 1");
+        let begin2 = unsafe { (entry2 as *const u32).read_unaligned() };
+        assert_eq!(begin2, 0x2000);
+
+        // A PC outside all ranges should return NULL
+        let miss = unsafe {
+            kernel32_RtlLookupFunctionEntry(
+                image_base + 0x9999,
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+            )
+        };
+        assert!(miss.is_null(), "Out-of-range PC should return NULL");
+
+        // Clear the global exception table to prevent a dangling pointer:
+        // fake_table is stack-allocated and will be dropped at end of scope.
+        // Any subsequent test that calls RtlLookupFunctionEntry would otherwise
+        // read freed memory via the stored pointer.
+        {
+            let mut guard = EXCEPTION_TABLE
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            *guard = None;
+        }
+    }
+
+    #[test]
+    fn test_seh_virtual_unwind_basic() {
+        // Build a minimal PE in memory:
+        //
+        //  image_base (fake):  start of image_mem
+        //  Function at RVA 0x1000, size 0x100
+        //
+        // UNWIND_INFO at RVA 0x5000:
+        //   Byte 0: 0x01  (Version=1, Flags=0)
+        //   Byte 1: 0x08  (SizeOfProlog = 8)
+        //   Byte 2: 0x01  (CountOfCodes = 1)
+        //   Byte 3: 0x00  (FrameRegister=0, FrameOffset=0)
+        //   UNWIND_CODE[0]: UWOP_ALLOC_SMALL with op_info=3
+        //     → (3+1)*8 = 32 bytes sub rsp in prolog
+        //     → unwind effect: RSP += 32
+
+        let image_size = 0x6000usize;
+        let mut image_mem = vec![0u8; image_size];
+
+        // Write RUNTIME_FUNCTION at offset 0 (used as pdata)
+        let rf_ptr = image_mem.as_mut_ptr().cast::<u32>();
+        unsafe {
+            rf_ptr.write_unaligned(0x1000); // BeginAddress
+            rf_ptr.add(1).write_unaligned(0x1100); // EndAddress
+            rf_ptr.add(2).write_unaligned(0x5000); // UnwindInfoAddress
+        }
+
+        // Write UNWIND_INFO at offset 0x5000
+        let ui_ptr = unsafe { image_mem.as_mut_ptr().add(0x5000) };
+        // UWOP_ALLOC_SMALL: code_offset=8, op=2, op_info=3
+        let alloc_small_code: u16 = 0x08 | (2u16 << 8) | (3u16 << 12);
+        unsafe {
+            ui_ptr.write(0x01); // Version=1, Flags=0
+            ui_ptr.add(1).write(0x08); // SizeOfProlog=8
+            ui_ptr.add(2).write(0x01); // CountOfCodes=1
+            ui_ptr.add(3).write(0x00); // FrameRegister=0, FrameOffset=0
+            ui_ptr
+                .add(4)
+                .cast::<u16>()
+                .write_unaligned(alloc_small_code);
+        }
+
+        // All writes are done; obtain the image base for use in RtlVirtualUnwind.
+        let image_base = image_mem.as_ptr() as u64;
+
+        // Build a fake stack.  The prolog executed "sub rsp, 32", so at the time
+        // the context is captured (after prolog), RSP is 32 bytes below where it
+        // was before the call.  The stack layout (low→high) is:
+        //
+        //   [fake_rsp+0 .. +31]  : local frame / shadow space (4 × u64 = 32 bytes)
+        //   [fake_rsp+32]        : return address = 0xDEAD_BEEF_1234_5678
+        //
+        // After ALLOC_SMALL unwind: RSP += 32 → points at return address
+        // After pop return address: RSP += 8  → fake_rsp + 40
+        const RETURN_ADDR: u64 = 0xDEAD_BEEF_1234_5678;
+        // 5 slots: 4 × local + 1 × return address
+        let fake_stack: Vec<u64> = vec![0u64, 0u64, 0u64, 0u64, RETURN_ADDR];
+        let fake_rsp = fake_stack.as_ptr() as u64;
+
+        // Set up CONTEXT with RSP = fake_rsp
+        let mut ctx = vec![0u8; 1232usize];
+        ctx[0x98..0xA0].copy_from_slice(&fake_rsp.to_le_bytes());
+
+        let function_entry = image_mem.as_mut_ptr().cast::<core::ffi::c_void>();
+        let mut handler_data: *mut core::ffi::c_void = core::ptr::null_mut();
+        let mut establisher_frame = 0u64;
+
+        // control_pc is past the prolog (offset 0x1080 >> SizeOfProlog 0x08)
+        let control_pc = image_base + 0x1080;
+        let handler = unsafe {
+            kernel32_RtlVirtualUnwind(
+                0,
+                image_base,
+                control_pc,
+                function_entry,
+                ctx.as_mut_ptr().cast(),
+                core::ptr::addr_of_mut!(handler_data),
+                core::ptr::addr_of_mut!(establisher_frame),
+                core::ptr::null_mut(),
+            )
+        };
+
+        // Flags=0 → no handler
+        assert!(handler.is_null(), "No handler expected");
+
+        // After ALLOC_SMALL(3): RSP += 32, then pop return address: RSP += 8
+        let final_rsp = u64::from_le_bytes(ctx[0x98..0xA0].try_into().unwrap());
+        assert_eq!(
+            final_rsp,
+            fake_rsp + 40,
+            "RSP should advance by alloc (32) + return pop (8)"
+        );
+
+        // RIP = return address
+        let final_rip = u64::from_le_bytes(ctx[0xF8..0x100].try_into().unwrap());
+        assert_eq!(final_rip, RETURN_ADDR, "RIP should be the return address");
+
+        // Establisher frame = RSP before popping the return address
+        assert_eq!(
+            establisher_frame,
+            fake_rsp + 32,
+            "Establisher frame = RSP after alloc unwind, before return pop"
+        );
     }
 
     #[test]

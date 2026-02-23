@@ -21,6 +21,7 @@ pub mod version;
 pub mod ws2_32;
 
 pub use kernel32::register_dynamic_exports;
+pub use kernel32::register_exception_table;
 pub use kernel32::set_process_command_line;
 pub use kernel32::set_sandbox_root;
 pub use kernel32::set_volume_serial;

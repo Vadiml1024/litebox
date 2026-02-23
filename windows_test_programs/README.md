@@ -93,6 +93,47 @@ Validates the `GetProcAddress` API and friends:
 - `GetModuleHandleW(NULL)` → non-NULL (wide-string variant)
 - `LoadLibraryA` + `GetProcAddress` + `FreeLibrary` round-trip
 
+### seh_test (C and C++)
+
+Test programs that exercise Windows Structured Exception Handling (SEH).
+Located in `seh_test/` and built with the MinGW cross-compiler (not Cargo).
+
+> **Note:** GCC/MinGW does not support the MSVC-specific `__try/__except/__finally`
+> syntax in C mode.  The C test therefore exercises the SEH runtime API layer
+> directly, while the C++ test uses standard `try/catch/throw` (which on
+> Windows x64 uses the SEH `.pdata`/`.xdata` unwind machinery under the hood).
+
+#### seh_c_test
+
+Plain-C program that validates the Windows SEH runtime APIs:
+
+- `RtlCaptureContext` – captures non-zero RSP and RIP for the current thread
+- `SetUnhandledExceptionFilter` – accepts a filter and returns the previous one
+- `AddVectoredExceptionHandler` – returns a non-NULL registration handle
+- `RemoveVectoredExceptionHandler` – removes the registration
+- `RtlLookupFunctionEntry` – returns NULL for out-of-range PC; finds own entry when exception table is registered
+- `RtlVirtualUnwind` – returns NULL for NULL function_entry argument
+- `RtlUnwindEx` – does not crash with NULL arguments
+- `setjmp`/`longjmp` – C-standard non-local jumps (the C alternative to `__try/__except`)
+- Standard exception-code constants (EXCEPTION_ACCESS_VIOLATION, etc.)
+
+#### seh_cpp_test
+
+C++ program that validates C++ exception handling (exercises the SEH unwind machinery):
+
+- `throw int` / `catch(int)` – basic typed exception
+- `throw std::string` / `catch(const std::string &)` – class exception
+- Polymorphic catch via base-class reference
+- Rethrowing with `throw;`
+- `catch(...)` catch-all handler
+- Stack unwinding: destructors called when exception propagates
+- Nested `try/catch` blocks
+- Exception propagates across multiple stack frames
+- `std::exception` hierarchy (`std::runtime_error`, `std::logic_error`)
+- Member destructor called when constructor throws
+- Multiple catch clauses with correct clause selection
+- Exception propagation through an indirect function call
+
 #### winsock_basic_test
 
 Validates the fundamental WinSock2 building blocks:
@@ -188,6 +229,21 @@ make
 The resulting executable will be in `windows_test_programs/dynload_test/`:
 - `getprocaddress_test.exe`
 
+### C and C++ SEH programs (seh_test/)
+
+```bash
+# Install MinGW cross-compiler (if not already installed)
+sudo apt install -y mingw-w64
+
+# Build both SEH test programs
+cd windows_test_programs/seh_test
+make
+```
+
+The resulting executables will be in `windows_test_programs/seh_test/`:
+- `seh_c_test.exe`   – C program testing SEH runtime APIs
+- `seh_cpp_test.exe` – C++ program testing C++ exceptions (which use SEH)
+
 ## Testing
 
 These programs can be used to test the Windows-on-Linux runner:
@@ -211,6 +267,10 @@ cargo build -p litebox_runner_windows_on_linux_userland
 
 # Run the C dynload test program
 ./target/debug/litebox_runner_windows_on_linux_userland ./windows_test_programs/dynload_test/getprocaddress_test.exe
+
+# Run the C and C++ SEH test programs
+./target/debug/litebox_runner_windows_on_linux_userland ./windows_test_programs/seh_test/seh_c_test.exe
+./target/debug/litebox_runner_windows_on_linux_userland ./windows_test_programs/seh_test/seh_cpp_test.exe
 ```
 
 ### Current Status
@@ -243,5 +303,7 @@ These test programs serve as a comprehensive test suite to verify that:
 8. Memory allocation and management are functional
 9. The Windows-on-Linux platform is working as expected
 10. WinSock2 APIs function correctly (socket creation, TCP/UDP data exchange)
+11. SEH runtime APIs are callable and return correct values (C test)
+12. C++ exceptions using the x64 SEH unwind machinery work end-to-end (C++ test)
 
-Most test programs validate their operations and report success (✓) or failure (✗) for each check, exiting with non-zero status on any failure. Programs like `file_io_test`, `string_test`, and `math_test` perform actual validation. Programs like `args_test` and `hello_cli` primarily demonstrate functionality by displaying output. The C++ WinSock programs (`winsock_basic_test`, `winsock_tcp_test`, `winsock_udp_test`) all perform end-to-end validation and exit with non-zero status on any failure.
+Most test programs validate their operations and report success (✓) or failure (✗) for each check, exiting with non-zero status on any failure. Programs like `file_io_test`, `string_test`, and `math_test` perform actual validation. Programs like `args_test` and `hello_cli` primarily demonstrate functionality by displaying output. The C++ WinSock programs (`winsock_basic_test`, `winsock_tcp_test`, `winsock_udp_test`) all perform end-to-end validation and exit with non-zero status on any failure. The SEH programs (`seh_c_test`, `seh_cpp_test`) validate the exception-handling infrastructure.

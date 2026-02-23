@@ -394,6 +394,8 @@ jobs:
             test_dir: windows_test_programs/phase27_test
           - suite: sync
             test_dir: windows_test_programs/sync_test
+          - suite: seh
+            test_dir: windows_test_programs/seh_test
     steps:
       - name: Check out repo
         uses: actions/checkout@v4
@@ -492,6 +494,19 @@ jobs:
           grep -q "Windows Synchronization API Tests PASSED" /tmp/sync_test_out.txt \
             || { echo "✗ sync_test FAILED"; exit 1; }
           echo "✓ sync_test PASSED"
+      - name: Run seh_c_test
+        if: matrix.suite == 'seh'
+        run: |
+          echo "=== seh_c_test.exe ==="
+          ./target/debug/litebox_runner_windows_on_linux_userland \
+            windows_test_programs/seh_test/seh_c_test.exe \
+            2>&1 | tee /tmp/seh_c_test_out.txt
+
+          echo ""
+          echo "--- Verifying test output ---"
+          grep -q "Results:.*0 failed" /tmp/seh_c_test_out.txt \
+            || { echo "✗ seh_c_test FAILED"; exit 1; }
+          echo "✓ seh_c_test PASSED"
       - name: Upload test output on failure
         if: failure()
         uses: actions/upload-artifact@v4
@@ -511,7 +526,7 @@ jobs:
             name=$(basename "$f" _out.txt)
             pass=$(grep -c "\[PASS\]" "$f" || true)
             fail=$(grep -c "\[FAIL\]" "$f" || true)
-            if grep -qE "PASSED \(0 failures\)|Tests PASSED" "$f"; then
+            if grep -qE "PASSED \(0 failures\)|Tests PASSED|Results:.*0 failed" "$f"; then
               echo "  ✓ ${name}: ${pass} passed, ${fail} failed"
             else
               echo "  ✗ ${name}: ${pass} passed, ${fail} failed"

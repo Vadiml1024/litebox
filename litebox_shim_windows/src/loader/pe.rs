@@ -91,7 +91,6 @@ const IMAGE_DIRECTORY_ENTRY_EXPORT: usize = 0;
 const IMAGE_DIRECTORY_ENTRY_IMPORT: usize = 1;
 #[allow(dead_code)]
 const IMAGE_DIRECTORY_ENTRY_RESOURCE: usize = 2;
-#[allow(dead_code)]
 const IMAGE_DIRECTORY_ENTRY_EXCEPTION: usize = 3;
 #[allow(dead_code)]
 const IMAGE_DIRECTORY_ENTRY_SECURITY: usize = 4;
@@ -193,6 +192,18 @@ pub struct TlsInfo {
     pub address_of_index: u64,
     /// Size of zero-filled data following the initialized data
     pub size_of_zero_fill: u32,
+}
+
+/// Exception directory information from the .pdata section
+///
+/// This contains the location of the exception table used for structured
+/// exception handling (SEH) on x64 Windows.
+#[derive(Debug, Clone, Copy)]
+pub struct ExceptionDirectoryInfo {
+    /// RVA of the exception directory (.pdata section)
+    pub rva: u32,
+    /// Size of the exception directory in bytes
+    pub size: u32,
 }
 
 /// PE binary loader
@@ -898,6 +909,47 @@ impl PeLoader {
             end_address: tls_directory.end_address_of_raw_data,
             address_of_index: tls_directory.address_of_index,
             size_of_zero_fill: tls_directory.size_of_zero_fill,
+        }))
+    }
+
+    /// Get exception directory information for SEH support
+    ///
+    /// Returns the RVA and size of the exception table (.pdata section) if present.
+    /// The exception table contains `IMAGE_RUNTIME_FUNCTION_ENTRY` records used by
+    /// `RtlLookupFunctionEntry` to locate unwind information for a given program counter.
+    ///
+    /// Returns `None` if no exception directory exists in the PE binary.
+    /// Returns an error if the exception directory range is outside the loaded sections.
+    pub fn exception_directory(&self) -> Result<Option<ExceptionDirectoryInfo>> {
+        let dir = self.get_data_directory(IMAGE_DIRECTORY_ENTRY_EXCEPTION)?;
+
+        if dir.virtual_address == 0 || dir.size == 0 {
+            return Ok(None);
+        }
+
+        // Validate that [virtual_address, virtual_address + size) lies within
+        // a known section, preventing malformed PEs from advertising an out-of-range
+        // .pdata RVA that could cause RtlLookupFunctionEntry to read unmapped memory.
+        let end_rva = dir.virtual_address.checked_add(dir.size).ok_or_else(|| {
+            WindowsShimError::InvalidPeBinary(
+                "Exception directory range overflows RVA space".to_string(),
+            )
+        })?;
+
+        let sections = self.sections()?;
+        let in_section = sections.iter().any(|s| {
+            let sec_end = s.virtual_address.saturating_add(s.virtual_size);
+            dir.virtual_address >= s.virtual_address && end_rva <= sec_end
+        });
+        if !in_section {
+            return Err(WindowsShimError::InvalidPeBinary(
+                "Exception directory not contained within any section".to_string(),
+            ));
+        }
+
+        Ok(Some(ExceptionDirectoryInfo {
+            rva: dir.virtual_address,
+            size: dir.size,
         }))
     }
 
