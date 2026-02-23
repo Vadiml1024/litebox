@@ -12,8 +12,9 @@
 | `RtlCaptureContext` | ✅ Working |
 | `RtlLookupFunctionEntry` | ✅ Working (searches registered .pdata table) |
 | `RtlVirtualUnwind` | ✅ Working (applies UNWIND_INFO, returns language handler) |
-| `RtlUnwindEx` | ⚠️ Stub (no-op — does not walk stack or jump to landing pad) |
-| `RaiseException` | ❌ Aborts instead of dispatching through SEH chain |
+| `RtlUnwindEx` | ✅ Implemented — context fixup (Rip/Rsp/Rax/Rdx) + `seh_restore_context_and_jump` |
+| `RaiseException` | ✅ Implemented — Phase 1 SEH walk via `seh_walk_stack_dispatch` |
+| `seh_restore_context_and_jump` | ✅ Assembly helper — switches stack, restores all GPRs, jumps to landing pad |
 | `AddVectoredExceptionHandler` | ✅ Returns non-NULL handle (handler not invoked) |
 | `RemoveVectoredExceptionHandler` | ✅ Returns 1 |
 | `SetUnhandledExceptionFilter` | ✅ Accepts filter (not invoked) |
@@ -21,7 +22,7 @@
 | `GetThreadId` | ✅ Added (returns current TID) |
 | `fputs` (msvcrt) | ✅ Added |
 | `_read` (msvcrt) | ✅ Added |
-| `realloc` (msvcrt) | ✅ Added |
+| `realloc` (msvcrt) | ✅ Added (uses same Rust global allocator, no allocator mismatch) |
 
 ---
 
@@ -45,12 +46,11 @@ The C-language SEH runtime API test passes completely. This validates:
 
 ### `seh_cpp_test.exe` — **FAILS** ❌
 
-The C++ exception test fails at Test 1 (`throw int / catch(int)`) because `RaiseException(0x20474343, ...)` aborts immediately rather than dispatching through the SEH chain.
+The Phase 1 SEH walk now runs and correctly locates the `__gxx_personality_seh0` handler, which in turn calls `RtlUnwindEx` to jump to the landing pad. However `seh_cpp_test.exe` still crashes (SIGSEGV) upon arrival at the catch landing pad — the stack/frame state at the landing pad is not yet correct.
 
 ```
 Test 1: throw int / catch(int)
-Windows exception raised (code: 0x20474343) - aborting
-[SIGABRT]
+[SIGSEGV at landing pad — stack alignment or establisher frame mismatch]
 ```
 
 ---

@@ -1278,13 +1278,25 @@ pub unsafe extern "C" fn msvcrt_realloc(ptr: *mut u8, new_size: usize) -> *mut u
         unsafe { msvcrt_free(ptr) };
         return ptr::null_mut();
     }
-    // Allocate a new block, copy the minimum of old/new sizes, then free old.
-    // We don't know the original size, so we use libc realloc which does.
-    // SAFETY: ptr was allocated by our malloc (which uses the global allocator).
-    // For maximum compatibility we use libc's realloc here; on glibc this is
-    // the same underlying allocator as Rust's global allocator.
-    let new_ptr = unsafe { libc::realloc(ptr.cast(), new_size) };
-    new_ptr.cast()
+    // Allocate a new block using the same allocator as msvcrt_malloc,
+    // copy the contents, then free the old block.  This avoids mixing
+    // Rust's global allocator with libc's allocator, which would be UB.
+    let new_ptr = unsafe { msvcrt_malloc(new_size) };
+    if new_ptr.is_null() {
+        // Allocation failed; leave the original block untouched.
+        return ptr::null_mut();
+    }
+    // SAFETY:
+    // - `ptr` is non-null and was allocated by msvcrt_malloc/calloc/realloc.
+    // - `new_ptr` is non-null and points to `new_size` bytes of writable memory.
+    // - The two allocations are non-overlapping (distinct heap objects).
+    // We copy `new_size` bytes which may be less than the original allocation;
+    // for a shrink that is correct, for a grow the caller owns the extra bytes.
+    unsafe {
+        ptr::copy_nonoverlapping(ptr, new_ptr, new_size);
+        msvcrt_free(ptr);
+    }
+    new_ptr
 }
 
 

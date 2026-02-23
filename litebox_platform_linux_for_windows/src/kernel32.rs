@@ -1379,13 +1379,17 @@ const STATUS_GCC_UNWIND: u32 = 0x2147_4343;
 const STATUS_GCC_FORCED: u32 = 0x2247_4343;
 
 // ---- Exception flags (EXCEPTION_RECORD.ExceptionFlags) ----
+#[allow(dead_code)]
 const EXCEPTION_NONCONTINUABLE: u32 = 0x1;
 const EXCEPTION_UNWINDING: u32 = 0x2;
+#[allow(dead_code)]
 const EXCEPTION_EXIT_UNWIND: u32 = 0x4;
+#[allow(dead_code)]
 const EXCEPTION_TARGET_UNWIND: u32 = 0x20;
 
 // ---- ExceptionDisposition values returned by language handlers ----
 const EXCEPTION_CONTINUE_EXECUTION: i32 = 0; // ExceptionContinueExecution
+#[allow(dead_code)]
 const EXCEPTION_CONTINUE_SEARCH: i32 = 1; // ExceptionContinueSearch
 
 /// Windows x64 DISPATCHER_CONTEXT — passed to language-specific handlers
@@ -9143,10 +9147,6 @@ unsafe fn seh_walk_stack_dispatch(
         let mut handler_data: *mut core::ffi::c_void = core::ptr::null_mut();
         let mut establisher_frame: u64 = 0;
 
-        eprintln!(
-            "[SEH walk] pc={control_pc:#x} fe={fe:p} image_base={image_base:#x}"
-        );
-
         // SAFETY: fe and ctx_ptr are valid; establisher_frame and handler_data
         // are valid output slots.
         let lang_handler = unsafe {
@@ -9161,11 +9161,6 @@ unsafe fn seh_walk_stack_dispatch(
                 core::ptr::null_mut(),
             )
         };
-
-        eprintln!(
-            "[SEH walk] after VU: handler={lang_handler:p} establisher={establisher_frame:#x} new_pc={:#x}",
-            unsafe { ctx_read(ctx_ptr, CTX_RIP) }
-        );
 
         if !lang_handler.is_null() {
             // Build a DISPATCHER_CONTEXT for this frame.
@@ -9221,7 +9216,7 @@ unsafe fn seh_walk_stack_dispatch(
     found
 }
 
-
+#[cfg(test)]
 mod tests {
     use super::*;
 

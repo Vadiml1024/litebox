@@ -10,14 +10,16 @@
 | Component | State |
 |-----------|-------|
 | `seh_c_test.exe` | ✅ **21/21 PASS** |
-| `seh_cpp_test.exe` | ❌ **FAILS** — `RaiseException` aborts instead of dispatching |
-| New MSVCRT functions (`fputs`, `_read`, `realloc`) | ✅ Added |
+| `seh_cpp_test.exe` | ❌ **FAILS** — SIGSEGV at catch landing pad (stack/frame mismatch) |
+| New MSVCRT functions (`fputs`, `_read`, `realloc`) | ✅ Added (`realloc` uses Rust allocator, no UB) |
 | New KERNEL32 function (`GetThreadId`) | ✅ Added |
-| `DispatcherContext` / `ExceptionRecord` structs | ✅ Added (kernel32.rs ~line 1392) |
+| `DispatcherContext` / `ExceptionRecord` structs | ✅ Added (kernel32.rs ~line 1397) |
 | GCC SEH constants (`STATUS_GCC_THROW`, etc.) | ✅ Added (kernel32.rs ~line 1375) |
-| `RaiseException` — two-phase SEH dispatch | ❌ **NOT YET IMPLEMENTED** — still aborts |
-| `RtlUnwindEx` — stack walk + context jump | ❌ **NOT YET IMPLEMENTED** — still no-op |
-| `seh_restore_context_and_jump` assembly helper | ❌ **NOT YET IMPLEMENTED** |
+| `seh_restore_context_and_jump` assembly helper | ✅ Implemented (global_asm!, kernel32.rs ~line 8910) |
+| `seh_find_pe_frame_on_stack` | ✅ Implemented (kernel32.rs ~line 8971) |
+| `seh_walk_stack_dispatch` | ✅ Implemented (kernel32.rs ~line 9066) |
+| `RaiseException` — two-phase SEH dispatch | ✅ Implemented — Phase 1 walk, finds handler, calls `RtlUnwindEx` |
+| `RtlUnwindEx` — context fixup + jump | ✅ Implemented — sets Rip/Rsp/Rax/Rdx, calls `seh_restore_context_and_jump` |
 | Integration test `test_seh_cpp_program` | ❌ **NOT YET ADDED** |
 
 ### Files changed in this PR
@@ -27,129 +29,64 @@
 - `docs/cpp-exception-status.md` — current status document
 - `docs/cpp-exceptions-status-plan.md` — **10-step R&D plan (READ THIS)**
 
-### What the next session must implement
+### What the next session must fix
 
-**1. Replace `kernel32_RaiseException` (around line 1704)**
+All major SEH components are now implemented (`RaiseException`, `RtlUnwindEx`,
+`seh_restore_context_and_jump`, `seh_walk_stack_dispatch`, `seh_find_pe_frame_on_stack`).
 
-The current implementation just calls `std::process::abort()`. It must be replaced with two-phase SEH dispatch. See `docs/cpp-exceptions-status-plan.md` Steps 3–5 for the full algorithm. The key insight from GDB:
+**The remaining issue:** `seh_cpp_test.exe` still crashes with SIGSEGV at the
+catch landing pad after `seh_restore_context_and_jump` runs.
 
-- When called, `rdi` (SysV arg1) = exception code = `0x20474343` (`STATUS_GCC_THROW`)
-- `rcx` (SysV arg4) = `args_ptr` → `args[0]` = `_Unwind_Exception*` at `0x5555559454e0`
-- The `_Unwind_Exception.exception_class` = `0x474e5543432b2b00` ("GNUCC++\0")
-- `private_[1..3]` are all zero (Phase 1 not yet run)
+**GDB findings from last session:**
+- `RtlUnwindEx` is called with: `target_frame=0x7ffff7b70f48`, `target_ip=0x7ffff7e46795`
+- `context_record` has: `Rip=0x7ffff7e28307`, `Rsp=0x7ffff7b70f50`, `Rax=0x0`
+- After fixup: `Rip←target_ip=0x7ffff7e46795`, `Rsp←target_frame=0x7ffff7b70f48`, `Rax←return_value=0x5555559484e0`
+- `seh_restore_context_and_jump` is reached with those correct values
 
-**Algorithm for `kernel32_RaiseException`:**
-```
-1. Allocate EXCEPTION_RECORD (on heap, zeroed) and fill with args
-2. Get current Rust RSP via inline asm
-3. Scan stack for first address in PE image range → that is guest_rip
-4. guest_rsp = scan_address + 8
-5. Allocate CONTEXT (1232 bytes, zeroed), fill RIP+RSP from guest frame
-6. Phase 1 loop:
-   while control_pc in PE image:
-     fe = RtlLookupFunctionEntry(control_pc, &image_base, null)
-     if fe == null: break
-     handler = RtlVirtualUnwind(UNW_FLAG_EHANDLER=1, image_base, control_pc, fe,
-                                 ctx, &handler_data, &establisher_frame, null)
-     if handler != null:
-       fill DispatcherContext{control_pc, image_base, fe, establisher_frame,
-                              target_ip=0, ctx_ptr, handler, handler_data, null, 0, 0}
-       result = call_handler_win64(handler, exc_rec, establisher_frame, ctx, &disp_ctx)
-       // handler internally calls RtlUnwindEx if it found the catch frame
-     control_pc = ctx_read(ctx, CTX_RIP)  // updated by RtlVirtualUnwind
-7. If no handler found: eprintln + abort
-```
+**Suspected root cause:** The `context_record` passed by the PE's `_GCC_specific_handler`
+to `RtlUnwindEx` already has the right `Rip/Rsp` — but `Rax` is 0 (the
+`_Unwind_Exception*` should be `return_value = 0x5555559484e0`). After the fix
+that sets `ctx->Rax = return_value`, the landing pad should find the exception
+pointer in RAX. The SIGSEGV suggests either the RSP at the landing pad is
+wrong (unaligned or points to unmapped memory) or Rdx (type selector) is
+still 0.
 
-**2. Implement `kernel32_RtlUnwindEx` (around line 1879)**
+**Next debugging step — use GDB to inspect state AT the landing pad:**
+```bash
+cat > /tmp/gdb_landing.py << 'EOF'
+import gdb, struct
+gdb.execute("set pagination off")
+gdb.execute("set confirm off")
+gdb.execute("handle SIGABRT nostop noprint pass")
+gdb.execute("handle SIGSEGV stop print")
 
-Currently a no-op. Must:
-```
-1. Set EXCEPTION_UNWINDING | EXCEPTION_EXIT_UNWIND in exc_rec.ExceptionFlags
-2. Walk stack same as Phase 1 loop above, but:
-   a. For each frame, call handler with EXCEPTION_UNWINDING set
-   b. When establisher_frame == target_frame: set EXCEPTION_TARGET_UNWIND,
-      call handler one final time, then restore context and jump
-3. At landing pad: rax=return_value, rdx=selector(from ctx), rsp=target_rsp, rip=target_ip
-4. Use seh_restore_context_and_jump to perform the noreturn context switch
-```
+def rd64(a):
+    try: return struct.unpack_from('<Q',bytes(gdb.inferiors()[0].read_memory(a,8)))[0]
+    except: return 0
 
-**3. Add `seh_restore_context_and_jump` assembly**
+class RestoreBreak(gdb.Breakpoint):
+    def stop(self):
+        rdi = int(gdb.parse_and_eval("$rdi"))
+        rip = rd64(rdi+0xF8); rsp = rd64(rdi+0x98)
+        rax = rd64(rdi+0x78); rdx = rd64(rdi+0x88)
+        print(f"RESTORE: Rip=0x{rip:x} Rsp=0x{rsp:x} Rax=0x{rax:x} Rdx=0x{rdx:x}")
+        # Validate RSP alignment
+        print(f"  RSP%16 = {rsp % 16} (should be 0 at function entry, or 8 at landing pad)")
+        return False
 
-Add this `global_asm!` near the top of the SEH section:
-```rust
-core::arch::global_asm!(
-    ".globl seh_restore_context_and_jump",
-    ".type seh_restore_context_and_jump, @function",
-    "seh_restore_context_and_jump:",
-    "mov rsp, QWORD PTR [rdi + 0x98]",  // RSP (switch stack first)
-    "push QWORD PTR [rdi + 0xF8]",       // push RIP (landing pad)
-    "mov r15, QWORD PTR [rdi + 0xF0]",
-    "mov r14, QWORD PTR [rdi + 0xE8]",
-    "mov r13, QWORD PTR [rdi + 0xE0]",
-    "mov r12, QWORD PTR [rdi + 0xD8]",
-    "mov rbp, QWORD PTR [rdi + 0xA0]",
-    "mov rbx, QWORD PTR [rdi + 0x90]",
-    "mov rdx, QWORD PTR [rdi + 0x88]",
-    "mov rcx, QWORD PTR [rdi + 0x80]",
-    "mov rax, QWORD PTR [rdi + 0x78]",
-    "mov rsi, QWORD PTR [rdi + 0xA8]",
-    "mov r8,  QWORD PTR [rdi + 0xB8]",
-    "mov r9,  QWORD PTR [rdi + 0xC0]",
-    "mov r10, QWORD PTR [rdi + 0xC8]",
-    "mov r11, QWORD PTR [rdi + 0xD0]",
-    "mov rdi, QWORD PTR [rdi + 0xB0]",  // RDI last
-    "ret",                               // pops landing pad address
-);
+RestoreBreak("seh_restore_context_and_jump")
+gdb.execute("run windows_test_programs/seh_test/seh_cpp_test.exe")
+gdb.execute("quit")
+EOF
+timeout 15 gdb -batch -x /tmp/gdb_landing.py target/debug/litebox_runner_windows_on_linux_userland 2>&1 | grep -v "^warn\|^Using\|auto-load\|^of file"
 ```
 
-**4. Calling PE language handlers with Windows x64 ABI**
+**If RSP is misaligned:** The landing pad expects `rsp % 16 == 0` (at a landing
+pad, the frame hasn't pushed the return address yet). If `target_frame` is off
+by 8, subtract 8 in `RtlUnwindEx` before writing `ctx->Rsp`.
 
-Language handlers inside the PE use Windows calling convention. Call them with:
-```rust
-type ExceptionRoutine = unsafe extern "win64" fn(
-    *mut ExceptionRecord,       // rcx
-    u64,                         // rdx - EstablisherFrame  
-    *mut u8,                     // r8  - CONTEXT*
-    *mut DispatcherContext,      // r9
-) -> i32;
-let handler_fn: ExceptionRoutine = core::mem::transmute(handler_addr);
-let result = handler_fn(exc_rec, establisher_frame, ctx_ptr, &mut disp_ctx);
-```
-
-**5. Finding the guest stack frame**
-
-The trampoline layout means:
-```
-At entry to kernel32_RaiseException (Rust):
-  [rsp+0]  = ret-into-trampoline (epilogue)
-  [rsp+8]  = alignment gap
-  [rsp+16] = saved rsi
-  [rsp+24] = saved rdi
-  [rsp+32] = GUEST RETURN ADDRESS (address in PE after "call RaiseException")
-  [rsp+40] = guest shadow[0] / more stack...
-```
-BUT Rust's prologue may add more pushes. Safer: scan the stack forward from RSP
-for the first value that falls within `PE_image_base <= val < PE_image_base + 0x40000`.
-
-```rust
-fn find_guest_frame_on_stack() -> Option<(u64, u64)> {
-    let mut rsp: u64;
-    unsafe { core::arch::asm!("mov {}, rsp", out(reg) rsp) };
-    let guard = EXCEPTION_TABLE.lock().unwrap_or_else(|e| e.into_inner());
-    let Some(ref tbl) = *guard else { return None; };
-    let pe_base = tbl.image_base;
-    let pe_end  = pe_base + tbl.pdata_rva as u64 + tbl.pdata_size as u64 + 0x10000;
-    drop(guard);
-    for slot in 0..512u64 {
-        let addr = rsp + slot * 8;
-        let candidate = unsafe { (addr as *const u64).read_unaligned() };
-        if candidate >= pe_base && candidate < pe_end {
-            return Some((candidate, addr + 8)); // (rip, guest_rsp)
-        }
-    }
-    None
-}
-```
+**If Rdx is 0:** The `ExceptionInformation[3]` assignment needs to be verified —
+check that `exc_rec->NumberParameters >= 4` before reading `[3]`.
 
 ### GDB commands for debugging the new implementation
 
