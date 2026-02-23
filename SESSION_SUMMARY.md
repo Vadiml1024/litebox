@@ -1,4 +1,188 @@
-# Windows-on-Linux Support — Session Summary (Phase 28)
+# Windows-on-Linux Support — Session Summary (C++ Exception Handling / Phase 29)
+
+## ⚡ CURRENT WORK IN PROGRESS — READ THIS FIRST FOR RESUMPTION ⚡
+
+**Branch:** `copilot/implement-windows-on-linux-features`  
+**Goal:** Make `seh_cpp_test.exe` pass all 12 C++ exception tests.
+
+### Status at last checkpoint
+
+| Component | State |
+|-----------|-------|
+| `seh_c_test.exe` | ✅ **21/21 PASS** |
+| `seh_cpp_test.exe` | ❌ **FAILS** — SIGSEGV at catch landing pad (stack/frame mismatch) |
+| New MSVCRT functions (`fputs`, `_read`, `realloc`) | ✅ Added (`realloc` uses Rust allocator, no UB) |
+| New KERNEL32 function (`GetThreadId`) | ✅ Added |
+| `DispatcherContext` / `ExceptionRecord` structs | ✅ Added (kernel32.rs ~line 1397) |
+| GCC SEH constants (`STATUS_GCC_THROW`, etc.) | ✅ Added (kernel32.rs ~line 1375) |
+| `seh_restore_context_and_jump` assembly helper | ✅ Implemented (global_asm!, kernel32.rs ~line 8910) |
+| `seh_find_pe_frame_on_stack` | ✅ Implemented (kernel32.rs ~line 8971) |
+| `seh_walk_stack_dispatch` | ✅ Implemented (kernel32.rs ~line 9066) |
+| `RaiseException` — two-phase SEH dispatch | ✅ Implemented — Phase 1 walk, finds handler, calls `RtlUnwindEx` |
+| `RtlUnwindEx` — context fixup + jump | ✅ Implemented — sets Rip/Rsp/Rax/Rdx, calls `seh_restore_context_and_jump` |
+| Integration test `test_seh_cpp_program` | ❌ **NOT YET ADDED** |
+
+### Files changed in this PR
+- `litebox_platform_linux_for_windows/src/kernel32.rs` — `GetThreadId`, structs, constants
+- `litebox_platform_linux_for_windows/src/msvcrt.rs` — `fputs`, `_read`, `realloc`
+- `litebox_platform_linux_for_windows/src/function_table.rs` — new entries for above
+- `docs/cpp-exception-status.md` — current status document
+- `docs/cpp-exceptions-status-plan.md` — **10-step R&D plan (READ THIS)**
+
+### What the next session must fix
+
+All major SEH components are now implemented (`RaiseException`, `RtlUnwindEx`,
+`seh_restore_context_and_jump`, `seh_walk_stack_dispatch`, `seh_find_pe_frame_on_stack`).
+
+**The remaining issue:** `seh_cpp_test.exe` still crashes with SIGSEGV at the
+catch landing pad after `seh_restore_context_and_jump` runs.
+
+**GDB findings from last session:**
+- `RtlUnwindEx` is called with: `target_frame=0x7ffff7b70f48`, `target_ip=0x7ffff7e46795`
+- `context_record` has: `Rip=0x7ffff7e28307`, `Rsp=0x7ffff7b70f50`, `Rax=0x0`
+- After fixup: `Rip←target_ip=0x7ffff7e46795`, `Rsp←target_frame=0x7ffff7b70f48`, `Rax←return_value=0x5555559484e0`
+- `seh_restore_context_and_jump` is reached with those correct values
+
+**Suspected root cause:** The `context_record` passed by the PE's `_GCC_specific_handler`
+to `RtlUnwindEx` already has the right `Rip/Rsp` — but `Rax` is 0 (the
+`_Unwind_Exception*` should be `return_value = 0x5555559484e0`). After the fix
+that sets `ctx->Rax = return_value`, the landing pad should find the exception
+pointer in RAX. The SIGSEGV suggests either the RSP at the landing pad is
+wrong (unaligned or points to unmapped memory) or Rdx (type selector) is
+still 0.
+
+**Next debugging step — use GDB to inspect state AT the landing pad:**
+```bash
+cat > /tmp/gdb_landing.py << 'EOF'
+import gdb, struct
+gdb.execute("set pagination off")
+gdb.execute("set confirm off")
+gdb.execute("handle SIGABRT nostop noprint pass")
+gdb.execute("handle SIGSEGV stop print")
+
+def rd64(a):
+    try: return struct.unpack_from('<Q',bytes(gdb.inferiors()[0].read_memory(a,8)))[0]
+    except: return 0
+
+class RestoreBreak(gdb.Breakpoint):
+    def stop(self):
+        rdi = int(gdb.parse_and_eval("$rdi"))
+        rip = rd64(rdi+0xF8); rsp = rd64(rdi+0x98)
+        rax = rd64(rdi+0x78); rdx = rd64(rdi+0x88)
+        print(f"RESTORE: Rip=0x{rip:x} Rsp=0x{rsp:x} Rax=0x{rax:x} Rdx=0x{rdx:x}")
+        # Validate RSP alignment
+        print(f"  RSP%16 = {rsp % 16} (should be 0 at function entry, or 8 at landing pad)")
+        return False
+
+RestoreBreak("seh_restore_context_and_jump")
+gdb.execute("run windows_test_programs/seh_test/seh_cpp_test.exe")
+gdb.execute("quit")
+EOF
+timeout 15 gdb -batch -x /tmp/gdb_landing.py target/debug/litebox_runner_windows_on_linux_userland 2>&1 | grep -v "^warn\|^Using\|auto-load\|^of file"
+```
+
+**If RSP is misaligned:** The landing pad expects `rsp % 16 == 0` (at a landing
+pad, the frame hasn't pushed the return address yet). If `target_frame` is off
+by 8, subtract 8 in `RtlUnwindEx` before writing `ctx->Rsp`.
+
+**If Rdx is 0:** The `ExceptionInformation[3]` assignment needs to be verified —
+check that `exc_rec->NumberParameters >= 4` before reading `[3]`.
+
+### GDB commands for debugging the new implementation
+
+```bash
+cat > /tmp/gdb_seh.py << 'EOF'
+import gdb, struct
+gdb.execute("set pagination off")
+gdb.execute("set confirm off")
+gdb.execute("handle SIGABRT nostop noprint pass")
+
+def rd64(a):
+    try: return struct.unpack_from('<Q',bytes(gdb.inferiors()[0].read_memory(a,8)))[0]
+    except: return 0
+
+class RaiseBreak(gdb.Breakpoint):
+    def stop(self):
+        code = int(gdb.parse_and_eval("$rdi"))
+        rsp  = int(gdb.parse_and_eval("$rsp"))
+        print(f"RAISE 0x{code:08x} rsp=0x{rsp:x}")
+        print(f"  [rsp+32]=0x{rd64(rsp+32):x} (expected: guest ret)")
+        gdb.execute("bt 8")
+        return False
+
+class UnwindBreak(gdb.Breakpoint):
+    def stop(self):
+        print(f"UNWINDEX tgt=0x{int(gdb.parse_and_eval('$rdi')):x} ip=0x{int(gdb.parse_and_eval('$rsi')):x}")
+        return False
+
+RaiseBreak("kernel32_RaiseException")
+UnwindBreak("kernel32_RtlUnwindEx")
+gdb.execute("run windows_test_programs/seh_test/seh_cpp_test.exe")
+gdb.execute("quit")
+EOF
+
+cd /home/runner/work/litebox/litebox
+cargo build -p litebox_runner_windows_on_linux_userland
+timeout 20 gdb -batch -x /tmp/gdb_seh.py target/debug/litebox_runner_windows_on_linux_userland 2>&1 | grep -v "^warning\|^Using\|auto-load\|^of file"
+```
+
+### Build & test commands
+
+```bash
+cd /home/runner/work/litebox/litebox
+
+# Quick build
+cargo build -p litebox_platform_linux_for_windows
+
+# Full build
+cargo build -p litebox_runner_windows_on_linux_userland
+
+# Run C test (should still pass 21/21)
+timeout 5 ./target/debug/litebox_runner_windows_on_linux_userland \
+  windows_test_programs/seh_test/seh_c_test.exe
+
+# Run C++ test (goal: pass 12/12)
+timeout 10 ./target/debug/litebox_runner_windows_on_linux_userland \
+  windows_test_programs/seh_test/seh_cpp_test.exe
+
+# Lint
+RUSTFLAGS="-Dwarnings" cargo clippy \
+  -p litebox_platform_linux_for_windows \
+  -p litebox_runner_windows_on_linux_userland 2>&1 | head -30
+
+# Unit tests
+cargo nextest run -p litebox_platform_linux_for_windows 2>&1 | tail -10
+```
+
+### Key source locations
+
+| What | File | ~Line |
+|------|------|-------|
+| `kernel32_RaiseException` | `litebox_platform_linux_for_windows/src/kernel32.rs` | 1704 |
+| `kernel32_RtlUnwindEx` | same | 1879 |
+| `kernel32_RtlLookupFunctionEntry` | same | 1774 |
+| `kernel32_RtlVirtualUnwind` | same | 1837 |
+| `apply_unwind_info` | same | 1398 |
+| `DispatcherContext` struct | same | ~1392 |
+| `ExceptionRecord` struct | same | ~1410 |
+| GCC SEH constants | same | ~1375 |
+| `EXCEPTION_TABLE` static | same | 1284 |
+| CTX_* constants | same | 1310 |
+| Function table | `litebox_platform_linux_for_windows/src/function_table.rs` | — |
+| Trampoline generator | `litebox_shim_windows/src/loader/dispatch.rs` | 100 |
+
+### Reference documents (STUDY THESE)
+
+- `docs/cpp-exceptions-status-plan.md` — 10-step R&D plan with all algorithm details
+- `docs/cpp-exception-status.md` — current status with GDB findings
+- `libgcc/unwind-seh.c` (GCC source, already fetched in plan doc)
+- Wine `dlls/ntdll/signal_x86_64.c` for RtlUnwindEx reference
+
+---
+
+## Phase 28 Work (Completed)
+
+
 
 ## Work Completed ✅
 

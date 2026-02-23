@@ -877,6 +877,19 @@ pub unsafe extern "C" fn kernel32_GetCurrentThreadId() -> u32 {
     (tid as u32)
 }
 
+/// Get the thread ID of a given thread handle (GetThreadId)
+///
+/// Returns the thread ID for the given thread handle. Since LiteBox is
+/// single-threaded, any valid handle is treated as the current thread.
+///
+/// # Safety
+/// Marked unsafe for FFI compatibility. `_thread` may be any value.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_GetThreadId(_thread: *mut core::ffi::c_void) -> u32 {
+    // Single-threaded emulation: return the current thread ID
+    unsafe { kernel32_GetCurrentThreadId() }
+}
+
 /// Get the current process ID (GetCurrentProcessId)
 ///
 /// Returns the unique identifier for the current process.
@@ -1360,6 +1373,56 @@ const UNW_FLAG_EHANDLER: u8 = 0x01;
 const UNW_FLAG_UHANDLER: u8 = 0x02;
 const UNW_FLAG_CHAININFO: u8 = 0x04;
 
+// ---- GCC/MinGW SEH exception codes ----
+const STATUS_GCC_THROW: u32 = 0x2047_4343;
+const STATUS_GCC_UNWIND: u32 = 0x2147_4343;
+const STATUS_GCC_FORCED: u32 = 0x2247_4343;
+
+// ---- Exception flags (EXCEPTION_RECORD.ExceptionFlags) ----
+#[allow(dead_code)]
+const EXCEPTION_NONCONTINUABLE: u32 = 0x1;
+const EXCEPTION_UNWINDING: u32 = 0x2;
+#[allow(dead_code)]
+const EXCEPTION_EXIT_UNWIND: u32 = 0x4;
+#[allow(dead_code)]
+const EXCEPTION_TARGET_UNWIND: u32 = 0x20;
+
+// ---- ExceptionDisposition values returned by language handlers ----
+const EXCEPTION_CONTINUE_EXECUTION: i32 = 0; // ExceptionContinueExecution
+#[allow(dead_code)]
+const EXCEPTION_CONTINUE_SEARCH: i32 = 1; // ExceptionContinueSearch
+
+/// Windows x64 DISPATCHER_CONTEXT — passed to language-specific handlers
+/// by `RtlVirtualUnwind` / `RtlUnwindEx`.
+///
+/// Total size: 96 bytes (11 fields, 8 bytes each except scope_index/fill which are 4 bytes each).
+#[repr(C)]
+struct DispatcherContext {
+    control_pc: u64,
+    image_base: u64,
+    function_entry: *mut core::ffi::c_void, // PRUNTIME_FUNCTION
+    establisher_frame: u64,
+    target_ip: u64,
+    context_record: *mut u8,               // PCONTEXT
+    language_handler: *mut core::ffi::c_void, // PEXCEPTION_ROUTINE
+    handler_data: *mut core::ffi::c_void,
+    history_table: *mut core::ffi::c_void, // PUNWIND_HISTORY_TABLE
+    scope_index: u32,
+    _fill0: u32,
+}
+
+/// Windows x64 EXCEPTION_RECORD (total 152 bytes for 15 ExceptionInformation entries)
+#[repr(C)]
+struct ExceptionRecord {
+    exception_code: u32,
+    exception_flags: u32,
+    exception_record: *mut ExceptionRecord,
+    exception_address: *mut core::ffi::c_void,
+    number_parameters: u32,
+    _pad: u32,
+    exception_information: [usize; 15],
+}
+
 // ---- UNWIND_CODE opcodes ----
 const UWOP_PUSH_NONVOL: u8 = 0;
 const UWOP_ALLOC_LARGE: u8 = 1;
@@ -1680,22 +1743,94 @@ pub unsafe extern "C" fn kernel32_SetUnhandledExceptionFilter(
     core::ptr::null_mut()
 }
 
-/// Raise an exception
+/// Raise an exception and dispatch it through the SEH handler chain.
 ///
-/// Aborts the process. A full implementation would dispatch the exception
-/// through the SEH chain before terminating.
+/// Implements Windows x64 SEH phase-1 (search) walk: for each PE frame on
+/// the guest call stack, calls `RtlLookupFunctionEntry` + `RtlVirtualUnwind`
+/// to find a language-specific handler.  If the handler (e.g.
+/// `__gxx_personality_seh0`) finds a matching catch clause it will call
+/// `RtlUnwindEx` which transfers control to the landing pad; that call never
+/// returns.  If no handler is found the process is aborted.
+///
+/// GCC/MinGW STATUS codes recognized:
+///   0x20474343 (STATUS_GCC_THROW)   – normal C++ throw
+///   0x21474343 (STATUS_GCC_UNWIND)  – forced unwind
+///   0x22474343 (STATUS_GCC_FORCED)  – forced unwind (alternate)
 ///
 /// # Safety
-/// Always aborts; never returns.
+/// Never returns normally; either control is transferred to a catch landing
+/// pad or the process aborts.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_RaiseException(
     exception_code: u32,
-    _exception_flags: u32,
-    _number_parameters: u32,
-    _arguments: *const usize,
+    exception_flags: u32,
+    number_parameters: u32,
+    arguments: *const usize,
 ) -> ! {
-    eprintln!("Windows exception raised (code: {exception_code:#x}) - aborting");
-    std::process::abort()
+    // Only dispatch GCC C++ exceptions through the SEH walk; abort all others.
+    if exception_code != STATUS_GCC_THROW
+        && exception_code != STATUS_GCC_UNWIND
+        && exception_code != STATUS_GCC_FORCED
+    {
+        eprintln!("Windows exception raised (code: {exception_code:#x}) - aborting");
+        std::process::abort();
+    }
+
+    // ── Locate the guest frame that called RaiseException ──────────────────
+    // The trampoline prologue is: push rdi; push rsi; sub rsp,8; ...
+    // So from inside our Rust function the guest return address lives somewhere
+    // above our current RSP.  We scan upward for the first pointer that falls
+    // within the loaded PE image.
+    let rust_rsp: usize;
+    // SAFETY: Reading RSP into a local variable; nostack so the compiler
+    // doesn't insert any stack-adjusting code around this asm block.
+    unsafe {
+        core::arch::asm!("mov {}, rsp", out(reg) rust_rsp, options(nostack, nomem));
+    }
+
+    let Some((initial_rip, initial_rsp)) = seh_find_pe_frame_on_stack(rust_rsp) else {
+        eprintln!(
+            "RaiseException(0x{exception_code:08x}): could not find PE frame on stack – aborting"
+        );
+        std::process::abort();
+    };
+
+    // ── Build the EXCEPTION_RECORD ──────────────────────────────────────────
+    let exc_layout = alloc::Layout::new::<ExceptionRecord>();
+    // SAFETY: Layout is non-zero.
+    let exc_ptr = unsafe { alloc::alloc_zeroed(exc_layout) }.cast::<ExceptionRecord>();
+    if exc_ptr.is_null() {
+        std::process::abort();
+    }
+    // SAFETY: exc_ptr is freshly allocated and non-null.
+    unsafe {
+        (*exc_ptr).exception_code = exception_code;
+        (*exc_ptr).exception_flags = exception_flags & !EXCEPTION_UNWINDING;
+        (*exc_ptr).exception_record = core::ptr::null_mut();
+        (*exc_ptr).exception_address = initial_rip as *mut core::ffi::c_void;
+        (*exc_ptr).number_parameters = number_parameters.min(15);
+        if !arguments.is_null() {
+            let n = (*exc_ptr).number_parameters as usize;
+            for i in 0..n {
+                (*exc_ptr).exception_information[i] = *arguments.add(i);
+            }
+        }
+    }
+
+    // ── Phase 1: search for a handler ──────────────────────────────────────
+    let found = unsafe { seh_walk_stack_dispatch(exc_ptr, initial_rip, initial_rsp, 1) };
+
+    // SAFETY: exc_ptr was allocated above.
+    unsafe { alloc::dealloc(exc_ptr.cast::<u8>(), exc_layout) };
+
+    if !found {
+        eprintln!("Unhandled C++ exception (code: {exception_code:#x}) – aborting");
+        std::process::abort();
+    }
+
+    // seh_walk_stack_dispatch returns `true` only when a handler called
+    // RtlUnwindEx, which never returns.  We should never reach here.
+    std::process::abort();
 }
 
 /// Capture the current CPU context into a Windows CONTEXT structure
@@ -1854,25 +1989,78 @@ pub unsafe extern "C" fn kernel32_RtlVirtualUnwind(
     }
 }
 
-/// Perform full stack unwinding to a target frame
+/// Perform full stack unwinding to a target frame (phase 2)
 ///
-/// Unwinds the call stack until `target_frame` is reached, calling
-/// termination handlers along the way.  This is a best-effort implementation;
-/// it does not yet invoke language-specific handlers during the unwind phase.
+/// Called by language-specific handlers (e.g. `__gxx_personality_seh0`) when
+/// a catch clause has been selected.  Sets `EXCEPTION_UNWINDING` on the
+/// exception record, fixes up `context_record` with the target RSP, RIP, and
+/// return value, then restores the CPU state and jumps to the landing pad.
+///
+/// The supplied `context_record` must have been prepared by the caller (the
+/// personality function) with the landing-pad state.  `RtlUnwindEx` sets
+/// `Rsp` from `target_frame` and `Rip` from `target_ip` before the jump.
 ///
 /// # Safety
-/// All pointer arguments may be NULL (they are validated before use).
+/// - `context_record` must be non-NULL and point to a valid, writable `CONTEXT`.
+/// - After a successful unwind this function never returns; execution resumes
+///   at the landing pad.
+/// - All pointer arguments may be NULL except `context_record`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_RtlUnwindEx(
-    _target_frame: *mut core::ffi::c_void,
-    _target_ip: *mut core::ffi::c_void,
-    _exception_record: *mut core::ffi::c_void,
-    _return_value: *mut core::ffi::c_void,
-    _context_record: *mut core::ffi::c_void,
+    target_frame: *mut core::ffi::c_void,
+    target_ip: *mut core::ffi::c_void,
+    exception_record: *mut core::ffi::c_void,
+    return_value: *mut core::ffi::c_void,
+    context_record: *mut core::ffi::c_void,
     _history_table: *mut core::ffi::c_void,
 ) {
-    // Full RtlUnwindEx would walk the call stack calling termination handlers.
-    // This stub is sufficient for programs that do not use __finally blocks.
+    if context_record.is_null() {
+        // Nothing we can do without a context.
+        return;
+    }
+
+    let ctx = context_record.cast::<u8>();
+
+    // Mark the exception as unwinding.
+    if !exception_record.is_null() {
+        // SAFETY: caller guarantees exception_record is a valid EXCEPTION_RECORD.
+        let exc = exception_record.cast::<ExceptionRecord>();
+        unsafe {
+            (*exc).exception_flags |= EXCEPTION_UNWINDING;
+        }
+    }
+
+    // Fix up the context for the landing pad:
+    //   • Rip  ← target_ip  (landing pad address)
+    //   • Rax  ← return_value (_Unwind_Exception* — read by the landing pad)
+    //   • Rsp  ← target_frame (establisher frame RSP of the catching function)
+    //   • Rdx  ← ExceptionInformation[3] (type selector set during Phase 1 by
+    //             _GCC_specific_handler; equivalent to what EXCEPTION_TARGET_UNWIND
+    //             would cause the handler to write into ctx->Rdx)
+    if !target_ip.is_null() {
+        // SAFETY: ctx is a valid, writable CONTEXT buffer.
+        unsafe { ctx_write(ctx, CTX_RIP, target_ip as u64) };
+    }
+    // SAFETY: ctx is a valid, writable CONTEXT buffer.
+    unsafe { ctx_write(ctx, CTX_RAX, return_value as u64) };
+    if !target_frame.is_null() {
+        // SAFETY: ctx is a valid, writable CONTEXT buffer.
+        unsafe { ctx_write(ctx, CTX_RSP, target_frame as u64) };
+    }
+    // ExceptionInformation[3] = gcc_context.reg[1] = the C++ type-selector index.
+    // _GCC_specific_handler sets this during Phase 1 before calling RtlUnwindEx,
+    // and reads it back into ctx->Rdx when called with EXCEPTION_TARGET_UNWIND.
+    // We replicate that effect directly to avoid a full target-frame handler call.
+    if !exception_record.is_null() {
+        // SAFETY: caller guarantees exception_record is a valid ExceptionRecord.
+        let selector = unsafe { (*exception_record.cast::<ExceptionRecord>()).exception_information[3] };
+        // SAFETY: ctx is a valid, writable CONTEXT buffer.
+        unsafe { ctx_write(ctx, CTX_RDX, selector as u64) };
+    }
+
+    // Restore registers and jump to the landing pad.
+    // SAFETY: ctx is a valid CONTEXT; seh_restore_context_and_jump never returns.
+    unsafe { seh_restore_context_and_jump(ctx) };
 }
 
 /// Add vectored exception handler
@@ -8714,6 +8902,318 @@ pub unsafe extern "C" fn kernel32_GetSystemDefaultLCID() -> u32 {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_GetUserDefaultLCID() -> u32 {
     0x0409
+}
+
+// ── SEH helper: restore a Windows CONTEXT and jump to its RIP ──────────────
+
+unsafe extern "C" {
+    /// Restore all general-purpose registers from a Windows x64 CONTEXT and
+    /// jump to `ctx->Rip` with `ctx->Rsp` as the stack pointer.
+    ///
+    /// The function is implemented in `global_asm!` below.  It never returns.
+    ///
+    /// # Safety
+    /// `ctx` must point to a valid, readable Windows CONTEXT (≥ CTX_SIZE bytes)
+    /// whose `Rip` and `Rsp` fields describe a valid landing pad.
+    fn seh_restore_context_and_jump(ctx: *mut u8) -> !;
+}
+
+// Restores all GPRs from a Windows x64 CONTEXT struct (SysV calling convention:
+// argument arrives in RDI).  The sequence is:
+//   1. Switch RSP to the target stack (ctx->Rsp).
+//   2. Push the target RIP onto the new stack.
+//   3. Restore all remaining GPRs (RDI last, since it holds our ctx pointer).
+//   4. RET — pops the target RIP and jumps there.
+core::arch::global_asm!(
+    ".globl seh_restore_context_and_jump",
+    "seh_restore_context_and_jump:",
+    // Switch to the target stack; push the target RIP so we can `ret` to it.
+    "mov rsp, QWORD PTR [rdi + 0x98]",   // ctx->Rsp  → rsp
+    "push QWORD PTR [rdi + 0xF8]",        // ctx->Rip  → [rsp]
+    // Restore GPRs (order does not matter except rdi must be last).
+    "mov r15, QWORD PTR [rdi + 0xF0]",
+    "mov r14, QWORD PTR [rdi + 0xE8]",
+    "mov r13, QWORD PTR [rdi + 0xE0]",
+    "mov r12, QWORD PTR [rdi + 0xD8]",
+    "mov r11, QWORD PTR [rdi + 0xD0]",
+    "mov r10, QWORD PTR [rdi + 0xC8]",
+    "mov r9,  QWORD PTR [rdi + 0xC0]",
+    "mov r8,  QWORD PTR [rdi + 0xB8]",
+    "mov rsi, QWORD PTR [rdi + 0xA8]",
+    "mov rbp, QWORD PTR [rdi + 0xA0]",
+    "mov rbx, QWORD PTR [rdi + 0x90]",
+    "mov rcx, QWORD PTR [rdi + 0x80]",
+    "mov rdx, QWORD PTR [rdi + 0x88]",
+    "mov rax, QWORD PTR [rdi + 0x78]",
+    "mov rdi, QWORD PTR [rdi + 0xB0]",  // clobbers ctx ptr – must be last
+    "ret",
+);
+
+// ── SEH helper: scan the Rust stack for the first PE return address ─────────
+
+/// Scan the Rust call stack upward from `rust_rsp` looking for the PE return
+/// address that was pushed by the `call [IAT_func]` instruction inside the PE
+/// (e.g. inside `_Unwind_RaiseException` when it calls `RaiseException`).
+///
+/// The trampoline that bridges Windows→Linux calling conventions has this
+/// structure in its prologue (for a 4-parameter function):
+///
+/// ```text
+/// [entry_rsp - 8]:  push rdi  (saves Windows param1)
+/// [entry_rsp - 16]: push rsi  (saves Windows param2)
+/// [entry_rsp - 24]: sub rsp,8 (alignment gap, nothing written)
+/// [entry_rsp - 32]: call rax  → pushes trampoline return address
+/// ```
+///
+/// So from current Rust RSP (after `sub rsp, rust_frame_size` prologue):
+///
+/// ```text
+/// [rsp + rust_frame_size + 0]:  trampoline return addr  (NULL from pdata)
+/// [rsp + rust_frame_size + 8]:  alignment gap
+/// [rsp + rust_frame_size + 16]: saved rsi
+/// [rsp + rust_frame_size + 24]: saved rdi
+/// [rsp + rust_frame_size + 32]: PE return addr          (non-NULL from pdata)
+/// ```
+///
+/// To distinguish the live trampoline frame from stale data (previous function
+/// calls that left similar patterns in the Rust frame allocation), we use
+/// the **last** NULL-then-non-NULL pair in the scan window: the actual
+/// trampoline return address is always at `rsp + rust_frame_size`, which is
+/// the *highest* such offset because stale trampoline addresses live within
+/// the Rust frame body (lower offsets).
+///
+/// Returns `(control_pc, guest_rsp)` where:
+/// - `control_pc` is the validated PE return address (covered by pdata), and
+/// - `guest_rsp` is the PE stack pointer at that call site (slot + 8).
+fn seh_find_pe_frame_on_stack(rust_rsp: usize) -> Option<(u64, u64)> {
+    let pe_base = {
+        let guard = EXCEPTION_TABLE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(ref tbl) = *guard else {
+            return None;
+        };
+        tbl.image_base
+    };
+
+    // Any valid PE code RVA is between 0x1000 (past the PE header) and 16 MB.
+    const PE_MAX_SIZE: u64 = 16 * 1024 * 1024;
+
+    #[inline]
+    fn in_range(candidate: u64, pe_base: u64) -> bool {
+        let rva = candidate.wrapping_sub(pe_base);
+        rva > 0x1000 && rva < PE_MAX_SIZE
+    }
+
+    #[inline]
+    unsafe fn is_pdata(candidate: u64) -> bool {
+        // SAFETY: null image_base output pointer is accepted.
+        unsafe {
+            !kernel32_RtlLookupFunctionEntry(
+                candidate,
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+            )
+            .is_null()
+        }
+    }
+
+    // Scan for all NULL-then-non-NULL pairs exactly 32 bytes apart.
+    // Keep only the LAST (highest-offset) pair – that is the live trampoline
+    // frame; any earlier pairs are stale data inside the Rust frame body.
+    let mut best: Option<(u64, u64)> = None; // (control_pc, guest_rsp)
+
+    for offset in (0..1024_usize).step_by(8) {
+        let slot = rust_rsp + offset;
+        // SAFETY: Reading from our own live call stack.
+        let candidate = unsafe { (slot as *const u64).read_unaligned() };
+
+        if !in_range(candidate, pe_base) {
+            continue;
+        }
+
+        // SAFETY: validated above.
+        if unsafe { is_pdata(candidate) } {
+            // This is a PE pdata address – not a trampoline ret addr itself,
+            // but check if 32 bytes BELOW it is a NULL (trampoline ret addr).
+            // i.e. check if this is the "+32" slot for some NULL at offset-32.
+            // This is handled implicitly by the pass below.
+            continue;
+        }
+
+        // candidate is in range but NOT in pdata → potential trampoline ret addr.
+        // Check if [offset+32] is a valid pdata PE address.
+        if offset + 32 >= 1024 {
+            break;
+        }
+        let pe_slot = slot + 32;
+        // SAFETY: Reading from our own live call stack.
+        let pe_candidate = unsafe { (pe_slot as *const u64).read_unaligned() };
+
+        if !in_range(pe_candidate, pe_base) {
+            continue;
+        }
+        // SAFETY: validated above.
+        if unsafe { is_pdata(pe_candidate) } {
+            // Valid pair! Record it – we'll use the last one found.
+            best = Some((pe_candidate, pe_slot as u64 + 8));
+        }
+    }
+
+    best
+}
+
+// ── SEH helper: walk the PE call stack dispatching language handlers ─────────
+
+/// Walk the PE call stack starting at `(initial_rip, initial_rsp)` and
+/// dispatch language-specific exception handlers.
+///
+/// `phase`:
+/// - `1` — search phase: calls `EHANDLER` routines without setting
+///   `EXCEPTION_UNWINDING`.  Returns `true` as soon as a handler accepts
+///   (i.e. calls `RtlUnwindEx`, which never returns here).
+/// - `2` — cleanup phase: calls `UHANDLER` routines with `EXCEPTION_UNWINDING`
+///   set in the exception record.  Returns `true` when the target frame is
+///   reached (currently walks all frames).
+///
+/// Returns `false` if no more PE frames are found before a handler accepts.
+///
+/// # Safety
+/// `exc_rec` must point to a valid, writable `ExceptionRecord`.
+unsafe fn seh_walk_stack_dispatch(
+    exc_rec: *mut ExceptionRecord,
+    initial_rip: u64,
+    initial_rsp: u64,
+    phase: u32,
+) -> bool {
+    // Allocate a CONTEXT on the heap (1232 bytes) — too large for the stack.
+    let ctx_layout = alloc::Layout::from_size_align(CTX_SIZE, 16)
+        .expect("CTX layout is valid");
+    // SAFETY: layout is non-zero.
+    let ctx_ptr = unsafe { alloc::alloc_zeroed(ctx_layout) };
+    if ctx_ptr.is_null() {
+        return false;
+    }
+
+    // Seed the context with the guest's initial PC and SP.
+    // SAFETY: ctx_ptr is a freshly zeroed CTX_SIZE-byte allocation.
+    unsafe {
+        ctx_write(ctx_ptr, CTX_RIP, initial_rip);
+        ctx_write(ctx_ptr, CTX_RSP, initial_rsp);
+    }
+
+    let handler_flag = if phase == 2 {
+        u32::from(UNW_FLAG_UHANDLER)
+    } else {
+        u32::from(UNW_FLAG_EHANDLER)
+    };
+
+    // Set EXCEPTION_UNWINDING on the record for phase-2 walks.
+    if phase == 2 {
+        // SAFETY: caller guarantees exc_rec is valid.
+        unsafe { (*exc_rec).exception_flags |= EXCEPTION_UNWINDING };
+    }
+
+    let mut found = false;
+    let mut max_frames: u32 = 256; // guard against infinite loops
+
+    loop {
+        max_frames -= 1;
+        if max_frames == 0 {
+            break;
+        }
+
+        // SAFETY: ctx_ptr is a valid CONTEXT.
+        let control_pc = unsafe { ctx_read(ctx_ptr, CTX_RIP) };
+        if control_pc == 0 {
+            break;
+        }
+
+        let mut image_base: u64 = 0;
+        // SAFETY: RtlLookupFunctionEntry is safe to call with a valid PC and
+        // a pointer to a u64 output.
+        let fe = unsafe {
+            kernel32_RtlLookupFunctionEntry(
+                control_pc,
+                &mut image_base,
+                core::ptr::null_mut(),
+            )
+        };
+        if fe.is_null() {
+            // control_pc is outside the registered PE — no more frames to walk.
+            break;
+        }
+
+        let mut handler_data: *mut core::ffi::c_void = core::ptr::null_mut();
+        let mut establisher_frame: u64 = 0;
+
+        // SAFETY: fe and ctx_ptr are valid; establisher_frame and handler_data
+        // are valid output slots.
+        let lang_handler = unsafe {
+            kernel32_RtlVirtualUnwind(
+                handler_flag,
+                image_base,
+                control_pc,
+                fe,
+                ctx_ptr.cast::<core::ffi::c_void>(),
+                &mut handler_data,
+                &mut establisher_frame,
+                core::ptr::null_mut(),
+            )
+        };
+
+        if !lang_handler.is_null() {
+            // Build a DISPATCHER_CONTEXT for this frame.
+            let mut dc = DispatcherContext {
+                control_pc,
+                image_base,
+                function_entry: fe,
+                establisher_frame,
+                target_ip: 0,
+                context_record: ctx_ptr,
+                language_handler: lang_handler,
+                handler_data,
+                history_table: core::ptr::null_mut(),
+                scope_index: 0,
+                _fill0: 0,
+            };
+
+            // Call the language handler using the Windows x64 ABI (win64).
+            // The handler is a PE function; its four parameters are:
+            //   rcx = ExceptionRecord*
+            //   rdx = EstablisherFrame (u64)
+            //   r8  = CONTEXT*
+            //   r9  = DISPATCHER_CONTEXT*
+            type ExceptionRoutine = unsafe extern "win64" fn(
+                *mut ExceptionRecord,
+                u64,
+                *mut u8,
+                *mut DispatcherContext,
+            ) -> i32;
+
+            // SAFETY: lang_handler is a valid PE function pointer with the
+            // EXCEPTION_ROUTINE signature.
+            let handler_fn: ExceptionRoutine =
+                unsafe { core::mem::transmute(lang_handler) };
+
+            // SAFETY: all pointers are valid for their respective types.
+            let disposition =
+                unsafe { handler_fn(exc_rec, establisher_frame, ctx_ptr, &mut dc) };
+
+            if disposition == EXCEPTION_CONTINUE_EXECUTION {
+                found = true;
+                break;
+            }
+            // EXCEPTION_CONTINUE_SEARCH (1): keep walking.
+            // If the handler itself called RtlUnwindEx, we never reach here.
+        }
+        // Context has been updated by RtlVirtualUnwind to the caller's frame;
+        // the next iteration processes the caller.
+    }
+
+    // SAFETY: ctx_ptr was allocated above with ctx_layout.
+    unsafe { alloc::dealloc(ctx_ptr, ctx_layout) };
+    found
 }
 
 #[cfg(test)]
