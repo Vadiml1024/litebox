@@ -507,6 +507,20 @@ jobs:
           grep -q "Results:.*0 failed" /tmp/seh_c_test_out.txt \
             || { echo "✗ seh_c_test FAILED"; exit 1; }
           echo "✓ seh_c_test PASSED"
+      - name: Run seh_cpp_test
+        if: matrix.suite == 'seh'
+        continue-on-error: true
+        run: |
+          echo "=== seh_cpp_test.exe ==="
+          ./target/debug/litebox_runner_windows_on_linux_userland \
+            windows_test_programs/seh_test/seh_cpp_test.exe \
+            2>&1 | tee /tmp/seh_cpp_test_out.txt
+
+          echo ""
+          echo "--- Verifying test output ---"
+          grep -q "Results:.*0 failed" /tmp/seh_cpp_test_out.txt \
+            || { echo "✗ seh_cpp_test FAILED (C++ exception support is a work in progress)"; exit 1; }
+          echo "✓ seh_cpp_test PASSED"
       - name: Upload test output on failure
         if: failure()
         uses: actions/upload-artifact@v4
