@@ -1985,16 +1985,15 @@ pub unsafe extern "C" fn kernel32_RaiseException(
     // SAFETY: Capturing RSP and callee-saved registers (SysV ABI: RBX, R12-R15).
     // These registers are callee-saved in both Windows x64 and SysV ABIs, so
     // their values match the guest PE's values at the RaiseException call site.
-    // For RBP: Rust may use it as a frame pointer (`push rbp; mov rbp, rsp`),
-    // so the PE's RBP (= Rust's caller RBP) is saved at [rbp].  We read that
-    // value to get the correct PE RBP.  If Rust doesn't use a frame pointer
-    // (release builds), rbp still holds the caller's value directly.
+    // For RBP: the Rust compiler does NOT use a frame pointer for this
+    // `extern "C"` function (it only does `sub rsp, N`), so RBP still holds
+    // the PE's callee-saved RBP value directly — no dereference needed.
     // RSI and RDI are captured from the trampoline frame.
     unsafe {
         core::arch::asm!(
             "mov {rsp_out}, rsp",
             "mov {rbx_out}, rbx",
-            "mov {rbp_out}, QWORD PTR [rbp]",
+            "mov {rbp_out}, rbp",
             "mov {r12_out}, r12",
             "mov {r13_out}, r13",
             "mov {r14_out}, r14",
@@ -2019,8 +2018,10 @@ pub unsafe extern "C" fn kernel32_RaiseException(
     let start_rip = pe_frame.control_pc;
     let start_rsp = pe_frame.guest_rsp;
 
-    // RBP was read from [rbp] in the inline asm above, which dereferences
-    // Rust's frame pointer to get the caller's (= trampoline's = PE's) RBP.
+    // RBP was read directly from the register in the inline asm above.
+    // Since the Rust compiler does not use a frame pointer for this function
+    // (prologue is `sub rsp, N` without `push rbp`), RBP still holds the
+    // PE's callee-saved value at the RaiseException call site.
     let nv_regs = NonVolatileRegs {
         rbx: nv_rbx,
         rbp: nv_rbp_or_frame,
@@ -2293,10 +2294,21 @@ pub unsafe extern "C" fn kernel32_RtlUnwindEx(
     //
     // We allocate a separate walk context so `ctx` (the caller's original
     // context) is preserved for the final landing-pad jump.
+    //
+    // After each INTERMEDIATE frame we copy `walk_ctx → ctx` (matching
+    // Wine's `*context = new_context;`), so that when we break at the target
+    // frame `ctx` has the non-volatile registers restored by unwinding all
+    // intermediate frames.
     let walk_ctx_layout =
         alloc::Layout::from_size_align(CTX_SIZE, 16).expect("CTX layout is valid");
     // SAFETY: layout is non-zero.
     let walk_ctx = unsafe { alloc::alloc_zeroed(walk_ctx_layout) };
+    // Save target frame metadata so we can fix up the body frame register
+    // after the loop (image_base + function_entry are needed by
+    // `compute_body_frame_reg`).
+    let mut target_fe: *mut core::ffi::c_void = core::ptr::null_mut();
+    let mut target_image_base: u64 = 0;
+    let mut target_establisher: u64 = 0;
     if walk_ctx.is_null() {
         eprintln!("RtlUnwindEx: failed to allocate walk context — skipping cleanup walk");
     } else {
@@ -2337,6 +2349,7 @@ pub unsafe extern "C" fn kernel32_RtlUnwindEx(
                     ctx_write(walk_ctx, CTX_RIP, ret_addr);
                     ctx_write(walk_ctx, CTX_RSP, rsp + 8);
                 }
+                // Non-PE frames don't update ctx — they are skipped.
                 continue;
             }
 
@@ -2367,6 +2380,11 @@ pub unsafe extern "C" fn kernel32_RtlUnwindEx(
                         (*exc).exception_flags |= EXCEPTION_TARGET_UNWIND;
                     }
                 }
+
+                // Save target frame info for body frame register fixup.
+                target_fe = fe;
+                target_image_base = image_base;
+                target_establisher = establisher_frame;
 
                 // Call the target frame's handler if present.
                 if !lang_handler.is_null() && !exception_record.is_null() {
@@ -2424,7 +2442,15 @@ pub unsafe extern "C" fn kernel32_RtlUnwindEx(
                     );
                 }
             }
-            // walk_ctx has been updated by RtlVirtualUnwind; loop continues.
+
+            // Copy walk_ctx to ctx after each intermediate frame, matching
+            // Wine's `*context = new_context;` at the end of each loop
+            // iteration.  When we break at the target frame, ctx retains
+            // the state from the previous iteration — exactly the registers
+            // the catch landing pad expects (non-volatile regs restored
+            // by intermediate frames' unwind info).
+            // SAFETY: both buffers are CTX_SIZE bytes.
+            unsafe { core::ptr::copy_nonoverlapping(walk_ctx, ctx, CTX_SIZE) };
         }
 
         // SAFETY: walk_ctx was allocated above.
@@ -2435,12 +2461,31 @@ pub unsafe extern "C" fn kernel32_RtlUnwindEx(
     //   • Rip  ← target_ip  (landing pad address)
     //   • Rax  ← return_value (_Unwind_Exception* — read by the landing pad)
     //   • Rdx  ← ExceptionInformation[3] (type selector set during Phase 1)
+    //   • Frame register (e.g. RBP) ← recomputed from the target function's
+    //     UNWIND_INFO, matching how `compute_body_frame_reg` works.
+
     if !target_ip.is_null() {
         // SAFETY: ctx is a valid, writable CONTEXT buffer.
         unsafe { ctx_write(ctx, CTX_RIP, target_ip as u64) };
     }
     // SAFETY: ctx is a valid, writable CONTEXT buffer.
     unsafe { ctx_write(ctx, CTX_RAX, return_value as u64) };
+
+    // Fix up the frame register (typically RBP) for the target function.
+    //
+    // If the target function uses UWOP_SET_FPREG (e.g. "mov rbp, rsp" in
+    // the prologue), the landing pad expects the frame register to hold
+    // `establisher_frame + frame_offset * 16`.  Without this correction,
+    // the frame register retains whatever stale value it had from the
+    // Phase 1 walk, causing the landing pad to read from wrong memory.
+    if !target_fe.is_null() && target_image_base != 0 && target_establisher != 0 {
+        // SAFETY: target_fe and target_image_base are from the Phase 2 walk.
+        if let Some((reg_off, val)) =
+            unsafe { compute_body_frame_reg(target_image_base, target_fe, target_establisher) }
+        {
+            unsafe { ctx_write(ctx, reg_off, val) };
+        }
+    }
 
     // ExceptionInformation[3] = gcc_context.reg[1] = the C++ type-selector index.
     // _GCC_specific_handler sets this during Phase 1 before calling RtlUnwindEx,
