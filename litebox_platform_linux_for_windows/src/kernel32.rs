@@ -1364,7 +1364,8 @@ const CTX_RAX: usize = 0x78;
 const CTX_RCX: usize = 0x80;
 const CTX_RDX: usize = 0x88;
 const CTX_RBX: usize = 0x90;
-const CTX_RSP: usize = 0x98;
+/// Offset of RSP in the Windows CONTEXT structure (x64)
+pub const CTX_RSP: usize = 0x98;
 const CTX_RBP: usize = 0xA0;
 const CTX_RSI: usize = 0xA8;
 const CTX_RDI: usize = 0xB0;
@@ -1376,7 +1377,8 @@ const CTX_R12: usize = 0xD8;
 const CTX_R13: usize = 0xE0;
 const CTX_R14: usize = 0xE8;
 const CTX_R15: usize = 0xF0;
-const CTX_RIP: usize = 0xF8;
+/// Offset of RIP in the Windows CONTEXT structure (x64)
+pub const CTX_RIP: usize = 0xF8;
 const CTX_SIZE: usize = 1232;
 
 /// Map an x64 register number (0-15) to its byte offset in the Windows CONTEXT
@@ -1406,7 +1408,12 @@ fn ctx_reg_offset(reg: u8) -> usize {
 /// # Safety
 /// `ctx` must point to a valid CONTEXT structure of at least CTX_SIZE bytes.
 #[inline]
-unsafe fn ctx_read(ctx: *const u8, offset: usize) -> u64 {
+/// Read a u64 from a CONTEXT structure at the given offset.
+///
+/// # Safety
+/// `ctx` must point to a valid, readable CONTEXT buffer of at least
+/// `offset + 8` bytes.
+pub unsafe fn ctx_read(ctx: *const u8, offset: usize) -> u64 {
     // SAFETY: Caller guarantees ctx is valid; offset is always within the 1232-byte CONTEXT.
     unsafe { ctx.add(offset).cast::<u64>().read_unaligned() }
 }
@@ -1416,7 +1423,12 @@ unsafe fn ctx_read(ctx: *const u8, offset: usize) -> u64 {
 /// # Safety
 /// `ctx` must point to a valid writable CONTEXT structure of at least CTX_SIZE bytes.
 #[inline]
-unsafe fn ctx_write(ctx: *mut u8, offset: usize, value: u64) {
+/// Write a u64 into a CONTEXT structure at the given offset.
+///
+/// # Safety
+/// `ctx` must point to a valid, writable CONTEXT buffer of at least
+/// `offset + 8` bytes.
+pub unsafe fn ctx_write(ctx: *mut u8, offset: usize, value: u64) {
     // SAFETY: Caller guarantees ctx is valid and writable; offset is within CONTEXT bounds.
     unsafe { ctx.add(offset).cast::<u64>().write_unaligned(value) }
 }
@@ -1430,6 +1442,12 @@ const UNW_FLAG_CHAININFO: u8 = 0x04;
 const STATUS_GCC_THROW: u32 = 0x2047_4343;
 const STATUS_GCC_UNWIND: u32 = 0x2147_4343;
 const STATUS_GCC_FORCED: u32 = 0x2247_4343;
+
+// ---- MSVC C++ exception code ----
+/// MSVC C++ exception code: `0xE06D7363` == "msc" in little-endian ASCII.
+/// Used by `_CxxThrowException` when calling `RaiseException`.
+/// Ref: Wine `dlls/msvcrt/except_x86_64.c`, ReactOS `sdk/lib/crt/except/cppexcept.h`.
+const STATUS_MSVC_CPP_EXCEPTION: u32 = 0xE06D_7363;
 
 // ---- Exception flags (EXCEPTION_RECORD.ExceptionFlags) ----
 #[allow(dead_code)]
@@ -1941,14 +1959,18 @@ pub unsafe extern "C" fn kernel32_SetUnhandledExceptionFilter(
 /// Implements Windows x64 SEH phase-1 (search) walk: for each PE frame on
 /// the guest call stack, calls `RtlLookupFunctionEntry` + `RtlVirtualUnwind`
 /// to find a language-specific handler.  If the handler (e.g.
-/// `__gxx_personality_seh0`) finds a matching catch clause it will call
-/// `RtlUnwindEx` which transfers control to the landing pad; that call never
-/// returns.  If no handler is found the process is aborted.
+/// `__gxx_personality_seh0` for MinGW or `__CxxFrameHandler3` for MSVC)
+/// finds a matching catch clause it will call `RtlUnwindEx` which transfers
+/// control to the landing pad; that call never returns.
+/// If no handler is found the process is aborted.
 ///
-/// GCC/MinGW STATUS codes recognized:
-///   0x20474343 (STATUS_GCC_THROW)   – normal C++ throw
-///   0x21474343 (STATUS_GCC_UNWIND)  – forced unwind
-///   0x22474343 (STATUS_GCC_FORCED)  – forced unwind (alternate)
+/// Exception codes recognized:
+///   0x20474343 (STATUS_GCC_THROW)          – MinGW/GCC normal C++ throw
+///   0x21474343 (STATUS_GCC_UNWIND)         – MinGW/GCC forced unwind
+///   0x22474343 (STATUS_GCC_FORCED)         – MinGW/GCC forced unwind (alt)
+///   0xE06D7363 (STATUS_MSVC_CPP_EXCEPTION) – MSVC C++ throw (`_CxxThrowException`)
+///
+/// Ref: Wine `dlls/ntdll/exception.c`, ReactOS `sdk/lib/rtl/exception.c`.
 ///
 /// # Safety
 /// Never returns normally; either control is transferred to a catch landing
@@ -1961,10 +1983,12 @@ pub unsafe extern "C" fn kernel32_RaiseException(
     number_parameters: u32,
     arguments: *const usize,
 ) -> ! {
-    // Only dispatch GCC C++ exceptions through the SEH walk; abort all others.
+    // Dispatch C++ exceptions (GCC/MinGW and MSVC) through the SEH walk.
+    // Abort all other exception codes (hardware faults, etc.).
     if exception_code != STATUS_GCC_THROW
         && exception_code != STATUS_GCC_UNWIND
         && exception_code != STATUS_GCC_FORCED
+        && exception_code != STATUS_MSVC_CPP_EXCEPTION
     {
         eprintln!("Windows exception raised (code: {exception_code:#x}) - aborting");
         std::process::abort();
@@ -2458,45 +2482,65 @@ pub unsafe extern "C" fn kernel32_RtlUnwindEx(
     }
 
     // ── Step 3: Fix up the context for the landing pad ─────────────────────
-    //   • Rip  ← target_ip  (landing pad address)
-    //   • Rax  ← return_value (_Unwind_Exception* — read by the landing pad)
-    //   • Rdx  ← ExceptionInformation[3] (type selector set during Phase 1)
-    //   • Frame register (e.g. RBP) ← recomputed from the target function's
-    //     UNWIND_INFO, matching how `compute_body_frame_reg` works.
-
-    if !target_ip.is_null() {
-        // SAFETY: ctx is a valid, writable CONTEXT buffer.
-        unsafe { ctx_write(ctx, CTX_RIP, target_ip as u64) };
-    }
-    // SAFETY: ctx is a valid, writable CONTEXT buffer.
-    unsafe { ctx_write(ctx, CTX_RAX, return_value as u64) };
-
-    // Fix up the frame register (typically RBP) for the target function.
     //
-    // If the target function uses UWOP_SET_FPREG (e.g. "mov rbp, rsp" in
-    // the prologue), the landing pad expects the frame register to hold
-    // `establisher_frame + frame_offset * 16`.  Without this correction,
-    // the frame register retains whatever stale value it had from the
-    // Phase 1 walk, causing the landing pad to read from wrong memory.
-    if !target_fe.is_null() && target_image_base != 0 && target_establisher != 0 {
-        // SAFETY: target_fe and target_image_base are from the Phase 2 walk.
-        if let Some((reg_off, val)) =
-            unsafe { compute_body_frame_reg(target_image_base, target_fe, target_establisher) }
-        {
-            unsafe { ctx_write(ctx, reg_off, val) };
-        }
-    }
+    // Determine the exception ABI so we can fix up registers correctly.
+    let is_msvc_exception = !exception_record.is_null()
+        && unsafe {
+            (*exception_record.cast::<ExceptionRecord>()).exception_code
+                == STATUS_MSVC_CPP_EXCEPTION
+        };
 
-    // ExceptionInformation[3] = gcc_context.reg[1] = the C++ type-selector index.
-    // _GCC_specific_handler sets this during Phase 1 before calling RtlUnwindEx,
-    // and reads it back into ctx->Rdx when called with EXCEPTION_TARGET_UNWIND.
-    // We replicate that effect directly.
-    if !exception_record.is_null() {
-        // SAFETY: caller guarantees exception_record is a valid ExceptionRecord.
-        let selector =
-            unsafe { (*exception_record.cast::<ExceptionRecord>()).exception_information[3] };
+    if is_msvc_exception {
+        // MSVC C++ exception:
+        //   RIP ← the context already has the continuation IP set by
+        //          __CxxFrameHandler3 (which called the catch funclet and
+        //          stored its return value in context->Rip). Do NOT override
+        //          it with target_ip (which was the funclet address, not the
+        //          continuation).
+        //   RAX ← not meaningful for MSVC path (funclet returns continuation
+        //          directly); set to 0.
+        //   RDX ← not overridden (context already has correct registers from
+        //          the unwind walk that __CxxFrameHandler3 used).
+    } else {
+        // GCC/MinGW C++ exception (or generic SEH):
+        //   RIP ← target_ip (landing pad address set during Phase 1)
+        //   RAX ← return_value (_Unwind_Exception* read by the landing pad)
+        //   RDX ← ExceptionInformation[3] (type-selector index)
+        //   Frame register ← recomputed from UNWIND_INFO
+        if !target_ip.is_null() {
+            // SAFETY: ctx is a valid, writable CONTEXT buffer.
+            unsafe { ctx_write(ctx, CTX_RIP, target_ip as u64) };
+        }
         // SAFETY: ctx is a valid, writable CONTEXT buffer.
-        unsafe { ctx_write(ctx, CTX_RDX, selector as u64) };
+        unsafe { ctx_write(ctx, CTX_RAX, return_value as u64) };
+
+        // Fix up the frame register (typically RBP) for the target function.
+        //
+        // If the target function uses UWOP_SET_FPREG (e.g. "mov rbp, rsp" in
+        // the prologue), the landing pad expects the frame register to hold
+        // `establisher_frame + frame_offset * 16`.  Without this correction,
+        // the frame register retains whatever stale value it had from the
+        // Phase 1 walk, causing the landing pad to read from wrong memory.
+        if !target_fe.is_null() && target_image_base != 0 && target_establisher != 0 {
+            // SAFETY: target_fe and target_image_base are from the Phase 2 walk.
+            if let Some((reg_off, val)) =
+                unsafe { compute_body_frame_reg(target_image_base, target_fe, target_establisher) }
+            {
+                unsafe { ctx_write(ctx, reg_off, val) };
+            }
+        }
+
+        // ExceptionInformation[3] = gcc_context.reg[1] = the C++ type-selector index.
+        // _GCC_specific_handler sets this during Phase 1 before calling RtlUnwindEx,
+        // and reads it back into ctx->Rdx when called with EXCEPTION_TARGET_UNWIND.
+        // We replicate that effect directly.
+        if !exception_record.is_null() {
+            // SAFETY: caller guarantees exception_record is a valid ExceptionRecord.
+            let selector =
+                unsafe { (*exception_record.cast::<ExceptionRecord>()).exception_information[3] };
+            // SAFETY: ctx is a valid, writable CONTEXT buffer.
+            unsafe { ctx_write(ctx, CTX_RDX, selector as u64) };
+        }
     }
 
     // ── Step 4: Restore registers and jump to the landing pad ─────────────
@@ -5263,6 +5307,38 @@ pub unsafe extern "C" fn kernel32_WriteConsoleW(
             }
             return 1; // TRUE
         }
+    }
+    0 // FALSE
+}
+
+/// WriteConsoleA - writes an ANSI character string to a console screen buffer
+///
+/// Writes `number_of_chars_to_write` bytes from the byte buffer `buffer` to
+/// stdout, treating the data as UTF-8 (or Latin-1 for non-UTF-8 bytes).
+///
+/// # Safety
+/// `buffer` must point to at least `number_of_chars_to_write` valid bytes
+/// when non-null.  `number_of_chars_written`, if non-null, must point to a
+/// writable `u32`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_WriteConsoleA(
+    _console_output: *mut core::ffi::c_void,
+    buffer: *const u8,
+    number_of_chars_to_write: u32,
+    number_of_chars_written: *mut u32,
+    _reserved: *mut core::ffi::c_void,
+) -> i32 {
+    use std::io::Write as _;
+    if !buffer.is_null() && number_of_chars_to_write > 0 {
+        let slice = core::slice::from_raw_parts(buffer, number_of_chars_to_write as usize);
+        // Best-effort UTF-8 interpretation; non-UTF-8 bytes are replaced.
+        let s = String::from_utf8_lossy(slice);
+        let _ = std::io::stdout().write_all(s.as_bytes());
+        let _ = std::io::stdout().flush();
+        if !number_of_chars_written.is_null() {
+            *number_of_chars_written = number_of_chars_to_write;
+        }
+        return 1; // TRUE
     }
     0 // FALSE
 }

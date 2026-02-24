@@ -13,6 +13,7 @@ pub mod gdi32;
 pub mod kernel32;
 pub mod msvcrt;
 pub mod ntdll_impl;
+pub mod oleaut32;
 pub mod shell32;
 pub mod shlwapi;
 pub mod trampoline;

@@ -569,3 +569,154 @@ fn test_hello_gui_program() {
         "hello_gui.exe should exit with code 0\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
 }
+
+/// Test that seh_c_test.exe runs all 21 C-language SEH API tests successfully.
+///
+/// `seh_c_test` is a MinGW-compiled C program that exercises Windows structured-
+/// exception-handling runtime APIs without using MSVC `__try`/`__except` syntax.
+///
+/// Build the program with:
+/// ```
+/// cd windows_test_programs/seh_test && make seh_c_test.exe
+/// ```
+#[test]
+#[ignore = "Requires MinGW-built SEH test programs (run: cd windows_test_programs/seh_test && make)"]
+fn test_seh_c_program() {
+    use std::env;
+    use std::path::PathBuf;
+    use std::process::Command;
+
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let workspace_root = PathBuf::from(manifest_dir).parent().unwrap().to_path_buf();
+    let exe_path = workspace_root
+        .join("windows_test_programs")
+        .join("seh_test")
+        .join("seh_c_test.exe");
+
+    assert!(
+        exe_path.exists(),
+        "seh_c_test.exe not found at {exe_path:?}. \
+         Build it with: cd windows_test_programs/seh_test && make seh_c_test.exe"
+    );
+
+    let runner_exe = env!("CARGO_BIN_EXE_litebox_runner_windows_on_linux_userland");
+    let output = Command::new(runner_exe)
+        .arg(&exe_path)
+        .output()
+        .expect("failed to launch litebox runner for seh_c_test.exe");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "seh_c_test.exe should exit with code 0\nstdout:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("=== SEH C Runtime API Test Suite ==="),
+        "seh_c_test.exe stdout should contain test suite header\nstdout:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("21 passed, 0 failed"),
+        "seh_c_test.exe should report 21 passed, 0 failed\nstdout:\n{stdout}"
+    );
+}
+
+/// Test that seh_cpp_test.exe runs all 12 C++ exception-handling tests successfully.
+///
+/// `seh_cpp_test` is a MinGW-compiled C++ program that exercises C++ `throw`/`catch`
+/// using the Windows x64 SEH machinery (`__gxx_personality_seh0` / `_GCC_specific_handler`).
+/// It validates basic throw/catch, rethrow, catch-all, destructor unwinding, polymorphic
+/// dispatch, and cross-frame propagation.
+///
+/// Build the program with:
+/// ```
+/// cd windows_test_programs/seh_test && make seh_cpp_test.exe
+/// ```
+#[test]
+#[ignore = "Requires MinGW-built SEH test programs (run: cd windows_test_programs/seh_test && make)"]
+fn test_seh_cpp_program() {
+    use std::env;
+    use std::path::PathBuf;
+    use std::process::Command;
+
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let workspace_root = PathBuf::from(manifest_dir).parent().unwrap().to_path_buf();
+    let exe_path = workspace_root
+        .join("windows_test_programs")
+        .join("seh_test")
+        .join("seh_cpp_test.exe");
+
+    assert!(
+        exe_path.exists(),
+        "seh_cpp_test.exe not found at {exe_path:?}. \
+         Build it with: cd windows_test_programs/seh_test && make seh_cpp_test.exe"
+    );
+
+    let runner_exe = env!("CARGO_BIN_EXE_litebox_runner_windows_on_linux_userland");
+    let output = Command::new(runner_exe)
+        .arg(&exe_path)
+        .output()
+        .expect("failed to launch litebox runner for seh_cpp_test.exe");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "seh_cpp_test.exe should exit with code 0\nstdout:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("=== SEH C++ Test Suite ==="),
+        "seh_cpp_test.exe stdout should contain test suite header\nstdout:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("0 failed"),
+        "seh_cpp_test.exe should report 0 failed\nstdout:\n{stdout}"
+    );
+}
+
+/// Test that phase27_test.exe passes all Phase 27 Windows API tests.
+///
+/// `phase27_test` is a MinGW-compiled C++ program that exercises thread management,
+/// process management, file time APIs, system directory APIs, character conversion,
+/// character classification, and headless window utilities.
+///
+/// The binary is pre-compiled and checked in at
+/// `windows_test_programs/phase27_test/phase27_test.exe`.
+#[test]
+#[ignore = "Requires pre-compiled phase27_test.exe in windows_test_programs/phase27_test/"]
+fn test_phase27_program() {
+    use std::env;
+    use std::path::PathBuf;
+    use std::process::Command;
+
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let workspace_root = PathBuf::from(manifest_dir).parent().unwrap().to_path_buf();
+    let exe_path = workspace_root
+        .join("windows_test_programs")
+        .join("phase27_test")
+        .join("phase27_test.exe");
+
+    assert!(
+        exe_path.exists(),
+        "phase27_test.exe not found at {exe_path:?}. \
+         Build it with: cd windows_test_programs/phase27_test && make"
+    );
+
+    let runner_exe = env!("CARGO_BIN_EXE_litebox_runner_windows_on_linux_userland");
+    let output = Command::new(runner_exe)
+        .arg(&exe_path)
+        .output()
+        .expect("failed to launch litebox runner for phase27_test.exe");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "phase27_test.exe should exit with code 0\nstdout:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("=== Phase 27 Windows API Tests ==="),
+        "phase27_test.exe stdout should contain test suite header\nstdout:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("PASSED (0 failures)"),
+        "phase27_test.exe should report PASSED with 0 failures\nstdout:\n{stdout}"
+    );
+}

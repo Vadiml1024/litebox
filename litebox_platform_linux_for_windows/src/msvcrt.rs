@@ -2568,24 +2568,30 @@ pub unsafe extern "C" fn msvcrt__CxxThrowException(
     exception_object: *mut core::ffi::c_void,
     throw_info: *mut core::ffi::c_void,
 ) {
-    // The MSVC CRT passes 4 parameters to RaiseException:
-    //   [0] = MSVC magic number (0x19930520 = VC8+ version)
-    //   [1] = pointer to the thrown object
-    //   [2] = pointer to _ThrowInfo
+    // The MSVC CRT passes 4 parameters to RaiseException for VC8+ (magic 0x19930520):
+    //   [0] = MSVC magic number (0x19930520)
+    //   [1] = pointer to the thrown object (absolute VA)
+    //   [2] = ThrowInfo RVA — offset from the module base, NOT an absolute pointer
     //   [3] = image base of the module (for RVA resolution in _ThrowInfo)
     //
-    // We pass 4 parameters here:
-    //   [0] = MSVC magic number (0x19930520 = VC8+ version)
-    //   [1] = pointer to the thrown object
-    //   [2] = pointer to _ThrowInfo
-    //   [3] = image base of the module (for RVA resolution in _ThrowInfo)
+    // Ref: Wine dlls/msvcrt/except_x86_64.c `__CxxThrowException`,
+    //      ReactOS sdk/lib/crt/except/cppexcept.h.
+    //
+    // The compiler-emitted call passes `throw_info` as an absolute VA.
+    // We must convert it to an RVA before storing in ExceptionInformation[2],
+    // because `__CxxFrameHandler3` reads ExceptionInformation[2] as a u32 RVA
+    // and resolves it by adding ExceptionInformation[3] (the image base).
     let module_base = crate::kernel32::get_registered_image_base();
-    #[allow(clippy::cast_possible_truncation)]
+    let throw_info_rva = if throw_info.is_null() {
+        0usize
+    } else {
+        (throw_info as usize).wrapping_sub(module_base as usize)
+    };
     let params: [usize; 4] = [
-        0x1993_0520,               // magic version number
-        exception_object as usize, // exception object
-        throw_info as usize,       // throw info
-        module_base as usize,      // image base for RVA resolution (truncation OK on x64)
+        0x1993_0520,               // magic version number (VC8+)
+        exception_object as usize, // exception object pointer (absolute VA)
+        throw_info_rva,            // ThrowInfo RVA relative to module_base
+        module_base as usize,      // image base for RVA resolution
     ];
 
     // SAFETY: kernel32_RaiseException is defined in the platform layer.
@@ -2657,6 +2663,7 @@ pub unsafe extern "C" fn msvcrt___CxxFrameHandler3(
     let exc_code = exc_rec_ref.exception_code;
 
     let is_unwinding = (exc_flags & EXCEPTION_UNWINDING_FLAG) != 0;
+    let is_target_unwind = (exc_flags & EXCEPTION_TARGET_UNWIND_FLAG) != 0;
 
     // Synchronous mode (VC8+): only handle CXX_EXCEPTION.
     if magic >= CXX_FRAME_MAGIC_VC8
@@ -2669,11 +2676,125 @@ pub unsafe extern "C" fn msvcrt___CxxFrameHandler3(
     // Determine current trylevel from IP-to-state map.
     let trylevel = cxx_ip_to_state(fi, image_base, control_pc);
 
-    if is_unwinding {
-        // Unwind phase: call local destructors via the unwind map.
-        // Both target-unwind and intermediate frames unwind all locals.
+    if is_unwinding && !is_target_unwind {
+        // Cleanup phase (intermediate frame): run local destructors only.
         cxx_local_unwind(fi, image_base, establisher_frame, trylevel, -1);
         return 1; // EXCEPTION_CONTINUE_SEARCH
+    }
+
+    if is_target_unwind {
+        // Target-unwind phase: run destructors, then call the catch funclet.
+        //
+        // The MSVC catch funclet is a compiler-generated "funclet" that runs the
+        // catch body and returns the continuation IP (the code right after the
+        // catch block) in RAX.  Unlike GCC landing pads (which are jumped to),
+        // MSVC funclets must be CALLED so that their `ret` instruction returns
+        // to us.
+        //
+        // Calling convention (clang-cl Windows x64):
+        //   RCX = image_base  (for any intra-PE RVA resolution inside the funclet)
+        //   RDX = post-alloc RSP of the parent function
+        //         (= the RSP value right after the parent's prologue `sub rsp, N`,
+        //          which the funclet uses to reconstruct the parent's RBP via
+        //          `lea FPREG_OFFSET(%rdx), %rbp`)
+        //
+        // The `context_record` Rsp is already the post-alloc RSP of the target
+        // function because the RtlUnwindEx stack walk correctly unwinds all
+        // intermediate frames.
+        //
+        // Ref: Wine dlls/msvcrt/except_x86_64.c `cxx_frame_handler`,
+        //      LLVM lib/Target/X86/X86WinEHState.cpp.
+        cxx_local_unwind(fi, image_base, establisher_frame, trylevel, -1);
+
+        // Only call the funclet for MSVC C++ exceptions (not SEH or other codes).
+        if exc_code != MSVC_CPP_EXCEPTION_CODE || fi.tryblock_count == 0 {
+            return 1;
+        }
+
+        let exc_record = unsafe { &*exception_record.cast::<crate::kernel32::ExceptionRecord>() };
+        #[allow(clippy::cast_possible_truncation)]
+        let exc_type_rva = exc_record.exception_information[2] as u32;
+        let exc_image_base = exc_record.exception_information[3] as u64;
+        let throw_base = if exc_image_base != 0 {
+            exc_image_base
+        } else {
+            image_base
+        };
+        let exc_type_ptr = if exc_type_rva != 0 {
+            (throw_base + u64::from(exc_type_rva)) as *const CxxExceptionType
+        } else {
+            core::ptr::null()
+        };
+
+        // Find the catch block that handles this exception.
+        let try_table = (image_base + u64::from(fi.tryblock)) as *const CxxTryBlockInfo;
+        let ctx = context_record.cast::<u8>();
+        // The post-alloc RSP of the parent function is already in the context.
+        let rsp_within_frame = unsafe { crate::kernel32::ctx_read(ctx, crate::kernel32::CTX_RSP) };
+
+        'outer: for i in 0..(fi.tryblock_count as usize) {
+            let tb = unsafe { &*try_table.add(i) };
+            if trylevel < tb.start_level || trylevel > tb.end_level {
+                continue;
+            }
+            let catchblock_table =
+                (image_base + u64::from(tb.catchblock)) as *const CxxCatchBlockInfo;
+            for j in 0..(tb.catchblock_count as usize) {
+                let catchblock = unsafe { &*catchblock_table.add(j) };
+                let matches = if exc_type_ptr.is_null() {
+                    catchblock.type_info == 0
+                } else {
+                    unsafe { cxx_catch_matches(catchblock, exc_type_ptr, throw_base, image_base) }
+                };
+                if !matches {
+                    continue;
+                }
+                if catchblock.handler == 0 {
+                    continue;
+                }
+
+                // Copy exception object into the frame-local catch parameter if needed.
+                if !exc_type_ptr.is_null() && catchblock.type_info != 0 && catchblock.offset != 0 {
+                    let exc_object = unsafe { exc_record.exception_information[1] as *const u8 };
+                    if !exc_object.is_null() {
+                        #[allow(clippy::cast_possible_truncation)]
+                        let dest = (establisher_frame as *mut u8)
+                            .wrapping_offset(i64::from(catchblock.offset) as isize);
+                        if (catchblock.flags & TYPE_FLAG_REFERENCE) != 0 {
+                            unsafe { dest.cast::<*const u8>().write_unaligned(exc_object) };
+                        } else {
+                            let size = unsafe { cxx_get_exception_size(exc_type_ptr, throw_base) };
+                            if size > 0 {
+                                unsafe {
+                                    core::ptr::copy_nonoverlapping(exc_object, dest, size);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Call the catch funclet as a Windows x64 function:
+                //   RCX = image_base
+                //   RDX = post-alloc RSP of the parent function
+                // Returns: continuation IP (code right after the catch block) in RAX.
+                //
+                // SAFETY: handler_va is the address of a valid PE catch funclet;
+                // we call it with the Windows x64 calling convention.
+                let handler_va = image_base + u64::from(catchblock.handler);
+                // NOTE: `extern "win64"` uses the Microsoft x64 calling convention,
+                // which matches the Windows PE code we are calling.
+                type CatchFunclet = unsafe extern "win64" fn(u64, u64) -> u64;
+                let funclet: CatchFunclet = unsafe { core::mem::transmute(handler_va as usize) };
+                let continuation = unsafe { funclet(image_base, rsp_within_frame) };
+
+                // Update the context RIP to the continuation address.
+                // RtlUnwindEx will jump there instead of jumping to the funclet.
+                unsafe { crate::kernel32::ctx_write(ctx, crate::kernel32::CTX_RIP, continuation) };
+                break 'outer;
+            }
+        }
+
+        return 1; // EXCEPTION_CONTINUE_SEARCH (RtlUnwindEx uses context.Rip)
     }
 
     // Search phase: look for a matching catch block.
