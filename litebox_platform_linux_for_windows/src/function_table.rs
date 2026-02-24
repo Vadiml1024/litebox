@@ -3006,61 +3006,124 @@ pub fn get_function_table() -> Vec<FunctionImpl> {
             num_params: 0,
             impl_address: crate::msvcrt::msvcrt___current_exception_context as *const () as usize,
         },
+        // VCRUNTIME140 / UCRT stubs for MSVC-compiled programs.
+        // These DLLs are aliased to MSVCRT.dll in the DLL manager, so all
+        // entries use dll_name: "MSVCRT.dll".
+        FunctionImpl {
+            name: "__vcrt_initialize",
+            dll_name: "MSVCRT.dll",
+            num_params: 0,
+            impl_address: crate::msvcrt::vcruntime__vcrt_initialize as *const () as usize,
+        },
+        FunctionImpl {
+            name: "__vcrt_uninitialize",
+            dll_name: "MSVCRT.dll",
+            num_params: 0,
+            impl_address: crate::msvcrt::vcruntime__vcrt_uninitialize as *const () as usize,
+        },
+        FunctionImpl {
+            name: "__security_init_cookie",
+            dll_name: "MSVCRT.dll",
+            num_params: 0,
+            impl_address: crate::msvcrt::vcruntime__security_init_cookie as *const () as usize,
+        },
+        FunctionImpl {
+            name: "__security_check_cookie",
+            dll_name: "MSVCRT.dll",
+            num_params: 1,
+            impl_address: crate::msvcrt::vcruntime__security_check_cookie as *const () as usize,
+        },
+        FunctionImpl {
+            name: "_initialize_narrow_environment",
+            dll_name: "MSVCRT.dll",
+            num_params: 0,
+            impl_address: crate::msvcrt::ucrt__initialize_narrow_environment as *const () as usize,
+        },
+        FunctionImpl {
+            name: "_configure_narrow_argv",
+            dll_name: "MSVCRT.dll",
+            num_params: 1,
+            impl_address: crate::msvcrt::ucrt__configure_narrow_argv as *const () as usize,
+        },
+        FunctionImpl {
+            name: "_crt_atexit",
+            dll_name: "MSVCRT.dll",
+            num_params: 1,
+            impl_address: crate::msvcrt::ucrt__crt_atexit as *const () as usize,
+        },
+        FunctionImpl {
+            name: "__acrt_iob_func",
+            dll_name: "MSVCRT.dll",
+            num_params: 1,
+            impl_address: crate::msvcrt::ucrt__acrt_iob_func as *const () as usize,
+        },
+        FunctionImpl {
+            name: "__stdio_common_vfprintf",
+            dll_name: "MSVCRT.dll",
+            num_params: 4,
+            impl_address: crate::msvcrt::ucrt__stdio_common_vfprintf as *const () as usize,
+        },
+        FunctionImpl {
+            name: "_configthreadlocale",
+            dll_name: "MSVCRT.dll",
+            num_params: 1,
+            impl_address: crate::msvcrt::ucrt__configthreadlocale as *const () as usize,
+        },
         // OLEAUT32: COM error info and BSTR functions
         FunctionImpl {
             name: "GetErrorInfo",
             dll_name: "OLEAUT32.dll",
             num_params: 2,
-            impl_address: crate::oleaut32::oleaut32_GetErrorInfo as *const () as usize,
+            impl_address: crate::oleaut32::oleaut32_get_error_info as *const () as usize,
         },
         FunctionImpl {
             name: "SetErrorInfo",
             dll_name: "OLEAUT32.dll",
             num_params: 2,
-            impl_address: crate::oleaut32::oleaut32_SetErrorInfo as *const () as usize,
+            impl_address: crate::oleaut32::oleaut32_set_error_info as *const () as usize,
         },
         FunctionImpl {
             name: "SysFreeString",
             dll_name: "OLEAUT32.dll",
             num_params: 1,
-            impl_address: crate::oleaut32::oleaut32_SysFreeString as *const () as usize,
+            impl_address: crate::oleaut32::oleaut32_sys_free_string as *const () as usize,
         },
         FunctionImpl {
             name: "SysStringLen",
             dll_name: "OLEAUT32.dll",
             num_params: 1,
-            impl_address: crate::oleaut32::oleaut32_SysStringLen as *const () as usize,
+            impl_address: crate::oleaut32::oleaut32_sys_string_len as *const () as usize,
         },
         FunctionImpl {
             name: "SysAllocString",
             dll_name: "OLEAUT32.dll",
             num_params: 1,
-            impl_address: crate::oleaut32::oleaut32_SysAllocString as *const () as usize,
+            impl_address: crate::oleaut32::oleaut32_sys_alloc_string as *const () as usize,
         },
         FunctionImpl {
             name: "SysAllocStringLen",
             dll_name: "OLEAUT32.dll",
             num_params: 2,
-            impl_address: crate::oleaut32::oleaut32_SysAllocStringLen as *const () as usize,
+            impl_address: crate::oleaut32::oleaut32_sys_alloc_string_len as *const () as usize,
         },
         // api-ms-win-core-winrt-error: Windows Runtime error origination
         FunctionImpl {
             name: "RoOriginateErrorW",
             dll_name: "api-ms-win-core-winrt-error-l1-1-0.dll",
             num_params: 3,
-            impl_address: crate::oleaut32::winrt_RoOriginateErrorW as *const () as usize,
+            impl_address: crate::oleaut32::winrt_ro_originate_error_w as *const () as usize,
         },
         FunctionImpl {
             name: "RoOriginateError",
             dll_name: "api-ms-win-core-winrt-error-l1-1-0.dll",
             num_params: 2,
-            impl_address: crate::oleaut32::winrt_RoOriginateError as *const () as usize,
+            impl_address: crate::oleaut32::winrt_ro_originate_error as *const () as usize,
         },
         FunctionImpl {
             name: "RoGetErrorReportingFlags",
             dll_name: "api-ms-win-core-winrt-error-l1-1-0.dll",
             num_params: 1,
-            impl_address: crate::oleaut32::winrt_RoGetErrorReportingFlags as *const () as usize,
+            impl_address: crate::oleaut32::winrt_ro_get_error_reporting_flags as *const () as usize,
         },
     ]
 }
@@ -3178,6 +3241,26 @@ impl LinuxPlatformForWindows {
                 "MSVCRT.dll",
                 "__initenv",
                 core::ptr::addr_of_mut!(crate::msvcrt::msvcrt___initenv) as usize,
+            ),
+            // Stack-probe functions use a non-standard calling convention (RAX = frame
+            // size; must be preserved on return).  They must NOT go through the normal
+            // trampoline (which clobbers RAX), so we register them here as direct
+            // function addresses.  On Linux the kernel maps stack pages on demand, so
+            // a bare `ret` (empty function) is the correct implementation.
+            (
+                "MSVCRT.dll",
+                "__chkstk",
+                crate::msvcrt::msvcrt_chkstk_nop as *const () as usize,
+            ),
+            (
+                "MSVCRT.dll",
+                "___chkstk_ms",
+                crate::msvcrt::msvcrt_chkstk_nop as *const () as usize,
+            ),
+            (
+                "MSVCRT.dll",
+                "_alloca_probe",
+                crate::msvcrt::msvcrt_chkstk_nop as *const () as usize,
             ),
         ];
 

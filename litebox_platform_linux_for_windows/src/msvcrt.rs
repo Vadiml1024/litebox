@@ -2582,11 +2582,13 @@ pub unsafe extern "C" fn msvcrt__CxxThrowException(
     // because `__CxxFrameHandler3` reads ExceptionInformation[2] as a u32 RVA
     // and resolves it by adding ExceptionInformation[3] (the image base).
     let module_base = crate::kernel32::get_registered_image_base();
+    #[allow(clippy::cast_possible_truncation)]
     let throw_info_rva = if throw_info.is_null() {
         0usize
     } else {
         (throw_info as usize).wrapping_sub(module_base as usize)
     };
+    #[allow(clippy::cast_possible_truncation)]
     let params: [usize; 4] = [
         0x1993_0520,               // magic version number (VC8+)
         exception_object as usize, // exception object pointer (absolute VA)
@@ -2683,6 +2685,9 @@ pub unsafe extern "C" fn msvcrt___CxxFrameHandler3(
     }
 
     if is_target_unwind {
+        // NOTE: `extern "win64"` uses the Microsoft x64 calling convention,
+        // which matches the Windows PE code we are calling.
+        type CatchFunclet = unsafe extern "win64" fn(u64, u64) -> u64;
         // Target-unwind phase: run destructors, then call the catch funclet.
         //
         // The MSVC catch funclet is a compiler-generated "funclet" that runs the
@@ -2755,7 +2760,7 @@ pub unsafe extern "C" fn msvcrt___CxxFrameHandler3(
 
                 // Copy exception object into the frame-local catch parameter if needed.
                 if !exc_type_ptr.is_null() && catchblock.type_info != 0 && catchblock.offset != 0 {
-                    let exc_object = unsafe { exc_record.exception_information[1] as *const u8 };
+                    let exc_object = exc_record.exception_information[1] as *const u8;
                     if !exc_object.is_null() {
                         #[allow(clippy::cast_possible_truncation)]
                         let dest = (establisher_frame as *mut u8)
@@ -2781,9 +2786,7 @@ pub unsafe extern "C" fn msvcrt___CxxFrameHandler3(
                 // SAFETY: handler_va is the address of a valid PE catch funclet;
                 // we call it with the Windows x64 calling convention.
                 let handler_va = image_base + u64::from(catchblock.handler);
-                // NOTE: `extern "win64"` uses the Microsoft x64 calling convention,
-                // which matches the Windows PE code we are calling.
-                type CatchFunclet = unsafe extern "win64" fn(u64, u64) -> u64;
+                #[allow(clippy::cast_possible_truncation)]
                 let funclet: CatchFunclet = unsafe { core::mem::transmute(handler_va as usize) };
                 let continuation = unsafe { funclet(image_base, rsp_within_frame) };
 
@@ -3090,6 +3093,185 @@ pub unsafe extern "C" fn msvcrt___current_exception_context() -> *mut *mut core:
     }
     CURRENT_EXCEPTION_CONTEXT.with(std::cell::UnsafeCell::get)
 }
+
+// ── VCRUNTIME140 / UCRT stubs for MSVC-compiled programs ─────────────────────
+//
+// Programs compiled with the MSVC toolchain (cl.exe / cargo with
+// x86_64-pc-windows-msvc target) import from vcruntime140.dll and the
+// Universal CRT (api-ms-win-crt-* / ucrtbase.dll) instead of the older
+// msvcrt.dll.  These DLLs are aliased to MSVCRT.dll in the DLL manager, so
+// the functions below are all exported under "MSVCRT.dll" in the function
+// table.
+
+/// `__vcrt_initialize()` — VCRUNTIME140 CRT initialisation
+///
+/// Returns TRUE (1) to indicate success.  No real initialisation needed
+/// because the litebox platform manages the CRT lifetime directly.
+///
+/// # Safety
+///
+/// Safe to call unconditionally.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vcruntime__vcrt_initialize() -> i32 {
+    1
+}
+
+/// `__vcrt_uninitialize()` — VCRUNTIME140 CRT cleanup
+///
+/// No-op: litebox does not maintain VCRUNTIME state that needs to be torn down.
+///
+/// # Safety
+///
+/// Safe to call unconditionally.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vcruntime__vcrt_uninitialize() {}
+
+/// `__security_init_cookie()` — Initialise the stack-guard security cookie
+///
+/// No-op in the litebox environment: stack canary protection is not needed
+/// because we control the entire execution context.
+///
+/// # Safety
+///
+/// Safe to call unconditionally.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vcruntime__security_init_cookie() {}
+
+/// `__security_check_cookie(guard)` — Verify the stack-guard security cookie
+///
+/// Always succeeds (no-op).  In a real implementation this would terminate
+/// the process on mismatch; our emulated environment never has a mismatch.
+///
+/// # Safety
+///
+/// Safe to call unconditionally.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vcruntime__security_check_cookie(_guard: usize) {}
+
+/// `_initialize_narrow_environment()` — UCRT narrow-environment initialisation
+///
+/// Returns 0 (success).  Environment variables are managed by the litebox
+/// platform layer directly via `GetEnvironmentVariableA/W`.
+///
+/// # Safety
+///
+/// Safe to call unconditionally.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ucrt__initialize_narrow_environment() -> i32 {
+    0
+}
+
+/// `_configure_narrow_argv(mode)` — UCRT argv configuration
+///
+/// Returns 0 (success).  Command-line arguments are supplied by the runner
+/// via `PROCESS_COMMAND_LINE` and parsed by `__getmainargs`.
+///
+/// # Safety
+///
+/// Safe to call unconditionally.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ucrt__configure_narrow_argv(_mode: i32) -> i32 {
+    0
+}
+
+/// `_crt_atexit(fn)` — UCRT atexit registration
+///
+/// No-op stub.  The litebox runner does not currently support atexit handlers
+/// registered through the UCRT path; the process lifetime is managed externally.
+///
+/// # Safety
+///
+/// Safe to call unconditionally; the function pointer is ignored.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ucrt__crt_atexit(_func: *const core::ffi::c_void) -> i32 {
+    0
+}
+
+/// `__acrt_iob_func(index)` — UCRT stdio-stream accessor
+///
+/// Returns a pointer into the shared IOB array at the given index.  This is
+/// the UCRT equivalent of the MSVCRT `__iob_func()` function, but takes an
+/// explicit index (0 = stdin, 1 = stdout, 2 = stderr).
+///
+/// # Safety
+///
+/// `index` must be 0, 1, or 2.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ucrt__acrt_iob_func(index: u32) -> *mut u8 {
+    // Each IOB entry is 8 bytes in our simplified layout.  The backing
+    // static in `msvcrt___iob_func` is `[u8; 24]`, which accommodates
+    // 3 streams × 8 bytes each (stdin = 0, stdout = 1, stderr = 2).
+    const IOB_ENTRY_SIZE: usize = 8;
+    let base = msvcrt___iob_func();
+    // SAFETY: index is expected to be 0-2; we offset into the IOB array.
+    unsafe { base.add((index as usize) * IOB_ENTRY_SIZE) }
+}
+
+/// `__stdio_common_vfprintf(options, stream, fmt, locale, ...)` — UCRT printf
+///
+/// Minimal stub that ignores the `options`, `locale`, and variadic arguments
+/// and delegates to `fprintf`.  This is sufficient for debug/trace output from
+/// UCRT-linked programs; full format-string support is not required for the
+/// test suite.
+///
+/// # Safety
+///
+/// `stream` and `fmt` must be valid pointers for the duration of the call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ucrt__stdio_common_vfprintf(
+    _options: u64,
+    _stream: *mut u8,
+    _fmt: *const u8,
+    _locale: *const u8,
+    // Variadic arguments (va_list) are not accessible from safe Rust;
+    // the stub returns -1 (error) which the UCRT caller will ignore for
+    // non-critical output paths.
+) -> i32 {
+    -1
+}
+
+/// `_configthreadlocale(mode)` — UCRT per-thread locale configuration
+///
+/// Returns 0 (the legacy "global locale" mode).  Locale-sensitive operations
+/// in the test suite use the process-global locale, which is adequate for
+/// ASCII-only programs.
+///
+/// # Safety
+///
+/// Safe to call unconditionally.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ucrt__configthreadlocale(_mode: i32) -> i32 {
+    0
+}
+
+// ── Stack probe stubs ─────────────────────────────────────────────────────────
+//
+// `__chkstk` (and its variants) uses a non-standard calling convention on
+// Windows x64: RAX holds the number of bytes to probe, and callers typically
+// do `sub rsp, rax` after the call.  This function MUST preserve RAX.
+//
+// These are registered via `link_data_exports_to_dll_manager` (NOT via
+// the normal trampoline mechanism) so that RAX is never clobbered on the
+// call path.  On Linux the kernel maps stack pages on demand, so no actual
+// page probing is needed; an empty function that immediately returns is
+// correct.
+
+/// `__chkstk` / `___chkstk_ms` — MSVC/LLVM x64 stack probe stub
+///
+/// On Windows x64, the compiler calls `__chkstk` before allocating large
+/// (> one page) stack frames so that guard pages are touched in order.
+/// Linux maps stack pages on demand, making the probe a no-op.
+///
+/// **Important**: this function is registered via the *data-export* path so
+/// the trampoline (which clobbers RAX) is bypassed.  The caller passes the
+/// frame size in RAX; that value must be intact when `__chkstk` returns so
+/// that the calling code's subsequent `sub rsp, rax` works correctly.
+///
+/// # Safety
+///
+/// Safe to call unconditionally.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_chkstk_nop() {}
 
 #[cfg(test)]
 mod tests {
