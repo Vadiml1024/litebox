@@ -9480,6 +9480,12 @@ fn seh_find_pe_frame_on_stack(rust_rsp: usize) -> Option<PeFrameInfo> {
 #[allow(clippy::similar_names)]
 fn try_trampoline_at_offset(rust_rsp: usize, offset: usize, pe_base: u64) -> Option<PeFrameInfo> {
     const PE_MAX_SIZE: u64 = 16 * 1024 * 1024;
+    // Userspace address range: above the first 64KB (reserved by the OS)
+    // and below the canonical address boundary on x86-64.
+    const MIN_USERSPACE_ADDR: u64 = 0x10000;
+    const MAX_USERSPACE_ADDR: u64 = 0x7FFF_FFFF_FFFF;
+    // Trampoline epilogue: pop rsi; pop rdi; ret
+    const TRAMPOLINE_EPILOGUE: [u8; 3] = [0x5E, 0x5F, 0xC3];
 
     #[inline]
     fn in_pe_range(addr: u64, pe_base: u64) -> bool {
@@ -9500,14 +9506,13 @@ fn try_trampoline_at_offset(rust_rsp: usize, offset: usize, pe_base: u64) -> Opt
 
     // The trampoline return address is in separately mmap'd trampoline
     // memory, NOT in the PE.  Validate it by checking for the trampoline
-    // epilogue byte pattern: `pop rsi (5E); pop rdi (5F); ret (C3)`.
-    // The epilogue starts after an `add rsp, N` instruction (4 or 7 bytes),
-    // so we scan the first 8 bytes for the pattern.
-    if !(0x10000..=0x7FFF_FFFF_FFFF).contains(&candidate) {
+    // epilogue byte pattern.  The epilogue starts after an `add rsp, N`
+    // instruction (4 or 7 bytes), so we scan the first 8 bytes.
+    if !(MIN_USERSPACE_ADDR..=MAX_USERSPACE_ADDR).contains(&candidate) {
         return None;
     }
     // Check if the page at `candidate` is mapped using mincore().
-    let page_size = 4096_usize;
+    let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize };
     let page_addr = (candidate as usize) & !(page_size - 1);
     let mut vec: u8 = 0;
     let rc = unsafe { libc::mincore(page_addr as *mut libc::c_void, page_size, &raw mut vec) };
@@ -9518,16 +9523,16 @@ fn try_trampoline_at_offset(rust_rsp: usize, offset: usize, pe_base: u64) -> Opt
 
     let tramp_ret = candidate as *const u8;
     let mut found_epilogue = false;
-    for look in 0..8_usize {
+    for scan_offset in 0..8_usize {
         // SAFETY: We verified the page is mapped via mincore() above.
         let bytes = unsafe {
             [
-                tramp_ret.add(look).read(),
-                tramp_ret.add(look + 1).read(),
-                tramp_ret.add(look + 2).read(),
+                tramp_ret.add(scan_offset).read(),
+                tramp_ret.add(scan_offset + 1).read(),
+                tramp_ret.add(scan_offset + 2).read(),
             ]
         };
-        if bytes == [0x5E, 0x5F, 0xC3] {
+        if bytes == TRAMPOLINE_EPILOGUE {
             found_epilogue = true;
             break;
         }
