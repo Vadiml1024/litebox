@@ -2582,11 +2582,13 @@ pub unsafe extern "C" fn msvcrt__CxxThrowException(
     // because `__CxxFrameHandler3` reads ExceptionInformation[2] as a u32 RVA
     // and resolves it by adding ExceptionInformation[3] (the image base).
     let module_base = crate::kernel32::get_registered_image_base();
+    #[allow(clippy::cast_possible_truncation)]
     let throw_info_rva = if throw_info.is_null() {
         0usize
     } else {
         (throw_info as usize).wrapping_sub(module_base as usize)
     };
+    #[allow(clippy::cast_possible_truncation)]
     let params: [usize; 4] = [
         0x1993_0520,               // magic version number (VC8+)
         exception_object as usize, // exception object pointer (absolute VA)
@@ -2683,6 +2685,9 @@ pub unsafe extern "C" fn msvcrt___CxxFrameHandler3(
     }
 
     if is_target_unwind {
+        // NOTE: `extern "win64"` uses the Microsoft x64 calling convention,
+        // which matches the Windows PE code we are calling.
+        type CatchFunclet = unsafe extern "win64" fn(u64, u64) -> u64;
         // Target-unwind phase: run destructors, then call the catch funclet.
         //
         // The MSVC catch funclet is a compiler-generated "funclet" that runs the
@@ -2755,7 +2760,7 @@ pub unsafe extern "C" fn msvcrt___CxxFrameHandler3(
 
                 // Copy exception object into the frame-local catch parameter if needed.
                 if !exc_type_ptr.is_null() && catchblock.type_info != 0 && catchblock.offset != 0 {
-                    let exc_object = unsafe { exc_record.exception_information[1] as *const u8 };
+                    let exc_object = exc_record.exception_information[1] as *const u8;
                     if !exc_object.is_null() {
                         #[allow(clippy::cast_possible_truncation)]
                         let dest = (establisher_frame as *mut u8)
@@ -2781,9 +2786,7 @@ pub unsafe extern "C" fn msvcrt___CxxFrameHandler3(
                 // SAFETY: handler_va is the address of a valid PE catch funclet;
                 // we call it with the Windows x64 calling convention.
                 let handler_va = image_base + u64::from(catchblock.handler);
-                // NOTE: `extern "win64"` uses the Microsoft x64 calling convention,
-                // which matches the Windows PE code we are calling.
-                type CatchFunclet = unsafe extern "win64" fn(u64, u64) -> u64;
+                #[allow(clippy::cast_possible_truncation)]
                 let funclet: CatchFunclet = unsafe { core::mem::transmute(handler_va as usize) };
                 let continuation = unsafe { funclet(image_base, rsp_within_frame) };
 
