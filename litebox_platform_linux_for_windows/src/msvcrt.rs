@@ -3244,6 +3244,35 @@ pub unsafe extern "C" fn ucrt__configthreadlocale(_mode: i32) -> i32 {
     0
 }
 
+// ── Stack probe stubs ─────────────────────────────────────────────────────────
+//
+// `__chkstk` (and its variants) uses a non-standard calling convention on
+// Windows x64: RAX holds the number of bytes to probe, and callers typically
+// do `sub rsp, rax` after the call.  This function MUST preserve RAX.
+//
+// These are registered via `link_data_exports_to_dll_manager` (NOT via
+// the normal trampoline mechanism) so that RAX is never clobbered on the
+// call path.  On Linux the kernel maps stack pages on demand, so no actual
+// page probing is needed; an empty function that immediately returns is
+// correct.
+
+/// `__chkstk` / `___chkstk_ms` — MSVC/LLVM x64 stack probe stub
+///
+/// On Windows x64, the compiler calls `__chkstk` before allocating large
+/// (> one page) stack frames so that guard pages are touched in order.
+/// Linux maps stack pages on demand, making the probe a no-op.
+///
+/// **Important**: this function is registered via the *data-export* path so
+/// the trampoline (which clobbers RAX) is bypassed.  The caller passes the
+/// frame size in RAX; that value must be intact when `__chkstk` returns so
+/// that the calling code's subsequent `sub rsp, rax` works correctly.
+///
+/// # Safety
+///
+/// Safe to call unconditionally.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_chkstk_nop() {}
+
 #[cfg(test)]
 mod tests {
     use super::*;

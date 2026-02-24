@@ -713,6 +713,11 @@ impl DllManager {
             ("__acrt_iob_func", MSVCRT_BASE + 0x79),
             ("__stdio_common_vfprintf", MSVCRT_BASE + 0x7A),
             ("_configthreadlocale", MSVCRT_BASE + 0x7B),
+            // Stack probe functions — registered via data-export path so RAX is preserved.
+            // These placeholder addresses are overwritten by link_data_exports_to_dll_manager.
+            ("__chkstk", MSVCRT_BASE + 0x7C),
+            ("___chkstk_ms", MSVCRT_BASE + 0x7D),
+            ("_alloca_probe", MSVCRT_BASE + 0x7E),
         ];
 
         self.register_stub_dll("MSVCRT.dll", exports);

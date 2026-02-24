@@ -857,18 +857,33 @@ jobs:
       - name: Run hello_cli.exe (MSVC) and verify output
         run: |
           echo "=== hello_cli.exe (MSVC-compiled) ==="
-          output=$(./target/debug/litebox_runner_windows_on_linux_userland \
-            msvc_test_programs/hello_cli.exe 2>&1)
-          echo "$output"
-          echo "$output" | grep -q "Hello World from LiteBox!" \
-            || { echo "✗ MSVC hello_cli.exe FAILED"; exit 1; }
+          set +e
+          ./target/debug/litebox_runner_windows_on_linux_userland \
+            --verbose \
+            msvc_test_programs/hello_cli.exe \
+            2>&1 | tee /tmp/hello_cli_msvc.txt
+          EXIT_CODE=${PIPESTATUS[0]}
+          set -e
+          if [ $EXIT_CODE -ne 0 ]; then
+            echo "✗ MSVC hello_cli.exe FAILED (exit $EXIT_CODE)"
+            exit 1
+          fi
+          grep -q "Hello World from LiteBox!" /tmp/hello_cli_msvc.txt \
+            || { echo "✗ MSVC hello_cli.exe output mismatch"; exit 1; }
           echo "✓ MSVC hello_cli.exe PASSED"
       - name: Run math_test.exe (MSVC) and verify exit code
         run: |
           echo "=== math_test.exe (MSVC-compiled) ==="
+          set +e
           ./target/debug/litebox_runner_windows_on_linux_userland \
             msvc_test_programs/math_test.exe \
             2>&1 | tee /tmp/math_test_msvc.txt
+          EXIT_CODE=${PIPESTATUS[0]}
+          set -e
+          if [ $EXIT_CODE -ne 0 ]; then
+            echo "✗ MSVC math_test.exe FAILED (exit $EXIT_CODE)"
+            exit 1
+          fi
           grep -q "0 failed" /tmp/math_test_msvc.txt \
             || { echo "✗ MSVC math_test.exe FAILED"; exit 1; }
           echo "✓ MSVC math_test.exe PASSED"

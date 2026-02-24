@@ -3242,6 +3242,26 @@ impl LinuxPlatformForWindows {
                 "__initenv",
                 core::ptr::addr_of_mut!(crate::msvcrt::msvcrt___initenv) as usize,
             ),
+            // Stack-probe functions use a non-standard calling convention (RAX = frame
+            // size; must be preserved on return).  They must NOT go through the normal
+            // trampoline (which clobbers RAX), so we register them here as direct
+            // function addresses.  On Linux the kernel maps stack pages on demand, so
+            // a bare `ret` (empty function) is the correct implementation.
+            (
+                "MSVCRT.dll",
+                "__chkstk",
+                crate::msvcrt::msvcrt_chkstk_nop as *const () as usize,
+            ),
+            (
+                "MSVCRT.dll",
+                "___chkstk_ms",
+                crate::msvcrt::msvcrt_chkstk_nop as *const () as usize,
+            ),
+            (
+                "MSVCRT.dll",
+                "_alloca_probe",
+                crate::msvcrt::msvcrt_chkstk_nop as *const () as usize,
+            ),
         ];
 
         for (dll_name, export_name, address) in data_exports {

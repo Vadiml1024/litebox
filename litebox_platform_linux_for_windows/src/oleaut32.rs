@@ -257,7 +257,7 @@ mod tests {
     #[test]
     fn test_get_error_info_returns_s_false() {
         let mut ptr: *mut u8 = core::ptr::null_mut();
-        let hr = unsafe { oleaut32_get_error_info(0, &mut ptr) };
+        let hr = unsafe { oleaut32_get_error_info(0, &raw mut ptr) };
         assert_eq!(
             hr, S_FALSE,
             "GetErrorInfo must return S_FALSE in headless mode"
