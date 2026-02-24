@@ -2265,6 +2265,9 @@ fn cxx_ip_to_state(fi: &CxxFuncInfo, image_base: u64, control_pc: u64) -> i32 {
     if fi.ipmap_count == 0 || fi.ipmap == 0 {
         return -1;
     }
+    if control_pc < image_base {
+        return -1;
+    }
     #[allow(clippy::cast_possible_truncation)]
     let ip_rva = (control_pc - image_base) as u32;
     let ipmap = (image_base + u64::from(fi.ipmap)) as *const CxxIpMapEntry;
@@ -2376,6 +2379,10 @@ unsafe fn cxx_find_catch_block(
 
             // Found a matching catch block — copy exception object if needed.
             if !exc_type.is_null() && catchblock.type_info != 0 && catchblock.offset != 0 {
+                // ExceptionInformation[1] is at offset 40 in the EXCEPTION_RECORD:
+                //   ExceptionCode(4) + ExceptionFlags(4) + ExceptionRecord*(8)
+                //   + ExceptionAddress*(8) + NumberParameters(4) + _pad(4)
+                //   + ExceptionInformation[0](8) = 40
                 let exc = exception_record.cast::<u8>();
                 let exc_object = unsafe { exc.add(40).cast::<*const u8>().read_unaligned() };
                 if !exc_object.is_null() {
@@ -2429,6 +2436,10 @@ unsafe fn cxx_catch_matches(
     throw_base: u64,
     image_base: u64,
 ) -> bool {
+    // type_info layout on x64: vtable_ptr(8) + name_ptr(8) + mangled_name[...]
+    // The mangled name starts at offset 16.
+    const TYPE_INFO_MANGLED_NAME_OFFSET: u64 = 16;
+
     // catch(...) matches everything.
     if catchblock.type_info == 0 {
         return true;
@@ -2448,8 +2459,7 @@ unsafe fn cxx_catch_matches(
 
     // Read the catch block's type_info and get its mangled name.
     let catch_ti_addr = image_base + u64::from(catchblock.type_info);
-    // type_info layout: vtable_ptr(8), name_ptr(8), mangled_name(variable)
-    let catch_mangled_ptr = (catch_ti_addr + 16) as *const u8;
+    let catch_mangled_ptr = (catch_ti_addr + TYPE_INFO_MANGLED_NAME_OFFSET) as *const u8;
 
     for k in 0..table.count {
         let type_info_rva = unsafe { *(&raw const table.info).cast::<u32>().add(k as usize) };
@@ -2463,7 +2473,7 @@ unsafe fn cxx_catch_matches(
         }
         // Resolve the thrown type's type_info.
         let thrown_ti_addr = throw_base + u64::from(ti.type_info);
-        let thrown_mangled_ptr = (thrown_ti_addr + 16) as *const u8;
+        let thrown_mangled_ptr = (thrown_ti_addr + TYPE_INFO_MANGLED_NAME_OFFSET) as *const u8;
 
         // Compare mangled names (null-terminated C strings).
         if unsafe { cxx_strcmp(catch_mangled_ptr, thrown_mangled_ptr) } {
@@ -2679,9 +2689,9 @@ pub unsafe extern "C" fn msvcrt___CxxFrameHandler3(
     }
 
     // Read ExceptionInformation from the exception record.
-    // Layout after ExceptionCode(4), ExceptionFlags(4), ExceptionRecord(8),
-    //   ExceptionAddress(8), NumberParameters(4), _pad(4):
-    //   ExceptionInformation starts at offset 32.
+    // ExceptionInformation starts at offset 32 in EXCEPTION_RECORD:
+    //   ExceptionCode(4) + ExceptionFlags(4) + ExceptionRecord*(8)
+    //   + ExceptionAddress*(8) + NumberParameters(4) + _pad(4) = 32
     // [0] = magic version, [1] = exception object ptr, [2] = ThrowInfo RVA,
     // [3] = image base (for RVA resolution)
     let exc_info_base = exc.add(32);

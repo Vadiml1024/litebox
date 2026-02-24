@@ -1331,8 +1331,9 @@ pub unsafe extern "C" fn kernel32_RtlPcToFileHeader(
     pc: *mut core::ffi::c_void,
     base_of_image: *mut *mut core::ffi::c_void,
 ) -> *mut core::ffi::c_void {
-    // 64 MiB is a generous upper bound — typical PE images are well under
-    // this, and the Windows loader rejects images larger than 2 GiB.
+    // 64 MiB is a conservative upper bound for a single PE image in our
+    // sandbox.  While Windows can load images up to 2 GiB, the programs
+    // we target are much smaller.
     const MAX_PE_IMAGE_SIZE: u64 = 64 * 1024 * 1024;
 
     let pc_addr = pc as u64;
@@ -1344,8 +1345,7 @@ pub unsafe extern "C" fn kernel32_RtlPcToFileHeader(
         return core::ptr::null_mut();
     }
     // Check if PC falls within a reasonable range of the image.
-    let rva = pc_addr.wrapping_sub(image_base);
-    if rva < MAX_PE_IMAGE_SIZE {
+    if pc_addr >= image_base && (pc_addr - image_base) < MAX_PE_IMAGE_SIZE {
         let base = image_base as *mut core::ffi::c_void;
         if !base_of_image.is_null() {
             unsafe { *base_of_image = base };
