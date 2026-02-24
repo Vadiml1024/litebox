@@ -1707,26 +1707,166 @@ unsafe fn apply_unwind_info(
     core::ptr::null_mut()
 }
 
-/// Windows exception handler function type
+/// SCOPE_TABLE entry for `__C_specific_handler`.
 ///
-/// This is a stub implementation for `__C_specific_handler`, the C-language
-/// exception handler used with `__try`/`__except`/`__finally` constructs.
+/// Each scope record describes one `__try` region inside a function and its
+/// associated `__except` filter / handler or `__finally` block.
 ///
-/// A full implementation would call the filter expression in `SCOPE_TABLE`,
-/// and (for `__except`) perform a longjmp-style transfer to the handler block.
-/// For now, this returns `EXCEPTION_CONTINUE_SEARCH` to let exceptions propagate.
+/// ```text
+/// struct SCOPE_TABLE_ENTRY {
+///     ULONG BeginAddress;   // RVA of __try block start
+///     ULONG EndAddress;     // RVA of __try block end
+///     ULONG HandlerAddress; // RVA of filter (__except) or handler (__finally)
+///     ULONG JumpTarget;     // RVA of __except body; 0 for __finally
+/// };
+/// struct SCOPE_TABLE {
+///     ULONG Count;
+///     SCOPE_TABLE_ENTRY ScopeRecord[1]; // variable length
+/// };
+/// ```
+#[repr(C)]
+struct ScopeTableEntry {
+    begin_address: u32,
+    end_address: u32,
+    handler_address: u32,
+    jump_target: u32,
+}
+
+/// C-language exception handler (`__C_specific_handler`)
+///
+/// Implements `__try`/`__except`/`__finally` for Windows x64 by walking the
+/// SCOPE_TABLE attached to the function's UNWIND_INFO.
+///
+/// **Search phase** (no `EXCEPTION_UNWINDING` flag):
+///   For each scope whose `[BeginAddress, EndAddress)` contains the control PC:
+///   - If `JumpTarget != 0` (an `__except` block), call the filter expression
+///     at `HandlerAddress`.  If the filter returns `EXCEPTION_EXECUTE_HANDLER`
+///     (1), initiate unwind to `JumpTarget`.
+///   - If `JumpTarget == 0` (a `__finally` block), skip it during the search
+///     phase; it will be called during the unwind phase.
+///
+/// **Unwind phase** (`EXCEPTION_UNWINDING` is set):
+///   For each scope containing the control PC whose `JumpTarget == 0`:
+///   call the termination handler at `HandlerAddress`.
 ///
 /// # Safety
-/// This function is safe to call with any arguments including NULL pointers.
+/// All pointer arguments must be valid or NULL.
 #[unsafe(no_mangle)]
+#[allow(clippy::similar_names)]
 pub unsafe extern "C" fn kernel32___C_specific_handler(
-    _exception_record: *mut core::ffi::c_void,
-    _establisher_frame: u64,
-    _context_record: *mut core::ffi::c_void,
-    _dispatcher_context: *mut core::ffi::c_void,
+    exception_record: *mut core::ffi::c_void,
+    establisher_frame: u64,
+    context_record: *mut core::ffi::c_void,
+    dispatcher_context: *mut core::ffi::c_void,
 ) -> i32 {
-    // EXCEPTION_CONTINUE_SEARCH (1) - let the exception propagate upward
-    1
+    if exception_record.is_null() || dispatcher_context.is_null() {
+        return 1; // EXCEPTION_CONTINUE_SEARCH
+    }
+
+    let exc = exception_record.cast::<ExceptionRecord>();
+    let dc = dispatcher_context.cast::<DispatcherContext>();
+
+    // SAFETY: dc is a valid DispatcherContext.
+    let handler_data = unsafe { (*dc).handler_data };
+    if handler_data.is_null() {
+        return 1; // no scope table
+    }
+
+    // Read scope table count.
+    // SAFETY: handler_data points to a SCOPE_TABLE.
+    let scope_count = unsafe { (handler_data.cast::<u32>()).read_unaligned() } as usize;
+    if scope_count == 0 {
+        return 1;
+    }
+
+    // SAFETY: scope entries follow the count field.
+    let scope_entries = unsafe { handler_data.cast::<u32>().add(1).cast::<ScopeTableEntry>() };
+
+    let image_base = unsafe { (*dc).image_base };
+    let control_pc = unsafe { (*dc).control_pc };
+    let control_rva = (control_pc - image_base) as u32;
+
+    let is_unwinding = unsafe { (*exc).exception_flags & EXCEPTION_UNWINDING } != 0;
+
+    for i in 0..scope_count {
+        // SAFETY: i < scope_count, so this is within bounds.
+        let entry = unsafe { &*scope_entries.add(i) };
+
+        if control_rva < entry.begin_address || control_rva >= entry.end_address {
+            continue;
+        }
+
+        if is_unwinding {
+            // Unwind phase: call __finally handlers (JumpTarget == 0).
+            if entry.jump_target == 0 && entry.handler_address != 0 {
+                // Termination handler signature:
+                //   void handler(BOOLEAN abnormal_termination, u64 establisher_frame)
+                type TerminationHandler =
+                    unsafe extern "win64" fn(u8, u64);
+                let handler_addr = image_base + u64::from(entry.handler_address);
+                let handler: TerminationHandler =
+                    unsafe { core::mem::transmute(handler_addr) };
+                // abnormal_termination = TRUE (1) during unwind
+                unsafe { handler(1, establisher_frame) };
+            }
+        } else {
+            // Search phase: evaluate __except filters (JumpTarget != 0).
+            if entry.jump_target != 0 && entry.handler_address != 0 {
+                // Filter signature:
+                //   LONG filter(EXCEPTION_POINTERS* ptrs, u64 establisher_frame)
+                // We pass the exception record pointer as the EXCEPTION_POINTERS
+                // (simplified; a full impl would build a proper EXCEPTION_POINTERS).
+                type FilterExpression =
+                    unsafe extern "win64" fn(*mut core::ffi::c_void, u64) -> i32;
+
+                // Special case: HandlerAddress == 1 means EXCEPTION_EXECUTE_HANDLER constant.
+                let filter_result = if entry.handler_address == 1 {
+                    1 // EXCEPTION_EXECUTE_HANDLER
+                } else {
+                    let filter_addr = image_base + u64::from(entry.handler_address);
+                    let filter: FilterExpression =
+                        unsafe { core::mem::transmute(filter_addr) };
+                    unsafe { filter(exception_record, establisher_frame) }
+                };
+
+                if filter_result == 1 {
+                    // EXCEPTION_EXECUTE_HANDLER: unwind to the __except body.
+                    let target_ip = image_base + u64::from(entry.jump_target);
+                    // SAFETY: RtlUnwindEx will transfer control to the __except body.
+                    unsafe {
+                        kernel32_RtlUnwindEx(
+                            establisher_frame as *mut core::ffi::c_void,
+                            target_ip as *mut core::ffi::c_void,
+                            exception_record,
+                            (exception_code_from_record(exc) as u64) as *mut core::ffi::c_void,
+                            context_record,
+                            core::ptr::null_mut(),
+                        );
+                    }
+                    // RtlUnwindEx never returns if it succeeds.
+                    return 0; // EXCEPTION_CONTINUE_EXECUTION (fallback)
+                } else if filter_result == -1 {
+                    // EXCEPTION_CONTINUE_EXECUTION
+                    return 0;
+                }
+                // filter_result == 0: EXCEPTION_CONTINUE_SEARCH — try next scope.
+            }
+        }
+    }
+
+    1 // EXCEPTION_CONTINUE_SEARCH
+}
+
+/// Extract the exception code from an `ExceptionRecord` pointer.
+///
+/// # Safety
+/// `exc` must point to a valid `ExceptionRecord`.
+unsafe fn exception_code_from_record(exc: *const ExceptionRecord) -> u32 {
+    if exc.is_null() {
+        0
+    } else {
+        unsafe { (*exc).exception_code }
+    }
 }
 
 /// Set unhandled exception filter
