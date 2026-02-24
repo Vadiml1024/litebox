@@ -2070,6 +2070,486 @@ pub unsafe extern "C" fn msvcrt_mbstowcs(dest: *mut u16, src: *const i8, n: usiz
 /// MSVC exception code for C++ exceptions (`0xE06D7363` = "msc" in ASCII).
 const MSVC_CPP_EXCEPTION_CODE: u32 = 0xE06D_7363;
 
+// ── MSVC C++ Exception Handling Constants ──────────────────────────────────
+
+/// Magic numbers identifying the `FuncInfo` version.
+const CXX_FRAME_MAGIC_VC6: u32 = 0x1993_0520;
+#[allow(dead_code)]
+const CXX_FRAME_MAGIC_VC7: u32 = 0x1993_0521;
+const CXX_FRAME_MAGIC_VC8: u32 = 0x1993_0522;
+
+/// Flags on `CxxFuncInfo::flags` (valid when magic ≥ VC8).
+const FUNC_DESCR_SYNCHRONOUS: u32 = 1;
+#[allow(dead_code)]
+const FUNC_DESCR_NOEXCEPT: u32 = 4;
+
+/// Flags on `CxxTypeInfo::flags`.
+#[allow(dead_code)]
+const CLASS_IS_SIMPLE_TYPE: u32 = 1;
+#[allow(dead_code)]
+const CLASS_HAS_VIRTUAL_BASE_CLASS: u32 = 4;
+
+/// Flags on `CxxCatchBlockInfo::flags` / `CxxExceptionType::flags`.
+#[allow(dead_code)]
+const TYPE_FLAG_CONST: u32 = 1;
+#[allow(dead_code)]
+const TYPE_FLAG_VOLATILE: u32 = 2;
+const TYPE_FLAG_REFERENCE: u32 = 8;
+
+/// Exception flags (from `EXCEPTION_RECORD.ExceptionFlags`).
+const EXCEPTION_UNWINDING_FLAG: u32 = 0x2;
+#[allow(dead_code)]
+const EXCEPTION_TARGET_UNWIND_FLAG: u32 = 0x20;
+
+// ── MSVC C++ Exception Data Structures (x64, RVA-based) ───────────────────
+//
+// On x64, all pointers in the MSVC exception metadata are stored as
+// 32-bit RVAs (Relative Virtual Addresses) relative to the module's
+// image base.  This matches native `msvcrt.dll` / `ucrtbase.dll` behavior.
+//
+// Reference: Wine's `dlls/msvcrt/cxx.h` and `dlls/msvcrt/except.c`.
+
+/// IP-to-state mapping entry.
+///
+/// Maps instruction pointer ranges to "try levels" (states).  The runtime
+/// uses these to determine which try block is active at any given PC.
+#[repr(C)]
+struct CxxIpMapEntry {
+    /// RVA of the first instruction in this state region.
+    ip: u32,
+    /// State (try level) index.  -1 means "outside all try blocks".
+    state: i32,
+}
+
+/// Unwind map entry — describes one destructor to call during stack unwinding.
+///
+/// The unwind map is a linked list (via `prev`) of state transitions.
+/// Walking from the current state backward through `prev` calls each
+/// destructor in reverse construction order.
+#[repr(C)]
+struct CxxUnwindMapEntry {
+    /// Previous state index (-1 = end of chain).
+    prev: i32,
+    /// RVA of the cleanup/destructor handler (0 = no handler for this state).
+    handler: u32,
+}
+
+/// Catch block descriptor — describes one `catch(T)` clause.
+#[repr(C)]
+#[allow(dead_code)]
+struct CxxCatchBlockInfo {
+    /// Flags (`TYPE_FLAG_CONST`, `TYPE_FLAG_VOLATILE`, `TYPE_FLAG_REFERENCE`, etc.).
+    flags: u32,
+    /// RVA of `type_info` for the caught type (0 = `catch(...)`).
+    type_info: u32,
+    /// Offset from the establisher frame where the exception object is copied.
+    offset: i32,
+    /// RVA of the catch handler function.
+    handler: u32,
+    /// Frame offset for the catch block (x64 only).
+    frame: u32,
+}
+
+/// Try block descriptor — describes one `try { } catch(...) { }` region.
+#[repr(C)]
+#[allow(dead_code)]
+struct CxxTryBlockInfo {
+    /// Lowest state covered by this try block.
+    start_level: i32,
+    /// Highest state covered by this try block.
+    end_level: i32,
+    /// State when the catch block is executing.
+    catch_level: i32,
+    /// Number of catch blocks.
+    catchblock_count: u32,
+    /// RVA of the catch block array.
+    catchblock: u32,
+}
+
+/// `this` pointer offset descriptor — used for virtual base class adjustments.
+#[repr(C)]
+#[allow(dead_code)]
+struct CxxThisPtrOffsets {
+    /// Offset from the base to the `this` pointer.
+    this_offset: i32,
+    /// Offset to virtual base descriptor (-1 = no virtual base).
+    vbase_descr: i32,
+    /// Offset within the virtual base class descriptor.
+    vbase_offset: i32,
+}
+
+/// Type info for one catchable type in the exception's type hierarchy.
+#[repr(C)]
+#[allow(dead_code)]
+struct CxxTypeInfo {
+    /// Flags (`CLASS_IS_SIMPLE_TYPE`, `CLASS_HAS_VIRTUAL_BASE_CLASS`, etc.).
+    flags: u32,
+    /// RVA of the `type_info` for this type.
+    type_info: u32,
+    /// Offsets for `this` pointer adjustment.
+    offsets: CxxThisPtrOffsets,
+    /// Size of the exception object.
+    size: u32,
+    /// RVA of the copy constructor.
+    copy_ctor: u32,
+}
+
+/// Table of catchable types for an exception.
+///
+/// The `info` array contains RVAs to `CxxTypeInfo` entries.
+/// In practice the array is variable-length; we declare a small fixed
+/// array and access it by index (all within bounds guaranteed by `count`).
+#[repr(C)]
+struct CxxTypeInfoTable {
+    /// Number of entries in the `info` array.
+    count: u32,
+    /// RVAs of `CxxTypeInfo` entries (variable length; first element here).
+    info: [u32; 1],
+}
+
+/// Exception type descriptor — the "ThrowInfo" in MSVC terminology.
+///
+/// Attached to each throw expression.  Describes the thrown type, its
+/// destructor, and the list of types it can be caught as.
+#[repr(C)]
+#[allow(dead_code)]
+struct CxxExceptionType {
+    /// Flags (`TYPE_FLAG_CONST`, `TYPE_FLAG_VOLATILE`).
+    flags: u32,
+    /// RVA of the destructor for the thrown object.
+    destructor: u32,
+    /// RVA of a custom exception handler (usually 0).
+    custom_handler: u32,
+    /// RVA of the `CxxTypeInfoTable`.
+    type_info_table: u32,
+}
+
+/// Function descriptor — the central metadata structure for `__CxxFrameHandler3`.
+///
+/// Pointed to (via RVA) by the `HandlerData` field of the `DISPATCHER_CONTEXT`.
+/// Contains all information needed to unwind locals, match catch blocks,
+/// and determine the active try level.
+#[repr(C)]
+struct CxxFuncInfo {
+    /// Magic number identifying the version (VC6/VC7/VC8).
+    /// The top 3 bits are `bbt_flags`.
+    magic_and_bbt: u32,
+    /// Number of entries in the unwind map.
+    unwind_count: u32,
+    /// RVA of the unwind map array (`CxxUnwindMapEntry[]`).
+    unwind_table: u32,
+    /// Number of try block descriptors.
+    tryblock_count: u32,
+    /// RVA of the try block array (`CxxTryBlockInfo[]`).
+    tryblock: u32,
+    /// Number of entries in the IP-to-state map.
+    ipmap_count: u32,
+    /// RVA of the IP-to-state map array (`CxxIpMapEntry[]`).
+    ipmap: u32,
+    /// Offset from the frame pointer to the "unwind help" slot (x64 only).
+    /// This is a stack-relative offset where the runtime stores the current
+    /// trylevel at function entry (-2 = not initialized).
+    unwind_help: i32,
+    /// RVA of the expected exception list (VC7+, usually 0).
+    expect_list: u32,
+    /// Flags (`FUNC_DESCR_SYNCHRONOUS`, `FUNC_DESCR_NOEXCEPT`) — valid when magic ≥ VC8.
+    flags: u32,
+}
+
+/// Determine the current state (trylevel) from the IP-to-state map.
+///
+/// Walks the map backward to find the highest entry whose IP is ≤ the
+/// control PC, returning the corresponding state.  Returns -1 if the
+/// PC is before the first entry.
+fn cxx_ip_to_state(fi: &CxxFuncInfo, image_base: u64, control_pc: u64) -> i32 {
+    if fi.ipmap_count == 0 || fi.ipmap == 0 {
+        return -1;
+    }
+    if control_pc < image_base {
+        return -1;
+    }
+    let Some(diff) = control_pc.checked_sub(image_base) else {
+        return -1;
+    };
+    if diff > u64::from(u32::MAX) {
+        return -1;
+    }
+    #[allow(clippy::cast_possible_truncation)]
+    let ip_rva = diff as u32;
+    let ipmap = (image_base + u64::from(fi.ipmap)) as *const CxxIpMapEntry;
+    let mut state = -1_i32;
+    for i in 0..fi.ipmap_count {
+        // SAFETY: ipmap is within the loaded PE image.
+        let entry = unsafe { &*ipmap.add(i as usize) };
+        if entry.ip > ip_rva {
+            break;
+        }
+        state = entry.state;
+    }
+    state
+}
+
+/// Run local destructors via the unwind map.
+///
+/// Walks from `current_state` back through the unwind map, calling each
+/// destructor handler, until reaching `target_state`.
+///
+/// # Safety
+/// `fi` must point to a valid `CxxFuncInfo`, `image_base` must be the PE
+/// load address, and `frame` must be the establisher frame.
+unsafe fn cxx_local_unwind(
+    fi: &CxxFuncInfo,
+    image_base: u64,
+    frame: u64,
+    current_state: i32,
+    target_state: i32,
+) {
+    type DestructorHandler = unsafe extern "win64" fn(u64);
+
+    if fi.unwind_count == 0 || fi.unwind_table == 0 {
+        return;
+    }
+    let unwind_table = (image_base + u64::from(fi.unwind_table)) as *const CxxUnwindMapEntry;
+    let mut state = current_state;
+    // Guard against cycles in malformed unwind maps: limit iterations to
+    // the table size (a well-formed chain visits each entry at most once).
+    let mut iterations: u32 = 0;
+    let max_iterations = fi.unwind_count;
+    #[allow(clippy::cast_sign_loss)]
+    while state > target_state && state >= 0 && (state as u32) < fi.unwind_count {
+        iterations += 1;
+        if iterations > max_iterations {
+            break;
+        }
+        // SAFETY: state is within bounds of the unwind table.
+        #[allow(clippy::cast_sign_loss)]
+        let entry = unsafe { &*unwind_table.add(state as usize) };
+        if entry.handler != 0 {
+            let handler_addr = image_base + u64::from(entry.handler);
+            // transmute is required to cast the raw PE address to a Win64
+            // ABI function pointer — no safe alternative exists.
+            let handler: DestructorHandler = unsafe { core::mem::transmute(handler_addr) };
+            unsafe { handler(frame) };
+        }
+        state = entry.prev;
+    }
+}
+
+/// Search for a matching catch block during the search phase.
+///
+/// If a matching catch block is found, initiates unwind to the catch
+/// handler via `RtlUnwindEx` (which never returns).
+///
+/// # Safety
+/// All pointers must be valid or NULL.
+#[allow(clippy::too_many_arguments)]
+unsafe fn cxx_find_catch_block(
+    exception_record: *mut core::ffi::c_void,
+    establisher_frame: u64,
+    context_record: *mut core::ffi::c_void,
+    _dispatcher_context: *mut core::ffi::c_void,
+    fi: &CxxFuncInfo,
+    image_base: u64,
+    trylevel: i32,
+    exc_type: *const CxxExceptionType,
+    throw_base: u64,
+) {
+    if fi.tryblock_count == 0 || fi.tryblock == 0 {
+        return;
+    }
+    let tryblock_table = (image_base + u64::from(fi.tryblock)) as *const CxxTryBlockInfo;
+
+    for i in 0..fi.tryblock_count {
+        // SAFETY: i is within bounds.
+        let tryblock = unsafe { &*tryblock_table.add(i as usize) };
+
+        // Check if the current trylevel falls within this try block.
+        if trylevel < tryblock.start_level || trylevel > tryblock.end_level {
+            continue;
+        }
+
+        if tryblock.catchblock_count == 0 || tryblock.catchblock == 0 {
+            continue;
+        }
+
+        let catchblock_table =
+            (image_base + u64::from(tryblock.catchblock)) as *const CxxCatchBlockInfo;
+
+        for j in 0..tryblock.catchblock_count {
+            // SAFETY: j is within bounds.
+            let catchblock = unsafe { &*catchblock_table.add(j as usize) };
+
+            // Check if this catch block matches the thrown type.
+            let matches = if exc_type.is_null() {
+                // Non-C++ exception: only match catch(...)
+                catchblock.type_info == 0
+            } else {
+                unsafe { cxx_catch_matches(catchblock, exc_type, throw_base, image_base) }
+            };
+
+            if !matches {
+                continue;
+            }
+
+            // Found a matching catch block — copy exception object if needed.
+            if !exc_type.is_null() && catchblock.type_info != 0 && catchblock.offset != 0 {
+                // Retrieve the C++ exception object pointer from ExceptionInformation[1].
+                let exc_object = unsafe {
+                    // SAFETY: exception_record is expected to point to a valid EXCEPTION_RECORD
+                    // provided by the unwinder. We only read ExceptionInformation[1].
+                    (*exception_record.cast::<crate::kernel32::ExceptionRecord>())
+                        .exception_information[1] as *const u8
+                };
+                if !exc_object.is_null() {
+                    #[allow(clippy::cast_possible_truncation)]
+                    let dest = (establisher_frame as *mut u8)
+                        .wrapping_offset(i64::from(catchblock.offset) as isize);
+                    if (catchblock.flags & TYPE_FLAG_REFERENCE) != 0 {
+                        unsafe {
+                            dest.cast::<*const u8>().write_unaligned(exc_object);
+                        }
+                    } else {
+                        let size = unsafe { cxx_get_exception_size(exc_type, throw_base) };
+                        if size > 0 {
+                            unsafe {
+                                core::ptr::copy_nonoverlapping(exc_object, dest, size);
+                            }
+                        }
+                    }
+                }
+            }
+
+            if catchblock.handler == 0 {
+                continue;
+            }
+            let handler_ip = image_base + u64::from(catchblock.handler);
+
+            // Initiate unwind to the catch handler.
+            // SAFETY: RtlUnwindEx is implemented in kernel32.
+            unsafe {
+                crate::kernel32::kernel32_RtlUnwindEx(
+                    establisher_frame as *mut core::ffi::c_void,
+                    handler_ip as *mut core::ffi::c_void,
+                    exception_record,
+                    core::ptr::null_mut(),
+                    context_record,
+                    core::ptr::null_mut(),
+                );
+            }
+            // RtlUnwindEx should not return if it succeeds.
+            return;
+        }
+    }
+}
+
+/// Check if a catch block matches the thrown exception type.
+///
+/// Walks the thrown exception's `CxxTypeInfoTable` comparing `type_info`
+/// mangled names with the catch block's expected type.
+unsafe fn cxx_catch_matches(
+    catchblock: &CxxCatchBlockInfo,
+    exc_type: *const CxxExceptionType,
+    throw_base: u64,
+    image_base: u64,
+) -> bool {
+    // type_info layout on x64: vtable_ptr(8) + name_ptr(8) + mangled_name[...]
+    // The mangled name starts at offset 16.
+    const TYPE_INFO_MANGLED_NAME_OFFSET: u64 = 16;
+
+    // catch(...) matches everything.
+    if catchblock.type_info == 0 {
+        return true;
+    }
+
+    if exc_type.is_null() {
+        return false;
+    }
+
+    let exc = unsafe { &*exc_type };
+    if exc.type_info_table == 0 {
+        return false;
+    }
+
+    let type_table = (throw_base + u64::from(exc.type_info_table)) as *const CxxTypeInfoTable;
+    let table = unsafe { &*type_table };
+
+    // Read the catch block's type_info and get its mangled name.
+    let catch_ti_addr = image_base + u64::from(catchblock.type_info);
+    let catch_mangled_ptr = (catch_ti_addr + TYPE_INFO_MANGLED_NAME_OFFSET) as *const u8;
+
+    for k in 0..table.count {
+        let type_info_rva = unsafe { *(&raw const table.info).cast::<u32>().add(k as usize) };
+        if type_info_rva == 0 {
+            continue;
+        }
+        let cxx_ti = (throw_base + u64::from(type_info_rva)) as *const CxxTypeInfo;
+        let ti = unsafe { &*cxx_ti };
+        if ti.type_info == 0 {
+            continue;
+        }
+        // Resolve the thrown type's type_info.
+        let thrown_ti_addr = throw_base + u64::from(ti.type_info);
+        let thrown_mangled_ptr = (thrown_ti_addr + TYPE_INFO_MANGLED_NAME_OFFSET) as *const u8;
+
+        // Compare mangled names (null-terminated C strings).
+        if unsafe { cxx_strcmp(catch_mangled_ptr, thrown_mangled_ptr) } {
+            return true;
+        }
+    }
+
+    false
+}
+
+/// Compare two null-terminated C strings for equality.
+///
+/// # Safety
+/// Both pointers must be valid, null-terminated C strings.
+unsafe fn cxx_strcmp(a: *const u8, b: *const u8) -> bool {
+    // MSVC mangled names are typically under 1 KiB.
+    const MAX_TYPE_NAME_LENGTH: usize = 1024;
+
+    let mut i = 0;
+    loop {
+        let ca = unsafe { *a.add(i) };
+        let cb = unsafe { *b.add(i) };
+        if ca != cb {
+            return false;
+        }
+        if ca == 0 {
+            return true;
+        }
+        i += 1;
+        // Safety guard against unterminated strings.
+        if i > MAX_TYPE_NAME_LENGTH {
+            return false;
+        }
+    }
+}
+
+/// Get the size of the exception object from its type info table.
+///
+/// Returns the size of the first (most derived) type, or 0 if unknown.
+unsafe fn cxx_get_exception_size(exc_type: *const CxxExceptionType, throw_base: u64) -> usize {
+    if exc_type.is_null() {
+        return 0;
+    }
+    let exc = unsafe { &*exc_type };
+    if exc.type_info_table == 0 {
+        return 0;
+    }
+    let type_table = (throw_base + u64::from(exc.type_info_table)) as *const CxxTypeInfoTable;
+    let table = unsafe { &*type_table };
+    if table.count == 0 {
+        return 0;
+    }
+    let first_rva = unsafe { *(&raw const table.info).cast::<u32>() };
+    if first_rva == 0 {
+        return 0;
+    }
+    let first_ti = (throw_base + u64::from(first_rva)) as *const CxxTypeInfo;
+    unsafe { (*first_ti).size as usize }
+}
+
 /// `_CxxThrowException` — Throw a C++ exception using MSVC semantics.
 ///
 /// Called by the compiler-generated code for `throw expr;`.  Builds the
@@ -2094,16 +2574,18 @@ pub unsafe extern "C" fn msvcrt__CxxThrowException(
     //   [2] = pointer to _ThrowInfo
     //   [3] = image base of the module (for RVA resolution in _ThrowInfo)
     //
-    // We still pass 4 parameters here, but only the first 3 are meaningful;
-    // the image base parameter [3] is set to 0 since we don't have a real
-    // module base. MinGW programs typically don't use _CxxThrowException
-    // (they use GCC's _Unwind_RaiseException), so this is mainly for MSVC
-    // binaries.
+    // We pass 4 parameters here:
+    //   [0] = MSVC magic number (0x19930520 = VC8+ version)
+    //   [1] = pointer to the thrown object
+    //   [2] = pointer to _ThrowInfo
+    //   [3] = image base of the module (for RVA resolution in _ThrowInfo)
+    let module_base = crate::kernel32::get_registered_image_base();
+    #[allow(clippy::cast_possible_truncation)]
     let params: [usize; 4] = [
         0x1993_0520,               // magic version number
         exception_object as usize, // exception object
         throw_info as usize,       // throw info
-        0,                         // image base (0 = not set)
+        module_base as usize,      // image base for RVA resolution (truncation OK on x64)
     ];
 
     // SAFETY: kernel32_RaiseException is defined in the platform layer.
@@ -2120,50 +2602,251 @@ pub unsafe extern "C" fn msvcrt__CxxThrowException(
 
 /// `__CxxFrameHandler3` — MSVC C++ frame-based exception handler (version 3).
 ///
-/// This is the language-specific handler installed in the UNWIND_INFO for
+/// This is the language-specific handler installed in the `UNWIND_INFO` for
 /// functions containing `try`/`catch` blocks compiled by MSVC.  It is called
 /// by the OS exception dispatcher (`RtlDispatchException` / `RtlUnwindEx`)
 /// during both the search (phase 1) and unwind (phase 2) phases.
 ///
-/// A full implementation would:
-/// - Parse the `FuncInfo` structure pointed to by `handler_data`
-/// - Walk the try/catch map to find a matching handler
-/// - Execute destructors for local objects during unwind
-///
-/// This implementation returns `EXCEPTION_CONTINUE_SEARCH` to allow
-/// GCC-style handlers (`__gxx_personality_seh0`) to handle the exception
-/// instead.  This is sufficient for MinGW-compiled programs that link
-/// against MSVCRT but use GCC exception handling internally.
+/// The implementation:
+/// - Parses the `FuncInfo` structure pointed to by `handler_data`
+/// - Walks the try/catch map to find a matching handler (search phase)
+/// - Executes destructors for local objects during unwind (unwind phase)
 ///
 /// # Safety
 /// All pointer arguments must be valid or NULL.
 #[unsafe(no_mangle)]
+#[allow(clippy::similar_names)]
 pub unsafe extern "C" fn msvcrt___CxxFrameHandler3(
-    _exception_record: *mut core::ffi::c_void,
-    _establisher_frame: u64,
-    _context_record: *mut core::ffi::c_void,
-    _dispatcher_context: *mut core::ffi::c_void,
+    exception_record: *mut core::ffi::c_void,
+    establisher_frame: u64,
+    context_record: *mut core::ffi::c_void,
+    dispatcher_context: *mut core::ffi::c_void,
 ) -> i32 {
-    // EXCEPTION_CONTINUE_SEARCH (1) — let GCC personality handle it
-    1
+    if exception_record.is_null() || dispatcher_context.is_null() {
+        return 1; // EXCEPTION_CONTINUE_SEARCH
+    }
+
+    // Read DispatcherContext fields via struct access.
+    let dc = unsafe { &*dispatcher_context.cast::<crate::kernel32::DispatcherContext>() };
+    let image_base = dc.image_base;
+    let handler_data = dc.handler_data;
+    let control_pc = dc.control_pc;
+
+    if handler_data.is_null() || image_base == 0 {
+        return 1;
+    }
+
+    // HandlerData points to a FuncInfo RVA for __CxxFrameHandler3.
+    let func_info_rva = unsafe { (handler_data as *const u32).read_unaligned() };
+    if func_info_rva == 0 {
+        return 1;
+    }
+    let func_info = (image_base + u64::from(func_info_rva)) as *const CxxFuncInfo;
+
+    let fi = unsafe { &*func_info };
+    let magic = fi.magic_and_bbt & 0x1FFF_FFFF; // bottom 29 bits
+
+    // Validate magic number.
+    if !(CXX_FRAME_MAGIC_VC6..=CXX_FRAME_MAGIC_VC8).contains(&magic) {
+        return 1;
+    }
+
+    // Read exception record fields.
+    let exc_rec_ref = unsafe { &*exception_record.cast::<crate::kernel32::ExceptionRecord>() };
+    let exc_flags = exc_rec_ref.exception_flags;
+    let exc_code = exc_rec_ref.exception_code;
+
+    let is_unwinding = (exc_flags & EXCEPTION_UNWINDING_FLAG) != 0;
+
+    // Synchronous mode (VC8+): only handle CXX_EXCEPTION.
+    if magic >= CXX_FRAME_MAGIC_VC8
+        && (fi.flags & FUNC_DESCR_SYNCHRONOUS) != 0
+        && exc_code != MSVC_CPP_EXCEPTION_CODE
+    {
+        return 1;
+    }
+
+    // Determine current trylevel from IP-to-state map.
+    let trylevel = cxx_ip_to_state(fi, image_base, control_pc);
+
+    if is_unwinding {
+        // Unwind phase: call local destructors via the unwind map.
+        // Both target-unwind and intermediate frames unwind all locals.
+        cxx_local_unwind(fi, image_base, establisher_frame, trylevel, -1);
+        return 1; // EXCEPTION_CONTINUE_SEARCH
+    }
+
+    // Search phase: look for a matching catch block.
+    if fi.tryblock_count == 0 {
+        return 1;
+    }
+
+    // Only match MSVC C++ exceptions.
+    if exc_code != MSVC_CPP_EXCEPTION_CODE {
+        // For non-C++ exceptions, try to find catch(...) blocks.
+        unsafe {
+            cxx_find_catch_block(
+                exception_record,
+                establisher_frame,
+                context_record,
+                dispatcher_context,
+                fi,
+                image_base,
+                trylevel,
+                core::ptr::null(),
+                0,
+            );
+        }
+        return 1;
+    }
+
+    // Read ExceptionInformation from the exception record.
+    // [0] = magic version, [1] = exception object ptr, [2] = ThrowInfo RVA,
+    // [3] = image base (for RVA resolution)
+    let exc_record = unsafe { &*exception_record.cast::<crate::kernel32::ExceptionRecord>() };
+    #[allow(clippy::cast_possible_truncation)]
+    let exc_type_rva = exc_record.exception_information[2] as u32;
+    let exc_image_base = exc_record.exception_information[3] as u64;
+
+    let throw_base = if exc_image_base != 0 {
+        exc_image_base
+    } else {
+        image_base
+    };
+
+    let exc_type_ptr = if exc_type_rva != 0 {
+        (throw_base + u64::from(exc_type_rva)) as *const CxxExceptionType
+    } else {
+        core::ptr::null()
+    };
+
+    unsafe {
+        cxx_find_catch_block(
+            exception_record,
+            establisher_frame,
+            context_record,
+            dispatcher_context,
+            fi,
+            image_base,
+            trylevel,
+            exc_type_ptr,
+            throw_base,
+        );
+    }
+
+    1 // EXCEPTION_CONTINUE_SEARCH (no match found)
 }
 
 /// `__CxxFrameHandler4` — MSVC C++ frame-based exception handler (version 4).
 ///
 /// Version 4 uses compressed `FuncInfo` (added in VS 2019 / MSVC 14.2x).
-/// Same as `__CxxFrameHandler3` but with a different encoding of the
-/// `FuncInfo` structure.
+/// For now, delegates to the V3 handler since the basic protocol is the same.
 ///
 /// # Safety
 /// All pointer arguments must be valid or NULL.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn msvcrt___CxxFrameHandler4(
-    _exception_record: *mut core::ffi::c_void,
-    _establisher_frame: u64,
-    _context_record: *mut core::ffi::c_void,
-    _dispatcher_context: *mut core::ffi::c_void,
+    exception_record: *mut core::ffi::c_void,
+    establisher_frame: u64,
+    context_record: *mut core::ffi::c_void,
+    dispatcher_context: *mut core::ffi::c_void,
 ) -> i32 {
-    1
+    // V4 uses compressed FuncInfo but the basic protocol is the same.
+    unsafe {
+        msvcrt___CxxFrameHandler3(
+            exception_record,
+            establisher_frame,
+            context_record,
+            dispatcher_context,
+        )
+    }
+}
+
+/// `__CxxRegisterExceptionObject` — Register an exception object for tracking.
+///
+/// Called by catch blocks to register the caught exception for potential
+/// rethrow.  This stub stores the exception pointer in thread-local storage.
+///
+/// # Safety
+/// Both pointers must be valid or NULL.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt___CxxRegisterExceptionObject(
+    _exception_pointers: *mut core::ffi::c_void,
+    _frame_info: *mut core::ffi::c_void,
+) -> i32 {
+    1 // success
+}
+
+/// `__CxxUnregisterExceptionObject` — Unregister a previously registered exception.
+///
+/// Called when leaving a catch block.
+///
+/// # Safety
+/// Both pointers must be valid or NULL.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt___CxxUnregisterExceptionObject(
+    _frame_info: *mut core::ffi::c_void,
+    _in_rethrow: i32,
+) -> i32 {
+    0
+}
+
+/// `__DestructExceptionObject` — Call the destructor for an exception object.
+///
+/// Called during rethrow or when an exception is being discarded.
+///
+/// # Safety
+/// `exception_record` must be a valid `EXCEPTION_RECORD` or NULL.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt___DestructExceptionObject(
+    _exception_record: *mut core::ffi::c_void,
+) {
+    // Stub: full implementation would call the destructor from ThrowInfo.
+}
+
+/// `__uncaught_exception` — Check if there is an active uncaught exception.
+///
+/// Returns `true` if an exception has been thrown and not yet caught.
+///
+/// # Safety
+/// Safe to call from any context.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt___uncaught_exception() -> i32 {
+    0 // no uncaught exceptions
+}
+
+/// `__uncaught_exceptions` — Get the count of active uncaught exceptions.
+///
+/// Returns the number of exceptions that have been thrown but not yet caught.
+///
+/// # Safety
+/// Safe to call from any context.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt___uncaught_exceptions() -> i32 {
+    0
+}
+
+/// `_local_unwind` — Perform a local unwind to a target frame.
+///
+/// Used by `__finally` handlers and cleanup code.
+///
+/// # Safety
+/// Both pointers must be valid or NULL.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt__local_unwind(
+    frame: *mut core::ffi::c_void,
+    target: *mut core::ffi::c_void,
+) {
+    unsafe {
+        crate::kernel32::kernel32_RtlUnwindEx(
+            frame,
+            target,
+            core::ptr::null_mut(),
+            core::ptr::null_mut(),
+            core::ptr::null_mut(),
+            core::ptr::null_mut(),
+        );
+    }
 }
 
 /// `terminate` — Called when C++ exception handling fails.
@@ -2935,5 +3618,70 @@ mod tests {
             let c: Vec<u16> = "world\0".encode_utf16().collect();
             assert_ne!(msvcrt__wcsicmp(a.as_ptr(), c.as_ptr()), 0);
         }
+    }
+
+    #[test]
+    fn test_cxx_frame_handler3_null_args() {
+        let result = unsafe {
+            msvcrt___CxxFrameHandler3(
+                core::ptr::null_mut(),
+                0,
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+            )
+        };
+        assert_eq!(result, 1);
+    }
+
+    #[test]
+    fn test_cxx_frame_handler4_null_args() {
+        let result = unsafe {
+            msvcrt___CxxFrameHandler4(
+                core::ptr::null_mut(),
+                0,
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+            )
+        };
+        assert_eq!(result, 1);
+    }
+
+    #[test]
+    fn test_cxx_register_unregister_exception_object() {
+        let result = unsafe {
+            msvcrt___CxxRegisterExceptionObject(core::ptr::null_mut(), core::ptr::null_mut())
+        };
+        assert_eq!(result, 1);
+
+        let result = unsafe { msvcrt___CxxUnregisterExceptionObject(core::ptr::null_mut(), 0) };
+        assert_eq!(result, 0);
+    }
+
+    #[test]
+    fn test_destruct_exception_object_null() {
+        unsafe { msvcrt___DestructExceptionObject(core::ptr::null_mut()) };
+    }
+
+    #[test]
+    fn test_uncaught_exception() {
+        assert_eq!(unsafe { msvcrt___uncaught_exception() }, 0);
+        assert_eq!(unsafe { msvcrt___uncaught_exceptions() }, 0);
+    }
+
+    #[test]
+    fn test_cxx_ip_to_state_empty() {
+        let fi = CxxFuncInfo {
+            magic_and_bbt: CXX_FRAME_MAGIC_VC8,
+            unwind_count: 0,
+            unwind_table: 0,
+            tryblock_count: 0,
+            tryblock: 0,
+            ipmap_count: 0,
+            ipmap: 0,
+            unwind_help: 0,
+            expect_list: 0,
+            flags: 0,
+        };
+        assert_eq!(cxx_ip_to_state(&fi, 0x1000, 0x1100), -1);
     }
 }

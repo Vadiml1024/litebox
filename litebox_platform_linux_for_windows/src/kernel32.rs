@@ -1305,6 +1305,59 @@ pub fn register_exception_table(image_base: u64, pdata_rva: u32, pdata_size: u32
     });
 }
 
+/// Get the image base from the registered exception table.
+///
+/// Returns the PE image base address, or 0 if no exception table is registered.
+pub fn get_registered_image_base() -> u64 {
+    let guard = EXCEPTION_TABLE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    match *guard {
+        Some(ref tbl) => tbl.image_base,
+        None => 0,
+    }
+}
+
+/// Map a program counter to the base address of its module.
+///
+/// Implements the Windows `RtlPcToFileHeader` API.  Returns the image base
+/// of the module containing `pc`, or NULL if `pc` is not inside any known
+/// module.  Also writes the base to `*base_of_image` if non-NULL.
+///
+/// # Safety
+/// `base_of_image` must be NULL or point to writable memory for one `*mut c_void`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_RtlPcToFileHeader(
+    pc: *mut core::ffi::c_void,
+    base_of_image: *mut *mut core::ffi::c_void,
+) -> *mut core::ffi::c_void {
+    // 64 MiB is a conservative upper bound for a single PE image in our
+    // sandbox.  While Windows can load images up to 2 GiB, the programs
+    // we target are much smaller.
+    const MAX_PE_IMAGE_SIZE: u64 = 64 * 1024 * 1024;
+
+    let pc_addr = pc as u64;
+    let image_base = get_registered_image_base();
+    if image_base == 0 {
+        if !base_of_image.is_null() {
+            unsafe { *base_of_image = core::ptr::null_mut() };
+        }
+        return core::ptr::null_mut();
+    }
+    // Check if PC falls within a reasonable range of the image.
+    if pc_addr >= image_base && (pc_addr - image_base) < MAX_PE_IMAGE_SIZE {
+        let base = image_base as *mut core::ffi::c_void;
+        if !base_of_image.is_null() {
+            unsafe { *base_of_image = base };
+        }
+        return base;
+    }
+    if !base_of_image.is_null() {
+        unsafe { *base_of_image = core::ptr::null_mut() };
+    }
+    core::ptr::null_mut()
+}
+
 // ---- CONTEXT register byte offsets (Windows x64 CONTEXT structure) ----
 // The CONTEXT structure for x64 is 1232 bytes total.
 const CTX_RAX: usize = 0x78;
@@ -1397,31 +1450,31 @@ const EXCEPTION_CONTINUE_SEARCH: i32 = 1; // ExceptionContinueSearch
 ///
 /// Total size: 96 bytes (11 fields, 8 bytes each except scope_index/fill which are 4 bytes each).
 #[repr(C)]
-struct DispatcherContext {
-    control_pc: u64,
-    image_base: u64,
-    function_entry: *mut core::ffi::c_void, // PRUNTIME_FUNCTION
-    establisher_frame: u64,
-    target_ip: u64,
-    context_record: *mut u8,                  // PCONTEXT
-    language_handler: *mut core::ffi::c_void, // PEXCEPTION_ROUTINE
-    handler_data: *mut core::ffi::c_void,
-    history_table: *mut core::ffi::c_void, // PUNWIND_HISTORY_TABLE
-    scope_index: u32,
-    _fill0: u32,
+pub(crate) struct DispatcherContext {
+    pub(crate) control_pc: u64,
+    pub(crate) image_base: u64,
+    pub(crate) function_entry: *mut core::ffi::c_void, // PRUNTIME_FUNCTION
+    pub(crate) establisher_frame: u64,
+    pub(crate) target_ip: u64,
+    pub(crate) context_record: *mut u8, // PCONTEXT
+    pub(crate) language_handler: *mut core::ffi::c_void, // PEXCEPTION_ROUTINE
+    pub(crate) handler_data: *mut core::ffi::c_void,
+    pub(crate) history_table: *mut core::ffi::c_void, // PUNWIND_HISTORY_TABLE
+    pub(crate) scope_index: u32,
+    pub(crate) _fill0: u32,
 }
 
 /// Windows x64 EXCEPTION_RECORD (total 152 bytes for 15 ExceptionInformation entries)
 #[repr(C)]
 #[allow(clippy::struct_field_names)]
-struct ExceptionRecord {
-    exception_code: u32,
-    exception_flags: u32,
-    exception_record: *mut ExceptionRecord,
-    exception_address: *mut core::ffi::c_void,
-    number_parameters: u32,
-    _pad: u32,
-    exception_information: [usize; 15],
+pub(crate) struct ExceptionRecord {
+    pub(crate) exception_code: u32,
+    pub(crate) exception_flags: u32,
+    pub(crate) exception_record: *mut ExceptionRecord,
+    pub(crate) exception_address: *mut core::ffi::c_void,
+    pub(crate) number_parameters: u32,
+    pub(crate) _pad: u32,
+    pub(crate) exception_information: [usize; 15],
 }
 
 // ---- UNWIND_CODE opcodes ----
@@ -1932,16 +1985,15 @@ pub unsafe extern "C" fn kernel32_RaiseException(
     // SAFETY: Capturing RSP and callee-saved registers (SysV ABI: RBX, R12-R15).
     // These registers are callee-saved in both Windows x64 and SysV ABIs, so
     // their values match the guest PE's values at the RaiseException call site.
-    // For RBP: Rust may use it as a frame pointer (`push rbp; mov rbp, rsp`),
-    // so the PE's RBP (= Rust's caller RBP) is saved at [rbp].  We read that
-    // value to get the correct PE RBP.  If Rust doesn't use a frame pointer
-    // (release builds), rbp still holds the caller's value directly.
+    // For RBP: the Rust compiler does NOT use a frame pointer for this
+    // `extern "C"` function (it only does `sub rsp, N`), so RBP still holds
+    // the PE's callee-saved RBP value directly — no dereference needed.
     // RSI and RDI are captured from the trampoline frame.
     unsafe {
         core::arch::asm!(
             "mov {rsp_out}, rsp",
             "mov {rbx_out}, rbx",
-            "mov {rbp_out}, QWORD PTR [rbp]",
+            "mov {rbp_out}, rbp",
             "mov {r12_out}, r12",
             "mov {r13_out}, r13",
             "mov {r14_out}, r14",
@@ -1966,8 +2018,10 @@ pub unsafe extern "C" fn kernel32_RaiseException(
     let start_rip = pe_frame.control_pc;
     let start_rsp = pe_frame.guest_rsp;
 
-    // RBP was read from [rbp] in the inline asm above, which dereferences
-    // Rust's frame pointer to get the caller's (= trampoline's = PE's) RBP.
+    // RBP was read directly from the register in the inline asm above.
+    // Since the Rust compiler does not use a frame pointer for this function
+    // (prologue is `sub rsp, N` without `push rbp`), RBP still holds the
+    // PE's callee-saved value at the RaiseException call site.
     let nv_regs = NonVolatileRegs {
         rbx: nv_rbx,
         rbp: nv_rbp_or_frame,
@@ -2240,10 +2294,21 @@ pub unsafe extern "C" fn kernel32_RtlUnwindEx(
     //
     // We allocate a separate walk context so `ctx` (the caller's original
     // context) is preserved for the final landing-pad jump.
+    //
+    // After each INTERMEDIATE frame we copy `walk_ctx → ctx` (matching
+    // Wine's `*context = new_context;`), so that when we break at the target
+    // frame `ctx` has the non-volatile registers restored by unwinding all
+    // intermediate frames.
     let walk_ctx_layout =
         alloc::Layout::from_size_align(CTX_SIZE, 16).expect("CTX layout is valid");
     // SAFETY: layout is non-zero.
     let walk_ctx = unsafe { alloc::alloc_zeroed(walk_ctx_layout) };
+    // Save target frame metadata so we can fix up the body frame register
+    // after the loop (image_base + function_entry are needed by
+    // `compute_body_frame_reg`).
+    let mut target_fe: *mut core::ffi::c_void = core::ptr::null_mut();
+    let mut target_image_base: u64 = 0;
+    let mut target_establisher: u64 = 0;
     if walk_ctx.is_null() {
         eprintln!("RtlUnwindEx: failed to allocate walk context — skipping cleanup walk");
     } else {
@@ -2284,6 +2349,7 @@ pub unsafe extern "C" fn kernel32_RtlUnwindEx(
                     ctx_write(walk_ctx, CTX_RIP, ret_addr);
                     ctx_write(walk_ctx, CTX_RSP, rsp + 8);
                 }
+                // Non-PE frames don't update ctx — they are skipped.
                 continue;
             }
 
@@ -2314,6 +2380,11 @@ pub unsafe extern "C" fn kernel32_RtlUnwindEx(
                         (*exc).exception_flags |= EXCEPTION_TARGET_UNWIND;
                     }
                 }
+
+                // Save target frame info for body frame register fixup.
+                target_fe = fe;
+                target_image_base = image_base;
+                target_establisher = establisher_frame;
 
                 // Call the target frame's handler if present.
                 if !lang_handler.is_null() && !exception_record.is_null() {
@@ -2371,7 +2442,15 @@ pub unsafe extern "C" fn kernel32_RtlUnwindEx(
                     );
                 }
             }
-            // walk_ctx has been updated by RtlVirtualUnwind; loop continues.
+
+            // Copy walk_ctx to ctx after each intermediate frame, matching
+            // Wine's `*context = new_context;` at the end of each loop
+            // iteration.  When we break at the target frame, ctx retains
+            // the state from the previous iteration — exactly the registers
+            // the catch landing pad expects (non-volatile regs restored
+            // by intermediate frames' unwind info).
+            // SAFETY: both buffers are CTX_SIZE bytes.
+            unsafe { core::ptr::copy_nonoverlapping(walk_ctx, ctx, CTX_SIZE) };
         }
 
         // SAFETY: walk_ctx was allocated above.
@@ -2382,12 +2461,31 @@ pub unsafe extern "C" fn kernel32_RtlUnwindEx(
     //   • Rip  ← target_ip  (landing pad address)
     //   • Rax  ← return_value (_Unwind_Exception* — read by the landing pad)
     //   • Rdx  ← ExceptionInformation[3] (type selector set during Phase 1)
+    //   • Frame register (e.g. RBP) ← recomputed from the target function's
+    //     UNWIND_INFO, matching how `compute_body_frame_reg` works.
+
     if !target_ip.is_null() {
         // SAFETY: ctx is a valid, writable CONTEXT buffer.
         unsafe { ctx_write(ctx, CTX_RIP, target_ip as u64) };
     }
     // SAFETY: ctx is a valid, writable CONTEXT buffer.
     unsafe { ctx_write(ctx, CTX_RAX, return_value as u64) };
+
+    // Fix up the frame register (typically RBP) for the target function.
+    //
+    // If the target function uses UWOP_SET_FPREG (e.g. "mov rbp, rsp" in
+    // the prologue), the landing pad expects the frame register to hold
+    // `establisher_frame + frame_offset * 16`.  Without this correction,
+    // the frame register retains whatever stale value it had from the
+    // Phase 1 walk, causing the landing pad to read from wrong memory.
+    if !target_fe.is_null() && target_image_base != 0 && target_establisher != 0 {
+        // SAFETY: target_fe and target_image_base are from the Phase 2 walk.
+        if let Some((reg_off, val)) =
+            unsafe { compute_body_frame_reg(target_image_base, target_fe, target_establisher) }
+        {
+            unsafe { ctx_write(ctx, reg_off, val) };
+        }
+    }
 
     // ExceptionInformation[3] = gcc_context.reg[1] = the C++ type-selector index.
     // _GCC_specific_handler sets this during Phase 1 before calling RtlUnwindEx,
@@ -9318,12 +9416,12 @@ core::arch::global_asm!(
 /// [rsp + rust_frame_size + 32]: PE return addr          (non-NULL from pdata)
 /// ```
 ///
-/// To distinguish the live trampoline frame from stale data (previous function
-/// calls that left similar patterns in the Rust frame allocation), we use
-/// the **last** NULL-then-non-NULL pair in the scan window: the actual
-/// trampoline return address is always at `rsp + rust_frame_size`, which is
-/// the *highest* such offset because stale trampoline addresses live within
-/// the Rust frame body (lower offsets).
+/// To distinguish the live trampoline frame from stale data, we validate
+/// the first candidate by checking for the trampoline epilogue byte pattern
+/// (`pop rsi; pop rdi; ret` = `5E 5F C3`), then use the **last** (highest-
+/// offset) match since the actual trampoline frame sits directly above the
+/// Rust frame while stale trampoline return addresses from earlier IAT calls
+/// live at lower offsets inside the Rust frame body.
 ///
 /// Returns a [`PeFrameInfo`] with the validated PE return address, guest RSP,
 /// and the guest's saved RSI/RDI from the trampoline.
@@ -9354,12 +9452,15 @@ fn seh_find_pe_frame_on_stack(rust_rsp: usize) -> Option<PeFrameInfo> {
     // The call chain is:
     //   PE code → [call IAT] → trampoline → [call rax] → this Rust function
     //
-    // We look for (non-pdata, pdata) pairs at 32-byte spacing, where the
-    // non-pdata value is a trampoline return address and the pdata value
-    // is a PE return address.
+    // We look for trampoline epilogue signatures at each slot, with a
+    // valid .pdata PE return address 32 bytes above.
     //
-    // We use the LAST match (highest offset) because earlier matches may
-    // be stale data from Rust local variables.
+    // We use the LAST match (highest offset) because earlier matches are
+    // stale trampoline return addresses from previous IAT calls stored in
+    // the Rust frame body.  The actual trampoline frame is at the highest
+    // offset (directly above the Rust frame).  The trampoline epilogue
+    // pattern check (`pop rsi; pop rdi; ret`) prevents false positives
+    // from stale PE function pointers.
     let mut best: Option<PeFrameInfo> = None;
 
     for offset in (0..1024_usize).step_by(8) {
@@ -9373,34 +9474,23 @@ fn seh_find_pe_frame_on_stack(rust_rsp: usize) -> Option<PeFrameInfo> {
 
 /// Try to extract a PE frame from a specific stack offset.
 ///
-/// Returns `Some(PeFrameInfo)` if `[rust_rsp + offset]` is a non-pdata PE
-/// address and `[rust_rsp + offset + 32]` is a valid pdata PE address.
+/// Returns `Some(PeFrameInfo)` if `[rust_rsp + offset]` points to a
+/// trampoline epilogue (`pop rsi; pop rdi; ret`) and
+/// `[rust_rsp + offset + 32]` is a valid .pdata PE address.
 #[allow(clippy::similar_names)]
 fn try_trampoline_at_offset(rust_rsp: usize, offset: usize, pe_base: u64) -> Option<PeFrameInfo> {
     const PE_MAX_SIZE: u64 = 16 * 1024 * 1024;
+    // Userspace address range: above the first 64KB (reserved by the OS)
+    // and below the canonical address boundary on x86-64.
+    const MIN_USERSPACE_ADDR: u64 = 0x10000;
+    const MAX_USERSPACE_ADDR: u64 = 0x7FFF_FFFF_FFFF;
+    // Trampoline epilogue: pop rsi; pop rdi; ret
+    const TRAMPOLINE_EPILOGUE: [u8; 3] = [0x5E, 0x5F, 0xC3];
 
     #[inline]
-    fn in_range(candidate: u64, pe_base: u64) -> bool {
-        let rva = candidate.wrapping_sub(pe_base);
+    fn in_pe_range(addr: u64, pe_base: u64) -> bool {
+        let rva = addr.wrapping_sub(pe_base);
         rva > 0x1000 && rva < PE_MAX_SIZE
-    }
-
-    let slot = rust_rsp + offset;
-    // SAFETY: Reading from our own live call stack.
-    let candidate = unsafe { (slot as *const u64).read_unaligned() };
-
-    if !in_range(candidate, pe_base) {
-        return None;
-    }
-
-    // If the candidate itself is in pdata, it's a PE function address
-    // (not a trampoline return address).
-    // SAFETY: candidate is a valid PE address.
-    if unsafe {
-        !kernel32_RtlLookupFunctionEntry(candidate, core::ptr::null_mut(), core::ptr::null_mut())
-            .is_null()
-    } {
-        return None;
     }
 
     // Ensure all reads within the trampoline frame stay inside the
@@ -9409,10 +9499,52 @@ fn try_trampoline_at_offset(rust_rsp: usize, offset: usize, pe_base: u64) -> Opt
     if offset + 40 > 1024 {
         return None;
     }
+
+    let slot = rust_rsp + offset;
+    // SAFETY: Reading from our own live call stack.
+    let candidate = unsafe { (slot as *const u64).read_unaligned() };
+
+    // The trampoline return address is in separately mmap'd trampoline
+    // memory, NOT in the PE.  Validate it by checking for the trampoline
+    // epilogue byte pattern.  The epilogue starts after an `add rsp, N`
+    // instruction (4 or 7 bytes), so we scan the first 8 bytes.
+    if !(MIN_USERSPACE_ADDR..=MAX_USERSPACE_ADDR).contains(&candidate) {
+        return None;
+    }
+    // Check if the page at `candidate` is mapped using mincore().
+    let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize };
+    let page_addr = (candidate as usize) & !(page_size - 1);
+    let mut vec: u8 = 0;
+    let rc = unsafe { libc::mincore(page_addr as *mut libc::c_void, page_size, &raw mut vec) };
+    if rc != 0 {
+        // Page is not mapped — not a valid address.
+        return None;
+    }
+
+    let tramp_ret = candidate as *const u8;
+    let mut found_epilogue = false;
+    for scan_offset in 0..8_usize {
+        // SAFETY: We verified the page is mapped via mincore() above.
+        let bytes = unsafe {
+            [
+                tramp_ret.add(scan_offset).read(),
+                tramp_ret.add(scan_offset + 1).read(),
+                tramp_ret.add(scan_offset + 2).read(),
+            ]
+        };
+        if bytes == TRAMPOLINE_EPILOGUE {
+            found_epilogue = true;
+            break;
+        }
+    }
+    if !found_epilogue {
+        return None;
+    }
+
     let pe_slot = slot + 32;
     let pe_candidate = unsafe { (pe_slot as *const u64).read_unaligned() };
 
-    if !in_range(pe_candidate, pe_base) {
+    if !in_pe_range(pe_candidate, pe_base) {
         return None;
     }
     // SAFETY: pe_candidate is a valid PE address.
@@ -9605,7 +9737,28 @@ unsafe fn seh_walk_stack_dispatch(
             kernel32_RtlLookupFunctionEntry(control_pc, &raw mut image_base, core::ptr::null_mut())
         };
         if fe.is_null() {
-            // control_pc is outside the registered PE — no more frames to walk.
+            // No .pdata entry — this is either a leaf function (which doesn't
+            // modify RSP or save non-volatile registers) or a non-PE address.
+            // For leaf functions inside the PE: pop the return address from
+            // RSP and continue the walk.  For addresses outside the PE: stop.
+            let pe_base = {
+                let guard = EXCEPTION_TABLE
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                (*guard).as_ref().map_or(0, |t| t.image_base)
+            };
+            let rva = control_pc.wrapping_sub(pe_base);
+            if pe_base != 0 && rva > 0x1000 && rva < 16 * 1024 * 1024 {
+                // Likely a leaf function inside the PE — pop return address.
+                let rsp = unsafe { ctx_read(ctx_ptr, CTX_RSP) };
+                let ret_addr = unsafe { (rsp as *const u64).read_unaligned() };
+                unsafe {
+                    ctx_write(ctx_ptr, CTX_RIP, ret_addr);
+                    ctx_write(ctx_ptr, CTX_RSP, rsp + 8);
+                }
+                continue;
+            }
+            // Outside the PE — no more frames to walk.
             break;
         }
 
@@ -13975,5 +14128,16 @@ mod tests {
             libc::munmap(mapped, len);
         }
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_rtl_pc_to_file_header_out_of_range() {
+        // A PC far outside any registered image should return null.
+        let mut base: *mut core::ffi::c_void = core::ptr::without_provenance_mut(1); // sentinel
+        let result = unsafe {
+            kernel32_RtlPcToFileHeader(core::ptr::without_provenance_mut(usize::MAX), &raw mut base)
+        };
+        assert!(result.is_null());
+        assert!(base.is_null());
     }
 }

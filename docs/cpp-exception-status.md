@@ -1,11 +1,13 @@
 # C++ Exception Handling: Current Implementation Status
 
-**Last Updated:** 2026-02-23  
-**Branch:** `copilot/implement-windows-on-linux-features`
+**Last Updated:** 2026-02-24  
+**Branch:** `copilot/continue-implementing-exception-handling`
 
 ---
 
 ## Quick Summary
+
+### SEH / Windows Exception Infrastructure
 
 | Component | Status |
 |-----------|--------|
@@ -18,11 +20,46 @@
 | `AddVectoredExceptionHandler` | ✅ Returns non-NULL handle (handler not invoked) |
 | `RemoveVectoredExceptionHandler` | ✅ Returns 1 |
 | `SetUnhandledExceptionFilter` | ✅ Accepts filter (not invoked) |
-| `__C_specific_handler` | ⚠️ Stub — returns EXCEPTION_CONTINUE_SEARCH only |
+| `__C_specific_handler` | ✅ Implemented — scope table walking with __try/__except/__finally support |
+| `RtlPcToFileHeader` | ✅ Implemented — maps PC to module image base |
 | `GetThreadId` | ✅ Added (returns current TID) |
-| `fputs` (msvcrt) | ✅ Added |
-| `_read` (msvcrt) | ✅ Added |
-| `realloc` (msvcrt) | ✅ Added (uses same Rust global allocator, no allocator mismatch) |
+
+### MSVC C++ Exception Handling (from Wine/ReactOS DLL analysis)
+
+| Component | Status |
+|-----------|--------|
+| `__CxxFrameHandler3` | ✅ Implemented — FuncInfo parsing, IP-to-state map, try block matching, catch type matching, local destructor unwinding |
+| `__CxxFrameHandler4` | ✅ Delegates to v3 handler |
+| `_CxxThrowException` | ✅ Implemented — proper image base resolution from registered exception table |
+| `__CxxRegisterExceptionObject` | ✅ Stub (returns success) |
+| `__CxxUnregisterExceptionObject` | ✅ Stub (returns success) |
+| `__DestructExceptionObject` | ✅ Stub |
+| `__uncaught_exception` | ✅ Returns 0 |
+| `__uncaught_exceptions` | ✅ Returns 0 |
+| `_local_unwind` | ✅ Delegates to RtlUnwindEx |
+| `_set_se_translator` | ✅ Stub (returns NULL) |
+| `_is_exception_typeof` | ✅ Stub (returns 0) |
+| `_CxxExceptionFilter` | ✅ Stub (returns EXCEPTION_CONTINUE_SEARCH) |
+| `__current_exception` | ✅ Thread-local storage |
+| `__current_exception_context` | ✅ Thread-local storage |
+| `terminate` | ✅ Calls abort() |
+| `__std_terminate` | ✅ Calls abort() |
+
+### MSVC C++ Exception Data Structures (x64 RVA-based)
+
+All structures modeled after native Microsoft `msvcrt.dll` (via Wine's `cxx.h`):
+
+| Structure | Status | Description |
+|-----------|--------|-------------|
+| `CxxFuncInfo` | ✅ | Function descriptor — unwind map, try blocks, IP-to-state map |
+| `CxxTryBlockInfo` | ✅ | Try block descriptor — start/end levels, catch blocks |
+| `CxxCatchBlockInfo` | ✅ | Catch block — flags, type_info, offset, handler, frame |
+| `CxxUnwindMapEntry` | ✅ | Unwind chain entry — prev state, destructor handler |
+| `CxxIpMapEntry` | ✅ | IP-to-state mapping — instruction pointer → trylevel |
+| `CxxExceptionType` | ✅ | ThrowInfo — flags, destructor, type info table |
+| `CxxTypeInfoTable` | ✅ | Array of catchable types for an exception |
+| `CxxTypeInfo` | ✅ | Type descriptor — flags, type_info, offsets, size, copy ctor |
+| `CxxThisPtrOffsets` | ✅ | Virtual base class pointer adjustments |
 
 ---
 

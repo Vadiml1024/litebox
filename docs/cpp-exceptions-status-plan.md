@@ -347,14 +347,19 @@ fn test_seh_cpp_program() {
 |------|-------------|--------|-----------------|
 | 1 | Research GCC/MinGW SEH protocol | ✅ Done | — |
 | 2 | Research Wine `RtlUnwindEx` | ✅ Done (reviewed) | — |
-| 3 | Implement `DISPATCHER_CONTEXT` struct | ⬜ TODO | 1–2h |
-| 4 | `RaiseException` Phase 1 walk | ⬜ TODO | 4–6h |
-| 5 | `EXCEPTION_RECORD` construction | ⬜ TODO | 1h |
-| 6 | `RtlUnwindEx` Phase 2 walk | ⬜ TODO | 4–6h |
-| 7 | `restore_context_and_jump` assembly | ⬜ TODO | 2–3h |
-| 8 | `STATUS_GCC_UNWIND` handling | ⬜ TODO | 1–2h |
-| 9 | GDB debugging + iteration | ⬜ TODO | ongoing |
+| 3 | Implement `DISPATCHER_CONTEXT` struct | ✅ Done | — |
+| 4 | `RaiseException` Phase 1 walk | ✅ Done | — |
+| 5 | `EXCEPTION_RECORD` construction | ✅ Done | — |
+| 6 | `RtlUnwindEx` Phase 2 walk | ✅ Done | — |
+| 7 | `restore_context_and_jump` assembly | ✅ Done | — |
+| 8 | `STATUS_GCC_UNWIND` handling | ✅ Done | — |
+| 9 | GDB debugging + iteration | ⬜ In Progress | ongoing |
 | 10 | Integration test | ⬜ TODO | 1h |
+| 11 | MSVC C++ exception structures (CxxFuncInfo, etc.) | ✅ Done | — |
+| 12 | Proper `__CxxFrameHandler3` implementation | ✅ Done | — |
+| 13 | `_CxxThrowException` image base resolution | ✅ Done | — |
+| 14 | `RtlPcToFileHeader` | ✅ Done | — |
+| 15 | MSVC helper stubs (__CxxRegister/Unregister, etc.) | ✅ Done | — |
 
 ---
 
