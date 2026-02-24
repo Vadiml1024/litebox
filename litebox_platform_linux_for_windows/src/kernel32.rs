@@ -1789,7 +1789,10 @@ pub unsafe extern "C" fn kernel32___C_specific_handler(
     let is_unwinding = unsafe { (*exc).exception_flags & EXCEPTION_UNWINDING } != 0;
 
     for i in 0..scope_count {
-        // SAFETY: i < scope_count, so this is within bounds.
+        // SAFETY: We trust that handler_data points to a valid SCOPE_TABLE
+        // whose `Count` field matches the actual number of entries.  This
+        // assumption is guaranteed by the PE loader having validated the
+        // UNWIND_INFO and SCOPE_TABLE structures during image loading.
         let entry = unsafe { &*scope_entries.add(i) };
 
         if control_rva < entry.begin_address || control_rva >= entry.end_address {
@@ -2243,7 +2246,9 @@ pub unsafe extern "C" fn kernel32_RtlUnwindEx(
         alloc::Layout::from_size_align(CTX_SIZE, 16).expect("CTX layout is valid");
     // SAFETY: layout is non-zero.
     let walk_ctx = unsafe { alloc::alloc_zeroed(walk_ctx_layout) };
-    if !walk_ctx.is_null() {
+    if walk_ctx.is_null() {
+        eprintln!("RtlUnwindEx: failed to allocate walk context — skipping cleanup walk");
+    } else {
         // Copy the caller-supplied context into the walk buffer.
         // SAFETY: both buffers are CTX_SIZE bytes.
         unsafe { core::ptr::copy_nonoverlapping(ctx, walk_ctx, CTX_SIZE) };
@@ -2252,6 +2257,9 @@ pub unsafe extern "C" fn kernel32_RtlUnwindEx(
         loop {
             max_frames -= 1;
             if max_frames == 0 {
+                eprintln!(
+                    "RtlUnwindEx: frame walk limit (256) exceeded without reaching target frame"
+                );
                 break;
             }
 

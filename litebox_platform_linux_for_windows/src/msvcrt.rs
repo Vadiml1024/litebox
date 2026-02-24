@@ -2094,9 +2094,11 @@ pub unsafe extern "C" fn msvcrt__CxxThrowException(
     //   [2] = pointer to _ThrowInfo
     //   [3] = image base of the module (for RVA resolution in _ThrowInfo)
     //
-    // We use 3 parameters since we don't have a real module base;
-    // MinGW programs typically don't use _CxxThrowException (they use
-    // GCC's _Unwind_RaiseException), so this is mainly for MSVC binaries.
+    // We still pass 4 parameters here, but only the first 3 are meaningful;
+    // the image base parameter [3] is set to 0 since we don't have a real
+    // module base. MinGW programs typically don't use _CxxThrowException
+    // (they use GCC's _Unwind_RaiseException), so this is mainly for MSVC
+    // binaries.
     let params: [usize; 4] = [
         0x1993_0520,               // magic version number
         exception_object as usize, // exception object
@@ -2240,16 +2242,14 @@ pub unsafe extern "C" fn msvcrt___std_terminate() -> ! {
 /// All pointer arguments must be valid or NULL.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn msvcrt__CxxExceptionFilter(
-    exception_pointers: *mut core::ffi::c_void,
+    _exception_pointers: *mut core::ffi::c_void,
     _type_info: *mut core::ffi::c_void,
     _flags: i32,
     _copy_function: *mut core::ffi::c_void,
 ) -> i32 {
-    if exception_pointers.is_null() {
-        return 0; // EXCEPTION_CONTINUE_SEARCH
-    }
-    // Simplified: just check for MSVC C++ exception code.
-    // A full implementation would also verify the type matches.
+    // Stub implementation: always continue search.
+    // A full implementation would inspect the exception record to
+    // detect MSVC C++ exceptions and potentially match the type.
     0 // EXCEPTION_CONTINUE_SEARCH
 }
 
@@ -2260,13 +2260,14 @@ pub unsafe extern "C" fn msvcrt__CxxExceptionFilter(
 /// `std::current_exception()` and rethrow.
 ///
 /// # Safety
-/// Returns a pointer to a static; caller must synchronize access.
+/// The returned pointer is valid only for the current thread.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn msvcrt___current_exception() -> *mut *mut core::ffi::c_void {
-    // Thread-local storage for the current exception.
-    // Use a simple static for now (single-threaded approximation).
-    static mut CURRENT_EXCEPTION: *mut core::ffi::c_void = core::ptr::null_mut();
-    &raw mut CURRENT_EXCEPTION
+    thread_local! {
+        static CURRENT_EXCEPTION: std::cell::UnsafeCell<*mut core::ffi::c_void> =
+            const { std::cell::UnsafeCell::new(core::ptr::null_mut()) };
+    }
+    CURRENT_EXCEPTION.with(std::cell::UnsafeCell::get)
 }
 
 /// `__current_exception_context` — Get pointer to the current exception
@@ -2276,11 +2277,14 @@ pub unsafe extern "C" fn msvcrt___current_exception() -> *mut *mut core::ffi::c_
 /// at the point the current exception was thrown.
 ///
 /// # Safety
-/// Returns a pointer to a static; caller must synchronize access.
+/// The returned pointer is valid only for the current thread.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn msvcrt___current_exception_context() -> *mut *mut core::ffi::c_void {
-    static mut CURRENT_EXCEPTION_CONTEXT: *mut core::ffi::c_void = core::ptr::null_mut();
-    &raw mut CURRENT_EXCEPTION_CONTEXT
+    thread_local! {
+        static CURRENT_EXCEPTION_CONTEXT: std::cell::UnsafeCell<*mut core::ffi::c_void> =
+            const { std::cell::UnsafeCell::new(core::ptr::null_mut()) };
+    }
+    CURRENT_EXCEPTION_CONTEXT.with(std::cell::UnsafeCell::get)
 }
 
 #[cfg(test)]
