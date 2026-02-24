@@ -346,6 +346,12 @@ pub fn get_function_table() -> Vec<FunctionImpl> {
             impl_address: crate::kernel32::kernel32_RtlVirtualUnwind as *const () as usize,
         },
         FunctionImpl {
+            name: "RtlPcToFileHeader",
+            dll_name: "KERNEL32.dll",
+            num_params: 2,
+            impl_address: crate::kernel32::kernel32_RtlPcToFileHeader as *const () as usize,
+        },
+        FunctionImpl {
             name: "AddVectoredExceptionHandler",
             dll_name: "KERNEL32.dll",
             num_params: 2,
@@ -1416,6 +1422,12 @@ pub fn get_function_table() -> Vec<FunctionImpl> {
             dll_name: "NTDLL.dll",
             num_params: 1,
             impl_address: crate::ntdll_impl::ntdll_RtlNtStatusToDosError as *const () as usize,
+        },
+        FunctionImpl {
+            name: "RtlPcToFileHeader",
+            dll_name: "NTDLL.dll",
+            num_params: 2,
+            impl_address: crate::kernel32::kernel32_RtlPcToFileHeader as *const () as usize,
         },
         // WS2_32.dll — Windows Sockets 2
         FunctionImpl {
@@ -2908,6 +2920,43 @@ pub fn get_function_table() -> Vec<FunctionImpl> {
             dll_name: "MSVCRT.dll",
             num_params: 4,
             impl_address: crate::msvcrt::msvcrt___CxxFrameHandler4 as *const () as usize,
+        },
+        FunctionImpl {
+            name: "__CxxRegisterExceptionObject",
+            dll_name: "MSVCRT.dll",
+            num_params: 2,
+            impl_address: crate::msvcrt::msvcrt___CxxRegisterExceptionObject as *const () as usize,
+        },
+        FunctionImpl {
+            name: "__CxxUnregisterExceptionObject",
+            dll_name: "MSVCRT.dll",
+            num_params: 2,
+            impl_address: crate::msvcrt::msvcrt___CxxUnregisterExceptionObject as *const ()
+                as usize,
+        },
+        FunctionImpl {
+            name: "__DestructExceptionObject",
+            dll_name: "MSVCRT.dll",
+            num_params: 1,
+            impl_address: crate::msvcrt::msvcrt___DestructExceptionObject as *const () as usize,
+        },
+        FunctionImpl {
+            name: "__uncaught_exception",
+            dll_name: "MSVCRT.dll",
+            num_params: 0,
+            impl_address: crate::msvcrt::msvcrt___uncaught_exception as *const () as usize,
+        },
+        FunctionImpl {
+            name: "__uncaught_exceptions",
+            dll_name: "MSVCRT.dll",
+            num_params: 0,
+            impl_address: crate::msvcrt::msvcrt___uncaught_exceptions as *const () as usize,
+        },
+        FunctionImpl {
+            name: "_local_unwind",
+            dll_name: "MSVCRT.dll",
+            num_params: 2,
+            impl_address: crate::msvcrt::msvcrt__local_unwind as *const () as usize,
         },
         FunctionImpl {
             name: "terminate",

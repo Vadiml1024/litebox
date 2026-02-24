@@ -1305,6 +1305,59 @@ pub fn register_exception_table(image_base: u64, pdata_rva: u32, pdata_size: u32
     });
 }
 
+/// Get the image base from the registered exception table.
+///
+/// Returns the PE image base address, or 0 if no exception table is registered.
+pub fn get_registered_image_base() -> u64 {
+    let guard = EXCEPTION_TABLE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    match *guard {
+        Some(ref tbl) => tbl.image_base,
+        None => 0,
+    }
+}
+
+/// Map a program counter to the base address of its module.
+///
+/// Implements the Windows `RtlPcToFileHeader` API.  Returns the image base
+/// of the module containing `pc`, or NULL if `pc` is not inside any known
+/// module.  Also writes the base to `*base_of_image` if non-NULL.
+///
+/// # Safety
+/// `base_of_image` must be NULL or point to writable memory for one `*mut c_void`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_RtlPcToFileHeader(
+    pc: *mut core::ffi::c_void,
+    base_of_image: *mut *mut core::ffi::c_void,
+) -> *mut core::ffi::c_void {
+    // 64 MiB is a generous upper bound — typical PE images are well under
+    // this, and the Windows loader rejects images larger than 2 GiB.
+    const MAX_PE_IMAGE_SIZE: u64 = 64 * 1024 * 1024;
+
+    let pc_addr = pc as u64;
+    let image_base = get_registered_image_base();
+    if image_base == 0 {
+        if !base_of_image.is_null() {
+            unsafe { *base_of_image = core::ptr::null_mut() };
+        }
+        return core::ptr::null_mut();
+    }
+    // Check if PC falls within a reasonable range of the image.
+    let rva = pc_addr.wrapping_sub(image_base);
+    if rva < MAX_PE_IMAGE_SIZE {
+        let base = image_base as *mut core::ffi::c_void;
+        if !base_of_image.is_null() {
+            unsafe { *base_of_image = base };
+        }
+        return base;
+    }
+    if !base_of_image.is_null() {
+        unsafe { *base_of_image = core::ptr::null_mut() };
+    }
+    core::ptr::null_mut()
+}
+
 // ---- CONTEXT register byte offsets (Windows x64 CONTEXT structure) ----
 // The CONTEXT structure for x64 is 1232 bytes total.
 const CTX_RAX: usize = 0x78;
@@ -13975,5 +14028,16 @@ mod tests {
             libc::munmap(mapped, len);
         }
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_rtl_pc_to_file_header_out_of_range() {
+        // A PC far outside any registered image should return null.
+        let mut base: *mut core::ffi::c_void = core::ptr::without_provenance_mut(1); // sentinel
+        let result = unsafe {
+            kernel32_RtlPcToFileHeader(core::ptr::without_provenance_mut(usize::MAX), &raw mut base)
+        };
+        assert!(result.is_null());
+        assert!(base.is_null());
     }
 }
