@@ -179,6 +179,20 @@ impl DllManager {
 
         // For now, we only support stub DLLs
         // Real DLL loading would be implemented here
+
+        // Normalize MSVC runtime DLLs to MSVCRT.dll.  Programs compiled with the
+        // MSVC toolchain import from vcruntime140.dll and the Universal CRT
+        // (ucrtbase.dll) instead of the older msvcrt.dll.  Our implementations live
+        // under MSVCRT.dll, so we alias these names to that DLL.
+        if matches!(
+            normalized_name.as_str(),
+            "VCRUNTIME140.DLL" | "VCRUNTIME140_1.DLL" | "UCRTBASE.DLL"
+        ) && let Some(&handle) = self.dll_by_name.get("MSVCRT.DLL")
+        {
+            self.dll_by_name.insert(normalized_name, handle);
+            return Ok(handle);
+        }
+
         Err(WindowsShimError::UnsupportedFeature(format!(
             "DLL not found: {name}"
         )))
@@ -688,6 +702,17 @@ impl DllManager {
             ("_CxxExceptionFilter", MSVCRT_BASE + 0x6F),
             ("__current_exception", MSVCRT_BASE + 0x70),
             ("__current_exception_context", MSVCRT_BASE + 0x71),
+            // UCRT / VCRUNTIME140 functions needed by MSVC-compiled programs
+            ("__vcrt_initialize", MSVCRT_BASE + 0x72),
+            ("__vcrt_uninitialize", MSVCRT_BASE + 0x73),
+            ("__security_init_cookie", MSVCRT_BASE + 0x74),
+            ("__security_check_cookie", MSVCRT_BASE + 0x75),
+            ("_initialize_narrow_environment", MSVCRT_BASE + 0x76),
+            ("_configure_narrow_argv", MSVCRT_BASE + 0x77),
+            ("_crt_atexit", MSVCRT_BASE + 0x78),
+            ("__acrt_iob_func", MSVCRT_BASE + 0x79),
+            ("__stdio_common_vfprintf", MSVCRT_BASE + 0x7A),
+            ("_configthreadlocale", MSVCRT_BASE + 0x7B),
         ];
 
         self.register_stub_dll("MSVCRT.dll", exports);
@@ -1042,9 +1067,9 @@ fn map_api_set_to_implementation(api_set_name: &str) -> &'static str {
         return "NTDLL.dll";
     }
 
-    // C Runtime APIs -> MSVCRT.dll or UCRTBASE.dll
+    // C Runtime APIs -> MSVCRT.dll (UCRT API sets forward to the same implementations)
     if name_upper.starts_with("API-MS-WIN-CRT-") {
-        return "UCRTBASE.dll";
+        return "MSVCRT.dll";
     }
 
     // Default to KERNEL32.dll for unknown API sets
@@ -1112,5 +1137,47 @@ mod tests {
         // Should not be able to get proc address after freeing
         let result = manager.get_proc_address(handle, "printf");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_vcruntime140_aliased_to_msvcrt() {
+        let mut manager = DllManager::new();
+        // VCRUNTIME140.dll should resolve to the same handle as MSVCRT.dll
+        let msvcrt = manager.load_library("MSVCRT.dll").unwrap();
+        let vcruntime = manager.load_library("vcruntime140.dll").unwrap();
+        assert_eq!(
+            msvcrt, vcruntime,
+            "vcruntime140.dll must alias to MSVCRT.dll"
+        );
+        // Repeated loads return the cached alias
+        let vcruntime2 = manager.load_library("VCRUNTIME140.DLL").unwrap();
+        assert_eq!(msvcrt, vcruntime2);
+    }
+
+    #[test]
+    fn test_ucrtbase_aliased_to_msvcrt() {
+        let mut manager = DllManager::new();
+        let msvcrt = manager.load_library("MSVCRT.dll").unwrap();
+        let ucrtbase = manager.load_library("ucrtbase.dll").unwrap();
+        assert_eq!(msvcrt, ucrtbase, "ucrtbase.dll must alias to MSVCRT.dll");
+    }
+
+    #[test]
+    fn test_api_ms_win_crt_redirected_to_msvcrt() {
+        let mut manager = DllManager::new();
+        let msvcrt = manager.load_library("MSVCRT.dll").unwrap();
+        // api-ms-win-crt-* DLLs should all forward to MSVCRT.dll
+        for api_set in &[
+            "api-ms-win-crt-runtime-l1-1-0.dll",
+            "api-ms-win-crt-stdio-l1-1-0.dll",
+            "api-ms-win-crt-math-l1-1-0.dll",
+            "api-ms-win-crt-heap-l1-1-0.dll",
+            "api-ms-win-crt-locale-l1-1-0.dll",
+        ] {
+            let handle = manager.load_library(api_set).unwrap_or_else(|e| {
+                panic!("Failed to load {api_set}: {e}");
+            });
+            assert_eq!(msvcrt, handle, "{api_set} must alias to MSVCRT.dll");
+        }
     }
 }

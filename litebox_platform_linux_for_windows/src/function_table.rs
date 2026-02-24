@@ -3006,6 +3006,69 @@ pub fn get_function_table() -> Vec<FunctionImpl> {
             num_params: 0,
             impl_address: crate::msvcrt::msvcrt___current_exception_context as *const () as usize,
         },
+        // VCRUNTIME140 / UCRT stubs for MSVC-compiled programs.
+        // These DLLs are aliased to MSVCRT.dll in the DLL manager, so all
+        // entries use dll_name: "MSVCRT.dll".
+        FunctionImpl {
+            name: "__vcrt_initialize",
+            dll_name: "MSVCRT.dll",
+            num_params: 0,
+            impl_address: crate::msvcrt::vcruntime__vcrt_initialize as *const () as usize,
+        },
+        FunctionImpl {
+            name: "__vcrt_uninitialize",
+            dll_name: "MSVCRT.dll",
+            num_params: 0,
+            impl_address: crate::msvcrt::vcruntime__vcrt_uninitialize as *const () as usize,
+        },
+        FunctionImpl {
+            name: "__security_init_cookie",
+            dll_name: "MSVCRT.dll",
+            num_params: 0,
+            impl_address: crate::msvcrt::vcruntime__security_init_cookie as *const () as usize,
+        },
+        FunctionImpl {
+            name: "__security_check_cookie",
+            dll_name: "MSVCRT.dll",
+            num_params: 1,
+            impl_address: crate::msvcrt::vcruntime__security_check_cookie as *const () as usize,
+        },
+        FunctionImpl {
+            name: "_initialize_narrow_environment",
+            dll_name: "MSVCRT.dll",
+            num_params: 0,
+            impl_address: crate::msvcrt::ucrt__initialize_narrow_environment as *const () as usize,
+        },
+        FunctionImpl {
+            name: "_configure_narrow_argv",
+            dll_name: "MSVCRT.dll",
+            num_params: 1,
+            impl_address: crate::msvcrt::ucrt__configure_narrow_argv as *const () as usize,
+        },
+        FunctionImpl {
+            name: "_crt_atexit",
+            dll_name: "MSVCRT.dll",
+            num_params: 1,
+            impl_address: crate::msvcrt::ucrt__crt_atexit as *const () as usize,
+        },
+        FunctionImpl {
+            name: "__acrt_iob_func",
+            dll_name: "MSVCRT.dll",
+            num_params: 1,
+            impl_address: crate::msvcrt::ucrt__acrt_iob_func as *const () as usize,
+        },
+        FunctionImpl {
+            name: "__stdio_common_vfprintf",
+            dll_name: "MSVCRT.dll",
+            num_params: 4,
+            impl_address: crate::msvcrt::ucrt__stdio_common_vfprintf as *const () as usize,
+        },
+        FunctionImpl {
+            name: "_configthreadlocale",
+            dll_name: "MSVCRT.dll",
+            num_params: 1,
+            impl_address: crate::msvcrt::ucrt__configthreadlocale as *const () as usize,
+        },
         // OLEAUT32: COM error info and BSTR functions
         FunctionImpl {
             name: "GetErrorInfo",

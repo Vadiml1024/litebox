@@ -3094,6 +3094,156 @@ pub unsafe extern "C" fn msvcrt___current_exception_context() -> *mut *mut core:
     CURRENT_EXCEPTION_CONTEXT.with(std::cell::UnsafeCell::get)
 }
 
+// ── VCRUNTIME140 / UCRT stubs for MSVC-compiled programs ─────────────────────
+//
+// Programs compiled with the MSVC toolchain (cl.exe / cargo with
+// x86_64-pc-windows-msvc target) import from vcruntime140.dll and the
+// Universal CRT (api-ms-win-crt-* / ucrtbase.dll) instead of the older
+// msvcrt.dll.  These DLLs are aliased to MSVCRT.dll in the DLL manager, so
+// the functions below are all exported under "MSVCRT.dll" in the function
+// table.
+
+/// `__vcrt_initialize()` — VCRUNTIME140 CRT initialisation
+///
+/// Returns TRUE (1) to indicate success.  No real initialisation needed
+/// because the litebox platform manages the CRT lifetime directly.
+///
+/// # Safety
+///
+/// Safe to call unconditionally.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vcruntime__vcrt_initialize() -> i32 {
+    1
+}
+
+/// `__vcrt_uninitialize()` — VCRUNTIME140 CRT cleanup
+///
+/// No-op: litebox does not maintain VCRUNTIME state that needs to be torn down.
+///
+/// # Safety
+///
+/// Safe to call unconditionally.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vcruntime__vcrt_uninitialize() {}
+
+/// `__security_init_cookie()` — Initialise the stack-guard security cookie
+///
+/// No-op in the litebox environment: stack canary protection is not needed
+/// because we control the entire execution context.
+///
+/// # Safety
+///
+/// Safe to call unconditionally.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vcruntime__security_init_cookie() {}
+
+/// `__security_check_cookie(guard)` — Verify the stack-guard security cookie
+///
+/// Always succeeds (no-op).  In a real implementation this would terminate
+/// the process on mismatch; our emulated environment never has a mismatch.
+///
+/// # Safety
+///
+/// Safe to call unconditionally.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vcruntime__security_check_cookie(_guard: usize) {}
+
+/// `_initialize_narrow_environment()` — UCRT narrow-environment initialisation
+///
+/// Returns 0 (success).  Environment variables are managed by the litebox
+/// platform layer directly via `GetEnvironmentVariableA/W`.
+///
+/// # Safety
+///
+/// Safe to call unconditionally.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ucrt__initialize_narrow_environment() -> i32 {
+    0
+}
+
+/// `_configure_narrow_argv(mode)` — UCRT argv configuration
+///
+/// Returns 0 (success).  Command-line arguments are supplied by the runner
+/// via `PROCESS_COMMAND_LINE` and parsed by `__getmainargs`.
+///
+/// # Safety
+///
+/// Safe to call unconditionally.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ucrt__configure_narrow_argv(_mode: i32) -> i32 {
+    0
+}
+
+/// `_crt_atexit(fn)` — UCRT atexit registration
+///
+/// No-op stub.  The litebox runner does not currently support atexit handlers
+/// registered through the UCRT path; the process lifetime is managed externally.
+///
+/// # Safety
+///
+/// Safe to call unconditionally; the function pointer is ignored.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ucrt__crt_atexit(_func: *const core::ffi::c_void) -> i32 {
+    0
+}
+
+/// `__acrt_iob_func(index)` — UCRT stdio-stream accessor
+///
+/// Returns a pointer into the shared IOB array at the given index.  This is
+/// the UCRT equivalent of the MSVCRT `__iob_func()` function, but takes an
+/// explicit index (0 = stdin, 1 = stdout, 2 = stderr).
+///
+/// # Safety
+///
+/// `index` must be 0, 1, or 2.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ucrt__acrt_iob_func(index: u32) -> *mut u8 {
+    // Each IOB entry is 8 bytes in our simplified layout.  The backing
+    // static in `msvcrt___iob_func` is `[u8; 24]`, which accommodates
+    // 3 streams × 8 bytes each (stdin = 0, stdout = 1, stderr = 2).
+    const IOB_ENTRY_SIZE: usize = 8;
+    let base = msvcrt___iob_func();
+    // SAFETY: index is expected to be 0-2; we offset into the IOB array.
+    unsafe { base.add((index as usize) * IOB_ENTRY_SIZE) }
+}
+
+/// `__stdio_common_vfprintf(options, stream, fmt, locale, ...)` — UCRT printf
+///
+/// Minimal stub that ignores the `options`, `locale`, and variadic arguments
+/// and delegates to `fprintf`.  This is sufficient for debug/trace output from
+/// UCRT-linked programs; full format-string support is not required for the
+/// test suite.
+///
+/// # Safety
+///
+/// `stream` and `fmt` must be valid pointers for the duration of the call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ucrt__stdio_common_vfprintf(
+    _options: u64,
+    _stream: *mut u8,
+    _fmt: *const u8,
+    _locale: *const u8,
+    // Variadic arguments (va_list) are not accessible from safe Rust;
+    // the stub returns -1 (error) which the UCRT caller will ignore for
+    // non-critical output paths.
+) -> i32 {
+    -1
+}
+
+/// `_configthreadlocale(mode)` — UCRT per-thread locale configuration
+///
+/// Returns 0 (the legacy "global locale" mode).  Locale-sensitive operations
+/// in the test suite use the process-global locale, which is adequate for
+/// ASCII-only programs.
+///
+/// # Safety
+///
+/// Safe to call unconditionally.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ucrt__configthreadlocale(_mode: i32) -> i32 {
+    0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

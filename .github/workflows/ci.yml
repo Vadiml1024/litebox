@@ -793,3 +793,135 @@ jobs:
           echo "✓ Relocation processing working"
           echo "✓ API tracing infrastructure functional"
           echo "================================================"
+
+  build_msvc_test_programs:
+    name: Build MSVC Test Programs
+    runs-on: windows-latest
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+      - name: Set up Rust
+        uses: ./.github/actions/setup-rust
+        with:
+          targets: x86_64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: msvc-test-programs
+      - name: Build Rust test programs with MSVC target
+        working-directory: windows_test_programs
+        run: |
+          cargo build --release --target x86_64-pc-windows-msvc --locked `
+            -p hello_cli -p math_test -p env_test `
+            -p args_test -p file_io_test -p string_test
+      - name: Verify MSVC executables
+        shell: bash
+        run: |
+          echo "Checking MSVC test programs..."
+          ls -lh windows_test_programs/target/x86_64-pc-windows-msvc/release/*.exe
+          file windows_test_programs/target/x86_64-pc-windows-msvc/release/hello_cli.exe
+          file windows_test_programs/target/x86_64-pc-windows-msvc/release/math_test.exe
+      - name: Upload MSVC test executables
+        uses: actions/upload-artifact@v4
+        with:
+          name: msvc-test-executables
+          path: |
+            windows_test_programs/target/x86_64-pc-windows-msvc/release/hello_cli.exe
+            windows_test_programs/target/x86_64-pc-windows-msvc/release/math_test.exe
+            windows_test_programs/target/x86_64-pc-windows-msvc/release/env_test.exe
+            windows_test_programs/target/x86_64-pc-windows-msvc/release/args_test.exe
+            windows_test_programs/target/x86_64-pc-windows-msvc/release/file_io_test.exe
+            windows_test_programs/target/x86_64-pc-windows-msvc/release/string_test.exe
+          retention-days: 1
+
+  test_msvc_programs_on_linux:
+    name: Test MSVC Programs on Linux
+    runs-on: ubuntu-latest
+    needs: build_msvc_test_programs
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+      - name: Set up Rust
+        uses: ./.github/actions/setup-rust
+        with:
+          targets: x86_64-unknown-linux-gnu
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: wol-runner
+      - name: Download MSVC test executables
+        uses: actions/download-artifact@v4
+        with:
+          name: msvc-test-executables
+          path: msvc_test_programs
+      - name: Build Windows-on-Linux runner
+        run: cargo build --locked -p litebox_runner_windows_on_linux_userland
+      - name: Run hello_cli.exe (MSVC) and verify output
+        run: |
+          echo "=== hello_cli.exe (MSVC-compiled) ==="
+          output=$(./target/debug/litebox_runner_windows_on_linux_userland \
+            msvc_test_programs/hello_cli.exe 2>&1)
+          echo "$output"
+          echo "$output" | grep -q "Hello World from LiteBox!" \
+            || { echo "✗ MSVC hello_cli.exe FAILED"; exit 1; }
+          echo "✓ MSVC hello_cli.exe PASSED"
+      - name: Run math_test.exe (MSVC) and verify exit code
+        run: |
+          echo "=== math_test.exe (MSVC-compiled) ==="
+          ./target/debug/litebox_runner_windows_on_linux_userland \
+            msvc_test_programs/math_test.exe \
+            2>&1 | tee /tmp/math_test_msvc.txt
+          grep -q "0 failed" /tmp/math_test_msvc.txt \
+            || { echo "✗ MSVC math_test.exe FAILED"; exit 1; }
+          echo "✓ MSVC math_test.exe PASSED"
+      - name: Run env_test.exe (MSVC) and verify exit code
+        run: |
+          echo "=== env_test.exe (MSVC-compiled) ==="
+          ./target/debug/litebox_runner_windows_on_linux_userland \
+            msvc_test_programs/env_test.exe 2>&1 \
+            || { echo "✗ MSVC env_test.exe FAILED"; exit 1; }
+          echo "✓ MSVC env_test.exe PASSED"
+      - name: Run args_test.exe (MSVC) and verify exit code
+        run: |
+          echo "=== args_test.exe (MSVC-compiled) ==="
+          ./target/debug/litebox_runner_windows_on_linux_userland \
+            msvc_test_programs/args_test.exe 2>&1 \
+            || { echo "✗ MSVC args_test.exe FAILED"; exit 1; }
+          echo "✓ MSVC args_test.exe PASSED"
+      - name: Run file_io_test.exe (MSVC) and verify exit code
+        run: |
+          echo "=== file_io_test.exe (MSVC-compiled) ==="
+          ./target/debug/litebox_runner_windows_on_linux_userland \
+            msvc_test_programs/file_io_test.exe \
+            2>&1 | tee /tmp/file_io_test_msvc.txt \
+            || { echo "✗ MSVC file_io_test.exe FAILED"; exit 1; }
+          echo "✓ MSVC file_io_test.exe PASSED"
+      - name: Run string_test.exe (MSVC) and verify exit code
+        run: |
+          echo "=== string_test.exe (MSVC-compiled) ==="
+          ./target/debug/litebox_runner_windows_on_linux_userland \
+            msvc_test_programs/string_test.exe \
+            2>&1 | tee /tmp/string_test_msvc.txt
+          grep -q "0 failed" /tmp/string_test_msvc.txt \
+            || { echo "✗ MSVC string_test.exe FAILED"; exit 1; }
+          echo "✓ MSVC string_test.exe PASSED"
+      - name: Upload test output on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: msvc-test-output
+          path: /tmp/*_msvc.txt
+          retention-days: 7
+      - name: Summary
+        if: always()
+        run: |
+          echo ""
+          echo "================================================"
+          echo " MSVC Programs on Linux – Summary"
+          echo "================================================"
+          for f in /tmp/*_msvc.txt; do
+            [ -f "$f" ] || continue
+            name=$(basename "$f" _msvc.txt)
+            pass=$(grep -c "\[PASS\]\|✓\|passed" "$f" 2>/dev/null || true)
+            fail=$(grep -c "\[FAIL\]\|✗\|failed" "$f" 2>/dev/null || true)
+            echo "  ${name}: ${pass} passed, ${fail} failed"
+          done
+          echo "================================================"
