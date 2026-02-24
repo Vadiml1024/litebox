@@ -1450,31 +1450,31 @@ const EXCEPTION_CONTINUE_SEARCH: i32 = 1; // ExceptionContinueSearch
 ///
 /// Total size: 96 bytes (11 fields, 8 bytes each except scope_index/fill which are 4 bytes each).
 #[repr(C)]
-struct DispatcherContext {
-    control_pc: u64,
-    image_base: u64,
-    function_entry: *mut core::ffi::c_void, // PRUNTIME_FUNCTION
-    establisher_frame: u64,
-    target_ip: u64,
-    context_record: *mut u8,                  // PCONTEXT
-    language_handler: *mut core::ffi::c_void, // PEXCEPTION_ROUTINE
-    handler_data: *mut core::ffi::c_void,
-    history_table: *mut core::ffi::c_void, // PUNWIND_HISTORY_TABLE
-    scope_index: u32,
-    _fill0: u32,
+pub(crate) struct DispatcherContext {
+    pub(crate) control_pc: u64,
+    pub(crate) image_base: u64,
+    pub(crate) function_entry: *mut core::ffi::c_void, // PRUNTIME_FUNCTION
+    pub(crate) establisher_frame: u64,
+    pub(crate) target_ip: u64,
+    pub(crate) context_record: *mut u8, // PCONTEXT
+    pub(crate) language_handler: *mut core::ffi::c_void, // PEXCEPTION_ROUTINE
+    pub(crate) handler_data: *mut core::ffi::c_void,
+    pub(crate) history_table: *mut core::ffi::c_void, // PUNWIND_HISTORY_TABLE
+    pub(crate) scope_index: u32,
+    pub(crate) _fill0: u32,
 }
 
 /// Windows x64 EXCEPTION_RECORD (total 152 bytes for 15 ExceptionInformation entries)
 #[repr(C)]
 #[allow(clippy::struct_field_names)]
-struct ExceptionRecord {
-    exception_code: u32,
-    exception_flags: u32,
-    exception_record: *mut ExceptionRecord,
-    exception_address: *mut core::ffi::c_void,
-    number_parameters: u32,
-    _pad: u32,
-    exception_information: [usize; 15],
+pub(crate) struct ExceptionRecord {
+    pub(crate) exception_code: u32,
+    pub(crate) exception_flags: u32,
+    pub(crate) exception_record: *mut ExceptionRecord,
+    pub(crate) exception_address: *mut core::ffi::c_void,
+    pub(crate) number_parameters: u32,
+    pub(crate) _pad: u32,
+    pub(crate) exception_information: [usize; 15],
 }
 
 // ---- UNWIND_CODE opcodes ----
@@ -9503,20 +9503,14 @@ fn try_trampoline_at_offset(rust_rsp: usize, offset: usize, pe_base: u64) -> Opt
     // epilogue byte pattern: `pop rsi (5E); pop rdi (5F); ret (C3)`.
     // The epilogue starts after an `add rsp, N` instruction (4 or 7 bytes),
     // so we scan the first 8 bytes for the pattern.
-    if candidate < 0x10000 || candidate > 0x7FFF_FFFF_FFFF {
+    if !(0x10000..=0x7FFF_FFFF_FFFF).contains(&candidate) {
         return None;
     }
     // Check if the page at `candidate` is mapped using mincore().
     let page_size = 4096_usize;
     let page_addr = (candidate as usize) & !(page_size - 1);
     let mut vec: u8 = 0;
-    let rc = unsafe {
-        libc::mincore(
-            page_addr as *mut libc::c_void,
-            page_size,
-            &raw mut vec,
-        )
-    };
+    let rc = unsafe { libc::mincore(page_addr as *mut libc::c_void, page_size, &raw mut vec) };
     if rc != 0 {
         // Page is not mapped — not a valid address.
         return None;
@@ -9746,7 +9740,7 @@ unsafe fn seh_walk_stack_dispatch(
                 let guard = EXCEPTION_TABLE
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-                (*guard).as_ref().map(|t| t.image_base).unwrap_or(0)
+                (*guard).as_ref().map_or(0, |t| t.image_base)
             };
             let rva = control_pc.wrapping_sub(pe_base);
             if pe_base != 0 && rva > 0x1000 && rva < 16 * 1024 * 1024 {

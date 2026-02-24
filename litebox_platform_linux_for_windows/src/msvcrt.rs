@@ -2268,8 +2268,14 @@ fn cxx_ip_to_state(fi: &CxxFuncInfo, image_base: u64, control_pc: u64) -> i32 {
     if control_pc < image_base {
         return -1;
     }
+    let Some(diff) = control_pc.checked_sub(image_base) else {
+        return -1;
+    };
+    if diff > u64::from(u32::MAX) {
+        return -1;
+    }
     #[allow(clippy::cast_possible_truncation)]
-    let ip_rva = (control_pc - image_base) as u32;
+    let ip_rva = diff as u32;
     let ipmap = (image_base + u64::from(fi.ipmap)) as *const CxxIpMapEntry;
     let mut state = -1_i32;
     for i in 0..fi.ipmap_count {
@@ -2305,8 +2311,16 @@ unsafe fn cxx_local_unwind(
     }
     let unwind_table = (image_base + u64::from(fi.unwind_table)) as *const CxxUnwindMapEntry;
     let mut state = current_state;
+    // Guard against cycles in malformed unwind maps: limit iterations to
+    // the table size (a well-formed chain visits each entry at most once).
+    let mut iterations: u32 = 0;
+    let max_iterations = fi.unwind_count;
     #[allow(clippy::cast_sign_loss)]
     while state > target_state && state >= 0 && (state as u32) < fi.unwind_count {
+        iterations += 1;
+        if iterations > max_iterations {
+            break;
+        }
         // SAFETY: state is within bounds of the unwind table.
         #[allow(clippy::cast_sign_loss)]
         let entry = unsafe { &*unwind_table.add(state as usize) };
@@ -2379,15 +2393,17 @@ unsafe fn cxx_find_catch_block(
 
             // Found a matching catch block — copy exception object if needed.
             if !exc_type.is_null() && catchblock.type_info != 0 && catchblock.offset != 0 {
-                // ExceptionInformation[1] is at offset 40 in the EXCEPTION_RECORD:
-                //   ExceptionCode(4) + ExceptionFlags(4) + ExceptionRecord*(8)
-                //   + ExceptionAddress*(8) + NumberParameters(4) + _pad(4)
-                //   + ExceptionInformation[0](8) = 40
-                let exc = exception_record.cast::<u8>();
-                let exc_object = unsafe { exc.add(40).cast::<*const u8>().read_unaligned() };
+                // Retrieve the C++ exception object pointer from ExceptionInformation[1].
+                let exc_object = unsafe {
+                    // SAFETY: exception_record is expected to point to a valid EXCEPTION_RECORD
+                    // provided by the unwinder. We only read ExceptionInformation[1].
+                    (*exception_record.cast::<crate::kernel32::ExceptionRecord>())
+                        .exception_information[1] as *const u8
+                };
                 if !exc_object.is_null() {
-                    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-                    let dest = (establisher_frame as usize + catchblock.offset as usize) as *mut u8;
+                    #[allow(clippy::cast_possible_truncation)]
+                    let dest = (establisher_frame as *mut u8)
+                        .wrapping_offset(i64::from(catchblock.offset) as isize);
                     if (catchblock.flags & TYPE_FLAG_REFERENCE) != 0 {
                         unsafe {
                             dest.cast::<*const u8>().write_unaligned(exc_object);
@@ -2610,14 +2626,11 @@ pub unsafe extern "C" fn msvcrt___CxxFrameHandler3(
         return 1; // EXCEPTION_CONTINUE_SEARCH
     }
 
-    // Read DispatcherContext fields.
-    // Layout: control_pc(8), image_base(8), function_entry(8),
-    //         establisher_frame(8), target_ip(8), context_record(8),
-    //         language_handler(8), handler_data(8), ...
-    let dc = dispatcher_context.cast::<u8>();
-    let image_base = unsafe { (dc.add(8) as *const u64).read_unaligned() };
-    let handler_data = unsafe { (dc.add(56) as *const *mut core::ffi::c_void).read_unaligned() };
-    let control_pc = unsafe { (dc as *const u64).read_unaligned() };
+    // Read DispatcherContext fields via struct access.
+    let dc = unsafe { &*dispatcher_context.cast::<crate::kernel32::DispatcherContext>() };
+    let image_base = dc.image_base;
+    let handler_data = dc.handler_data;
+    let control_pc = dc.control_pc;
 
     if handler_data.is_null() || image_base == 0 {
         return 1;
@@ -2639,10 +2652,9 @@ pub unsafe extern "C" fn msvcrt___CxxFrameHandler3(
     }
 
     // Read exception record fields.
-    let exc = exception_record.cast::<u8>();
-    // ExceptionRecord layout: ExceptionCode(4), ExceptionFlags(4), ...
-    let exc_flags = unsafe { (exc.add(4) as *const u32).read_unaligned() };
-    let exc_code = unsafe { (exc as *const u32).read_unaligned() };
+    let exc_rec_ref = unsafe { &*exception_record.cast::<crate::kernel32::ExceptionRecord>() };
+    let exc_flags = exc_rec_ref.exception_flags;
+    let exc_code = exc_rec_ref.exception_code;
 
     let is_unwinding = (exc_flags & EXCEPTION_UNWINDING_FLAG) != 0;
 
@@ -2689,15 +2701,12 @@ pub unsafe extern "C" fn msvcrt___CxxFrameHandler3(
     }
 
     // Read ExceptionInformation from the exception record.
-    // ExceptionInformation starts at offset 32 in EXCEPTION_RECORD:
-    //   ExceptionCode(4) + ExceptionFlags(4) + ExceptionRecord*(8)
-    //   + ExceptionAddress*(8) + NumberParameters(4) + _pad(4) = 32
     // [0] = magic version, [1] = exception object ptr, [2] = ThrowInfo RVA,
     // [3] = image base (for RVA resolution)
-    let exc_info_base = exc.add(32);
+    let exc_record = unsafe { &*exception_record.cast::<crate::kernel32::ExceptionRecord>() };
     #[allow(clippy::cast_possible_truncation)]
-    let exc_type_rva = unsafe { (exc_info_base.add(16) as *const usize).read_unaligned() } as u32;
-    let exc_image_base = unsafe { (exc_info_base.add(24) as *const usize).read_unaligned() } as u64;
+    let exc_type_rva = exc_record.exception_information[2] as u32;
+    let exc_image_base = exc_record.exception_information[3] as u64;
 
     let throw_base = if exc_image_base != 0 {
         exc_image_base
