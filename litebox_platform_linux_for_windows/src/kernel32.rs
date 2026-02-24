@@ -1284,6 +1284,31 @@ struct RegisteredExceptionTable {
 
 static EXCEPTION_TABLE: Mutex<Option<RegisteredExceptionTable>> = Mutex::new(None);
 
+/// Thread-local throw-site context set by `kernel32_RaiseException` and
+/// consumed by `kernel32_RtlUnwindEx` to start the cleanup walk from the
+/// actual throw location rather than from the catch frame.
+///
+/// Wine's `RtlUnwindEx` calls `RtlCaptureContext` internally to obtain the
+/// current (throw-site) context; we replicate that by stashing the context
+/// that `kernel32_RaiseException` already computed.
+#[derive(Clone, Copy)]
+struct ThrowSiteContext {
+    rip: u64,
+    rsp: u64,
+    rbx: u64,
+    rbp: u64,
+    rsi: u64,
+    rdi: u64,
+    r12: u64,
+    r13: u64,
+    r14: u64,
+    r15: u64,
+}
+thread_local! {
+    static THROW_SITE_CTX: std::cell::Cell<Option<ThrowSiteContext>>
+        = const { std::cell::Cell::new(None) };
+}
+
 /// Register the exception table for a loaded PE image
 ///
 /// This stores the location of the `.pdata` section so that
@@ -2057,6 +2082,28 @@ pub unsafe extern "C" fn kernel32_RaiseException(
         r15: nv_r15,
     };
 
+    // ── Stash the throw-site context for RtlUnwindEx ───────────────────────
+    // Wine's RtlUnwindEx calls RtlCaptureContext internally to obtain the
+    // current (throw-site) context and starts the cleanup walk from there,
+    // visiting all intermediate frames between the throw and the catch.
+    // We replicate that by storing the throw-site PC/SP here, which
+    // kernel32_RtlUnwindEx reads to initialise its walk context instead of
+    // starting from the (already-at-target) catch-frame context it receives.
+    THROW_SITE_CTX.with(|c| {
+        c.set(Some(ThrowSiteContext {
+            rip: start_rip,
+            rsp: start_rsp,
+            rbx: nv_regs.rbx,
+            rbp: nv_regs.rbp,
+            rsi: nv_regs.rsi,
+            rdi: nv_regs.rdi,
+            r12: nv_regs.r12,
+            r13: nv_regs.r13,
+            r14: nv_regs.r14,
+            r15: nv_regs.r15,
+        }));
+    });
+
     // ── Build the EXCEPTION_RECORD ──────────────────────────────────────────
     let exc_layout = alloc::Layout::new::<ExceptionRecord>();
     // SAFETY: Layout is non-zero.
@@ -2336,9 +2383,42 @@ pub unsafe extern "C" fn kernel32_RtlUnwindEx(
     if walk_ctx.is_null() {
         eprintln!("RtlUnwindEx: failed to allocate walk context — skipping cleanup walk");
     } else {
-        // Copy the caller-supplied context into the walk buffer.
-        // SAFETY: both buffers are CTX_SIZE bytes.
-        unsafe { core::ptr::copy_nonoverlapping(ctx, walk_ctx, CTX_SIZE) };
+        // ── Seed walk_ctx from the throw site, not the catch frame ──────────
+        //
+        // Wine's RtlUnwindEx calls RtlCaptureContext internally to obtain the
+        // current execution context (inside RtlUnwindEx itself, deep in the
+        // call stack at the throw site) and walks OUTWARD from there to
+        // `target_frame`, visiting every intermediate frame and calling its
+        // cleanup handler.
+        //
+        // In our implementation RtlUnwindEx is a Rust function; we cannot
+        // easily call RtlCaptureContext here (the Rust frames aren't in the PE
+        // .pdata).  Instead, kernel32_RaiseException stashes the throw-site
+        // PC/SP in a thread-local (THROW_SITE_CTX) which we read here.
+        //
+        // If no stashed context is available (e.g. called directly from Rust
+        // without going through RaiseException) we fall back to the
+        // caller-supplied context_record as before.
+        let throw_site = THROW_SITE_CTX.with(|c| c.get());
+        if let Some(ts) = throw_site {
+            // SAFETY: walk_ctx is a freshly zeroed CTX_SIZE-byte allocation.
+            unsafe {
+                ctx_write(walk_ctx, CTX_RIP, ts.rip);
+                ctx_write(walk_ctx, CTX_RSP, ts.rsp);
+                ctx_write(walk_ctx, CTX_RBX, ts.rbx);
+                ctx_write(walk_ctx, CTX_RBP, ts.rbp);
+                ctx_write(walk_ctx, CTX_RSI, ts.rsi);
+                ctx_write(walk_ctx, CTX_RDI, ts.rdi);
+                ctx_write(walk_ctx, CTX_R12, ts.r12);
+                ctx_write(walk_ctx, CTX_R13, ts.r13);
+                ctx_write(walk_ctx, CTX_R14, ts.r14);
+                ctx_write(walk_ctx, CTX_R15, ts.r15);
+            }
+        } else {
+            // Fallback: copy the caller-supplied context into the walk buffer.
+            // SAFETY: both buffers are CTX_SIZE bytes.
+            unsafe { core::ptr::copy_nonoverlapping(ctx, walk_ctx, CTX_SIZE) };
+        }
 
         let mut max_frames: u32 = 256;
         loop {
