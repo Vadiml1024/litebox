@@ -1801,11 +1801,9 @@ pub unsafe extern "C" fn kernel32___C_specific_handler(
             if entry.jump_target == 0 && entry.handler_address != 0 {
                 // Termination handler signature:
                 //   void handler(BOOLEAN abnormal_termination, u64 establisher_frame)
-                type TerminationHandler =
-                    unsafe extern "win64" fn(u8, u64);
+                type TerminationHandler = unsafe extern "win64" fn(u8, u64);
                 let handler_addr = image_base + u64::from(entry.handler_address);
-                let handler: TerminationHandler =
-                    unsafe { core::mem::transmute(handler_addr) };
+                let handler: TerminationHandler = unsafe { core::mem::transmute(handler_addr) };
                 // abnormal_termination = TRUE (1) during unwind
                 unsafe { handler(1, establisher_frame) };
             }
@@ -1824,8 +1822,7 @@ pub unsafe extern "C" fn kernel32___C_specific_handler(
                     1 // EXCEPTION_EXECUTE_HANDLER
                 } else {
                     let filter_addr = image_base + u64::from(entry.handler_address);
-                    let filter: FilterExpression =
-                        unsafe { core::mem::transmute(filter_addr) };
+                    let filter: FilterExpression = unsafe { core::mem::transmute(filter_addr) };
                     unsafe { filter(exception_record, establisher_frame) }
                 };
 
@@ -1838,7 +1835,8 @@ pub unsafe extern "C" fn kernel32___C_specific_handler(
                             establisher_frame as *mut core::ffi::c_void,
                             target_ip as *mut core::ffi::c_void,
                             exception_record,
-                            (exception_code_from_record(exc) as u64) as *mut core::ffi::c_void,
+                            u64::from(exception_code_from_record(exc))
+                                as *mut core::ffi::c_void,
                             context_record,
                             core::ptr::null_mut(),
                         );
