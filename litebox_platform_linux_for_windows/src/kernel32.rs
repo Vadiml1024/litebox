@@ -1924,6 +1924,7 @@ pub unsafe extern "C" fn kernel32_RaiseException(
     // within the loaded PE image.
     let rust_rsp: usize;
     let nv_rbx: u64;
+    let nv_rbp_or_frame: u64;
     let nv_r12: u64;
     let nv_r13: u64;
     let nv_r14: u64;
@@ -1931,23 +1932,28 @@ pub unsafe extern "C" fn kernel32_RaiseException(
     // SAFETY: Capturing RSP and callee-saved registers (SysV ABI: RBX, R12-R15).
     // These registers are callee-saved in both Windows x64 and SysV ABIs, so
     // their values match the guest PE's values at the RaiseException call site.
-    // RBP, RSI, and RDI are captured separately from the trampoline frame
-    // because they may have been modified by the Rust prologue / trampoline.
+    // For RBP: Rust may use it as a frame pointer (`push rbp; mov rbp, rsp`),
+    // so the PE's RBP (= Rust's caller RBP) is saved at [rbp].  We read that
+    // value to get the correct PE RBP.  If Rust doesn't use a frame pointer
+    // (release builds), rbp still holds the caller's value directly.
+    // RSI and RDI are captured from the trampoline frame.
     unsafe {
         core::arch::asm!(
             "mov {rsp_out}, rsp",
             "mov {rbx_out}, rbx",
+            "mov {rbp_out}, QWORD PTR [rbp]",
             "mov {r12_out}, r12",
             "mov {r13_out}, r13",
             "mov {r14_out}, r14",
             "mov {r15_out}, r15",
             rsp_out = out(reg) rust_rsp,
             rbx_out = out(reg) nv_rbx,
+            rbp_out = out(reg) nv_rbp_or_frame,
             r12_out = out(reg) nv_r12,
             r13_out = out(reg) nv_r13,
             r14_out = out(reg) nv_r14,
             r15_out = out(reg) nv_r15,
-            options(nostack, nomem),
+            options(nostack, readonly),
         );
     }
 
@@ -1960,19 +1966,11 @@ pub unsafe extern "C" fn kernel32_RaiseException(
     let start_rip = pe_frame.control_pc;
     let start_rsp = pe_frame.guest_rsp;
 
-    // Read the guest's saved RBP from the PE stack.
-    // The trampoline preserved RBP (callee-saved in SysV).  After the
-    // Rust function's prologue, the original guest RBP was pushed and is
-    // reachable from the stack.  However, the Rust compiler may use RBP
-    // as a general-purpose register, so we cannot trust the inline-asm
-    // captured value.  Instead, we read it from the PE stack: the
-    // _Unwind_RaiseException function (or whichever PE function made the
-    // RaiseException call) saved the guest RBP in its prolog, and
-    // RtlVirtualUnwind will restore it during the walk.  We initialise
-    // nv_rbp to 0; the walk's unwind codes will fix it up.
+    // RBP was read from [rbp] in the inline asm above, which dereferences
+    // Rust's frame pointer to get the caller's (= trampoline's = PE's) RBP.
     let nv_regs = NonVolatileRegs {
         rbx: nv_rbx,
-        rbp: 0, // restored during walk via UWOP_PUSH_NONVOL
+        rbp: nv_rbp_or_frame,
         rsi: pe_frame.guest_rsi,
         rdi: pe_frame.guest_rdi,
         r12: nv_r12,
