@@ -1707,26 +1707,166 @@ unsafe fn apply_unwind_info(
     core::ptr::null_mut()
 }
 
-/// Windows exception handler function type
+/// SCOPE_TABLE entry for `__C_specific_handler`.
 ///
-/// This is a stub implementation for `__C_specific_handler`, the C-language
-/// exception handler used with `__try`/`__except`/`__finally` constructs.
+/// Each scope record describes one `__try` region inside a function and its
+/// associated `__except` filter / handler or `__finally` block.
 ///
-/// A full implementation would call the filter expression in `SCOPE_TABLE`,
-/// and (for `__except`) perform a longjmp-style transfer to the handler block.
-/// For now, this returns `EXCEPTION_CONTINUE_SEARCH` to let exceptions propagate.
+/// ```text
+/// struct SCOPE_TABLE_ENTRY {
+///     ULONG BeginAddress;   // RVA of __try block start
+///     ULONG EndAddress;     // RVA of __try block end
+///     ULONG HandlerAddress; // RVA of filter (__except) or handler (__finally)
+///     ULONG JumpTarget;     // RVA of __except body; 0 for __finally
+/// };
+/// struct SCOPE_TABLE {
+///     ULONG Count;
+///     SCOPE_TABLE_ENTRY ScopeRecord[1]; // variable length
+/// };
+/// ```
+#[repr(C)]
+struct ScopeTableEntry {
+    begin_address: u32,
+    end_address: u32,
+    handler_address: u32,
+    jump_target: u32,
+}
+
+/// C-language exception handler (`__C_specific_handler`)
+///
+/// Implements `__try`/`__except`/`__finally` for Windows x64 by walking the
+/// SCOPE_TABLE attached to the function's UNWIND_INFO.
+///
+/// **Search phase** (no `EXCEPTION_UNWINDING` flag):
+///   For each scope whose `[BeginAddress, EndAddress)` contains the control PC:
+///   - If `JumpTarget != 0` (an `__except` block), call the filter expression
+///     at `HandlerAddress`.  If the filter returns `EXCEPTION_EXECUTE_HANDLER`
+///     (1), initiate unwind to `JumpTarget`.
+///   - If `JumpTarget == 0` (a `__finally` block), skip it during the search
+///     phase; it will be called during the unwind phase.
+///
+/// **Unwind phase** (`EXCEPTION_UNWINDING` is set):
+///   For each scope containing the control PC whose `JumpTarget == 0`:
+///   call the termination handler at `HandlerAddress`.
 ///
 /// # Safety
-/// This function is safe to call with any arguments including NULL pointers.
+/// All pointer arguments must be valid or NULL.
 #[unsafe(no_mangle)]
+#[allow(clippy::similar_names)]
 pub unsafe extern "C" fn kernel32___C_specific_handler(
-    _exception_record: *mut core::ffi::c_void,
-    _establisher_frame: u64,
-    _context_record: *mut core::ffi::c_void,
-    _dispatcher_context: *mut core::ffi::c_void,
+    exception_record: *mut core::ffi::c_void,
+    establisher_frame: u64,
+    context_record: *mut core::ffi::c_void,
+    dispatcher_context: *mut core::ffi::c_void,
 ) -> i32 {
-    // EXCEPTION_CONTINUE_SEARCH (1) - let the exception propagate upward
-    1
+    if exception_record.is_null() || dispatcher_context.is_null() {
+        return 1; // EXCEPTION_CONTINUE_SEARCH
+    }
+
+    let exc = exception_record.cast::<ExceptionRecord>();
+    let dc = dispatcher_context.cast::<DispatcherContext>();
+
+    // SAFETY: dc is a valid DispatcherContext.
+    let handler_data = unsafe { (*dc).handler_data };
+    if handler_data.is_null() {
+        return 1; // no scope table
+    }
+
+    // Read scope table count.
+    // SAFETY: handler_data points to a SCOPE_TABLE.
+    let scope_count = unsafe { (handler_data.cast::<u32>()).read_unaligned() } as usize;
+    if scope_count == 0 {
+        return 1;
+    }
+
+    // SAFETY: scope entries follow the count field.
+    let scope_entries = unsafe { handler_data.cast::<u32>().add(1).cast::<ScopeTableEntry>() };
+
+    let image_base = unsafe { (*dc).image_base };
+    let control_pc = unsafe { (*dc).control_pc };
+    let control_rva = (control_pc - image_base) as u32;
+
+    let is_unwinding = unsafe { (*exc).exception_flags & EXCEPTION_UNWINDING } != 0;
+
+    for i in 0..scope_count {
+        // SAFETY: We trust that handler_data points to a valid SCOPE_TABLE
+        // whose `Count` field matches the actual number of entries.  This
+        // assumption is guaranteed by the PE loader having validated the
+        // UNWIND_INFO and SCOPE_TABLE structures during image loading.
+        let entry = unsafe { &*scope_entries.add(i) };
+
+        if control_rva < entry.begin_address || control_rva >= entry.end_address {
+            continue;
+        }
+
+        if is_unwinding {
+            // Unwind phase: call __finally handlers (JumpTarget == 0).
+            if entry.jump_target == 0 && entry.handler_address != 0 {
+                // Termination handler signature:
+                //   void handler(BOOLEAN abnormal_termination, u64 establisher_frame)
+                type TerminationHandler = unsafe extern "win64" fn(u8, u64);
+                let handler_addr = image_base + u64::from(entry.handler_address);
+                let handler: TerminationHandler = unsafe { core::mem::transmute(handler_addr) };
+                // abnormal_termination = TRUE (1) during unwind
+                unsafe { handler(1, establisher_frame) };
+            }
+        } else {
+            // Search phase: evaluate __except filters (JumpTarget != 0).
+            if entry.jump_target != 0 && entry.handler_address != 0 {
+                // Filter signature:
+                //   LONG filter(EXCEPTION_POINTERS* ptrs, u64 establisher_frame)
+                // We pass the exception record pointer as the EXCEPTION_POINTERS
+                // (simplified; a full impl would build a proper EXCEPTION_POINTERS).
+                type FilterExpression =
+                    unsafe extern "win64" fn(*mut core::ffi::c_void, u64) -> i32;
+
+                // Special case: HandlerAddress == 1 means EXCEPTION_EXECUTE_HANDLER constant.
+                let filter_result = if entry.handler_address == 1 {
+                    1 // EXCEPTION_EXECUTE_HANDLER
+                } else {
+                    let filter_addr = image_base + u64::from(entry.handler_address);
+                    let filter: FilterExpression = unsafe { core::mem::transmute(filter_addr) };
+                    unsafe { filter(exception_record, establisher_frame) }
+                };
+
+                if filter_result == 1 {
+                    // EXCEPTION_EXECUTE_HANDLER: unwind to the __except body.
+                    let target_ip = image_base + u64::from(entry.jump_target);
+                    // SAFETY: RtlUnwindEx will transfer control to the __except body.
+                    unsafe {
+                        kernel32_RtlUnwindEx(
+                            establisher_frame as *mut core::ffi::c_void,
+                            target_ip as *mut core::ffi::c_void,
+                            exception_record,
+                            u64::from(exception_code_from_record(exc)) as *mut core::ffi::c_void,
+                            context_record,
+                            core::ptr::null_mut(),
+                        );
+                    }
+                    // RtlUnwindEx never returns if it succeeds.
+                    return 0; // EXCEPTION_CONTINUE_EXECUTION (fallback)
+                } else if filter_result == -1 {
+                    // EXCEPTION_CONTINUE_EXECUTION
+                    return 0;
+                }
+                // filter_result == 0: EXCEPTION_CONTINUE_SEARCH — try next scope.
+            }
+        }
+    }
+
+    1 // EXCEPTION_CONTINUE_SEARCH
+}
+
+/// Extract the exception code from an `ExceptionRecord` pointer.
+///
+/// # Safety
+/// `exc` must point to a valid `ExceptionRecord`.
+unsafe fn exception_code_from_record(exc: *const ExceptionRecord) -> u32 {
+    if exc.is_null() {
+        0
+    } else {
+        unsafe { (*exc).exception_code }
+    }
 }
 
 /// Set unhandled exception filter
@@ -1784,6 +1924,7 @@ pub unsafe extern "C" fn kernel32_RaiseException(
     // within the loaded PE image.
     let rust_rsp: usize;
     let nv_rbx: u64;
+    let nv_rbp_or_frame: u64;
     let nv_r12: u64;
     let nv_r13: u64;
     let nv_r14: u64;
@@ -1791,23 +1932,28 @@ pub unsafe extern "C" fn kernel32_RaiseException(
     // SAFETY: Capturing RSP and callee-saved registers (SysV ABI: RBX, R12-R15).
     // These registers are callee-saved in both Windows x64 and SysV ABIs, so
     // their values match the guest PE's values at the RaiseException call site.
-    // RBP, RSI, and RDI are captured separately from the trampoline frame
-    // because they may have been modified by the Rust prologue / trampoline.
+    // For RBP: Rust may use it as a frame pointer (`push rbp; mov rbp, rsp`),
+    // so the PE's RBP (= Rust's caller RBP) is saved at [rbp].  We read that
+    // value to get the correct PE RBP.  If Rust doesn't use a frame pointer
+    // (release builds), rbp still holds the caller's value directly.
+    // RSI and RDI are captured from the trampoline frame.
     unsafe {
         core::arch::asm!(
             "mov {rsp_out}, rsp",
             "mov {rbx_out}, rbx",
+            "mov {rbp_out}, QWORD PTR [rbp]",
             "mov {r12_out}, r12",
             "mov {r13_out}, r13",
             "mov {r14_out}, r14",
             "mov {r15_out}, r15",
             rsp_out = out(reg) rust_rsp,
             rbx_out = out(reg) nv_rbx,
+            rbp_out = out(reg) nv_rbp_or_frame,
             r12_out = out(reg) nv_r12,
             r13_out = out(reg) nv_r13,
             r14_out = out(reg) nv_r14,
             r15_out = out(reg) nv_r15,
-            options(nostack, nomem),
+            options(nostack, readonly),
         );
     }
 
@@ -1820,19 +1966,11 @@ pub unsafe extern "C" fn kernel32_RaiseException(
     let start_rip = pe_frame.control_pc;
     let start_rsp = pe_frame.guest_rsp;
 
-    // Read the guest's saved RBP from the PE stack.
-    // The trampoline preserved RBP (callee-saved in SysV).  After the
-    // Rust function's prologue, the original guest RBP was pushed and is
-    // reachable from the stack.  However, the Rust compiler may use RBP
-    // as a general-purpose register, so we cannot trust the inline-asm
-    // captured value.  Instead, we read it from the PE stack: the
-    // _Unwind_RaiseException function (or whichever PE function made the
-    // RaiseException call) saved the guest RBP in its prolog, and
-    // RtlVirtualUnwind will restore it during the walk.  We initialise
-    // nv_rbp to 0; the walk's unwind codes will fix it up.
+    // RBP was read from [rbp] in the inline asm above, which dereferences
+    // Rust's frame pointer to get the caller's (= trampoline's = PE's) RBP.
     let nv_regs = NonVolatileRegs {
         rbx: nv_rbx,
-        rbp: 0, // restored during walk via UWOP_PUSH_NONVOL
+        rbp: nv_rbp_or_frame,
         rsi: pe_frame.guest_rsi,
         rdi: pe_frame.guest_rdi,
         r12: nv_r12,
@@ -2038,38 +2176,52 @@ pub unsafe extern "C" fn kernel32_RtlVirtualUnwind(
 /// Perform full stack unwinding to a target frame (phase 2)
 ///
 /// Called by language-specific handlers (e.g. `__gxx_personality_seh0`) when
-/// a catch clause has been selected.  Sets `EXCEPTION_UNWINDING` on the
-/// exception record, fixes up `context_record` with the target RIP and
-/// return value, then restores the CPU state and jumps to the landing pad.
+/// a catch clause has been selected.  This implements the Windows x64
+/// `RtlUnwindEx` semantics modelled after Wine and ReactOS:
 ///
-/// The supplied `context_record` must have been prepared by the caller (the
-/// personality function) with the landing-pad state.  The context's RSP is
-/// preserved as-is (it already contains the function's body RSP from the
-/// Phase 1 walk).  `RtlUnwindEx` sets `Rip` from `target_ip` before the
-/// jump.
+/// 1. Set `EXCEPTION_UNWINDING` on the exception record.
+/// 2. Walk from the current PC/SP up to `target_frame`, calling every
+///    intermediate frame's `UHANDLER` (cleanup/destructor handler) with
+///    `EXCEPTION_UNWINDING` set.  When reaching `target_frame`, also set
+///    `EXCEPTION_TARGET_UNWIND`.
+/// 3. Fix up the context with `target_ip` (landing pad) and `return_value`
+///    (the `_Unwind_Exception*` or exception code), then restore registers
+///    and jump.
+///
+/// This two-phase approach is critical for C++ exception handling: without
+/// it, destructors in intermediate frames between the throw site and the
+/// catch clause would be skipped.
 ///
 /// # Safety
 /// - `context_record` must be non-NULL and point to a valid, writable `CONTEXT`.
 /// - After a successful unwind this function never returns; execution resumes
 ///   at the landing pad.
 /// - All pointer arguments may be NULL except `context_record`.
+///
+/// # Panics
+/// Panics if the internal CONTEXT layout computation fails (should never
+/// happen in practice).
 #[unsafe(no_mangle)]
+#[allow(clippy::similar_names)]
 pub unsafe extern "C" fn kernel32_RtlUnwindEx(
-    _target_frame: *mut core::ffi::c_void,
+    target_frame: *mut core::ffi::c_void,
     target_ip: *mut core::ffi::c_void,
     exception_record: *mut core::ffi::c_void,
     return_value: *mut core::ffi::c_void,
     context_record: *mut core::ffi::c_void,
     _history_table: *mut core::ffi::c_void,
 ) {
+    // Language handler function type (Windows x64 ABI).
+    type ExceptionRoutine =
+        unsafe extern "win64" fn(*mut ExceptionRecord, u64, *mut u8, *mut DispatcherContext) -> i32;
+
     if context_record.is_null() {
-        // Nothing we can do without a context.
         return;
     }
 
     let ctx = context_record.cast::<u8>();
 
-    // Mark the exception as unwinding.
+    // ── Step 1: Mark the exception as unwinding ────────────────────────────
     if !exception_record.is_null() {
         // SAFETY: caller guarantees exception_record is a valid EXCEPTION_RECORD.
         let exc = exception_record.cast::<ExceptionRecord>();
@@ -2078,27 +2230,169 @@ pub unsafe extern "C" fn kernel32_RtlUnwindEx(
         }
     }
 
-    // Fix up the context for the landing pad:
+    let target_frame_addr = target_frame as u64;
+
+    // ── Step 2: Phase-2 cleanup walk ──────────────────────────────────────
+    //
+    // Walk from the current context toward `target_frame`, calling every
+    // intermediate frame's UHANDLER (cleanup/destructor handler) with
+    // `EXCEPTION_UNWINDING` set.
+    //
+    // We allocate a separate walk context so `ctx` (the caller's original
+    // context) is preserved for the final landing-pad jump.
+    let walk_ctx_layout =
+        alloc::Layout::from_size_align(CTX_SIZE, 16).expect("CTX layout is valid");
+    // SAFETY: layout is non-zero.
+    let walk_ctx = unsafe { alloc::alloc_zeroed(walk_ctx_layout) };
+    if walk_ctx.is_null() {
+        eprintln!("RtlUnwindEx: failed to allocate walk context — skipping cleanup walk");
+    } else {
+        // Copy the caller-supplied context into the walk buffer.
+        // SAFETY: both buffers are CTX_SIZE bytes.
+        unsafe { core::ptr::copy_nonoverlapping(ctx, walk_ctx, CTX_SIZE) };
+
+        let mut max_frames: u32 = 256;
+        loop {
+            max_frames -= 1;
+            if max_frames == 0 {
+                eprintln!(
+                    "RtlUnwindEx: frame walk limit (256) exceeded without reaching target frame"
+                );
+                break;
+            }
+
+            // SAFETY: walk_ctx is valid.
+            let control_pc = unsafe { ctx_read(walk_ctx, CTX_RIP) };
+            if control_pc == 0 {
+                break;
+            }
+
+            let mut image_base: u64 = 0;
+            // SAFETY: RtlLookupFunctionEntry is safe with valid PC.
+            let fe = unsafe {
+                kernel32_RtlLookupFunctionEntry(
+                    control_pc,
+                    &raw mut image_base,
+                    core::ptr::null_mut(),
+                )
+            };
+            if fe.is_null() {
+                // Outside the PE — pop the return address and continue.
+                let rsp = unsafe { ctx_read(walk_ctx, CTX_RSP) };
+                let ret_addr = unsafe { (rsp as *const u64).read_unaligned() };
+                unsafe {
+                    ctx_write(walk_ctx, CTX_RIP, ret_addr);
+                    ctx_write(walk_ctx, CTX_RSP, rsp + 8);
+                }
+                continue;
+            }
+
+            let mut handler_data: *mut core::ffi::c_void = core::ptr::null_mut();
+            let mut establisher_frame: u64 = 0;
+
+            // SAFETY: fe and walk_ctx are valid.
+            let lang_handler = unsafe {
+                kernel32_RtlVirtualUnwind(
+                    u32::from(UNW_FLAG_UHANDLER),
+                    image_base,
+                    control_pc,
+                    fe,
+                    walk_ctx.cast::<core::ffi::c_void>(),
+                    &raw mut handler_data,
+                    &raw mut establisher_frame,
+                    core::ptr::null_mut(),
+                )
+            };
+
+            // Check if we've reached or passed the target frame.
+            if target_frame_addr != 0 && establisher_frame == target_frame_addr {
+                // Target frame reached — set EXCEPTION_TARGET_UNWIND.
+                if !exception_record.is_null() {
+                    let exc = exception_record.cast::<ExceptionRecord>();
+                    // SAFETY: exc is a valid ExceptionRecord.
+                    unsafe {
+                        (*exc).exception_flags |= EXCEPTION_TARGET_UNWIND;
+                    }
+                }
+
+                // Call the target frame's handler if present.
+                if !lang_handler.is_null() && !exception_record.is_null() {
+                    let mut dc = DispatcherContext {
+                        control_pc,
+                        image_base,
+                        function_entry: fe,
+                        establisher_frame,
+                        target_ip: target_ip as u64,
+                        context_record: ctx,
+                        language_handler: lang_handler,
+                        handler_data,
+                        history_table: core::ptr::null_mut(),
+                        scope_index: 0,
+                        _fill0: 0,
+                    };
+                    let handler_fn: ExceptionRoutine =
+                        unsafe { core::mem::transmute(lang_handler) };
+                    // SAFETY: handler_fn is a valid PE function pointer.
+                    unsafe {
+                        handler_fn(
+                            exception_record.cast::<ExceptionRecord>(),
+                            establisher_frame,
+                            ctx,
+                            &raw mut dc,
+                        );
+                    }
+                }
+                break;
+            }
+
+            // Intermediate frame: call its UHANDLER if present.
+            if !lang_handler.is_null() && !exception_record.is_null() {
+                let mut dc = DispatcherContext {
+                    control_pc,
+                    image_base,
+                    function_entry: fe,
+                    establisher_frame,
+                    target_ip: 0,
+                    context_record: walk_ctx,
+                    language_handler: lang_handler,
+                    handler_data,
+                    history_table: core::ptr::null_mut(),
+                    scope_index: 0,
+                    _fill0: 0,
+                };
+                let handler_fn: ExceptionRoutine = unsafe { core::mem::transmute(lang_handler) };
+                // SAFETY: handler_fn is a valid PE function pointer.
+                unsafe {
+                    handler_fn(
+                        exception_record.cast::<ExceptionRecord>(),
+                        establisher_frame,
+                        walk_ctx,
+                        &raw mut dc,
+                    );
+                }
+            }
+            // walk_ctx has been updated by RtlVirtualUnwind; loop continues.
+        }
+
+        // SAFETY: walk_ctx was allocated above.
+        unsafe { alloc::dealloc(walk_ctx, walk_ctx_layout) };
+    }
+
+    // ── Step 3: Fix up the context for the landing pad ─────────────────────
     //   • Rip  ← target_ip  (landing pad address)
     //   • Rax  ← return_value (_Unwind_Exception* — read by the landing pad)
-    //   • Rdx  ← ExceptionInformation[3] (type selector set during Phase 1 by
-    //             _GCC_specific_handler; equivalent to what EXCEPTION_TARGET_UNWIND
-    //             would cause the handler to write into ctx->Rdx)
+    //   • Rdx  ← ExceptionInformation[3] (type selector set during Phase 1)
     if !target_ip.is_null() {
         // SAFETY: ctx is a valid, writable CONTEXT buffer.
         unsafe { ctx_write(ctx, CTX_RIP, target_ip as u64) };
     }
     // SAFETY: ctx is a valid, writable CONTEXT buffer.
     unsafe { ctx_write(ctx, CTX_RAX, return_value as u64) };
-    // NOTE: We do NOT set RSP = target_frame here.  The context_record
-    // already contains the function's BODY RSP (set by the Phase 1 walk
-    // before RtlVirtualUnwind unwound the frame).  Setting RSP to
-    // target_frame (which is the function's ENTRY RSP / CFA) would be
-    // wrong because the landing pad expects the function body stack layout.
+
     // ExceptionInformation[3] = gcc_context.reg[1] = the C++ type-selector index.
     // _GCC_specific_handler sets this during Phase 1 before calling RtlUnwindEx,
     // and reads it back into ctx->Rdx when called with EXCEPTION_TARGET_UNWIND.
-    // We replicate that effect directly to avoid a full target-frame handler call.
+    // We replicate that effect directly.
     if !exception_record.is_null() {
         // SAFETY: caller guarantees exception_record is a valid ExceptionRecord.
         let selector =
@@ -2107,7 +2401,7 @@ pub unsafe extern "C" fn kernel32_RtlUnwindEx(
         unsafe { ctx_write(ctx, CTX_RDX, selector as u64) };
     }
 
-    // Restore registers and jump to the landing pad.
+    // ── Step 4: Restore registers and jump to the landing pad ─────────────
     // SAFETY: ctx is a valid CONTEXT; seh_restore_context_and_jump never returns.
     unsafe { seh_restore_context_and_jump(ctx) };
 }

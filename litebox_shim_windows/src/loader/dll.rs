@@ -667,6 +667,17 @@ impl DllManager {
             ("_wcsnicmp", MSVCRT_BASE + 0x65),
             ("wcstombs", MSVCRT_BASE + 0x66),
             ("mbstowcs", MSVCRT_BASE + 0x67),
+            // C++ Exception Handling (MSVC-style)
+            ("_CxxThrowException", MSVCRT_BASE + 0x68),
+            ("__CxxFrameHandler3", MSVCRT_BASE + 0x69),
+            ("__CxxFrameHandler4", MSVCRT_BASE + 0x6A),
+            ("terminate", MSVCRT_BASE + 0x6B),
+            ("_set_se_translator", MSVCRT_BASE + 0x6C),
+            ("_is_exception_typeof", MSVCRT_BASE + 0x6D),
+            ("__std_terminate", MSVCRT_BASE + 0x6E),
+            ("_CxxExceptionFilter", MSVCRT_BASE + 0x6F),
+            ("__current_exception", MSVCRT_BASE + 0x70),
+            ("__current_exception_context", MSVCRT_BASE + 0x71),
         ];
 
         self.register_stub_dll("MSVCRT.dll", exports);

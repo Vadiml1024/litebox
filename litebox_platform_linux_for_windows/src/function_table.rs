@@ -2890,6 +2890,67 @@ pub fn get_function_table() -> Vec<FunctionImpl> {
             num_params: 2,
             impl_address: crate::shlwapi::shlwapi_StrCmpIW as *const () as usize,
         },
+        // C++ Exception Handling (MSVC-style)
+        FunctionImpl {
+            name: "_CxxThrowException",
+            dll_name: "MSVCRT.dll",
+            num_params: 2,
+            impl_address: crate::msvcrt::msvcrt__CxxThrowException as *const () as usize,
+        },
+        FunctionImpl {
+            name: "__CxxFrameHandler3",
+            dll_name: "MSVCRT.dll",
+            num_params: 4,
+            impl_address: crate::msvcrt::msvcrt___CxxFrameHandler3 as *const () as usize,
+        },
+        FunctionImpl {
+            name: "__CxxFrameHandler4",
+            dll_name: "MSVCRT.dll",
+            num_params: 4,
+            impl_address: crate::msvcrt::msvcrt___CxxFrameHandler4 as *const () as usize,
+        },
+        FunctionImpl {
+            name: "terminate",
+            dll_name: "MSVCRT.dll",
+            num_params: 0,
+            impl_address: crate::msvcrt::msvcrt_terminate as *const () as usize,
+        },
+        FunctionImpl {
+            name: "_set_se_translator",
+            dll_name: "MSVCRT.dll",
+            num_params: 1,
+            impl_address: crate::msvcrt::msvcrt__set_se_translator as *const () as usize,
+        },
+        FunctionImpl {
+            name: "_is_exception_typeof",
+            dll_name: "MSVCRT.dll",
+            num_params: 2,
+            impl_address: crate::msvcrt::msvcrt__is_exception_typeof as *const () as usize,
+        },
+        FunctionImpl {
+            name: "__std_terminate",
+            dll_name: "MSVCRT.dll",
+            num_params: 0,
+            impl_address: crate::msvcrt::msvcrt___std_terminate as *const () as usize,
+        },
+        FunctionImpl {
+            name: "_CxxExceptionFilter",
+            dll_name: "MSVCRT.dll",
+            num_params: 4,
+            impl_address: crate::msvcrt::msvcrt__CxxExceptionFilter as *const () as usize,
+        },
+        FunctionImpl {
+            name: "__current_exception",
+            dll_name: "MSVCRT.dll",
+            num_params: 0,
+            impl_address: crate::msvcrt::msvcrt___current_exception as *const () as usize,
+        },
+        FunctionImpl {
+            name: "__current_exception_context",
+            dll_name: "MSVCRT.dll",
+            num_params: 0,
+            impl_address: crate::msvcrt::msvcrt___current_exception_context as *const () as usize,
+        },
     ]
 }
 
