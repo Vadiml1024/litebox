@@ -780,6 +780,12 @@ pub fn get_function_table() -> Vec<FunctionImpl> {
             impl_address: crate::kernel32::kernel32_WriteConsoleW as *const () as usize,
         },
         FunctionImpl {
+            name: "WriteConsoleA",
+            dll_name: "KERNEL32.dll",
+            num_params: 5,
+            impl_address: crate::kernel32::kernel32_WriteConsoleA as *const () as usize,
+        },
+        FunctionImpl {
             name: "GetFileInformationByHandleEx",
             dll_name: "KERNEL32.dll",
             num_params: 4,
@@ -2999,6 +3005,62 @@ pub fn get_function_table() -> Vec<FunctionImpl> {
             dll_name: "MSVCRT.dll",
             num_params: 0,
             impl_address: crate::msvcrt::msvcrt___current_exception_context as *const () as usize,
+        },
+        // OLEAUT32: COM error info and BSTR functions
+        FunctionImpl {
+            name: "GetErrorInfo",
+            dll_name: "OLEAUT32.dll",
+            num_params: 2,
+            impl_address: crate::oleaut32::oleaut32_GetErrorInfo as *const () as usize,
+        },
+        FunctionImpl {
+            name: "SetErrorInfo",
+            dll_name: "OLEAUT32.dll",
+            num_params: 2,
+            impl_address: crate::oleaut32::oleaut32_SetErrorInfo as *const () as usize,
+        },
+        FunctionImpl {
+            name: "SysFreeString",
+            dll_name: "OLEAUT32.dll",
+            num_params: 1,
+            impl_address: crate::oleaut32::oleaut32_SysFreeString as *const () as usize,
+        },
+        FunctionImpl {
+            name: "SysStringLen",
+            dll_name: "OLEAUT32.dll",
+            num_params: 1,
+            impl_address: crate::oleaut32::oleaut32_SysStringLen as *const () as usize,
+        },
+        FunctionImpl {
+            name: "SysAllocString",
+            dll_name: "OLEAUT32.dll",
+            num_params: 1,
+            impl_address: crate::oleaut32::oleaut32_SysAllocString as *const () as usize,
+        },
+        FunctionImpl {
+            name: "SysAllocStringLen",
+            dll_name: "OLEAUT32.dll",
+            num_params: 2,
+            impl_address: crate::oleaut32::oleaut32_SysAllocStringLen as *const () as usize,
+        },
+        // api-ms-win-core-winrt-error: Windows Runtime error origination
+        FunctionImpl {
+            name: "RoOriginateErrorW",
+            dll_name: "api-ms-win-core-winrt-error-l1-1-0.dll",
+            num_params: 3,
+            impl_address: crate::oleaut32::winrt_RoOriginateErrorW as *const () as usize,
+        },
+        FunctionImpl {
+            name: "RoOriginateError",
+            dll_name: "api-ms-win-core-winrt-error-l1-1-0.dll",
+            num_params: 2,
+            impl_address: crate::oleaut32::winrt_RoOriginateError as *const () as usize,
+        },
+        FunctionImpl {
+            name: "RoGetErrorReportingFlags",
+            dll_name: "api-ms-win-core-winrt-error-l1-1-0.dll",
+            num_params: 1,
+            impl_address: crate::oleaut32::winrt_RoGetErrorReportingFlags as *const () as usize,
         },
     ]
 }

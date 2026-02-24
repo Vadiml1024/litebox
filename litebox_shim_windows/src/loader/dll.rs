@@ -55,6 +55,12 @@ mod stub_addresses {
 
     /// SHLWAPI.dll function address range: 0xD000-0xDFFF
     pub const SHLWAPI_BASE: usize = 0xD000;
+
+    /// OLEAUT32.dll function address range: 0xE000-0xEFFF
+    pub const OLEAUT32_BASE: usize = 0xE000;
+
+    /// api-ms-win-core-winrt-error-l1-1-0.dll function address range: 0xF000-0xFFFF
+    pub const WINRT_ERROR_BASE: usize = 0xF000;
 }
 
 /// Type for a DLL function pointer
@@ -135,6 +141,8 @@ impl DllManager {
         manager.load_stub_shell32();
         manager.load_stub_version();
         manager.load_stub_shlwapi();
+        manager.load_stub_oleaut32();
+        manager.load_stub_winrt_error();
 
         manager
     }
@@ -522,6 +530,8 @@ impl DllManager {
             ("GetSystemDefaultLCID", KERNEL32_BASE + 0xDB),
             ("GetUserDefaultLCID", KERNEL32_BASE + 0xDC),
             ("RemoveVectoredExceptionHandler", KERNEL32_BASE + 0xDD),
+            // ANSI console write (used by MSVC-ABI programs)
+            ("WriteConsoleA", KERNEL32_BASE + 0xDE),
         ];
 
         self.register_stub_dll("KERNEL32.dll", exports);
@@ -948,6 +958,38 @@ impl DllManager {
 
         self.register_stub_dll("SHLWAPI.dll", exports);
     }
+
+    /// Load stub OLEAUT32.dll (OLE Automation APIs)
+    fn load_stub_oleaut32(&mut self) {
+        use stub_addresses::OLEAUT32_BASE;
+
+        let exports = vec![
+            // COM error info
+            ("GetErrorInfo", OLEAUT32_BASE),
+            ("SetErrorInfo", OLEAUT32_BASE + 1),
+            // BSTR (Basic String) functions
+            ("SysFreeString", OLEAUT32_BASE + 2),
+            ("SysStringLen", OLEAUT32_BASE + 3),
+            ("SysAllocString", OLEAUT32_BASE + 4),
+            ("SysAllocStringLen", OLEAUT32_BASE + 5),
+        ];
+
+        self.register_stub_dll("OLEAUT32.dll", exports);
+    }
+
+    /// Load stub api-ms-win-core-winrt-error-l1-1-0.dll (Windows Runtime error APIs)
+    fn load_stub_winrt_error(&mut self) {
+        use stub_addresses::WINRT_ERROR_BASE;
+
+        let exports = vec![
+            // Windows Runtime error origination
+            ("RoOriginateErrorW", WINRT_ERROR_BASE),
+            ("RoOriginateError", WINRT_ERROR_BASE + 1),
+            ("RoGetErrorReportingFlags", WINRT_ERROR_BASE + 2),
+        ];
+
+        self.register_stub_dll("api-ms-win-core-winrt-error-l1-1-0.dll", exports);
+    }
 }
 
 /// Map Windows API Set DLL names to their real implementation DLLs
@@ -1023,9 +1065,10 @@ mod tests {
     #[test]
     fn test_dll_manager_creation() {
         let manager = DllManager::new();
-        // Should have 13 pre-loaded stub DLLs (KERNEL32, NTDLL, MSVCRT, bcrypt, USERENV,
-        // WS2_32, api-ms-win-core-synch, USER32, ADVAPI32, GDI32, SHELL32, VERSION, SHLWAPI)
-        assert_eq!(manager.dlls.len(), 13);
+        // Should have 15 pre-loaded stub DLLs (KERNEL32, NTDLL, MSVCRT, bcrypt, USERENV,
+        // WS2_32, api-ms-win-core-synch, USER32, ADVAPI32, GDI32, SHELL32, VERSION, SHLWAPI,
+        // OLEAUT32, api-ms-win-core-winrt-error-l1-1-0)
+        assert_eq!(manager.dlls.len(), 15);
     }
 
     #[test]
