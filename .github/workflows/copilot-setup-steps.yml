@@ -13,18 +13,6 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # Install the exact Rust nightly toolchain pinned in rust-toolchain.toml
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: nightly-2026-01-15
-          targets: x86_64-pc-windows-gnu
-          components: rustfmt, clippy, rust-src
-
-      # Install the fast mold linker (3-5x faster linking per your own docs)
-      - name: Install mold linker
-        run: sudo apt-get update && sudo apt-get install -y mold clang mingw-w64
-
       # Cache Cargo registry, git sources, and compiled deps
       - name: Cache Cargo dependencies
         uses: Swatinem/rust-cache@v2
