@@ -1,8 +1,8 @@
 # Windows on Linux: Implementation Status
 
-**Last Updated:** 2026-02-23  
+**Last Updated:** 2026-02-25  
 **Total Tests:** 452 passing (384 platform + 47 shim + 16 runner + 5 dev_tests — +27 new MSVCRT/KERNEL32/SHLWAPI/USER32 tests added in Phase 28)  
-**Overall Status:** Core infrastructure complete. Seven Rust-based test programs (hello_cli, math_test, env_test, args_test, file_io_test, string_test, getprocaddress_test) run successfully end-to-end through the runner on Linux. **All API stub functions have been fully replaced — stub count is now 0.** Phase 28 adds MSVCRT numeric conversions, string extras, random/time, math, wide-char extensions; KERNEL32 locale/file APIs; new SHLWAPI.dll path utilities; and more USER32 window stubs.
+**Overall Status:** Core infrastructure complete. Seven Rust-based test programs (hello_cli, math_test, env_test, args_test, file_io_test, string_test, getprocaddress_test) run successfully end-to-end through the runner on Linux. **All API stub functions have been fully replaced — stub count is now 0.** Phase 28 adds MSVCRT numeric conversions, string extras, random/time, math, wide-char extensions; KERNEL32 locale/file APIs; new SHLWAPI.dll path utilities; and more USER32 window stubs. SEH infrastructure and MSVC C++ exception handling framework implemented; C-language SEH passes 21/21 tests.
 
 ---
 
@@ -172,9 +172,45 @@
 ### MSVCRT Implementations (18 functions)
 `printf`, `fprintf`, `sprintf`, `snprintf`, `malloc`, `calloc`, `realloc`, `free`, `memcpy`, `memmove`, `memset`, `memcmp`, `strlen`, `strcpy`, `strncpy`, `strcmp`, `strncmp`, `exit`
 
-### Exception Handling Stubs (8 functions)
-`__C_specific_handler`, `SetUnhandledExceptionFilter`, `RaiseException`, `RtlCaptureContext`, `RtlLookupFunctionEntry`, `RtlUnwindEx`, `RtlVirtualUnwind`, `AddVectoredExceptionHandler`  
-*(These are minimal stubs sufficient to pass CRT initialization; full SEH is not implemented.)*
+### SEH / Exception Handling
+
+#### SEH Infrastructure
+| Function | Implementation |
+|---|---|
+| `RtlCaptureContext` | Captures full CPU context (all GPRs including RSP/RIP) via inline assembly |
+| `RtlLookupFunctionEntry` | Searches the registered `.pdata` table for the RUNTIME_FUNCTION covering a given PC |
+| `RtlVirtualUnwind` | Applies all UNWIND_INFO opcodes (PUSH_NONVOL, ALLOC_SMALL/LARGE, SET_FPREG, SAVE_NONVOL, etc.) and returns the language handler pointer |
+| `RtlUnwindEx` | Full two-phase walk: cleanup mode stack walk from current frame to `target_frame`, calling each frame's language handler; restores CPU context and jumps to landing pad via `seh_restore_context_and_jump` |
+| `RaiseException` | Two-phase SEH dispatcher: Phase 1 stack walk calling language handlers in search mode; handles `STATUS_GCC_THROW` (0x20474343) and `STATUS_GCC_UNWIND` (0x21474343) for GCC/MinGW C++ exceptions, and `STATUS_MSVC_CPP_EXCEPTION` (0xE06D7363) for MSVC C++ exceptions |
+| `RtlPcToFileHeader` | Maps a program counter to its module image base by searching the registered PE image list |
+| `__C_specific_handler` | Full scope-table walking with `__try`/`__except`/`__finally` support; evaluates filter expressions and calls `RtlUnwindEx` to transfer control to `__except` handlers |
+| `SetUnhandledExceptionFilter` | Accepts and stores filter callback (not yet invoked on unhandled exceptions) |
+| `AddVectoredExceptionHandler` | Returns non-NULL handle (registered; handlers not yet invoked by `RaiseException`) |
+| `RemoveVectoredExceptionHandler` | Returns 1 (success) |
+| `GetThreadId` | Returns the TID of the given thread handle |
+| `seh_restore_context_and_jump` | Assembly helper — restores all non-volatile GPRs (rbx, rbp, rsi, rdi, r12–r15), sets rsp/rax/rdx, and jumps to the landing pad (noreturn) |
+
+#### MSVC C++ Exception Handling
+| Function | Implementation |
+|---|---|
+| `__CxxFrameHandler3` | Full implementation: parses `FuncInfo`, maps IP to try-level via `IpToStateMap`, walks `TryBlockMap` to find matching catch clause, matches thrown type against `CatchableTypeArray`, unwinds local destructors via `UnwindMap`, calls catch funclet |
+| `__CxxFrameHandler4` | Delegates to `__CxxFrameHandler3` |
+| `_CxxThrowException` | Builds `EXCEPTION_RECORD` with `STATUS_MSVC_CPP_EXCEPTION`; resolves image base from registered PE image list and stores it in `ThrowInfo`; calls `RaiseException` |
+| `__CxxRegisterExceptionObject` | Stub — returns success |
+| `__CxxUnregisterExceptionObject` | Stub — returns success |
+| `__DestructExceptionObject` | Stub |
+| `__uncaught_exception` | Returns 0 |
+| `__uncaught_exceptions` | Returns 0 |
+| `_local_unwind` | Delegates to `RtlUnwindEx` |
+| `_set_se_translator` | Stub — returns NULL |
+| `_is_exception_typeof` | Stub — returns 0 |
+| `_CxxExceptionFilter` | Stub — returns `EXCEPTION_CONTINUE_SEARCH` |
+| `__current_exception` | Returns pointer to thread-local current-exception pointer |
+| `__current_exception_context` | Returns pointer to thread-local exception context pointer |
+| `terminate` | Calls `abort()` |
+| `__std_terminate` | Calls `abort()` |
+
+**Status:** C-language SEH (`seh_c_test.exe`) passes 21/21 tests. GCC/MinGW C++ exception handling (`seh_cpp_test.exe`) is implemented end-to-end but the catch landing pad arrival still crashes (stack/frame state mismatch at landing pad). MSVC C++ exception handling (`seh_cpp_test_msvc.exe`) framework is in place.
 
 ### String / Wide-Char Operations
 `MultiByteToWideChar`, `WideCharToMultiByte`, `lstrlenW`, `lstrlenA`, `CompareStringOrdinal`  
@@ -272,7 +308,7 @@ All GDI32 functions operate in headless mode: drawing is silently discarded.
 
 | Feature | Status |
 |---|---|
-| Full SEH / C++ exception handling | Stubs only; stack unwinding not implemented |
+| Full SEH / C++ exception handling | C-language SEH (`__try`/`__except`/`__finally`) fully working. GCC/MinGW C++ `throw`/`catch` implemented end-to-end but landing pad arrival still crashes (SIGSEGV — stack/frame mismatch). MSVC C++ exception handler (`__CxxFrameHandler3`) framework complete. |
 | Full GUI rendering | USER32/GDI32 are headless stubs; no real window/drawing output |
 | Overlapped (async) I/O | `ReadFileEx`, `WriteFileEx`, `GetOverlappedResult` return `ERROR_NOT_SUPPORTED` |
 | Process creation (`CreateProcessW`) | Returns `ERROR_NOT_SUPPORTED`; sandboxed environment |
@@ -294,7 +330,7 @@ All GDI32 functions operate in headless mode: drawing is silently discarded.
 | `litebox_runner_windows_on_linux_userland` | 16 | 9 tracing + 7 integration tests |
 | `dev_tests` | 5 | Ratchet constraints (globals, transmutes, MaybeUninit, stubs, copyright) |
 
-**Integration tests (7, plus 7 MinGW-gated):**
+**Integration tests (7, plus 11 MinGW-gated):**
 1. PE loader with minimal binary
 2. DLL loading infrastructure
 3. Command-line APIs (`GetCommandLineW`, `CommandLineToArgvW`)
@@ -303,7 +339,7 @@ All GDI32 functions operate in headless mode: drawing is silently discarded.
 6. Error handling APIs (`GetLastError` / `SetLastError`)
 7. DLL exports validation (all critical KERNEL32, WS2_32, USER32, and GDI32 exports)
 
-**MinGW-gated integration tests (8, require `--include-ignored`):**
+**MinGW-gated integration tests (11, require `--include-ignored`):**
 - `test_hello_cli_program_exists` — checks hello_cli.exe is present
 - `test_math_test_program_exists` — checks math_test.exe is present
 - `test_env_test_program_exists` — checks env_test.exe is present
@@ -312,6 +348,9 @@ All GDI32 functions operate in headless mode: drawing is silently discarded.
 - `test_string_test_program_exists` — **runs** string_test.exe end-to-end; verifies exit 0, test header, and 0 failures
 - `test_getprocaddress_c_program` — **runs** getprocaddress_test.exe end-to-end; verifies exit 0 and 0 failures
 - `test_hello_gui_program` — **runs** hello_gui.exe end-to-end; verifies exit 0 (MessageBoxW prints headless message to stderr)
+- `test_seh_c_program` — **runs** seh_c_test.exe end-to-end; verifies exit 0 and `21 passed, 0 failed` (requires `cd windows_test_programs/seh_test && make`)
+- `test_seh_cpp_program` — **runs** seh_cpp_test.exe end-to-end; verifies exit 0 and 0 failures (MinGW C++ exceptions; requires `cd windows_test_programs/seh_test && make`)
+- `test_seh_cpp_msvc_program` — **runs** seh_cpp_test_msvc.exe; verifies basic MSVC-style C++ exception tests (requires clang-cl; `cd windows_test_programs/seh_test && make seh_cpp_test_msvc.exe`)
 
 **CI-validated test programs (7):**
 
