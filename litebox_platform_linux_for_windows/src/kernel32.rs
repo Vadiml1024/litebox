@@ -1284,6 +1284,31 @@ struct RegisteredExceptionTable {
 
 static EXCEPTION_TABLE: Mutex<Option<RegisteredExceptionTable>> = Mutex::new(None);
 
+/// Thread-local throw-site context set by `kernel32_RaiseException` and
+/// consumed by `kernel32_RtlUnwindEx` to start the cleanup walk from the
+/// actual throw location rather than from the catch frame.
+///
+/// Wine's `RtlUnwindEx` calls `RtlCaptureContext` internally to obtain the
+/// current (throw-site) context; we replicate that by stashing the context
+/// that `kernel32_RaiseException` already computed.
+#[derive(Clone, Copy)]
+struct ThrowSiteContext {
+    rip: u64,
+    rsp: u64,
+    rbx: u64,
+    rbp: u64,
+    rsi: u64,
+    rdi: u64,
+    r12: u64,
+    r13: u64,
+    r14: u64,
+    r15: u64,
+}
+thread_local! {
+    static THROW_SITE_CTX: std::cell::Cell<Option<ThrowSiteContext>>
+        = const { std::cell::Cell::new(None) };
+}
+
 /// Register the exception table for a loaded PE image
 ///
 /// This stores the location of the `.pdata` section so that
@@ -1646,11 +1671,20 @@ unsafe fn apply_unwind_info(
                 // Prolog: lea frame_reg, [rsp + frame_offset*16]
                 // Unwind: RSP = frame_reg - frame_offset*16
                 //
+                // Wine's RtlVirtualUnwind also sets `*frame_ret = frame` here,
+                // making the EstablisherFrame equal to the body RSP (the RSP
+                // value right after the prolog completes).  This is critical for
+                // MSVC catch funclets which receive EstablisherFrame in RDX and
+                // reconstruct the parent function's frame pointer from it.
+                //
                 // Only apply when a valid frame pointer exists (frame_register != 0).
                 // If fp_rsp_base is 0 the UNWIND_INFO is malformed; skip to avoid
                 // setting RSP to 0 and crashing on the subsequent return-address pop.
                 if fp_rsp_base != 0 {
                     unsafe { ctx_write(ctx, CTX_RSP, fp_rsp_base) };
+                    if !establisher_frame_out.is_null() {
+                        unsafe { *establisher_frame_out = fp_rsp_base };
+                    }
                 }
                 i += 1;
             }
@@ -1725,8 +1759,11 @@ unsafe fn apply_unwind_info(
         ctx_write(ctx, CTX_RIP, return_addr);
         ctx_write(ctx, CTX_RSP, rsp + 8);
     }
-    if !establisher_frame_out.is_null() {
-        // Establisher frame = RSP before popping the return address
+    // For functions WITHOUT a frame register, the establisher frame is the
+    // RSP after all unwind codes (before popping the return address).
+    // For functions WITH a frame register, UWOP_SET_FPREG already wrote
+    // the correct establisher frame (body RSP) above — do not overwrite it.
+    if !establisher_frame_out.is_null() && frame_register == 0 {
         unsafe { *establisher_frame_out = rsp }
     }
 
@@ -1994,6 +2031,47 @@ pub unsafe extern "C" fn kernel32_RaiseException(
         std::process::abort();
     }
 
+    // ── Handle STATUS_GCC_UNWIND / STATUS_GCC_FORCED directly ──────────────
+    //
+    // When `_GCC_specific_handler` finds a matching catch clause during the
+    // Phase 1 search, it calls `RaiseException(STATUS_GCC_UNWIND, ...)`.
+    // On real Windows the OS exception dispatcher would re-walk the native
+    // stack, reach the target frame, and `_GCC_specific_handler` there would
+    // call `RtlUnwindEx` to do the Phase 2 cleanup walk.
+    //
+    // In our implementation, however, the Phase 1 walk was done from Rust
+    // code inside `seh_walk_stack_dispatch`.  When `_GCC_specific_handler`
+    // is called from that walk (via trampoline) and then raises
+    // `STATUS_GCC_UNWIND`, the stack between here and the target frame
+    // contains Rust frames that have no `.pdata` entries.  A new Phase 1
+    // walk from here would exit the PE on the very first Rust frame,
+    // failing to reach the target.
+    //
+    // The fix: short-circuit `STATUS_GCC_UNWIND` by extracting the target
+    // frame and target IP from `ExceptionInformation` and calling
+    // `kernel32_RtlUnwindEx` directly.  This is semantically identical to
+    // what `_GCC_specific_handler` would do after the Phase 1 walk reached
+    // the target frame — we just skip the walk.
+    //
+    // This is handled in a separate `#[cold]` function so the additional
+    // stack allocations do not inflate `kernel32_RaiseException`'s frame
+    // and push the trampoline return address outside the 1024-byte scan
+    // window used by `seh_find_pe_frame_on_stack`.
+    if (exception_code == STATUS_GCC_UNWIND || exception_code == STATUS_GCC_FORCED)
+        && !arguments.is_null()
+        && number_parameters >= 3
+    {
+        // SAFETY: caller guarantees `arguments` is valid for `number_parameters`.
+        unsafe {
+            handle_gcc_unwind(
+                exception_code,
+                exception_flags,
+                number_parameters,
+                arguments,
+            )
+        };
+    }
+
     // ── Locate the guest frame that called RaiseException ──────────────────
     // The trampoline prologue is: push rdi; push rsi; sub rsp,8; ...
     // So from inside our Rust function the guest return address lives somewhere
@@ -2057,6 +2135,28 @@ pub unsafe extern "C" fn kernel32_RaiseException(
         r15: nv_r15,
     };
 
+    // ── Stash the throw-site context for RtlUnwindEx ───────────────────────
+    // Wine's RtlUnwindEx calls RtlCaptureContext internally to obtain the
+    // current (throw-site) context and starts the cleanup walk from there,
+    // visiting all intermediate frames between the throw and the catch.
+    // We replicate that by storing the throw-site PC/SP here, which
+    // kernel32_RtlUnwindEx reads to initialise its walk context instead of
+    // starting from the (already-at-target) catch-frame context it receives.
+    THROW_SITE_CTX.with(|c| {
+        c.set(Some(ThrowSiteContext {
+            rip: start_rip,
+            rsp: start_rsp,
+            rbx: nv_regs.rbx,
+            rbp: nv_regs.rbp,
+            rsi: nv_regs.rsi,
+            rdi: nv_regs.rdi,
+            r12: nv_regs.r12,
+            r13: nv_regs.r13,
+            r14: nv_regs.r14,
+            r15: nv_regs.r15,
+        }));
+    });
+
     // ── Build the EXCEPTION_RECORD ──────────────────────────────────────────
     let exc_layout = alloc::Layout::new::<ExceptionRecord>();
     // SAFETY: Layout is non-zero.
@@ -2092,6 +2192,100 @@ pub unsafe extern "C" fn kernel32_RaiseException(
 
     // seh_walk_stack_dispatch returns `true` only when a handler called
     // RtlUnwindEx, which never returns.  We should never reach here.
+    std::process::abort();
+}
+
+/// Handle `STATUS_GCC_UNWIND` / `STATUS_GCC_FORCED` by directly calling
+/// `RtlUnwindEx` with the target information from `ExceptionInformation`.
+///
+/// This is `#[cold]` and `#[inline(never)]` to prevent the compiler from
+/// merging its stack frame into `kernel32_RaiseException`, which would
+/// inflate the parent's frame size and push the trampoline return address
+/// outside the 1024-byte scan window of `seh_find_pe_frame_on_stack`.
+///
+/// # Safety
+/// `arguments` must be valid for at least `number_parameters` elements.
+#[cold]
+#[inline(never)]
+unsafe fn handle_gcc_unwind(
+    exception_code: u32,
+    exception_flags: u32,
+    number_parameters: u32,
+    arguments: *const usize,
+) -> ! {
+    let exc_layout = alloc::Layout::new::<ExceptionRecord>();
+    // SAFETY: Layout is non-zero.
+    let exc_ptr = unsafe { alloc::alloc_zeroed(exc_layout) }.cast::<ExceptionRecord>();
+    if exc_ptr.is_null() {
+        std::process::abort();
+    }
+    // SAFETY: exc_ptr is freshly allocated and non-null.
+    unsafe {
+        (*exc_ptr).exception_code = exception_code;
+        (*exc_ptr).exception_flags = exception_flags;
+        (*exc_ptr).exception_record = core::ptr::null_mut();
+        (*exc_ptr).exception_address = core::ptr::null_mut();
+        (*exc_ptr).number_parameters = number_parameters.min(15);
+        let n = (*exc_ptr).number_parameters as usize;
+        for i in 0..n {
+            (*exc_ptr).exception_information[i] = *arguments.add(i);
+        }
+    }
+
+    // ExceptionInformation layout (set by `_GCC_specific_handler`):
+    //   [0] = `_Unwind_Exception*` (return value for RAX at landing pad)
+    //   [1] = establisher frame (target frame address)
+    //   [2] = target IP (landing pad address)
+    //   [3] = context_record pointer
+    let uwexc_ptr = unsafe { *arguments } as *mut core::ffi::c_void;
+    let target_frame = unsafe { *arguments.add(1) } as *mut core::ffi::c_void;
+    let target_ip = unsafe { *arguments.add(2) } as *mut core::ffi::c_void;
+
+    // Allocate a CONTEXT for the RtlUnwindEx call, seeded from the
+    // throw-site context (so the cleanup walk starts at the throw frame
+    // and visits all intermediate frames for destructor cleanup).
+    let ctx_layout = alloc::Layout::from_size_align(CTX_SIZE, 16).expect("CTX layout is valid");
+    // SAFETY: layout is non-zero.
+    let ctx = unsafe { alloc::alloc_zeroed(ctx_layout) };
+    if ctx.is_null() {
+        std::process::abort();
+    }
+    // Use the stashed throw-site context if available, then clear it so
+    // nested RtlUnwindEx calls (from intermediate cleanup handlers) use
+    // their caller-supplied context instead of re-using the stale throw-site.
+    let throw_site = THROW_SITE_CTX.with(|c| {
+        let val = c.get();
+        c.set(None);
+        val
+    });
+    if let Some(ts) = throw_site {
+        unsafe {
+            ctx_write(ctx, CTX_RIP, ts.rip);
+            ctx_write(ctx, CTX_RSP, ts.rsp);
+            ctx_write(ctx, CTX_RBX, ts.rbx);
+            ctx_write(ctx, CTX_RBP, ts.rbp);
+            ctx_write(ctx, CTX_RSI, ts.rsi);
+            ctx_write(ctx, CTX_RDI, ts.rdi);
+            ctx_write(ctx, CTX_R12, ts.r12);
+            ctx_write(ctx, CTX_R13, ts.r13);
+            ctx_write(ctx, CTX_R14, ts.r14);
+            ctx_write(ctx, CTX_R15, ts.r15);
+        }
+    }
+
+    // SAFETY: all pointers are valid; RtlUnwindEx does not return on
+    // success — it jumps to the landing pad.
+    unsafe {
+        kernel32_RtlUnwindEx(
+            target_frame,
+            target_ip,
+            exc_ptr.cast::<core::ffi::c_void>(),
+            uwexc_ptr,
+            ctx.cast::<core::ffi::c_void>(),
+            core::ptr::null_mut(),
+        );
+    }
+    // RtlUnwindEx should never return.
     std::process::abort();
 }
 
@@ -2336,9 +2530,48 @@ pub unsafe extern "C" fn kernel32_RtlUnwindEx(
     if walk_ctx.is_null() {
         eprintln!("RtlUnwindEx: failed to allocate walk context — skipping cleanup walk");
     } else {
-        // Copy the caller-supplied context into the walk buffer.
-        // SAFETY: both buffers are CTX_SIZE bytes.
-        unsafe { core::ptr::copy_nonoverlapping(ctx, walk_ctx, CTX_SIZE) };
+        // ── Seed walk_ctx from the throw site, not the catch frame ──────────
+        //
+        // Wine's RtlUnwindEx calls RtlCaptureContext internally to obtain the
+        // current execution context (inside RtlUnwindEx itself, deep in the
+        // call stack at the throw site) and walks OUTWARD from there to
+        // `target_frame`, visiting every intermediate frame and calling its
+        // cleanup handler.
+        //
+        // In our implementation RtlUnwindEx is a Rust function; we cannot
+        // easily call RtlCaptureContext here (the Rust frames aren't in the PE
+        // .pdata).  Instead, kernel32_RaiseException stashes the throw-site
+        // PC/SP in a thread-local (THROW_SITE_CTX) which we read here.
+        //
+        // If no stashed context is available (e.g. called directly from Rust
+        // without going through RaiseException) we fall back to the
+        // caller-supplied context_record as before.
+        //
+        // Do NOT clear THROW_SITE_CTX here: the GCC exception protocol may
+        // call RtlUnwindEx from _GCC_specific_handler's search path, then
+        // later raise STATUS_GCC_UNWIND which is handled by
+        // `handle_gcc_unwind` — that function also needs the throw-site
+        // context.  Clearing here would race with the GCC protocol.
+        let throw_site = THROW_SITE_CTX.with(std::cell::Cell::get);
+        if let Some(ts) = throw_site {
+            // SAFETY: walk_ctx is a freshly zeroed CTX_SIZE-byte allocation.
+            unsafe {
+                ctx_write(walk_ctx, CTX_RIP, ts.rip);
+                ctx_write(walk_ctx, CTX_RSP, ts.rsp);
+                ctx_write(walk_ctx, CTX_RBX, ts.rbx);
+                ctx_write(walk_ctx, CTX_RBP, ts.rbp);
+                ctx_write(walk_ctx, CTX_RSI, ts.rsi);
+                ctx_write(walk_ctx, CTX_RDI, ts.rdi);
+                ctx_write(walk_ctx, CTX_R12, ts.r12);
+                ctx_write(walk_ctx, CTX_R13, ts.r13);
+                ctx_write(walk_ctx, CTX_R14, ts.r14);
+                ctx_write(walk_ctx, CTX_R15, ts.r15);
+            }
+        } else {
+            // Fallback: copy the caller-supplied context into the walk buffer.
+            // SAFETY: both buffers are CTX_SIZE bytes.
+            unsafe { core::ptr::copy_nonoverlapping(ctx, walk_ctx, CTX_SIZE) };
+        }
 
         let mut max_frames: u32 = 256;
         loop {
@@ -2530,16 +2763,25 @@ pub unsafe extern "C" fn kernel32_RtlUnwindEx(
             }
         }
 
-        // ExceptionInformation[3] = gcc_context.reg[1] = the C++ type-selector index.
-        // _GCC_specific_handler sets this during Phase 1 before calling RtlUnwindEx,
+        // For GCC-style exceptions (_GCC_specific_handler), ExceptionInformation[3]
+        // holds the type-selector index. _GCC_specific_handler sets this during Phase 1
         // and reads it back into ctx->Rdx when called with EXCEPTION_TARGET_UNWIND.
-        // We replicate that effect directly.
+        //
+        // For MSVC C++ exceptions (__CxxFrameHandler3), the catch funclet expects
+        // RDX = EstablisherFrame (the target frame address) so it can reconstruct
+        // the parent function's frame pointer and access local variables.
         if !exception_record.is_null() {
+            let exc = exception_record.cast::<ExceptionRecord>();
             // SAFETY: caller guarantees exception_record is a valid ExceptionRecord.
-            let selector =
-                unsafe { (*exception_record.cast::<ExceptionRecord>()).exception_information[3] };
-            // SAFETY: ctx is a valid, writable CONTEXT buffer.
-            unsafe { ctx_write(ctx, CTX_RDX, selector as u64) };
+            let code = unsafe { (*exc).exception_code };
+            if code == STATUS_MSVC_CPP_EXCEPTION {
+                // MSVC C++ exception: funclet needs RDX = EstablisherFrame.
+                unsafe { ctx_write(ctx, CTX_RDX, target_frame_addr) };
+            } else {
+                // GCC exception: RDX = type-selector from ExceptionInformation[3].
+                let selector = unsafe { (*exc).exception_information[3] };
+                unsafe { ctx_write(ctx, CTX_RDX, selector as u64) };
+            }
         }
     }
 
