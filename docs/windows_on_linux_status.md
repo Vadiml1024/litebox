@@ -172,8 +172,8 @@
 ### MSVCRT Implementations (18 functions)
 `printf`, `fprintf`, `sprintf`, `snprintf`, `malloc`, `calloc`, `realloc`, `free`, `memcpy`, `memmove`, `memset`, `memcmp`, `strlen`, `strcpy`, `strncpy`, `strcmp`, `strncmp`, `exit`
 
-### Exception Handling — Full C++ Exception Dispatch (14 functions)
-`__C_specific_handler`, `SetUnhandledExceptionFilter`, `RaiseException`, `RtlCaptureContext`, `RtlLookupFunctionEntry`, `RtlUnwindEx`, `RtlVirtualUnwind`, `AddVectoredExceptionHandler`, `RemoveVectoredExceptionHandler`, `_GCC_specific_handler` (GCC/MinGW C++ personality), `msvcrt__CxxThrowException`, `__CxxFrameHandler3` (MSVC C++ personality), `cxx_frame_handler`, `RtlUnwindEx` (extended unwind)
+### Exception Handling — Full C++ Exception Dispatch (13 functions)
+`__C_specific_handler`, `SetUnhandledExceptionFilter`, `RaiseException`, `RtlCaptureContext`, `RtlLookupFunctionEntry`, `RtlUnwindEx`, `RtlVirtualUnwind`, `AddVectoredExceptionHandler`, `RemoveVectoredExceptionHandler`, `_GCC_specific_handler` (GCC/MinGW C++ personality), `msvcrt__CxxThrowException`, `__CxxFrameHandler3` (MSVC C++ personality), `cxx_frame_handler`
 
 - **C SEH API tests**: `seh_c_test.exe` — **21/21 PASS** (MinGW)
 - **C++ GCC/MinGW exceptions**: `seh_cpp_test.exe` — **26/26 PASS** (MinGW g++)
@@ -276,8 +276,7 @@ All GDI32 functions operate in headless mode: drawing is silently discarded.
 
 | Feature | Status |
 |---|---|
-| Full SEH / C++ exception handling (GCC/MinGW) | ✅ Fully implemented; `seh_c_test` 21/21, `seh_cpp_test` 26/26, `seh_cpp_test_clang` 26/26 |
-| MSVC ABI C++ exception rethrow | ✅ Working; tests 1-5 pass (throw/catch, rethrow, catch-all); tests 6-10 in progress |
+| MSVC ABI C++ destructor unwinding | ⚠️ In progress; tests 6-10 (destructor cleanup during stack unwind, cross-frame propagation) |
 | Full GUI rendering | USER32/GDI32 are headless stubs; no real window/drawing output |
 | Overlapped (async) I/O | `ReadFileEx`, `WriteFileEx`, `GetOverlappedResult` return `ERROR_NOT_SUPPORTED` |
 | Process creation (`CreateProcessW`) | Returns `ERROR_NOT_SUPPORTED`; sandboxed environment |
@@ -285,6 +284,13 @@ All GDI32 functions operate in headless mode: drawing is silently discarded.
 | Waitable timers | `CreateWaitableTimerExW` returns `ERROR_NOT_SUPPORTED`; `SetWaitableTimer` is a no-op |
 | `WaitOnAddress` blocking | Returns TRUE immediately; no blocking wait |
 | Advanced networking | `WSAEventSelect`, `WSAAsyncSelect`, completion ports not implemented |
+
+### What IS Implemented ✅ (Exception Handling)
+
+| Feature | Status |
+|---|---|
+| Full SEH / C++ exception handling (GCC/MinGW) | ✅ Fully implemented; `seh_c_test` 21/21, `seh_cpp_test` 26/26, `seh_cpp_test_clang` 26/26 |
+| MSVC ABI C++ exception throw/catch/rethrow | ✅ Working; tests 1-5 pass (throw/catch for int/double/string, rethrow, catch-all) |
 
 ---
 

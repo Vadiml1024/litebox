@@ -2547,6 +2547,11 @@ unsafe fn cxx_find_catch_block(
                 let funclet: CatchFunclet = unsafe { core::mem::transmute(handler_ip as usize) };
                 let continuation = unsafe { funclet(effective_frame, effective_frame) };
 
+                // Clear TLS exception state now that the rethrown exception
+                // has been caught.  This prevents a stale saved record from
+                // being mistakenly rethrown by a later `throw;`.
+                CXX_EXC_RECORD.with(|c| c.set(None));
+
                 // Build a context for the continuation.  The context from
                 // the rethrow's stack walk has stale RSP/RBP; we must set
                 // them from the saved establisher frame.
@@ -2706,13 +2711,14 @@ unsafe fn cxx_get_exception_size(exc_type: *const CxxExceptionType, throw_base: 
 ///
 /// This is a separate `#[cold]` function to keep `_CxxThrowException`'s
 /// stack frame small — `seh_find_pe_frame_on_stack` has a limited
-/// scan window (1024 bytes) and a bloated frame can push the trampoline
+/// scan window (2048 bytes) and a bloated frame can push the trampoline
 /// frame out of range.
 ///
 /// # Safety
 /// Must only be called when a rethrow is active (i.e. from within a
 /// catch handler where `CXX_EXC_RECORD` has been populated).
 #[cold]
+#[inline(never)]
 unsafe fn cxx_handle_rethrow() -> ! {
     let saved = CXX_EXC_RECORD.with(std::cell::Cell::get);
     if let Some(saved) = saved {
@@ -3014,6 +3020,11 @@ pub unsafe extern "C" fn msvcrt___CxxFrameHandler3(
                 #[allow(clippy::cast_possible_truncation)]
                 let funclet: CatchFunclet = unsafe { core::mem::transmute(handler_va as usize) };
                 let continuation = unsafe { funclet(establisher_frame, establisher_frame) };
+
+                // Clear TLS exception state now that the catch funclet has
+                // returned normally.  This prevents a stale saved record from
+                // being mistakenly rethrown by a later `throw;`.
+                CXX_EXC_RECORD.with(|c| c.set(None));
 
                 // Update the context RIP to the continuation address.
                 // RtlUnwindEx will jump there instead of jumping to the funclet.
