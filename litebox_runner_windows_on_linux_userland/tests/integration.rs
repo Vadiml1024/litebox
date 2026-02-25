@@ -672,6 +672,60 @@ fn test_seh_cpp_program() {
     );
 }
 
+/// Test that seh_cpp_test_clang.exe runs all 26 C++ exception-handling tests successfully.
+///
+/// `seh_cpp_test_clang` is the same test source as `seh_cpp_test` but compiled
+/// with `clang++ --target=x86_64-w64-mingw32` at `-O0`.  The LLVM front-end
+/// generates different unwind tables and cleanup landing pads compared to
+/// GCC/MinGW, including `_Unwind_Resume` calls (STATUS_GCC_UNWIND path through
+/// `RaiseException`).  This validates that Clang-compiled MinGW-ABI C++
+/// exceptions work correctly through the LiteBox exception dispatcher.
+///
+/// Build the program with:
+/// ```
+/// cd windows_test_programs/seh_test && make seh_cpp_test_clang.exe
+/// ```
+#[test]
+#[ignore = "Requires clang-built MinGW SEH test program (run: cd windows_test_programs/seh_test && make seh_cpp_test_clang.exe)"]
+fn test_seh_cpp_clang_program() {
+    use std::env;
+    use std::path::PathBuf;
+    use std::process::Command;
+
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let workspace_root = PathBuf::from(manifest_dir).parent().unwrap().to_path_buf();
+    let exe_path = workspace_root
+        .join("windows_test_programs")
+        .join("seh_test")
+        .join("seh_cpp_test_clang.exe");
+
+    assert!(
+        exe_path.exists(),
+        "seh_cpp_test_clang.exe not found at {exe_path:?}. \
+         Build it with: cd windows_test_programs/seh_test && make seh_cpp_test_clang.exe"
+    );
+
+    let runner_exe = env!("CARGO_BIN_EXE_litebox_runner_windows_on_linux_userland");
+    let output = Command::new(runner_exe)
+        .arg(&exe_path)
+        .output()
+        .expect("failed to launch litebox runner for seh_cpp_test_clang.exe");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "seh_cpp_test_clang.exe should exit with code 0\nstdout:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("=== SEH C++ Test Suite ==="),
+        "seh_cpp_test_clang.exe stdout should contain test suite header\nstdout:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("0 failed"),
+        "seh_cpp_test_clang.exe should report 0 failed\nstdout:\n{stdout}"
+    );
+}
+
 /// Test that seh_cpp_test_msvc.exe runs basic MSVC-style C++ exception tests.
 ///
 /// `seh_cpp_test_msvc` is compiled with `clang++ --target=x86_64-pc-windows-msvc`

@@ -2055,7 +2055,7 @@ pub unsafe extern "C" fn kernel32_RaiseException(
     //
     // This is handled in a separate `#[cold]` function so the additional
     // stack allocations do not inflate `kernel32_RaiseException`'s frame
-    // and push the trampoline return address outside the 1024-byte scan
+    // and push the trampoline return address outside the 2048-byte scan
     // window used by `seh_find_pe_frame_on_stack`.
     if (exception_code == STATUS_GCC_UNWIND || exception_code == STATUS_GCC_FORCED)
         && !arguments.is_null()
@@ -2201,7 +2201,7 @@ pub unsafe extern "C" fn kernel32_RaiseException(
 /// This is `#[cold]` and `#[inline(never)]` to prevent the compiler from
 /// merging its stack frame into `kernel32_RaiseException`, which would
 /// inflate the parent's frame size and push the trampoline return address
-/// outside the 1024-byte scan window of `seh_find_pe_frame_on_stack`.
+/// outside the 2048-byte scan window of `seh_find_pe_frame_on_stack`.
 ///
 /// # Safety
 /// `arguments` must be valid for at least `number_parameters` elements.
@@ -9674,7 +9674,7 @@ unsafe extern "C" {
     /// # Safety
     /// `ctx` must point to a valid, readable Windows CONTEXT (≥ CTX_SIZE bytes)
     /// whose `Rip` and `Rsp` fields describe a valid landing pad.
-    fn seh_restore_context_and_jump(ctx: *mut u8) -> !;
+    pub(crate) fn seh_restore_context_and_jump(ctx: *mut u8) -> !;
 }
 
 // Restores all GPRs from a Windows x64 CONTEXT struct (SysV calling convention:
@@ -9779,9 +9779,14 @@ fn seh_find_pe_frame_on_stack(rust_rsp: usize) -> Option<PeFrameInfo> {
     // offset (directly above the Rust frame).  The trampoline epilogue
     // pattern check (`pop rsi; pop rdi; ret`) prevents false positives
     // from stale PE function pointers.
+    //
+    // The window must be large enough to reach the trampoline frame even
+    // when multiple Rust functions are between `kernel32_RaiseException`
+    // and the trampoline (e.g. during a C++ rethrow that goes through
+    // `cxx_handle_rethrow` → `msvcrt__CxxThrowException` → trampoline).
     let mut best: Option<PeFrameInfo> = None;
 
-    for offset in (0..1024_usize).step_by(8) {
+    for offset in (0..2048_usize).step_by(8) {
         if let Some(info) = try_trampoline_at_offset(rust_rsp, offset, pe_base) {
             best = Some(info);
         }
@@ -9812,9 +9817,9 @@ fn try_trampoline_at_offset(rust_rsp: usize, offset: usize, pe_base: u64) -> Opt
     }
 
     // Ensure all reads within the trampoline frame stay inside the
-    // 1024-byte scan window.  The largest read is a u64 at `slot + 32`,
+    // scan window.  The largest read is a u64 at `slot + 32`,
     // which spans bytes [offset+32 .. offset+40).
-    if offset + 40 > 1024 {
+    if offset + 40 > 2048 {
         return None;
     }
 
@@ -9923,7 +9928,7 @@ struct NonVolatileRegs {
 /// # Safety
 /// `image_base` must be the PE's load address and `function_entry` must point
 /// to a valid RUNTIME_FUNCTION within the image.
-unsafe fn compute_body_frame_reg(
+pub(crate) unsafe fn compute_body_frame_reg(
     image_base: u64,
     function_entry: *mut core::ffi::c_void,
     body_rsp: u64,

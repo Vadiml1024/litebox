@@ -2126,6 +2126,68 @@ const EXCEPTION_UNWINDING_FLAG: u32 = 0x2;
 #[allow(dead_code)]
 const EXCEPTION_TARGET_UNWIND_FLAG: u32 = 0x20;
 
+// ── Thread-local storage for MSVC C++ exception rethrow ────────────────────
+//
+// When a catch funclet is about to run, we save the exception record so that
+// `throw;` (rethrow) can recover the original exception.  `_CxxThrowException`
+// signals rethrow by passing both args as NULL, which produces
+// `ExceptionInformation[1] == 0 && ExceptionInformation[2] == 0`.
+//
+// On rethrow, `_CxxThrowException` restores the original exception parameters
+// and passes them to `RaiseException`.  The search phase of
+// `__CxxFrameHandler3` detects the rethrow via a TLS flag and skips the
+// try block whose catch is currently executing (the "in-catch" skip).
+//
+// Ref: Wine `dlls/msvcrt/except.c` — `msvcrt_get_thread_data()->exc_record`,
+//      `find_catch_block` `in_catch` logic.
+
+/// Saved exception record for rethrow support.
+///
+/// Stores the `ExceptionInformation` array plus `exception_code` and
+/// `number_parameters` so that rethrow can reconstruct the record.
+/// Also stores the `catch_level` of the try block whose catch is active,
+/// so the search phase can skip that try block on rethrow.
+#[derive(Clone, Copy)]
+struct SavedExcRecord {
+    exception_code: u32,
+    exception_flags: u32,
+    number_parameters: u32,
+    exception_information: [usize; 15],
+    /// The `catch_level` of the try block whose catch handler is active.
+    /// Stored for potential use in more complex nested exception scenarios.
+    #[allow(dead_code)]
+    catch_level: i32,
+    /// The `end_level` of the matching try block — the last state covered
+    /// by this try.  Any try block whose start_level ≤ this value is
+    /// "inside" the active catch and must be skipped.
+    in_catch_end_level: i32,
+    /// The establisher frame (RSP of the catching function after prologue).
+    /// Saved so the rethrow's `cxx_find_catch_block` can pass the correct
+    /// frame to `RtlUnwindEx` — the rethrow's stack walk through
+    /// intermediate Rust frames may compute a wrong establisher frame.
+    establisher_frame: u64,
+    /// Image base of the PE module, for `compute_body_frame_reg`.
+    image_base: u64,
+    /// The RUNTIME_FUNCTION entry for the catching function, needed to
+    /// compute the frame register (RBP) for `seh_restore_context_and_jump`.
+    function_entry: *mut core::ffi::c_void,
+}
+
+thread_local! {
+    /// Thread-local saved exception record.
+    ///
+    /// Set in the target-unwind phase of `__CxxFrameHandler3` right before
+    /// the catch funclet is called.  Read back when a rethrow is detected.
+    static CXX_EXC_RECORD: std::cell::Cell<Option<SavedExcRecord>> =
+        const { std::cell::Cell::new(None) };
+
+    /// Flag set by `_CxxThrowException` when handling a rethrow.
+    /// `__CxxFrameHandler3` reads and clears this to apply the "in-catch"
+    /// try-block skip logic.
+    static CXX_RETHROW_ACTIVE: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+}
+
 // ── MSVC C++ Exception Data Structures (x64, RVA-based) ───────────────────
 //
 // On x64, all pointers in the MSVC exception metadata are stored as
@@ -2378,6 +2440,7 @@ unsafe fn cxx_find_catch_block(
     trylevel: i32,
     exc_type: *const CxxExceptionType,
     throw_base: u64,
+    rethrow_info: Option<SavedExcRecord>,
 ) {
     if fi.tryblock_count == 0 || fi.tryblock == 0 {
         return;
@@ -2390,6 +2453,21 @@ unsafe fn cxx_find_catch_block(
 
         // Check if the current trylevel falls within this try block.
         if trylevel < tryblock.start_level || trylevel > tryblock.end_level {
+            continue;
+        }
+
+        // ── In-catch skip (rethrow) ───────────────────────────────────
+        // When rethrowing from inside a catch handler, skip try blocks
+        // that overlap with the active catch's try block.  This prevents
+        // the inner catch from matching the rethrown exception again.
+        //
+        // We skip a try block only if its end_level is within the
+        // active catch's range [0, in_catch_end_level].  This ensures
+        // the enclosing (outer) try block — which has a WIDER range —
+        // is NOT skipped.
+        if let Some(ref rethrow) = rethrow_info
+            && tryblock.end_level <= rethrow.in_catch_end_level
+        {
             continue;
         }
 
@@ -2416,6 +2494,13 @@ unsafe fn cxx_find_catch_block(
                 continue;
             }
 
+            // For rethrow, use the saved establisher frame from the
+            // original catch.  The rethrow's stack walk through
+            // intermediate Rust frames computes a wrong frame address.
+            let effective_frame = rethrow_info
+                .as_ref()
+                .map_or(establisher_frame, |r| r.establisher_frame);
+
             // Found a matching catch block — copy exception object if needed.
             if !exc_type.is_null() && catchblock.type_info != 0 && catchblock.offset != 0 {
                 // Retrieve the C++ exception object pointer from ExceptionInformation[1].
@@ -2427,7 +2512,7 @@ unsafe fn cxx_find_catch_block(
                 };
                 if !exc_object.is_null() {
                     #[allow(clippy::cast_possible_truncation)]
-                    let dest = (establisher_frame as *mut u8)
+                    let dest = (effective_frame as *mut u8)
                         .wrapping_offset(i64::from(catchblock.offset) as isize);
                     if (catchblock.flags & TYPE_FLAG_REFERENCE) != 0 {
                         unsafe {
@@ -2449,11 +2534,54 @@ unsafe fn cxx_find_catch_block(
             }
             let handler_ip = image_base + u64::from(catchblock.handler);
 
+            if let Some(ref rethrow) = rethrow_info {
+                // ── Rethrow shortcut ──────────────────────────────────
+                // On rethrow, `RtlUnwindEx` cannot properly walk from the
+                // funclet (PE) through intermediate Rust frames back to
+                // the target PE frame.  Instead, call the catch funclet
+                // directly with the saved establisher frame and jump to
+                // the continuation — mirroring what __CxxFrameHandler3's
+                // target-unwind phase does.
+                type CatchFunclet = unsafe extern "win64" fn(u64, u64) -> u64;
+                #[allow(clippy::cast_possible_truncation)]
+                let funclet: CatchFunclet = unsafe { core::mem::transmute(handler_ip as usize) };
+                let continuation = unsafe { funclet(effective_frame, effective_frame) };
+
+                // Clear TLS exception state now that the rethrown exception
+                // has been caught.  This prevents a stale saved record from
+                // being mistakenly rethrown by a later `throw;`.
+                CXX_EXC_RECORD.with(|c| c.set(None));
+
+                // Build a context for the continuation.  The context from
+                // the rethrow's stack walk has stale RSP/RBP; we must set
+                // them from the saved establisher frame.
+                if !context_record.is_null() {
+                    let ctx = context_record.cast::<u8>();
+                    unsafe {
+                        crate::kernel32::ctx_write(ctx, crate::kernel32::CTX_RIP, continuation);
+                        crate::kernel32::ctx_write(ctx, crate::kernel32::CTX_RSP, effective_frame);
+                        // Compute the frame register (typically RBP) from
+                        // the UNWIND_INFO so the continuation code can
+                        // access locals via RBP-relative addressing.
+                        if let Some((reg_off, val)) = crate::kernel32::compute_body_frame_reg(
+                            rethrow.image_base,
+                            rethrow.function_entry,
+                            effective_frame,
+                        ) {
+                            crate::kernel32::ctx_write(ctx, reg_off, val);
+                        }
+                        crate::kernel32::seh_restore_context_and_jump(ctx);
+                    }
+                }
+                // Fallback: should not reach here.
+                return;
+            }
+
             // Initiate unwind to the catch handler.
             // SAFETY: RtlUnwindEx is implemented in kernel32.
             unsafe {
                 crate::kernel32::kernel32_RtlUnwindEx(
-                    establisher_frame as *mut core::ffi::c_void,
+                    effective_frame as *mut core::ffi::c_void,
                     handler_ip as *mut core::ffi::c_void,
                     exception_record,
                     core::ptr::null_mut(),
@@ -2575,11 +2703,57 @@ unsafe fn cxx_get_exception_size(exc_type: *const CxxExceptionType, throw_base: 
     unsafe { (*first_ti).size as usize }
 }
 
+/// Handle a C++ rethrow (`throw;`).
+///
+/// Restores the saved exception parameters from TLS and re-raises the
+/// original exception.  Sets `CXX_RETHROW_ACTIVE` so the search phase
+/// of `__CxxFrameHandler3` applies the "in-catch" skip logic.
+///
+/// This is a separate `#[cold]` function to keep `_CxxThrowException`'s
+/// stack frame small — `seh_find_pe_frame_on_stack` has a limited
+/// scan window (2048 bytes) and a bloated frame can push the trampoline
+/// frame out of range.
+///
+/// # Safety
+/// Must only be called when a rethrow is active (i.e. from within a
+/// catch handler where `CXX_EXC_RECORD` has been populated).
+#[cold]
+#[inline(never)]
+unsafe fn cxx_handle_rethrow() -> ! {
+    let saved = CXX_EXC_RECORD.with(std::cell::Cell::get);
+    if let Some(saved) = saved {
+        CXX_RETHROW_ACTIVE.with(|c| c.set(true));
+        let n = (saved.number_parameters as usize).min(15);
+        // SAFETY: kernel32_RaiseException is defined in the platform layer.
+        unsafe {
+            crate::kernel32::kernel32_RaiseException(
+                saved.exception_code,
+                // Clear all dispatch-phase flags — this is a fresh exception
+                // raise.  The saved flags may include EXCEPTION_UNWINDING
+                // (0x2) and EXCEPTION_TARGET_UNWIND (0x20) from the
+                // target-unwind phase where the record was captured.
+                // EXCEPTION_NONCONTINUABLE (0x1) is preserved.
+                saved.exception_flags & 0x1,
+                saved.number_parameters,
+                saved.exception_information[..n].as_ptr(),
+            );
+        }
+    }
+    // No saved exception — unhandled rethrow.
+    eprintln!("Unhandled rethrow (throw;) with no active exception – aborting");
+    std::process::abort();
+}
+
 /// `_CxxThrowException` — Throw a C++ exception using MSVC semantics.
 ///
 /// Called by the compiler-generated code for `throw expr;`.  Builds the
 /// parameters array expected by the MSVC C++ runtime and calls
 /// `RaiseException` with the magic exception code `0xE06D7363`.
+///
+/// For rethrow (`throw;`), both `exception_object` and `throw_info` are
+/// NULL.  In that case, we restore the saved exception parameters from
+/// TLS (saved when the catch funclet was entered) and re-raise with
+/// those parameters.
 ///
 /// # Parameters
 /// - `exception_object`: Pointer to the thrown object (e.g. `new std::exception`).
@@ -2593,6 +2767,13 @@ pub unsafe extern "C" fn msvcrt__CxxThrowException(
     exception_object: *mut core::ffi::c_void,
     throw_info: *mut core::ffi::c_void,
 ) {
+    // Rethrow: `throw;` compiles to `_CxxThrowException(NULL, NULL)`.
+    // Delegate to a separate function to keep this function's stack frame
+    // small (seh_find_pe_frame_on_stack has a limited scan window).
+    if exception_object.is_null() && throw_info.is_null() {
+        unsafe { cxx_handle_rethrow() };
+    }
+
     // The MSVC CRT passes 4 parameters to RaiseException for VC8+ (magic 0x19930520):
     //   [0] = MSVC magic number (0x19930520)
     //   [1] = pointer to the thrown object (absolute VA)
@@ -2801,6 +2982,29 @@ pub unsafe extern "C" fn msvcrt___CxxFrameHandler3(
                     }
                 }
 
+                // Save the exception record to TLS before calling the catch
+                // funclet.  If the catch body executes `throw;` (rethrow),
+                // `_CxxThrowException` restores these parameters and sets
+                // `CXX_RETHROW_ACTIVE`.  The search phase of
+                // `__CxxFrameHandler3` then uses `catch_level` and
+                // `in_catch_end_level` to skip the inner try block.
+                //
+                // Ref: Wine `dlls/msvcrt/except.c` — the `exc_record` field
+                // in `msvcrt_get_thread_data()`, `find_catch_block` in_catch.
+                CXX_EXC_RECORD.with(|c| {
+                    c.set(Some(SavedExcRecord {
+                        exception_code: exc_record.exception_code,
+                        exception_flags: exc_record.exception_flags,
+                        number_parameters: exc_record.number_parameters,
+                        exception_information: exc_record.exception_information,
+                        catch_level: tb.catch_level,
+                        in_catch_end_level: tb.end_level,
+                        establisher_frame,
+                        image_base,
+                        function_entry: dc.function_entry,
+                    }));
+                });
+
                 // Call the catch funclet as a Windows x64 function:
                 //   RCX = establisher frame
                 //   RDX = establisher frame (post-alloc RSP of the parent function)
@@ -2816,6 +3020,11 @@ pub unsafe extern "C" fn msvcrt___CxxFrameHandler3(
                 #[allow(clippy::cast_possible_truncation)]
                 let funclet: CatchFunclet = unsafe { core::mem::transmute(handler_va as usize) };
                 let continuation = unsafe { funclet(establisher_frame, establisher_frame) };
+
+                // Clear TLS exception state now that the catch funclet has
+                // returned normally.  This prevents a stale saved record from
+                // being mistakenly rethrown by a later `throw;`.
+                CXX_EXC_RECORD.with(|c| c.set(None));
 
                 // Update the context RIP to the continuation address.
                 // RtlUnwindEx will jump there instead of jumping to the funclet.
@@ -2846,6 +3055,7 @@ pub unsafe extern "C" fn msvcrt___CxxFrameHandler3(
                 trylevel,
                 core::ptr::null(),
                 0,
+                None,
             );
         }
         return 1;
@@ -2855,6 +3065,7 @@ pub unsafe extern "C" fn msvcrt___CxxFrameHandler3(
     // [0] = magic version, [1] = exception object ptr, [2] = ThrowInfo RVA,
     // [3] = image base (for RVA resolution)
     let exc_record = unsafe { &*exception_record.cast::<crate::kernel32::ExceptionRecord>() };
+
     #[allow(clippy::cast_possible_truncation)]
     let exc_type_rva = exc_record.exception_information[2] as u32;
     let exc_image_base = exc_record.exception_information[3] as u64;
@@ -2871,6 +3082,31 @@ pub unsafe extern "C" fn msvcrt___CxxFrameHandler3(
         core::ptr::null()
     };
 
+    // ── Rethrow handling ──────────────────────────────────────────────
+    // `_CxxThrowException(NULL, NULL)` restores the saved exception
+    // parameters and sets `CXX_RETHROW_ACTIVE`.  We read the saved
+    // in-catch info to skip the try block whose catch is currently
+    // executing, mimicking Wine's `in_catch` logic in `find_catch_block`.
+    //
+    // Ref: Wine `dlls/msvcrt/except.c` → `find_catch_block`:
+    //   if (in_catch) {
+    //       if (tryblock->start_level <= in_catch->end_level) continue;
+    //       if (tryblock->end_level > in_catch->catch_level) continue;
+    //   }
+    let is_rethrow = CXX_RETHROW_ACTIVE.with(|c| {
+        let v = c.get();
+        if v {
+            c.set(false);
+        }
+        v
+    });
+
+    let rethrow_info = if is_rethrow {
+        CXX_EXC_RECORD.with(std::cell::Cell::get)
+    } else {
+        None
+    };
+
     unsafe {
         cxx_find_catch_block(
             exception_record,
@@ -2882,6 +3118,7 @@ pub unsafe extern "C" fn msvcrt___CxxFrameHandler3(
             trylevel,
             exc_type_ptr,
             throw_base,
+            rethrow_info,
         );
     }
 
