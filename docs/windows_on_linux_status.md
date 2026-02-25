@@ -2,7 +2,7 @@
 
 **Last Updated:** 2026-02-25  
 **Total Tests:** 453 passing (384 platform + 47 shim + 17 runner + 5 dev_tests — +1 new SEH clang integration test added in Phase 31)  
-**Overall Status:** Core infrastructure complete. Seven Rust-based test programs (hello_cli, math_test, env_test, args_test, file_io_test, string_test, getprocaddress_test) run successfully end-to-end through the runner on Linux. **All API stub functions have been fully replaced — stub count is now 0.** Full C++ exception handling implemented and validated: `seh_c_test` (21/21), `seh_cpp_test` MinGW (26/26), `seh_cpp_test_clang` clang/MinGW (26/26) all pass. MSVC ABI (`seh_cpp_test_msvc`) passes tests 1-5 (12/12 checks) including rethrow (`throw;`) and catch-all; tests 6-10 (destructor unwinding, cross-frame propagation) are in progress.
+**Overall Status:** Core infrastructure complete. Seven Rust-based test programs (hello_cli, math_test, env_test, args_test, file_io_test, string_test, getprocaddress_test) run successfully end-to-end through the runner on Linux. **All API stub functions have been fully replaced — stub count is now 0.** Full C++ exception handling implemented and validated: `seh_c_test` (21/21), `seh_cpp_test` MinGW (26/26), `seh_cpp_test_clang` clang/MinGW (26/26), and `seh_cpp_test_msvc` MSVC ABI (21/21) all pass. All 10 MSVC ABI test cases are fully working including destructor unwinding and cross-frame propagation.
 
 ---
 
@@ -178,7 +178,7 @@
 - **C SEH API tests**: `seh_c_test.exe` — **21/21 PASS** (MinGW)
 - **C++ GCC/MinGW exceptions**: `seh_cpp_test.exe` — **26/26 PASS** (MinGW g++)
 - **C++ Clang/MinGW exceptions**: `seh_cpp_test_clang.exe` — **26/26 PASS** (clang++ `--target=x86_64-w64-mingw32`)
-- **C++ MSVC ABI exceptions**: `seh_cpp_test_msvc.exe` — tests 1-5 pass (throw/catch, rethrow, catch-all); tests 6-10 (destructor unwinding, cross-frame propagation) in progress
+- **C++ MSVC ABI exceptions**: `seh_cpp_test_msvc.exe` — **21/21 PASS** (clang-cl/MSVC ABI; all 10 tests including destructor unwinding and cross-frame propagation)
 
 ### String / Wide-Char Operations
 `MultiByteToWideChar`, `WideCharToMultiByte`, `lstrlenW`, `lstrlenA`, `CompareStringOrdinal`  
@@ -276,7 +276,6 @@ All GDI32 functions operate in headless mode: drawing is silently discarded.
 
 | Feature | Status |
 |---|---|
-| MSVC ABI C++ destructor unwinding | ⚠️ In progress; tests 6-10 (destructor cleanup during stack unwind, cross-frame propagation) |
 | Full GUI rendering | USER32/GDI32 are headless stubs; no real window/drawing output |
 | Overlapped (async) I/O | `ReadFileEx`, `WriteFileEx`, `GetOverlappedResult` return `ERROR_NOT_SUPPORTED` |
 | Process creation (`CreateProcessW`) | Returns `ERROR_NOT_SUPPORTED`; sandboxed environment |
@@ -290,7 +289,7 @@ All GDI32 functions operate in headless mode: drawing is silently discarded.
 | Feature | Status |
 |---|---|
 | Full SEH / C++ exception handling (GCC/MinGW) | ✅ Fully implemented; `seh_c_test` 21/21, `seh_cpp_test` 26/26, `seh_cpp_test_clang` 26/26 |
-| MSVC ABI C++ exception throw/catch/rethrow | ✅ Working; tests 1-5 pass (throw/catch for int/double/string, rethrow, catch-all) |
+| MSVC ABI C++ exception throw/catch/rethrow | ✅ Fully working; all 10 tests pass (throw/catch for int/double/string, rethrow, catch-all, destructor unwinding, cross-frame propagation, indirect calls) |
 
 ---
 
@@ -326,7 +325,7 @@ All GDI32 functions operate in headless mode: drawing is silently discarded.
 - `test_seh_c_program` — **runs** seh_c_test.exe; verifies 21 passed, 0 failed (MinGW C SEH API tests)
 - `test_seh_cpp_program` — **runs** seh_cpp_test.exe; verifies 26 passed, 0 failed (MinGW C++ exceptions)
 - `test_seh_cpp_clang_program` — **runs** seh_cpp_test_clang.exe; verifies 26 passed, 0 failed (clang/MinGW C++ exceptions)
-- `test_seh_cpp_msvc_program` — **runs** seh_cpp_test_msvc.exe; verifies MSVC header + basic catch(int) passes
+- `test_seh_cpp_msvc_program` — **runs** seh_cpp_test_msvc.exe; verifies 21 passed, 0 failed (MSVC ABI C++ exceptions, all 10 tests)
 
 **CI-validated test programs (7 + 4 SEH):**
 
@@ -342,7 +341,7 @@ All GDI32 functions operate in headless mode: drawing is silently discarded.
 | `seh_c_test.exe` (MinGW C) | SEH runtime APIs (`RtlCaptureContext`, `RtlUnwindEx`, vectored handlers) | ✅ **21/21 Passing** |
 | `seh_cpp_test.exe` (MinGW C++) | C++ exceptions with GCC/MinGW ABI (`throw`/`catch`, rethrow, destructors) | ✅ **26/26 Passing** |
 | `seh_cpp_test_clang.exe` (clang/MinGW) | C++ exceptions with Clang targeting MinGW ABI (`_Unwind_Resume` path) | ✅ **26/26 Passing** |
-| `seh_cpp_test_msvc.exe` (clang-cl/MSVC ABI) | C++ exceptions with MSVC ABI (`_CxxThrowException` / `__CxxFrameHandler3`) | ⚠️ **Tests 1-5 pass (12/12 checks); tests 6-10 in progress** |
+| `seh_cpp_test_msvc.exe` (clang-cl/MSVC ABI) | C++ exceptions with MSVC ABI (`_CxxThrowException` / `__CxxFrameHandler3`) | ✅ **21/21 Passing** |
 
 ---
 

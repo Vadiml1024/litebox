@@ -726,12 +726,20 @@ fn test_seh_cpp_clang_program() {
     );
 }
 
-/// Test that seh_cpp_test_msvc.exe runs basic MSVC-style C++ exception tests.
+/// Test that seh_cpp_test_msvc.exe passes all 10 MSVC-style C++ exception tests.
 ///
 /// `seh_cpp_test_msvc` is compiled with `clang++ --target=x86_64-pc-windows-msvc`
 /// and uses MSVC-style exception handling (`_CxxThrowException` /
-/// `__CxxFrameHandler3`) instead of GCC-style.  This validates that clang-cl
-/// compiled C++ exceptions work through the LiteBox exception dispatcher.
+/// `__CxxFrameHandler3`) instead of GCC-style.  This validates that all 10 test
+/// cases pass through the LiteBox exception dispatcher, including:
+///   - throw/catch for int, double, const char*
+///   - rethrow (`throw;`)
+///   - catch-all (`catch(...)`)
+///   - stack unwinding (destructor calls)
+///   - nested try/catch
+///   - cross-frame propagation
+///   - multiple catch clauses
+///   - exception through indirect (function pointer) call
 ///
 /// Build the program with:
 /// ```
@@ -764,22 +772,18 @@ fn test_seh_cpp_msvc_program() {
         .expect("failed to launch litebox runner for seh_cpp_test_msvc.exe");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    // The MSVC test currently passes basic tests (throw/catch for int, double,
-    // string, catch-all, cross-frame propagation, indirect calls) but has known
-    // limitations with rethrow, destructor unwinding, and catch-clause ordering.
-    // We check for the test suite header and that at least basic tests pass.
     assert!(
         stdout.contains("=== SEH C++ Test Suite (MSVC ABI / clang-cl) ==="),
         "seh_cpp_test_msvc.exe stdout should contain MSVC test suite header\nstdout:\n{stdout}"
     );
-    // Verify that core tests pass (throw int, catch(int), value correct).
+    // All 21 checks across 10 tests must pass with 0 failures.
     assert!(
-        stdout.contains("catch(int) handler entered"),
-        "seh_cpp_test_msvc.exe should pass the basic catch(int) test\nstdout:\n{stdout}"
+        stdout.contains("21 passed, 0 failed"),
+        "seh_cpp_test_msvc.exe should report 21 passed, 0 failed\nstdout:\n{stdout}"
     );
     assert!(
-        stdout.contains("thrown int value is 42"),
-        "seh_cpp_test_msvc.exe should correctly pass the thrown int value\nstdout:\n{stdout}"
+        output.status.success(),
+        "seh_cpp_test_msvc.exe should exit with status 0\nstdout:\n{stdout}"
     );
 }
 
