@@ -404,6 +404,33 @@ pub fn run(cli_args: CliArgs) -> Result<()> {
             "  TLS initialized, slot[0] = 0x{:X}",
             execution_context.teb.tls_slots[0]
         );
+
+        // Execute TLS callbacks if present.
+        if tls.address_of_callbacks != 0 {
+            let actual_callbacks = tls.address_of_callbacks.wrapping_add(delta);
+            loader_log!(
+                "  Executing TLS callbacks from table at: 0x{actual_callbacks:X}"
+            );
+            // Walk the NULL-terminated array of callback function pointers.
+            #[allow(clippy::cast_possible_truncation)]
+            let mut cb_ptr = actual_callbacks as *const u64;
+            loop {
+                // SAFETY: cb_ptr points into the loaded image; the loop
+                // terminates at the NULL sentinel that terminates the table.
+                let cb_addr = unsafe { *cb_ptr };
+                if cb_addr == 0 {
+                    break;
+                }
+                loader_log!("    Calling TLS callback at: 0x{cb_addr:X}");
+                // Call with (base_address, DLL_PROCESS_ATTACH=1, NULL).
+                // SAFETY: cb_addr is a valid code address inside the loaded image.
+                #[allow(clippy::cast_possible_truncation)]
+                let callback: unsafe extern "C" fn(u64, u32, *mut u8) =
+                    unsafe { core::mem::transmute(cb_addr as usize) };
+                unsafe { callback(base_address, 1, core::ptr::null_mut()) };
+                cb_ptr = unsafe { cb_ptr.add(1) };
+            }
+        }
     } else {
         loader_log!("\nNo TLS directory found");
     }

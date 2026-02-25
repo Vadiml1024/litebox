@@ -3740,6 +3740,685 @@ pub unsafe extern "C" fn ucrt__configthreadlocale(_mode: i32) -> i32 {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn msvcrt_chkstk_nop() {}
 
+// ── Formatted I/O stubs ──────────────────────────────────────────────────────
+
+/// `sprintf(buf, format, ...) -> int` — write formatted string to buffer.
+///
+/// This is a simplified stub: copies the format string into `buf` unchanged
+/// (no format-specifier substitution).  Returns the number of characters
+/// written, or -1 on error.
+///
+/// # Safety
+///
+/// `buf` must point to a writable buffer large enough to hold the output.
+/// `format` must be a valid null-terminated string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_sprintf(buf: *mut i8, format: *const i8, _args: ...) -> i32 {
+    if buf.is_null() || format.is_null() {
+        return -1;
+    }
+    // SAFETY: Caller guarantees format is a valid null-terminated C string.
+    let fmt = unsafe { std::ffi::CStr::from_ptr(format) };
+    let bytes = fmt.to_bytes_with_nul();
+    // SAFETY: Caller guarantees buf is large enough.
+    unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr().cast::<i8>(), buf, bytes.len()) };
+    #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+    let len = (bytes.len() - 1) as i32;
+    len
+}
+
+/// `snprintf(buf, count, format, ...) -> int` — write formatted string to
+/// size-limited buffer.
+///
+/// Simplified stub: copies at most `count-1` bytes of `format` into `buf`
+/// and appends a NUL terminator.
+///
+/// # Safety
+///
+/// `buf` must point to a writable buffer of at least `count` bytes.
+/// `format` must be a valid null-terminated string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_snprintf(
+    buf: *mut i8,
+    count: usize,
+    format: *const i8,
+    _args: ...
+) -> i32 {
+    if buf.is_null() || format.is_null() || count == 0 {
+        return -1;
+    }
+    // SAFETY: Caller guarantees format is a valid null-terminated C string.
+    let fmt = unsafe { std::ffi::CStr::from_ptr(format) };
+    let bytes = fmt.to_bytes();
+    let copy_len = bytes.len().min(count - 1);
+    // SAFETY: Caller guarantees buf is at least `count` bytes.
+    unsafe {
+        std::ptr::copy_nonoverlapping(bytes.as_ptr().cast::<i8>(), buf, copy_len);
+        *buf.add(copy_len) = 0;
+    }
+    #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+    let len = copy_len as i32;
+    len
+}
+
+/// `sscanf(buf, format, ...) -> int` — parse formatted string from buffer.
+///
+/// Stub implementation; always returns 0 (no fields matched).
+///
+/// # Safety
+///
+/// `buf` and `format` must be valid null-terminated strings.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_sscanf(_buf: *const i8, _format: *const i8, _args: ...) -> i32 {
+    0
+}
+
+/// `swprintf(buf, format, ...) -> int` — write formatted string to wide buffer.
+///
+/// Stub implementation; copies the wide format string into `buf` unchanged.
+/// Returns the number of wide characters written, or -1 on error.
+///
+/// # Safety
+///
+/// `buf` must point to a writable wide-character buffer large enough for the output.
+/// `format` must be a valid null-terminated wide string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_swprintf(buf: *mut u16, format: *const u16, _args: ...) -> i32 {
+    if buf.is_null() || format.is_null() {
+        return -1;
+    }
+    let mut len = 0usize;
+    // SAFETY: Caller guarantees format is a valid null-terminated wide string.
+    unsafe {
+        let mut src = format;
+        loop {
+            let ch = *src;
+            *buf.add(len) = ch;
+            if ch == 0 {
+                break;
+            }
+            len += 1;
+            src = src.add(1);
+        }
+    }
+    #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+    let count = len as i32;
+    count
+}
+
+/// `wprintf(format, ...) -> int` — print wide formatted string to stdout.
+///
+/// Stub: converts to UTF-8 and prints via stdout.
+///
+/// # Safety
+///
+/// `format` must be a valid null-terminated wide string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_wprintf(format: *const u16, _args: ...) -> i32 {
+    if format.is_null() {
+        return -1;
+    }
+    // Collect the wide string.
+    let mut len = 0usize;
+    // SAFETY: Caller guarantees format is a valid null-terminated wide string.
+    unsafe {
+        let mut p = format;
+        while *p != 0 {
+            len += 1;
+            p = p.add(1);
+        }
+    }
+    // SAFETY: We just measured the length above.
+    let wide = unsafe { std::slice::from_raw_parts(format, len) };
+    let s = String::from_utf16_lossy(wide);
+    match std::io::Write::write_all(&mut std::io::stdout(), s.as_bytes()) {
+        Ok(()) => {
+            let _ = std::io::stdout().flush();
+            #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+            let count = len as i32;
+            count
+        }
+        Err(_) => -1,
+    }
+}
+
+// ── Character classification ─────────────────────────────────────────────────
+
+/// `isalpha(c) -> int` — test if character is alphabetic.
+///
+/// # Safety
+///
+/// `c` should be in the range -1 to 255.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_isalpha(c: i32) -> i32 {
+    // SAFETY: libc::isalpha is safe to call with any c in -1..=255.
+    unsafe { libc::isalpha(c) }
+}
+
+/// `isdigit(c) -> int` — test if character is a decimal digit.
+///
+/// # Safety
+///
+/// `c` should be in the range -1 to 255.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_isdigit(c: i32) -> i32 {
+    // SAFETY: libc::isdigit is safe to call with any c in -1..=255.
+    unsafe { libc::isdigit(c) }
+}
+
+/// `isspace(c) -> int` — test if character is whitespace.
+///
+/// # Safety
+///
+/// `c` should be in the range -1 to 255.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_isspace(c: i32) -> i32 {
+    // SAFETY: libc::isspace is safe to call with any c in -1..=255.
+    unsafe { libc::isspace(c) }
+}
+
+/// `isupper(c) -> int` — test if character is uppercase.
+///
+/// # Safety
+///
+/// `c` should be in the range -1 to 255.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_isupper(c: i32) -> i32 {
+    // SAFETY: libc::isupper is safe to call with any c in -1..=255.
+    unsafe { libc::isupper(c) }
+}
+
+/// `islower(c) -> int` — test if character is lowercase.
+///
+/// # Safety
+///
+/// `c` should be in the range -1 to 255.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_islower(c: i32) -> i32 {
+    // SAFETY: libc::islower is safe to call with any c in -1..=255.
+    unsafe { libc::islower(c) }
+}
+
+/// `toupper(c) -> int` — convert character to uppercase.
+///
+/// # Safety
+///
+/// `c` should be in the range -1 to 255.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_toupper(c: i32) -> i32 {
+    // SAFETY: libc::toupper is safe to call with any c in -1..=255.
+    unsafe { libc::toupper(c) }
+}
+
+/// `tolower(c) -> int` — convert character to lowercase.
+///
+/// # Safety
+///
+/// `c` should be in the range -1 to 255.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_tolower(c: i32) -> i32 {
+    // SAFETY: libc::tolower is safe to call with any c in -1..=255.
+    unsafe { libc::tolower(c) }
+}
+
+/// `isxdigit(c) -> int` — test if character is a hexadecimal digit.
+///
+/// # Safety
+///
+/// `c` should be in the range -1 to 255.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_isxdigit(c: i32) -> i32 {
+    // SAFETY: libc::isxdigit is safe to call with any c in -1..=255.
+    unsafe { libc::isxdigit(c) }
+}
+
+/// `ispunct(c) -> int` — test if character is punctuation.
+///
+/// # Safety
+///
+/// `c` should be in the range -1 to 255.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_ispunct(c: i32) -> i32 {
+    // SAFETY: libc::ispunct is safe to call with any c in -1..=255.
+    unsafe { libc::ispunct(c) }
+}
+
+/// `isprint(c) -> int` — test if character is printable.
+///
+/// # Safety
+///
+/// `c` should be in the range -1 to 255.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_isprint(c: i32) -> i32 {
+    // SAFETY: libc::isprint is safe to call with any c in -1..=255.
+    unsafe { libc::isprint(c) }
+}
+
+/// `iscntrl(c) -> int` — test if character is a control character.
+///
+/// # Safety
+///
+/// `c` should be in the range -1 to 255.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_iscntrl(c: i32) -> i32 {
+    // SAFETY: libc::iscntrl is safe to call with any c in -1..=255.
+    unsafe { libc::iscntrl(c) }
+}
+
+/// `isalnum(c) -> int` — test if character is alphanumeric.
+///
+/// # Safety
+///
+/// `c` should be in the range -1 to 255.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_isalnum(c: i32) -> i32 {
+    // SAFETY: libc::isalnum is safe to call with any c in -1..=255.
+    unsafe { libc::isalnum(c) }
+}
+
+// ── Sorting and searching ────────────────────────────────────────────────────
+
+/// `qsort(base, nmemb, size, compar)` — sort array.
+///
+/// Delegates directly to the host libc `qsort`.
+///
+/// # Safety
+///
+/// - `base` must point to a valid array of `nmemb` elements each `size` bytes.
+/// - `compar` must be a valid comparison function pointer.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_qsort(
+    base: *mut core::ffi::c_void,
+    nmemb: usize,
+    size: usize,
+    compar: Option<unsafe extern "C" fn(*const core::ffi::c_void, *const core::ffi::c_void) -> i32>,
+) {
+    // SAFETY: Caller guarantees base/nmemb/size describe a valid array and
+    // compar is a valid function pointer.
+    unsafe { libc::qsort(base, nmemb, size, compar) };
+}
+
+/// `bsearch(key, base, nmemb, size, compar) -> *mut void` — binary search.
+///
+/// Delegates directly to the host libc `bsearch`.
+///
+/// # Safety
+///
+/// - `key` must be a pointer to the value being searched for.
+/// - `base` must point to a sorted array of `nmemb` elements each `size` bytes.
+/// - `compar` must be a valid comparison function pointer.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_bsearch(
+    key: *const core::ffi::c_void,
+    base: *const core::ffi::c_void,
+    nmemb: usize,
+    size: usize,
+    compar: Option<unsafe extern "C" fn(*const core::ffi::c_void, *const core::ffi::c_void) -> i32>,
+) -> *mut core::ffi::c_void {
+    // SAFETY: Caller guarantees key/base/nmemb/size describe a valid sorted
+    // array and compar is a valid function pointer.
+    unsafe { libc::bsearch(key, base, nmemb, size, compar) }
+}
+
+// ── Wide string numeric conversions ─────────────────────────────────────────
+
+/// `wcstol(nptr, endptr, base) -> long` — convert wide string to long integer.
+///
+/// Converts the wide string to a narrow string then delegates to `libc::strtol`.
+///
+/// # Safety
+///
+/// `nptr` must point to a valid null-terminated wide string.
+/// `endptr`, if non-null, must be a valid pointer to a `*mut u16`.
+#[unsafe(no_mangle)]
+#[allow(clippy::cast_possible_truncation)]
+pub unsafe extern "C" fn msvcrt_wcstol(
+    nptr: *const u16,
+    endptr: *mut *mut u16,
+    base: i32,
+) -> i64 {
+    if nptr.is_null() {
+        return 0;
+    }
+    // Convert wide string to narrow for parsing.
+    let mut narrow = [0u8; 64];
+    let mut i = 0usize;
+    // SAFETY: Caller guarantees nptr is a valid null-terminated wide string.
+    unsafe {
+        let mut p = nptr;
+        while *p != 0 && i < narrow.len() - 1 {
+            narrow[i] = *p as u8;
+            i += 1;
+            p = p.add(1);
+        }
+        narrow[i] = 0;
+    }
+    let mut narrow_end: *mut u8 = std::ptr::null_mut();
+    // SAFETY: narrow is a valid null-terminated string; strtol is safe to call.
+    let val = unsafe {
+        libc::strtol(
+            narrow.as_ptr().cast(),
+            core::ptr::addr_of_mut!(narrow_end).cast(),
+            base,
+        )
+    };
+    if !endptr.is_null() {
+        // Map the narrow end pointer offset back to a wide pointer.
+        // SAFETY: narrow_end points within narrow[], so offset_from is non-negative.
+        let offset = unsafe { narrow_end.offset_from(narrow.as_ptr()) }.unsigned_abs();
+        // SAFETY: Caller guarantees endptr is a valid writable pointer.
+        unsafe { *endptr = nptr.add(offset).cast_mut() };
+    }
+    val as i64
+}
+
+/// `wcstoul(nptr, endptr, base) -> unsigned long` — convert wide string to
+/// unsigned long integer.
+///
+/// Converts the wide string to a narrow string then delegates to `libc::strtoul`.
+///
+/// # Safety
+///
+/// `nptr` must point to a valid null-terminated wide string.
+/// `endptr`, if non-null, must be a valid pointer to a `*mut u16`.
+#[unsafe(no_mangle)]
+#[allow(clippy::cast_possible_truncation)]
+pub unsafe extern "C" fn msvcrt_wcstoul(
+    nptr: *const u16,
+    endptr: *mut *mut u16,
+    base: i32,
+) -> u64 {
+    if nptr.is_null() {
+        return 0;
+    }
+    let mut narrow = [0u8; 64];
+    let mut i = 0usize;
+    // SAFETY: Caller guarantees nptr is a valid null-terminated wide string.
+    unsafe {
+        let mut p = nptr;
+        while *p != 0 && i < narrow.len() - 1 {
+            narrow[i] = *p as u8;
+            i += 1;
+            p = p.add(1);
+        }
+        narrow[i] = 0;
+    }
+    let mut narrow_end: *mut u8 = std::ptr::null_mut();
+    // SAFETY: narrow is a valid null-terminated string; strtoul is safe to call.
+    let val = unsafe {
+        libc::strtoul(
+            narrow.as_ptr().cast(),
+            core::ptr::addr_of_mut!(narrow_end).cast(),
+            base,
+        )
+    };
+    if !endptr.is_null() {
+        // SAFETY: narrow_end points within narrow[], so offset_from is non-negative.
+        let offset = unsafe { narrow_end.offset_from(narrow.as_ptr()) }.unsigned_abs();
+        // SAFETY: Caller guarantees endptr is a valid writable pointer.
+        unsafe { *endptr = nptr.add(offset).cast_mut() };
+    }
+    val as u64
+}
+
+/// `wcstod(nptr, endptr) -> double` — convert wide string to double.
+///
+/// Converts the wide string to a narrow string then delegates to `libc::strtod`.
+///
+/// # Safety
+///
+/// `nptr` must point to a valid null-terminated wide string.
+/// `endptr`, if non-null, must be a valid pointer to a `*mut u16`.
+#[unsafe(no_mangle)]
+#[allow(clippy::cast_possible_truncation)]
+pub unsafe extern "C" fn msvcrt_wcstod(nptr: *const u16, endptr: *mut *mut u16) -> f64 {
+    if nptr.is_null() {
+        return 0.0;
+    }
+    let mut narrow = [0u8; 64];
+    let mut i = 0usize;
+    // SAFETY: Caller guarantees nptr is a valid null-terminated wide string.
+    unsafe {
+        let mut p = nptr;
+        while *p != 0 && i < narrow.len() - 1 {
+            narrow[i] = *p as u8;
+            i += 1;
+            p = p.add(1);
+        }
+        narrow[i] = 0;
+    }
+    let mut narrow_end: *mut u8 = std::ptr::null_mut();
+    // SAFETY: narrow is a valid null-terminated string; strtod is safe to call.
+    let val = unsafe {
+        libc::strtod(
+            narrow.as_ptr().cast(),
+            core::ptr::addr_of_mut!(narrow_end).cast(),
+        )
+    };
+    if !endptr.is_null() {
+        // SAFETY: narrow_end points within narrow[], so offset_from is non-negative.
+        let offset = unsafe { narrow_end.offset_from(narrow.as_ptr()) }.unsigned_abs();
+        // SAFETY: Caller guarantees endptr is a valid writable pointer.
+        unsafe { *endptr = nptr.add(offset).cast_mut() };
+    }
+    val
+}
+
+// ── File I/O ─────────────────────────────────────────────────────────────────
+
+/// `fopen(filename, mode) -> FILE*` — open a file.
+///
+/// Delegates to `libc::fopen`.
+///
+/// # Safety
+///
+/// `filename` and `mode` must be valid null-terminated strings.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_fopen(filename: *const i8, mode: *const i8) -> *mut u8 {
+    // SAFETY: Caller guarantees filename and mode are valid C strings.
+    unsafe { libc::fopen(filename.cast(), mode.cast()).cast() }
+}
+
+/// `fclose(stream) -> int` — close a file.
+///
+/// Delegates to `libc::fclose`.
+///
+/// # Safety
+///
+/// `stream` must be a valid `FILE*` returned by `fopen`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_fclose(stream: *mut u8) -> i32 {
+    if stream.is_null() {
+        return -1;
+    }
+    // SAFETY: Caller guarantees stream is a valid FILE*.
+    unsafe { libc::fclose(stream.cast()) }
+}
+
+/// `fread(ptr, size, nmemb, stream) -> size_t` — read from file.
+///
+/// Delegates to `libc::fread`.
+///
+/// # Safety
+///
+/// `ptr` must point to a writable buffer of at least `size * nmemb` bytes.
+/// `stream` must be a valid open `FILE*`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_fread(
+    ptr: *mut u8,
+    size: usize,
+    nmemb: usize,
+    stream: *mut u8,
+) -> usize {
+    if ptr.is_null() || stream.is_null() || size == 0 || nmemb == 0 {
+        return 0;
+    }
+    // SAFETY: Caller guarantees ptr and stream are valid.
+    unsafe { libc::fread(ptr.cast(), size, nmemb, stream.cast()) }
+}
+
+/// `fgets(s, n, stream) -> char*` — read a line from file.
+///
+/// Delegates to `libc::fgets`.
+///
+/// # Safety
+///
+/// `s` must point to a writable buffer of at least `n` bytes.
+/// `stream` must be a valid open `FILE*`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_fgets(s: *mut i8, n: i32, stream: *mut u8) -> *mut i8 {
+    if s.is_null() || stream.is_null() || n <= 0 {
+        return std::ptr::null_mut();
+    }
+    // SAFETY: Caller guarantees s and stream are valid.
+    unsafe { libc::fgets(s.cast(), n, stream.cast()) }
+}
+
+/// `fseek(stream, offset, whence) -> int` — reposition file pointer.
+///
+/// Delegates to `libc::fseek`.
+///
+/// # Safety
+///
+/// `stream` must be a valid open `FILE*`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_fseek(stream: *mut u8, offset: i64, whence: i32) -> i32 {
+    if stream.is_null() {
+        return -1;
+    }
+    // SAFETY: Caller guarantees stream is a valid FILE*.
+    #[allow(clippy::cast_possible_truncation)]
+    unsafe {
+        libc::fseek(stream.cast(), offset as libc::c_long, whence)
+    }
+}
+
+/// `ftell(stream) -> long` — get file position.
+///
+/// Delegates to `libc::ftell`.
+///
+/// # Safety
+///
+/// `stream` must be a valid open `FILE*`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_ftell(stream: *mut u8) -> i64 {
+    if stream.is_null() {
+        return -1;
+    }
+    // SAFETY: Caller guarantees stream is a valid FILE*.
+    unsafe { libc::ftell(stream.cast()) as i64 }
+}
+
+/// `feof(stream) -> int` — test for end-of-file.
+///
+/// Delegates to `libc::feof`.
+///
+/// # Safety
+///
+/// `stream` must be a valid open `FILE*`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_feof(stream: *mut u8) -> i32 {
+    if stream.is_null() {
+        return 0;
+    }
+    // SAFETY: Caller guarantees stream is a valid FILE*.
+    unsafe { libc::feof(stream.cast()) }
+}
+
+/// `ferror(stream) -> int` — test for file error.
+///
+/// Delegates to `libc::ferror`.
+///
+/// # Safety
+///
+/// `stream` must be a valid open `FILE*`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_ferror(stream: *mut u8) -> i32 {
+    if stream.is_null() {
+        return 0;
+    }
+    // SAFETY: Caller guarantees stream is a valid FILE*.
+    unsafe { libc::ferror(stream.cast()) }
+}
+
+/// `clearerr(stream)` — clear end-of-file and error indicators.
+///
+/// Delegates to `libc::clearerr`.
+///
+/// # Safety
+///
+/// `stream` must be a valid open `FILE*`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_clearerr(stream: *mut u8) {
+    if stream.is_null() {
+        return;
+    }
+    // SAFETY: Caller guarantees stream is a valid FILE*.
+    unsafe { libc::clearerr(stream.cast()) };
+}
+
+/// `fflush(stream) -> int` — flush file buffer.
+///
+/// Delegates to `libc::fflush`.
+///
+/// # Safety
+///
+/// `stream` must be a valid open `FILE*`, or null to flush all streams.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_fflush(stream: *mut u8) -> i32 {
+    // SAFETY: libc::fflush accepts a null pointer (flushes all streams).
+    unsafe { libc::fflush(stream.cast()) }
+}
+
+/// `rewind(stream)` — reset file position to beginning.
+///
+/// Delegates to `libc::rewind`.
+///
+/// # Safety
+///
+/// `stream` must be a valid open `FILE*`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_rewind(stream: *mut u8) {
+    if stream.is_null() {
+        return;
+    }
+    // SAFETY: Caller guarantees stream is a valid FILE*.
+    unsafe { libc::rewind(stream.cast()) };
+}
+
+/// `fgetc(stream) -> int` — read a character from file.
+///
+/// Delegates to `libc::fgetc`.
+///
+/// # Safety
+///
+/// `stream` must be a valid open `FILE*`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_fgetc(stream: *mut u8) -> i32 {
+    if stream.is_null() {
+        return -1;
+    }
+    // SAFETY: Caller guarantees stream is a valid FILE*.
+    unsafe { libc::fgetc(stream.cast()) }
+}
+
+/// `ungetc(c, stream) -> int` — push character back into stream.
+///
+/// Delegates to `libc::ungetc`.
+///
+/// # Safety
+///
+/// `stream` must be a valid open `FILE*`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_ungetc(c: i32, stream: *mut u8) -> i32 {
+    if stream.is_null() {
+        return -1;
+    }
+    // SAFETY: Caller guarantees stream is a valid FILE*.
+    unsafe { libc::ungetc(c, stream.cast()) }
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
