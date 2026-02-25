@@ -1242,6 +1242,31 @@ pub unsafe extern "C" fn msvcrt_fputs(s: *const i8, stream: *mut core::ffi::c_vo
     if written < 0 { -1 } else { 0 }
 }
 
+/// `puts` – write a string and a trailing newline to stdout.
+///
+/// # Safety
+/// `s` must be a valid null-terminated C string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_puts(s: *const i8) -> i32 {
+    if s.is_null() {
+        return -1;
+    }
+    // SAFETY: caller guarantees s is a valid null-terminated C string.
+    let len = unsafe { libc::strlen(s.cast()) };
+    if len > 0 {
+        // SAFETY: s points to a valid buffer of at least `len` bytes.
+        let written = unsafe { libc::write(1, s.cast(), len) };
+        if written < 0 {
+            return -1;
+        }
+    }
+    // Append newline, matching POSIX puts() behaviour.
+    let nl: u8 = b'\n';
+    // SAFETY: we pass a valid 1-byte buffer.
+    let _ = unsafe { libc::write(1, core::ptr::addr_of!(nl).cast(), 1) };
+    0
+}
+
 /// `_read` – read bytes from a file descriptor.
 ///
 /// Reads up to `count` bytes from file descriptor `fd` into `buf`.
@@ -2734,8 +2759,6 @@ pub unsafe extern "C" fn msvcrt___CxxFrameHandler3(
         // Find the catch block that handles this exception.
         let try_table = (image_base + u64::from(fi.tryblock)) as *const CxxTryBlockInfo;
         let ctx = context_record.cast::<u8>();
-        // The post-alloc RSP of the parent function is already in the context.
-        let rsp_within_frame = unsafe { crate::kernel32::ctx_read(ctx, crate::kernel32::CTX_RSP) };
 
         'outer: for i in 0..(fi.tryblock_count as usize) {
             let tb = unsafe { &*try_table.add(i) };
@@ -2779,16 +2802,20 @@ pub unsafe extern "C" fn msvcrt___CxxFrameHandler3(
                 }
 
                 // Call the catch funclet as a Windows x64 function:
-                //   RCX = image_base
-                //   RDX = post-alloc RSP of the parent function
+                //   RCX = establisher frame
+                //   RDX = establisher frame (post-alloc RSP of the parent function)
                 // Returns: continuation IP (code right after the catch block) in RAX.
+                //
+                // Wine's `call_catch_block` passes the EstablisherFrame as both
+                // parameters — the funclet uses RDX to reconstruct the parent
+                // function's frame pointer via `lea OFFSET(%rdx), %rbp`.
                 //
                 // SAFETY: handler_va is the address of a valid PE catch funclet;
                 // we call it with the Windows x64 calling convention.
                 let handler_va = image_base + u64::from(catchblock.handler);
                 #[allow(clippy::cast_possible_truncation)]
                 let funclet: CatchFunclet = unsafe { core::mem::transmute(handler_va as usize) };
-                let continuation = unsafe { funclet(image_base, rsp_within_frame) };
+                let continuation = unsafe { funclet(establisher_frame, establisher_frame) };
 
                 // Update the context RIP to the continuation address.
                 // RtlUnwindEx will jump there instead of jumping to the funclet.

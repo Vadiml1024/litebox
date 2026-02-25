@@ -1671,11 +1671,20 @@ unsafe fn apply_unwind_info(
                 // Prolog: lea frame_reg, [rsp + frame_offset*16]
                 // Unwind: RSP = frame_reg - frame_offset*16
                 //
+                // Wine's RtlVirtualUnwind also sets `*frame_ret = frame` here,
+                // making the EstablisherFrame equal to the body RSP (the RSP
+                // value right after the prolog completes).  This is critical for
+                // MSVC catch funclets which receive EstablisherFrame in RDX and
+                // reconstruct the parent function's frame pointer from it.
+                //
                 // Only apply when a valid frame pointer exists (frame_register != 0).
                 // If fp_rsp_base is 0 the UNWIND_INFO is malformed; skip to avoid
                 // setting RSP to 0 and crashing on the subsequent return-address pop.
                 if fp_rsp_base != 0 {
                     unsafe { ctx_write(ctx, CTX_RSP, fp_rsp_base) };
+                    if !establisher_frame_out.is_null() {
+                        unsafe { *establisher_frame_out = fp_rsp_base };
+                    }
                 }
                 i += 1;
             }
@@ -1750,8 +1759,11 @@ unsafe fn apply_unwind_info(
         ctx_write(ctx, CTX_RIP, return_addr);
         ctx_write(ctx, CTX_RSP, rsp + 8);
     }
-    if !establisher_frame_out.is_null() {
-        // Establisher frame = RSP before popping the return address
+    // For functions WITHOUT a frame register, the establisher frame is the
+    // RSP after all unwind codes (before popping the return address).
+    // For functions WITH a frame register, UWOP_SET_FPREG already wrote
+    // the correct establisher frame (body RSP) above — do not overwrite it.
+    if !establisher_frame_out.is_null() && frame_register == 0 {
         unsafe { *establisher_frame_out = rsp }
     }
 
@@ -2751,16 +2763,25 @@ pub unsafe extern "C" fn kernel32_RtlUnwindEx(
             }
         }
 
-        // ExceptionInformation[3] = gcc_context.reg[1] = the C++ type-selector index.
-        // _GCC_specific_handler sets this during Phase 1 before calling RtlUnwindEx,
+        // For GCC-style exceptions (_GCC_specific_handler), ExceptionInformation[3]
+        // holds the type-selector index. _GCC_specific_handler sets this during Phase 1
         // and reads it back into ctx->Rdx when called with EXCEPTION_TARGET_UNWIND.
-        // We replicate that effect directly.
+        //
+        // For MSVC C++ exceptions (__CxxFrameHandler3), the catch funclet expects
+        // RDX = EstablisherFrame (the target frame address) so it can reconstruct
+        // the parent function's frame pointer and access local variables.
         if !exception_record.is_null() {
+            let exc = exception_record.cast::<ExceptionRecord>();
             // SAFETY: caller guarantees exception_record is a valid ExceptionRecord.
-            let selector =
-                unsafe { (*exception_record.cast::<ExceptionRecord>()).exception_information[3] };
-            // SAFETY: ctx is a valid, writable CONTEXT buffer.
-            unsafe { ctx_write(ctx, CTX_RDX, selector as u64) };
+            let code = unsafe { (*exc).exception_code };
+            if code == 0xE06D_7363 {
+                // MSVC C++ exception: funclet needs RDX = EstablisherFrame.
+                unsafe { ctx_write(ctx, CTX_RDX, target_frame_addr) };
+            } else {
+                // GCC exception: RDX = type-selector from ExceptionInformation[3].
+                let selector = unsafe { (*exc).exception_information[3] };
+                unsafe { ctx_write(ctx, CTX_RDX, selector as u64) };
+            }
         }
     }
 

@@ -672,6 +672,63 @@ fn test_seh_cpp_program() {
     );
 }
 
+/// Test that seh_cpp_test_msvc.exe runs basic MSVC-style C++ exception tests.
+///
+/// `seh_cpp_test_msvc` is compiled with `clang++ --target=x86_64-pc-windows-msvc`
+/// and uses MSVC-style exception handling (`_CxxThrowException` /
+/// `__CxxFrameHandler3`) instead of GCC-style.  This validates that clang-cl
+/// compiled C++ exceptions work through the LiteBox exception dispatcher.
+///
+/// Build the program with:
+/// ```
+/// cd windows_test_programs/seh_test && make seh_cpp_test_msvc.exe
+/// ```
+#[test]
+#[ignore = "Requires clang-cl-built MSVC test program (run: cd windows_test_programs/seh_test && make seh_cpp_test_msvc.exe)"]
+fn test_seh_cpp_msvc_program() {
+    use std::env;
+    use std::path::PathBuf;
+    use std::process::Command;
+
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let workspace_root = PathBuf::from(manifest_dir).parent().unwrap().to_path_buf();
+    let exe_path = workspace_root
+        .join("windows_test_programs")
+        .join("seh_test")
+        .join("seh_cpp_test_msvc.exe");
+
+    assert!(
+        exe_path.exists(),
+        "seh_cpp_test_msvc.exe not found at {exe_path:?}. \
+         Build it with: cd windows_test_programs/seh_test && make seh_cpp_test_msvc.exe"
+    );
+
+    let runner_exe = env!("CARGO_BIN_EXE_litebox_runner_windows_on_linux_userland");
+    let output = Command::new(runner_exe)
+        .arg(&exe_path)
+        .output()
+        .expect("failed to launch litebox runner for seh_cpp_test_msvc.exe");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // The MSVC test currently passes basic tests (throw/catch for int, double,
+    // string, catch-all, cross-frame propagation, indirect calls) but has known
+    // limitations with rethrow, destructor unwinding, and catch-clause ordering.
+    // We check for the test suite header and that at least basic tests pass.
+    assert!(
+        stdout.contains("=== SEH C++ Test Suite (MSVC ABI / clang-cl) ==="),
+        "seh_cpp_test_msvc.exe stdout should contain MSVC test suite header\nstdout:\n{stdout}"
+    );
+    // Verify that core tests pass (throw int, catch(int), value correct).
+    assert!(
+        stdout.contains("catch(int) handler entered"),
+        "seh_cpp_test_msvc.exe should pass the basic catch(int) test\nstdout:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("thrown int value is 42"),
+        "seh_cpp_test_msvc.exe should correctly pass the thrown int value\nstdout:\n{stdout}"
+    );
+}
+
 /// Test that phase27_test.exe passes all Phase 27 Windows API tests.
 ///
 /// `phase27_test` is a MinGW-compiled C++ program that exercises thread management,

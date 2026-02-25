@@ -223,6 +223,12 @@ pub fn get_function_table() -> Vec<FunctionImpl> {
             impl_address: crate::msvcrt::msvcrt_fputs as *const () as usize,
         },
         FunctionImpl {
+            name: "puts",
+            dll_name: "MSVCRT.dll",
+            num_params: 1,
+            impl_address: crate::msvcrt::msvcrt_puts as *const () as usize,
+        },
+        FunctionImpl {
             name: "_read",
             dll_name: "MSVCRT.dll",
             num_params: 3,
