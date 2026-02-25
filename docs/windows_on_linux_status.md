@@ -1,8 +1,8 @@
 # Windows on Linux: Implementation Status
 
-**Last Updated:** 2026-02-23  
-**Total Tests:** 452 passing (384 platform + 47 shim + 16 runner + 5 dev_tests — +27 new MSVCRT/KERNEL32/SHLWAPI/USER32 tests added in Phase 28)  
-**Overall Status:** Core infrastructure complete. Seven Rust-based test programs (hello_cli, math_test, env_test, args_test, file_io_test, string_test, getprocaddress_test) run successfully end-to-end through the runner on Linux. **All API stub functions have been fully replaced — stub count is now 0.** Phase 28 adds MSVCRT numeric conversions, string extras, random/time, math, wide-char extensions; KERNEL32 locale/file APIs; new SHLWAPI.dll path utilities; and more USER32 window stubs.
+**Last Updated:** 2026-02-25  
+**Total Tests:** 453 passing (384 platform + 47 shim + 17 runner + 5 dev_tests — +1 new SEH clang integration test added in Phase 31)  
+**Overall Status:** Core infrastructure complete. Seven Rust-based test programs (hello_cli, math_test, env_test, args_test, file_io_test, string_test, getprocaddress_test) run successfully end-to-end through the runner on Linux. **All API stub functions have been fully replaced — stub count is now 0.** Full C++ exception handling implemented and validated: `seh_c_test` (21/21), `seh_cpp_test` MinGW (26/26), `seh_cpp_test_clang` clang/MinGW (26/26) all pass. MSVC ABI (`seh_cpp_test_msvc`) passes basic tests but rethrow is not yet supported.
 
 ---
 
@@ -172,9 +172,13 @@
 ### MSVCRT Implementations (18 functions)
 `printf`, `fprintf`, `sprintf`, `snprintf`, `malloc`, `calloc`, `realloc`, `free`, `memcpy`, `memmove`, `memset`, `memcmp`, `strlen`, `strcpy`, `strncpy`, `strcmp`, `strncmp`, `exit`
 
-### Exception Handling Stubs (8 functions)
-`__C_specific_handler`, `SetUnhandledExceptionFilter`, `RaiseException`, `RtlCaptureContext`, `RtlLookupFunctionEntry`, `RtlUnwindEx`, `RtlVirtualUnwind`, `AddVectoredExceptionHandler`  
-*(These are minimal stubs sufficient to pass CRT initialization; full SEH is not implemented.)*
+### Exception Handling — Full C++ Exception Dispatch (14 functions)
+`__C_specific_handler`, `SetUnhandledExceptionFilter`, `RaiseException`, `RtlCaptureContext`, `RtlLookupFunctionEntry`, `RtlUnwindEx`, `RtlVirtualUnwind`, `AddVectoredExceptionHandler`, `RemoveVectoredExceptionHandler`, `_GCC_specific_handler` (GCC/MinGW C++ personality), `msvcrt__CxxThrowException`, `__CxxFrameHandler3` (MSVC C++ personality), `cxx_frame_handler`, `RtlUnwindEx` (extended unwind)
+
+- **C SEH API tests**: `seh_c_test.exe` — **21/21 PASS** (MinGW)
+- **C++ GCC/MinGW exceptions**: `seh_cpp_test.exe` — **26/26 PASS** (MinGW g++)
+- **C++ Clang/MinGW exceptions**: `seh_cpp_test_clang.exe` — **26/26 PASS** (clang++ `--target=x86_64-w64-mingw32`)
+- **C++ MSVC ABI exceptions**: `seh_cpp_test_msvc.exe` — basic throw/catch passes; rethrow (`throw;`) not yet supported
 
 ### String / Wide-Char Operations
 `MultiByteToWideChar`, `WideCharToMultiByte`, `lstrlenW`, `lstrlenA`, `CompareStringOrdinal`  
@@ -272,7 +276,8 @@ All GDI32 functions operate in headless mode: drawing is silently discarded.
 
 | Feature | Status |
 |---|---|
-| Full SEH / C++ exception handling | Stubs only; stack unwinding not implemented |
+| Full SEH / C++ exception handling (GCC/MinGW) | ✅ Fully implemented; `seh_c_test` 21/21, `seh_cpp_test` 26/26, `seh_cpp_test_clang` 26/26 |
+| MSVC ABI C++ exception rethrow | ⚠️ Partial; basic throw/catch passes; `throw;` (rethrow) crashes |
 | Full GUI rendering | USER32/GDI32 are headless stubs; no real window/drawing output |
 | Overlapped (async) I/O | `ReadFileEx`, `WriteFileEx`, `GetOverlappedResult` return `ERROR_NOT_SUPPORTED` |
 | Process creation (`CreateProcessW`) | Returns `ERROR_NOT_SUPPORTED`; sandboxed environment |
@@ -285,13 +290,13 @@ All GDI32 functions operate in headless mode: drawing is silently discarded.
 
 ## Test Coverage
 
-**425 tests total (all passing):**
+**453 tests total (all passing):**
 
 | Package | Tests | Notes |
 |---|---|---|
-| `litebox_platform_linux_for_windows` | 357 | KERNEL32, MSVCRT, WS2_32, advapi32, user32, gdi32, shell32, version, platform APIs |
+| `litebox_platform_linux_for_windows` | 384 | KERNEL32, MSVCRT, WS2_32, advapi32, user32, gdi32, shell32, version, platform APIs |
 | `litebox_shim_windows` | 47 | ABI translation, PE loader, tracing |
-| `litebox_runner_windows_on_linux_userland` | 16 | 9 tracing + 7 integration tests |
+| `litebox_runner_windows_on_linux_userland` | 17 | 9 tracing + 8 integration tests |
 | `dev_tests` | 5 | Ratchet constraints (globals, transmutes, MaybeUninit, stubs, copyright) |
 
 **Integration tests (7, plus 7 MinGW-gated):**
@@ -303,7 +308,7 @@ All GDI32 functions operate in headless mode: drawing is silently discarded.
 6. Error handling APIs (`GetLastError` / `SetLastError`)
 7. DLL exports validation (all critical KERNEL32, WS2_32, USER32, and GDI32 exports)
 
-**MinGW-gated integration tests (8, require `--include-ignored`):**
+**MinGW-gated integration tests (12, require `--include-ignored`):**
 - `test_hello_cli_program_exists` — checks hello_cli.exe is present
 - `test_math_test_program_exists` — checks math_test.exe is present
 - `test_env_test_program_exists` — checks env_test.exe is present
@@ -312,8 +317,12 @@ All GDI32 functions operate in headless mode: drawing is silently discarded.
 - `test_string_test_program_exists` — **runs** string_test.exe end-to-end; verifies exit 0, test header, and 0 failures
 - `test_getprocaddress_c_program` — **runs** getprocaddress_test.exe end-to-end; verifies exit 0 and 0 failures
 - `test_hello_gui_program` — **runs** hello_gui.exe end-to-end; verifies exit 0 (MessageBoxW prints headless message to stderr)
+- `test_seh_c_program` — **runs** seh_c_test.exe; verifies 21 passed, 0 failed (MinGW C SEH API tests)
+- `test_seh_cpp_program` — **runs** seh_cpp_test.exe; verifies 26 passed, 0 failed (MinGW C++ exceptions)
+- `test_seh_cpp_clang_program` — **runs** seh_cpp_test_clang.exe; verifies 26 passed, 0 failed (clang/MinGW C++ exceptions)
+- `test_seh_cpp_msvc_program` — **runs** seh_cpp_test_msvc.exe; verifies MSVC header + basic catch(int) passes
 
-**CI-validated test programs (7):**
+**CI-validated test programs (7 + 4 SEH):**
 
 | Program | What it tests | CI status |
 |---|---|---|
@@ -324,6 +333,10 @@ All GDI32 functions operate in headless mode: drawing is silently discarded.
 | `file_io_test.exe` | `CreateFileW`, `ReadFile`, `WriteFile`, directory operations | ✅ Passing |
 | `string_test.exe` | Rust `String` operations (allocations, comparisons, Unicode) | ✅ Passing |
 | `getprocaddress_test.exe` (C) | `GetModuleHandleA/W`, `GetProcAddress`, `LoadLibraryA`, `FreeLibrary` | ✅ Passing |
+| `seh_c_test.exe` (MinGW C) | SEH runtime APIs (`RtlCaptureContext`, `RtlUnwindEx`, vectored handlers) | ✅ **21/21 Passing** |
+| `seh_cpp_test.exe` (MinGW C++) | C++ exceptions with GCC/MinGW ABI (`throw`/`catch`, rethrow, destructors) | ✅ **26/26 Passing** |
+| `seh_cpp_test_clang.exe` (clang/MinGW) | C++ exceptions with Clang targeting MinGW ABI (`_Unwind_Resume` path) | ✅ **26/26 Passing** |
+| `seh_cpp_test_msvc.exe` (clang-cl/MSVC ABI) | C++ exceptions with MSVC ABI (`_CxxThrowException` / `__CxxFrameHandler3`) | ⚠️ **3 basic tests pass; rethrow not yet supported** |
 
 ---
 
@@ -366,7 +379,7 @@ litebox_runner_windows_on_linux_userland \
 
 ## Code Quality
 
-- **All 452 tests passing**
+- **All 453 tests passing**
 - `RUSTFLAGS=-Dwarnings cargo clippy --all-targets --all-features` — clean
 - `cargo fmt --check` — clean
 - All `unsafe` blocks have detailed safety comments
