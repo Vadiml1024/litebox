@@ -3381,6 +3381,48 @@ pub fn get_function_table() -> Vec<FunctionImpl> {
             num_params: 2,
             impl_address: crate::msvcrt::msvcrt_ungetc as *const () as usize,
         },
+        FunctionImpl {
+            name: "fileno",
+            dll_name: "MSVCRT.dll",
+            num_params: 1,
+            impl_address: crate::msvcrt::msvcrt_fileno as *const () as usize,
+        },
+        FunctionImpl {
+            name: "_fileno",
+            dll_name: "MSVCRT.dll",
+            num_params: 1,
+            impl_address: crate::msvcrt::msvcrt_fileno as *const () as usize,
+        },
+        FunctionImpl {
+            name: "fdopen",
+            dll_name: "MSVCRT.dll",
+            num_params: 2,
+            impl_address: crate::msvcrt::msvcrt_fdopen as *const () as usize,
+        },
+        FunctionImpl {
+            name: "_fdopen",
+            dll_name: "MSVCRT.dll",
+            num_params: 2,
+            impl_address: crate::msvcrt::msvcrt_fdopen as *const () as usize,
+        },
+        FunctionImpl {
+            name: "tmpfile",
+            dll_name: "MSVCRT.dll",
+            num_params: 0,
+            impl_address: crate::msvcrt::msvcrt_tmpfile as *const () as usize,
+        },
+        FunctionImpl {
+            name: "remove",
+            dll_name: "MSVCRT.dll",
+            num_params: 1,
+            impl_address: crate::msvcrt::msvcrt_remove as *const () as usize,
+        },
+        FunctionImpl {
+            name: "rename",
+            dll_name: "MSVCRT.dll",
+            num_params: 2,
+            impl_address: crate::msvcrt::msvcrt_rename as *const () as usize,
+        },
         // OLEAUT32: COM error info and BSTR functions
         FunctionImpl {
             name: "GetErrorInfo",

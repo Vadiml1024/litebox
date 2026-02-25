@@ -408,9 +408,7 @@ pub fn run(cli_args: CliArgs) -> Result<()> {
         // Execute TLS callbacks if present.
         if tls.address_of_callbacks != 0 {
             let actual_callbacks = tls.address_of_callbacks.wrapping_add(delta);
-            loader_log!(
-                "  Executing TLS callbacks from table at: 0x{actual_callbacks:X}"
-            );
+            loader_log!("  Executing TLS callbacks from table at: 0x{actual_callbacks:X}");
             // Walk the NULL-terminated array of callback function pointers.
             #[allow(clippy::cast_possible_truncation)]
             let mut cb_ptr = actual_callbacks as *const u64;

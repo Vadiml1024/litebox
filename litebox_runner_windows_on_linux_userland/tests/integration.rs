@@ -318,6 +318,26 @@ fn test_dll_manager_has_all_required_exports() {
         let result = dll_manager.get_proc_address(gdi32, func_name);
         assert!(result.is_ok(), "GDI32.dll should export {func_name}");
     }
+
+    // Check ole32.dll exports (Phase 32)
+    let ole32 = dll_manager.load_library("ole32.dll").unwrap();
+    let ole32_functions = vec![
+        "CoInitialize",
+        "CoInitializeEx",
+        "CoUninitialize",
+        "CoCreateInstance",
+        "CoTaskMemAlloc",
+        "CoTaskMemFree",
+        "CoTaskMemRealloc",
+        "StringFromGUID2",
+        "CoCreateGuid",
+        "CLSIDFromString",
+    ];
+
+    for func_name in ole32_functions {
+        let result = dll_manager.get_proc_address(ole32, func_name);
+        assert!(result.is_ok(), "ole32.dll should export {func_name}");
+    }
 }
 
 #[cfg(test)]

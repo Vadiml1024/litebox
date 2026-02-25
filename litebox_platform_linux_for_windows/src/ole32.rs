@@ -157,17 +157,7 @@ pub unsafe extern "C" fn ole32_string_from_guid2(
     // Build the 38-char string (no allocation — write directly into output).
     let s = format!(
         "{{{:08X}-{:04X}-{:04X}-{:02X}{:02X}-{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}}}",
-        d1,
-        d2,
-        d3,
-        g[8],
-        g[9],
-        g[10],
-        g[11],
-        g[12],
-        g[13],
-        g[14],
-        g[15],
+        d1, d2, d3, g[8], g[9], g[10], g[11], g[12], g[13], g[14], g[15],
     );
     let out = unsafe { core::slice::from_raw_parts_mut(lpsz, NEEDED as usize) };
     for (i, ch) in s.encode_utf16().enumerate() {
@@ -180,9 +170,9 @@ pub unsafe extern "C" fn ole32_string_from_guid2(
 /// Parse a single hex nibble from a `u16` wide character.
 fn parse_hex_nibble(c: u16) -> Option<u8> {
     match c {
-        0x30..=0x39 => Some((c - 0x30) as u8),         // '0'..'9'
-        0x61..=0x66 => Some((c - 0x61 + 10) as u8),    // 'a'..'f'
-        0x41..=0x46 => Some((c - 0x41 + 10) as u8),    // 'A'..'F'
+        0x30..=0x39 => Some((c - 0x30) as u8),      // '0'..'9'
+        0x61..=0x66 => Some((c - 0x61 + 10) as u8), // 'a'..'f'
+        0x41..=0x46 => Some((c - 0x41 + 10) as u8), // 'A'..'F'
         _ => None,
     }
 }
@@ -516,13 +506,8 @@ mod tests {
     fn test_co_get_class_object() {
         unsafe {
             let mut ppv: *mut u8 = ptr::null_mut();
-            let r = ole32_co_get_class_object(
-                ptr::null(),
-                0,
-                ptr::null_mut(),
-                ptr::null(),
-                &mut ppv,
-            );
+            let r =
+                ole32_co_get_class_object(ptr::null(), 0, ptr::null_mut(), ptr::null(), &mut ppv);
             assert_eq!(r, REGDB_E_CLASSNOTREG);
             assert!(ppv.is_null());
         }

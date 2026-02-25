@@ -1,8 +1,8 @@
 # Windows on Linux: Implementation Status
 
 **Last Updated:** 2026-02-25  
-**Total Tests:** 453 passing (384 platform + 47 shim + 17 runner + 5 dev_tests — +1 new SEH clang integration test added in Phase 31)  
-**Overall Status:** Core infrastructure complete. Seven Rust-based test programs (hello_cli, math_test, env_test, args_test, file_io_test, string_test, getprocaddress_test) run successfully end-to-end through the runner on Linux. **All API stub functions have been fully replaced — stub count is now 0.** Full C++ exception handling implemented and validated: `seh_c_test` (21/21), `seh_cpp_test` MinGW (26/26), `seh_cpp_test_clang` clang/MinGW (26/26), and `seh_cpp_test_msvc` MSVC ABI (21/21) all pass. All 10 MSVC ABI test cases are fully working including destructor unwinding and cross-frame propagation.
+**Total Tests:** 500 passing (433 platform + 50 shim + 17 runner + 5 dev_tests — Phase 32 adds ole32.dll COM stubs, 39 new MSVCRT functions, and TLS callbacks)  
+**Overall Status:** Core infrastructure complete. Seven Rust-based test programs (hello_cli, math_test, env_test, args_test, file_io_test, string_test, getprocaddress_test) run successfully end-to-end through the runner on Linux. **All API stub functions have been fully replaced — stub count is now 0.** Full C++ exception handling implemented and validated: `seh_c_test` (21/21), `seh_cpp_test` MinGW (26/26), `seh_cpp_test_clang` clang/MinGW (26/26), and `seh_cpp_test_msvc` MSVC ABI (21/21) all pass. Phase 32 adds ole32.dll with COM init/memory/GUID functions, 39 new MSVCRT helpers (stdio, char classification, sorting, wide numeric), and TLS callbacks execution.
 
 ---
 
@@ -270,6 +270,32 @@ All GDI32 functions operate in headless mode: drawing is silently discarded.
 - Zero overhead when disabled
 - Categories: `file_io`, `console_io`, `memory`, `threading`, `synchronization`, `environment`, `process`, `registry`
 
+### ole32.dll — COM Initialization and Memory (Phase 32, 12 functions)
+| Function | Behaviour |
+|---|---|
+| `CoInitialize` / `CoInitializeEx` | Returns S_OK (COM initialized in STA/MTA mode; headless) |
+| `CoUninitialize` | No-op |
+| `CoCreateInstance` | Returns E_NOTIMPL (0x80004001); COM object creation not supported in sandboxed env |
+| `CoGetClassObject` | Returns REGDB_E_CLASSNOTREG (0x80040154) |
+| `CoCreateGuid` | Fills 16 bytes with random data via `/dev/urandom` |
+| `StringFromGUID2` | Formats GUID as `{XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX}`; returns char count |
+| `CLSIDFromString` | Parses GUID string; returns CO_E_CLASSSTRING if invalid, S_OK if valid |
+| `CoTaskMemAlloc` / `CoTaskMemFree` / `CoTaskMemRealloc` | Delegate to `malloc`/`free`/`realloc` |
+| `CoSetProxyBlanket` | Returns E_NOTIMPL (security blanket not supported) |
+
+### MSVCRT New Functions (Phase 32, 39 functions)
+| Category | Functions |
+|---|---|
+| Formatted I/O | `sprintf`, `snprintf`, `sscanf`, `swprintf`, `wprintf` |
+| Character classification | `isalpha`, `isdigit`, `isspace`, `isupper`, `islower`, `isprint`, `isxdigit`, `isalnum`, `iscntrl`, `ispunct`, `toupper`, `tolower` |
+| Sorting | `qsort`, `bsearch` |
+| Wide numeric | `wcstol`, `wcstoul`, `wcstod` |
+| File I/O | `fopen`, `fclose`, `fread`, `fseek`, `ftell`, `fflush`, `fgets`, `rewind`, `feof`, `ferror`, `clearerr`, `fgetc`, `ungetc`, `fileno` (`_fileno`), `fdopen` (`_fdopen`), `tmpfile`, `remove`, `rename` |
+
+### TLS Callbacks (Phase 32)
+- `TlsInfo` now includes `address_of_callbacks` field parsed from the PE TLS directory
+- Runner executes all TLS callbacks (terminated by NULL pointer) before the entry point with `(base, DLL_PROCESS_ATTACH=1, NULL)` arguments
+
 ---
 
 ## What Is NOT Implemented ❌
@@ -295,23 +321,24 @@ All GDI32 functions operate in headless mode: drawing is silently discarded.
 
 ## Test Coverage
 
-**453 tests total (all passing):**
+**500 tests total (all passing):**
 
 | Package | Tests | Notes |
 |---|---|---|
-| `litebox_platform_linux_for_windows` | 384 | KERNEL32, MSVCRT, WS2_32, advapi32, user32, gdi32, shell32, version, platform APIs |
-| `litebox_shim_windows` | 47 | ABI translation, PE loader, tracing |
-| `litebox_runner_windows_on_linux_userland` | 17 | 9 tracing + 8 integration tests |
+| `litebox_platform_linux_for_windows` | 433 | KERNEL32, MSVCRT, WS2_32, advapi32, user32, gdi32, shell32, version, ole32, platform APIs |
+| `litebox_shim_windows` | 50 | ABI translation, PE loader, tracing, DLL manager |
+| `litebox_runner_windows_on_linux_userland` | 17 | 9 tracing + 8 integration tests (including ole32 exports) |
 | `dev_tests` | 5 | Ratchet constraints (globals, transmutes, MaybeUninit, stubs, copyright) |
 
-**Integration tests (7, plus 7 MinGW-gated):**
+**Integration tests (8, plus 12 MinGW-gated):**
 1. PE loader with minimal binary
 2. DLL loading infrastructure
 3. Command-line APIs (`GetCommandLineW`, `CommandLineToArgvW`)
 4. File search APIs (`FindFirstFileW`, `FindNextFileW`, `FindClose`)
 5. Memory protection APIs (`NtProtectVirtualMemory`)
 6. Error handling APIs (`GetLastError` / `SetLastError`)
-7. DLL exports validation (all critical KERNEL32, WS2_32, USER32, and GDI32 exports)
+7. DLL exports validation (all critical KERNEL32, WS2_32, USER32, GDI32, and ole32 exports)
+8. ole32.dll COM function exports
 
 **MinGW-gated integration tests (12, require `--include-ignored`):**
 - `test_hello_cli_program_exists` — checks hello_cli.exe is present
@@ -384,7 +411,7 @@ litebox_runner_windows_on_linux_userland \
 
 ## Code Quality
 
-- **All 453 tests passing**
+- **All 500 tests passing**
 - `RUSTFLAGS=-Dwarnings cargo clippy --all-targets --all-features` — clean
 - `cargo fmt --check` — clean
 - All `unsafe` blocks have detailed safety comments
@@ -419,3 +446,5 @@ litebox_runner_windows_on_linux_userland \
 | 27 | Thread management (`SetThreadPriority`, `GetThreadPriority`, `SuspendThread`, `ResumeThread`, `OpenThread`, `GetExitCodeThread`); process management (`OpenProcess`, `GetProcessTimes`); file-time utilities (`GetFileTime`, `CompareFileTime`, `FileTimeToLocalFileTime`); temp file name (`GetTempFileNameW`); USER32 character conversion (`CharUpperW/A`, `CharLowerW/A`); character classification (`IsCharAlphaW`, `IsCharAlphaNumericW`, `IsCharUpperW`, `IsCharLowerW`); window utilities (`IsWindow`, `IsWindowEnabled`, `IsWindowVisible`, `EnableWindow`, `GetWindowTextW`, `SetWindowTextW`, `GetParent`); +23 new tests | ✅ Complete |
 
 | 28 | MSVCRT numeric conversions (`atoi`, `atol`, `atof`, `strtol`, `strtoul`, `strtod`, `_itoa`, `_ltoa`); string extras (`strncpy`, `strncat`, `_stricmp`, `_strnicmp`, `_strdup`, `strnlen`); random/time (`rand`, `srand`, `time`, `clock`); math (`abs`, `labs`, `_abs64`, `fabs`, `sqrt`, `pow`, `log`, `log10`, `exp`, `sin`, `cos`, `tan`, `atan`, `atan2`, `ceil`, `floor`, `fmod`); wide-char extras (`wcscpy`, `wcscat`, `wcsncpy`, `wcschr`, `wcsncmp`, `_wcsicmp`, `_wcsnicmp`, `wcstombs`, `mbstowcs`); KERNEL32 (`GetFileSize`, `SetFilePointer`, `SetEndOfFile`, `FlushViewOfFile`, `GetSystemDefaultLangID/LCID`, `GetUserDefaultLangID/LCID`); new SHLWAPI.dll (`PathFileExistsW`, `PathCombineW`, `PathGetFileNameW`, `PathRemoveFileSpecW`, `PathIsRelativeW`, `PathFindExtensionW`, `PathStripPathW`, `PathAddBackslashW`, `StrToIntW`, `StrCmpIW`); USER32 window stubs (`FindWindowW`, `FindWindowExW`, `GetForegroundWindow`, `SetForegroundWindow`, `BringWindowToTop`, `GetWindowRect`, `SetWindowPos`, `MoveWindow`, `GetCursorPos`, `SetCursorPos`, `ScreenToClient`, `ClientToScreen`, `ShowCursor`, `GetFocus`, `SetFocus`); +27 new tests | ✅ Complete |
+| 29–31 | SEH/C++ exception handling (`__C_specific_handler`, `RtlCaptureContext`, `RtlLookupFunctionEntry`, `RtlVirtualUnwind`, `RtlUnwindEx`, `_GCC_specific_handler`, `__CxxFrameHandler3/4`, `msvcrt__CxxThrowException`); seh_c_test 21/21, seh_cpp_test 26/26, seh_cpp_test_clang 26/26, seh_cpp_test_msvc 21/21 all pass | ✅ Complete |
+| 32 | New `ole32.dll` (12 COM functions: `CoInitialize/Ex`, `CoUninitialize`, `CoCreateInstance`, `CoGetClassObject`, `CoCreateGuid`, `StringFromGUID2`, `CLSIDFromString`, `CoTaskMemAlloc/Free/Realloc`, `CoSetProxyBlanket`); 39 new MSVCRT functions (formatted I/O: `sprintf/snprintf/sscanf/swprintf/wprintf`; char classification: `isalpha/isdigit/isspace/isupper/islower/isprint/isxdigit/isalnum/iscntrl/ispunct/toupper/tolower`; sorting: `qsort/bsearch`; wide numeric: `wcstol/wcstoul/wcstod`; file I/O: `fopen/fclose/fread/fseek/ftell/fflush/fgets/rewind/feof/ferror/clearerr/fgetc/ungetc/fileno/fdopen/tmpfile/remove/rename`); TLS callbacks execution before entry point; +47 new tests (500 total) | ✅ Complete |

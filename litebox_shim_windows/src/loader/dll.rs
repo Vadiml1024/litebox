@@ -61,6 +61,9 @@ mod stub_addresses {
 
     /// api-ms-win-core-winrt-error-l1-1-0.dll function address range: 0xF000-0xFFFF
     pub const WINRT_ERROR_BASE: usize = 0xF000;
+
+    /// ole32.dll function address range: 0x10000-0x10FFF
+    pub const OLE32_BASE: usize = 0x10000;
 }
 
 /// Type for a DLL function pointer
@@ -143,6 +146,7 @@ impl DllManager {
         manager.load_stub_shlwapi();
         manager.load_stub_oleaut32();
         manager.load_stub_winrt_error();
+        manager.load_stub_ole32();
 
         manager
     }
@@ -1037,6 +1041,33 @@ impl DllManager {
 
         self.register_stub_dll("api-ms-win-core-winrt-error-l1-1-0.dll", exports);
     }
+
+    /// Load stub ole32.dll (COM initialization and memory functions)
+    fn load_stub_ole32(&mut self) {
+        use stub_addresses::OLE32_BASE;
+
+        let exports = vec![
+            // COM initialization
+            ("CoInitialize", OLE32_BASE),
+            ("CoInitializeEx", OLE32_BASE + 1),
+            ("CoUninitialize", OLE32_BASE + 2),
+            // COM object creation
+            ("CoCreateInstance", OLE32_BASE + 3),
+            ("CoGetClassObject", OLE32_BASE + 4),
+            // GUID functions
+            ("CoCreateGuid", OLE32_BASE + 5),
+            ("StringFromGUID2", OLE32_BASE + 6),
+            ("CLSIDFromString", OLE32_BASE + 7),
+            // COM task memory
+            ("CoTaskMemAlloc", OLE32_BASE + 8),
+            ("CoTaskMemFree", OLE32_BASE + 9),
+            ("CoTaskMemRealloc", OLE32_BASE + 10),
+            // Security
+            ("CoSetProxyBlanket", OLE32_BASE + 11),
+        ];
+
+        self.register_stub_dll("ole32.dll", exports);
+    }
 }
 
 /// Map Windows API Set DLL names to their real implementation DLLs
@@ -1112,10 +1143,10 @@ mod tests {
     #[test]
     fn test_dll_manager_creation() {
         let manager = DllManager::new();
-        // Should have 15 pre-loaded stub DLLs (KERNEL32, NTDLL, MSVCRT, bcrypt, USERENV,
+        // Should have 16 pre-loaded stub DLLs (KERNEL32, NTDLL, MSVCRT, bcrypt, USERENV,
         // WS2_32, api-ms-win-core-synch, USER32, ADVAPI32, GDI32, SHELL32, VERSION, SHLWAPI,
-        // OLEAUT32, api-ms-win-core-winrt-error-l1-1-0)
-        assert_eq!(manager.dlls.len(), 15);
+        // OLEAUT32, api-ms-win-core-winrt-error-l1-1-0, ole32)
+        assert_eq!(manager.dlls.len(), 16);
     }
 
     #[test]

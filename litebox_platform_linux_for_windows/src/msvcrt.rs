@@ -4072,11 +4072,7 @@ pub unsafe extern "C" fn msvcrt_bsearch(
 /// `endptr`, if non-null, must be a valid pointer to a `*mut u16`.
 #[unsafe(no_mangle)]
 #[allow(clippy::cast_possible_truncation)]
-pub unsafe extern "C" fn msvcrt_wcstol(
-    nptr: *const u16,
-    endptr: *mut *mut u16,
-    base: i32,
-) -> i64 {
+pub unsafe extern "C" fn msvcrt_wcstol(nptr: *const u16, endptr: *mut *mut u16, base: i32) -> i64 {
     if nptr.is_null() {
         return 0;
     }
@@ -4123,11 +4119,7 @@ pub unsafe extern "C" fn msvcrt_wcstol(
 /// `endptr`, if non-null, must be a valid pointer to a `*mut u16`.
 #[unsafe(no_mangle)]
 #[allow(clippy::cast_possible_truncation)]
-pub unsafe extern "C" fn msvcrt_wcstoul(
-    nptr: *const u16,
-    endptr: *mut *mut u16,
-    base: i32,
-) -> u64 {
+pub unsafe extern "C" fn msvcrt_wcstoul(nptr: *const u16, endptr: *mut *mut u16, base: i32) -> u64 {
     if nptr.is_null() {
         return 0;
     }
@@ -4418,6 +4410,87 @@ pub unsafe extern "C" fn msvcrt_ungetc(c: i32, stream: *mut u8) -> i32 {
     unsafe { libc::ungetc(c, stream.cast()) }
 }
 
+/// `fileno(stream) -> int`
+///
+/// Returns the file descriptor associated with `stream`, or -1 on error.
+///
+/// # Safety
+///
+/// `stream` must be a valid FILE pointer or NULL.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_fileno(stream: *mut u8) -> i32 {
+    if stream.is_null() {
+        return -1;
+    }
+    // SAFETY: Caller guarantees stream is a valid FILE*.
+    unsafe { libc::fileno(stream.cast()) }
+}
+
+/// `fdopen(fd, mode) -> FILE*`
+///
+/// Opens a stream associated with the given file descriptor.
+/// Returns NULL on error.
+///
+/// # Safety
+///
+/// `mode` must be a valid null-terminated C string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_fdopen(fd: i32, mode: *const i8) -> *mut u8 {
+    if mode.is_null() {
+        return core::ptr::null_mut();
+    }
+    // SAFETY: Caller guarantees mode is valid.
+    let result = unsafe { libc::fdopen(fd, mode) };
+    result.cast()
+}
+
+/// `tmpfile() -> FILE*`
+///
+/// Creates a temporary binary file opened for update.
+/// The file is automatically deleted when it is closed or the program terminates.
+/// Returns NULL on failure.
+///
+/// # Safety
+///
+/// This function is always safe to call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_tmpfile() -> *mut u8 {
+    // SAFETY: libc::tmpfile() is safe to call.
+    let result = unsafe { libc::tmpfile() };
+    result.cast()
+}
+
+/// `remove(path) -> int`
+///
+/// Deletes the file specified by `path`. Returns 0 on success, -1 on error.
+///
+/// # Safety
+///
+/// `path` must be a valid null-terminated C string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_remove(path: *const i8) -> i32 {
+    if path.is_null() {
+        return -1;
+    }
+    // SAFETY: Caller guarantees path is a valid string.
+    unsafe { libc::remove(path) }
+}
+
+/// `rename(oldname, newname) -> int`
+///
+/// Renames the file from `oldname` to `newname`. Returns 0 on success, -1 on error.
+///
+/// # Safety
+///
+/// `oldname` and `newname` must be valid null-terminated C strings.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_rename(oldname: *const i8, newname: *const i8) -> i32 {
+    if oldname.is_null() || newname.is_null() {
+        return -1;
+    }
+    // SAFETY: Caller guarantees both strings are valid.
+    unsafe { libc::rename(oldname, newname) }
+}
 
 #[cfg(test)]
 mod tests {
