@@ -2017,7 +2017,7 @@ pub unsafe extern "C" fn kernel32_InitializeSListHead(list_head: *mut core::ffi:
     if list_head.is_null() {
         return;
     }
-    unsafe { (list_head.cast::<usize>()).write(0) };
+    unsafe { (list_head.cast::<usize>()).write_unaligned(0) };
 }
 
 /// Raise an exception and dispatch it through the SEH handler chain.

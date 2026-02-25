@@ -39,7 +39,7 @@ pub static mut msvcrt__commode: i32 = 0;
 pub static mut msvcrt___initenv: *mut *mut i8 = ptr::null_mut();
 
 /// Null-terminated empty environment (`char**` with a single null pointer).
-static NULL_ENV_PTR: [usize; 1] = [0];
+const NULL_ENV_PTR: [usize; 1] = [0];
 
 // ============================================================================
 // Data Access Functions
@@ -562,7 +562,8 @@ pub unsafe extern "C" fn msvcrt__amsg_exit(code: i32) {
 /// This function is safe to call but marked unsafe for C ABI compatibility.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn msvcrt__cexit() {
-    std::process::exit(0)
+    // MSVCRT _cexit performs CRT cleanup without terminating the process.
+    // We do not maintain separate CRT cleanup state yet, so this is a no-op.
 }
 
 /// Reset floating point unit (_fpreset)
@@ -964,7 +965,7 @@ pub unsafe extern "C" fn msvcrt__initterm_e(
 static ARGC_STATIC: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
 
 /// Fallback null-terminated argv (`char**`) used before `__getmainargs`.
-static DEFAULT_ARGV_PTR: [usize; 1] = [0];
+const DEFAULT_ARGV_PTR: [usize; 1] = [0];
 
 /// Global argv pointer for `__p___argv`.
 ///
@@ -3544,7 +3545,7 @@ pub unsafe extern "C" fn ucrt__exit(status: i32) -> ! {
 /// Safe to call unconditionally.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ucrt__c_exit() {
-    std::process::exit(0)
+    unsafe { msvcrt__cexit() };
 }
 
 /// `_crt_atexit(fn)` — UCRT atexit registration
@@ -3589,7 +3590,8 @@ pub unsafe extern "C" fn ucrt__seh_filter_exe(
 /// Returns 0 (success).
 ///
 /// # Safety
-/// Safe to call with any pointer value.
+/// `table_ptr` must be non-null and point to writable memory containing a valid
+/// `_onexit_table_t`-compatible layout (three pointer fields).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ucrt__initialize_onexit_table(table_ptr: *mut core::ffi::c_void) -> i32 {
     #[repr(C)]
@@ -3599,25 +3601,15 @@ pub unsafe extern "C" fn ucrt__initialize_onexit_table(table_ptr: *mut core::ffi
         end: *mut *const core::ffi::c_void,
     }
 
-    static EMPTY_ONEXIT: std::sync::atomic::AtomicPtr<*const core::ffi::c_void> =
-        std::sync::atomic::AtomicPtr::new(core::ptr::null_mut());
-
     if table_ptr.is_null() {
         return -1;
     }
 
-    let mut empty_ptr = EMPTY_ONEXIT.load(std::sync::atomic::Ordering::Relaxed);
-    if empty_ptr.is_null() {
-        let boxed = Box::new([core::ptr::null::<core::ffi::c_void>()]);
-        empty_ptr = Box::into_raw(boxed).cast::<*const core::ffi::c_void>();
-        EMPTY_ONEXIT.store(empty_ptr, std::sync::atomic::Ordering::Relaxed);
-    }
-
     let table = table_ptr.cast::<OnExitTable>();
     unsafe {
-        (*table).first = empty_ptr;
-        (*table).last = empty_ptr;
-        (*table).end = empty_ptr;
+        (*table).first = core::ptr::null_mut();
+        (*table).last = core::ptr::null_mut();
+        (*table).end = core::ptr::null_mut();
     }
     0
 }

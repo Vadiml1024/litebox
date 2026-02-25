@@ -8,7 +8,6 @@
 //! invoke PE entry points with proper ABI translation.
 
 use crate::{Result, WindowsShimError};
-use std::sync::Once;
 
 /// Thread Environment Block (TEB) - Minimal stub version
 ///
@@ -704,24 +703,29 @@ pub unsafe fn call_entry_point(
     entry_point_address: usize,
     context: &ExecutionContext,
 ) -> Result<i32> {
-    static COMPAT_PAGE_ONCE: Once = Once::new();
-    COMPAT_PAGE_ONCE.call_once(|| unsafe {
+    unsafe {
         let page = 0x0040_0000usize as *mut libc::c_void;
         let mapped = libc::mmap(
             page,
             4096,
-            libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC,
+            libc::PROT_READ | libc::PROT_WRITE,
             libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_FIXED_NOREPLACE,
             -1,
             0,
         );
         if mapped == page {
-            // SAFETY: `mapped` is a writable/executable page we just mapped.
+            // SAFETY: `mapped` is a writable page we just mapped at `page`.
             *(mapped.cast::<u8>()) = 0xC3; // ret
+
+            // SAFETY: `mapped` points to a valid mapping of length 4096 we just created.
+            let rc = libc::mprotect(mapped, 4096, libc::PROT_READ | libc::PROT_EXEC);
+            if rc != 0 {
+                let _ = libc::munmap(mapped, 4096);
+            }
         } else if mapped != libc::MAP_FAILED {
             let _ = libc::munmap(mapped, 4096);
         }
-    });
+    }
 
     // Validate entry point is not null
     if entry_point_address == 0 {
