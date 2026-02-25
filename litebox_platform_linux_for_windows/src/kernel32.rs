@@ -9773,26 +9773,25 @@ fn seh_find_pe_frame_on_stack(rust_rsp: usize) -> Option<PeFrameInfo> {
     // We look for trampoline epilogue signatures at each slot, with a
     // valid .pdata PE return address 32 bytes above.
     //
-    // We use the LAST match (highest offset) because earlier matches are
-    // stale trampoline return addresses from previous IAT calls stored in
-    // the Rust frame body.  The actual trampoline frame is at the highest
-    // offset (directly above the Rust frame).  The trampoline epilogue
-    // pattern check (`pop rsi; pop rdi; ret`) prevents false positives
-    // from stale PE function pointers.
+    // We use the FIRST match (lowest offset) because the active trampoline
+    // frame is the closest to our Rust RSP — it sits directly above the
+    // Rust frames (kernel32_RaiseException → msvcrt__CxxThrowException →
+    // trampoline → PE code).  Stale trampoline frames from earlier IAT
+    // calls (e.g. printf called before the throw) reside at higher offsets
+    // in the PE caller's frame area and would yield the wrong PE return
+    // address.
     //
     // The window must be large enough to reach the trampoline frame even
     // when multiple Rust functions are between `kernel32_RaiseException`
     // and the trampoline (e.g. during a C++ rethrow that goes through
     // `cxx_handle_rethrow` → `msvcrt__CxxThrowException` → trampoline).
-    let mut best: Option<PeFrameInfo> = None;
-
     for offset in (0..2048_usize).step_by(8) {
         if let Some(info) = try_trampoline_at_offset(rust_rsp, offset, pe_base) {
-            best = Some(info);
+            return Some(info);
         }
     }
 
-    best
+    None
 }
 
 /// Try to extract a PE frame from a specific stack offset.
