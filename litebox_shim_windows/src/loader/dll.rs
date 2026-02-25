@@ -347,12 +347,14 @@ impl DllManager {
             // Phase 8: Exception Handling (stubs for CRT compatibility)
             ("__C_specific_handler", KERNEL32_BASE + 0x2E),
             ("SetUnhandledExceptionFilter", KERNEL32_BASE + 0x2F),
+            ("UnhandledExceptionFilter", KERNEL32_BASE + 0xDF),
             ("RaiseException", KERNEL32_BASE + 0x30),
             ("RtlCaptureContext", KERNEL32_BASE + 0x31),
             ("RtlLookupFunctionEntry", KERNEL32_BASE + 0x32),
             ("RtlUnwindEx", KERNEL32_BASE + 0x33),
             ("RtlVirtualUnwind", KERNEL32_BASE + 0x34),
             ("AddVectoredExceptionHandler", KERNEL32_BASE + 0x35),
+            ("InitializeSListHead", KERNEL32_BASE + 0xE0),
             // Phase 8.2: Critical Sections
             ("InitializeCriticalSection", KERNEL32_BASE + 0x36),
             ("EnterCriticalSection", KERNEL32_BASE + 0x37),
@@ -368,6 +370,7 @@ impl DllManager {
             ("QueryPerformanceCounter", KERNEL32_BASE + 0x3F),
             ("QueryPerformanceFrequency", KERNEL32_BASE + 0x40),
             ("GetSystemTimePreciseAsFileTime", KERNEL32_BASE + 0x41),
+            ("GetSystemTimeAsFileTime", KERNEL32_BASE + 0xE1),
             // Phase 8.5 and 8.6: Note - CreateFileW, ReadFile, WriteFile, CloseHandle,
             // GetProcessHeap, HeapAlloc, HeapFree, HeapReAlloc are already in the list above
             // Phase 8.7: Additional startup functions
@@ -401,6 +404,7 @@ impl DllManager {
             ("SetConsoleCtrlHandler", KERNEL32_BASE + 0x5C),
             ("SetFilePointerEx", KERNEL32_BASE + 0x5D),
             ("WaitForSingleObject", KERNEL32_BASE + 0x5E),
+            ("WaitForSingleObjectEx", KERNEL32_BASE + 0xE2),
             ("GetFileInformationByHandleEx", KERNEL32_BASE + 0x5F),
             ("GetFileSizeEx", KERNEL32_BASE + 0x60),
             ("GetFinalPathNameByHandleW", KERNEL32_BASE + 0x61),
@@ -708,8 +712,21 @@ impl DllManager {
             ("__security_init_cookie", MSVCRT_BASE + 0x74),
             ("__security_check_cookie", MSVCRT_BASE + 0x75),
             ("_initialize_narrow_environment", MSVCRT_BASE + 0x76),
+            ("_get_initial_narrow_environment", MSVCRT_BASE + 0x7F),
             ("_configure_narrow_argv", MSVCRT_BASE + 0x77),
+            ("_set_app_type", MSVCRT_BASE + 0x80),
+            ("_exit", MSVCRT_BASE + 0x81),
+            ("_c_exit", MSVCRT_BASE + 0x82),
             ("_crt_atexit", MSVCRT_BASE + 0x78),
+            (
+                "_register_thread_local_exe_atexit_callback",
+                MSVCRT_BASE + 0x83,
+            ),
+            ("_seh_filter_exe", MSVCRT_BASE + 0x84),
+            ("_initialize_onexit_table", MSVCRT_BASE + 0x85),
+            ("_register_onexit_function", MSVCRT_BASE + 0x86),
+            ("_set_fmode", MSVCRT_BASE + 0x87),
+            ("_set_new_mode", MSVCRT_BASE + 0x88),
             ("__acrt_iob_func", MSVCRT_BASE + 0x79),
             ("__stdio_common_vfprintf", MSVCRT_BASE + 0x7A),
             ("_configthreadlocale", MSVCRT_BASE + 0x7B),
@@ -1184,5 +1201,49 @@ mod tests {
             });
             assert_eq!(msvcrt, handle, "{api_set} must alias to MSVCRT.dll");
         }
+    }
+
+    #[test]
+    fn test_msvc_hello_cli_exports_present() {
+        let mut manager = DllManager::new();
+        let kernel32 = manager.load_library("KERNEL32.dll").unwrap();
+        for name in [
+            "UnhandledExceptionFilter",
+            "InitializeSListHead",
+            "WaitForSingleObjectEx",
+            "GetSystemTimeAsFileTime",
+        ] {
+            assert!(
+                manager.get_proc_address(kernel32, name).is_ok(),
+                "expected KERNEL32 export {name}"
+            );
+        }
+
+        let crt = manager
+            .load_library("api-ms-win-crt-runtime-l1-1-0.dll")
+            .unwrap();
+        for name in [
+            "_get_initial_narrow_environment",
+            "_set_app_type",
+            "_exit",
+            "_c_exit",
+            "_register_thread_local_exe_atexit_callback",
+            "_seh_filter_exe",
+            "_initialize_onexit_table",
+            "_register_onexit_function",
+        ] {
+            assert!(
+                manager.get_proc_address(crt, name).is_ok(),
+                "expected CRT export {name}"
+            );
+        }
+        let stdio = manager
+            .load_library("api-ms-win-crt-stdio-l1-1-0.dll")
+            .unwrap();
+        assert!(manager.get_proc_address(stdio, "_set_fmode").is_ok());
+        let heap = manager
+            .load_library("api-ms-win-crt-heap-l1-1-0.dll")
+            .unwrap();
+        assert!(manager.get_proc_address(heap, "_set_new_mode").is_ok());
     }
 }

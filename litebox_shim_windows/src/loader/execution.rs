@@ -38,8 +38,10 @@ pub struct ThreadEnvironmentBlock {
     pub environment_pointer: u64,
     /// Client ID - [process ID, thread ID] (offset 0x40)
     pub client_id: [u64; 2],
-    /// Reserved fields to reach offset 0x60 (offset 0x50-0x58)
-    _reserved: [u64; 2],
+    /// Active RPC handle (offset 0x50)
+    pub active_rpc_handle: u64,
+    /// ThreadLocalStoragePointer (offset 0x58)
+    pub thread_local_storage_pointer: u64,
     /// Pointer to PEB - MUST be at offset 0x60 for x64 Windows
     pub peb_pointer: u64,
     /// Reserved fields to reach TLS slots (offset 0x68 to 0x1480)
@@ -62,7 +64,8 @@ impl ThreadEnvironmentBlock {
             self_pointer: 0, // Will be set after allocation
             environment_pointer: 0,
             client_id: [0; 2], // [process_id, thread_id]
-            _reserved: [0; 2], // Fixed to 2 u64s to reach offset 0x60
+            active_rpc_handle: 0,
+            thread_local_storage_pointer: 0,
             peb_pointer,
             _reserved2: [0; 643], // Reserved space to reach TLS slots at 0x1480
             tls_slots: [0; 64],   // TLS slots initialized to null
@@ -488,6 +491,7 @@ impl ExecutionContext {
         // Set TEB self-pointer
         let teb_address = &raw const *teb as u64;
         teb.self_pointer = teb_address;
+        teb.thread_local_storage_pointer = teb.tls_slots.as_ptr() as u64;
 
         // Set thread and process IDs in TEB client_id
         // client_id[0] = process ID, client_id[1] = thread ID
@@ -699,6 +703,30 @@ pub unsafe fn call_entry_point(
     entry_point_address: usize,
     context: &ExecutionContext,
 ) -> Result<i32> {
+    unsafe {
+        let page = 0x0040_0000usize as *mut libc::c_void;
+        let mapped = libc::mmap(
+            page,
+            4096,
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_FIXED_NOREPLACE,
+            -1,
+            0,
+        );
+        if mapped == page {
+            // SAFETY: `mapped` is a writable page we just mapped at `page`.
+            *(mapped.cast::<u8>()) = 0xC3; // ret
+
+            // SAFETY: `mapped` points to a valid mapping of length 4096 we just created.
+            let rc = libc::mprotect(mapped, 4096, libc::PROT_READ | libc::PROT_EXEC);
+            if rc != 0 {
+                let _ = libc::munmap(mapped, 4096);
+            }
+        } else if mapped != libc::MAP_FAILED {
+            let _ = libc::munmap(mapped, 4096);
+        }
+    }
+
     // Validate entry point is not null
     if entry_point_address == 0 {
         return Err(WindowsShimError::InvalidParameter(

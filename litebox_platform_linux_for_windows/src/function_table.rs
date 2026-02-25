@@ -322,6 +322,18 @@ pub fn get_function_table() -> Vec<FunctionImpl> {
                 as usize,
         },
         FunctionImpl {
+            name: "UnhandledExceptionFilter",
+            dll_name: "KERNEL32.dll",
+            num_params: 1,
+            impl_address: crate::kernel32::kernel32_UnhandledExceptionFilter as *const () as usize,
+        },
+        FunctionImpl {
+            name: "InitializeSListHead",
+            dll_name: "KERNEL32.dll",
+            num_params: 1,
+            impl_address: crate::kernel32::kernel32_InitializeSListHead as *const () as usize,
+        },
+        FunctionImpl {
             name: "RaiseException",
             dll_name: "KERNEL32.dll",
             num_params: 4,
@@ -446,6 +458,12 @@ pub fn get_function_table() -> Vec<FunctionImpl> {
             num_params: 1,
             impl_address: crate::kernel32::kernel32_GetSystemTimePreciseAsFileTime as *const ()
                 as usize,
+        },
+        FunctionImpl {
+            name: "GetSystemTimeAsFileTime",
+            dll_name: "KERNEL32.dll",
+            num_params: 1,
+            impl_address: crate::kernel32::kernel32_GetSystemTimeAsFileTime as *const () as usize,
         },
         // Phase 8.5: File I/O Trampolines
         FunctionImpl {
@@ -778,6 +796,12 @@ pub fn get_function_table() -> Vec<FunctionImpl> {
             dll_name: "KERNEL32.dll",
             num_params: 2,
             impl_address: crate::kernel32::kernel32_WaitForSingleObject as *const () as usize,
+        },
+        FunctionImpl {
+            name: "WaitForSingleObjectEx",
+            dll_name: "KERNEL32.dll",
+            num_params: 3,
+            impl_address: crate::kernel32::kernel32_WaitForSingleObjectEx as *const () as usize,
         },
         FunctionImpl {
             name: "WriteConsoleW",
@@ -3046,16 +3070,77 @@ pub fn get_function_table() -> Vec<FunctionImpl> {
             impl_address: crate::msvcrt::ucrt__initialize_narrow_environment as *const () as usize,
         },
         FunctionImpl {
+            name: "_get_initial_narrow_environment",
+            dll_name: "MSVCRT.dll",
+            num_params: 0,
+            impl_address: crate::msvcrt::ucrt__get_initial_narrow_environment as *const () as usize,
+        },
+        FunctionImpl {
             name: "_configure_narrow_argv",
             dll_name: "MSVCRT.dll",
             num_params: 1,
             impl_address: crate::msvcrt::ucrt__configure_narrow_argv as *const () as usize,
         },
         FunctionImpl {
+            name: "_set_app_type",
+            dll_name: "MSVCRT.dll",
+            num_params: 1,
+            impl_address: crate::msvcrt::ucrt__set_app_type as *const () as usize,
+        },
+        FunctionImpl {
+            name: "_exit",
+            dll_name: "MSVCRT.dll",
+            num_params: 1,
+            impl_address: crate::msvcrt::ucrt__exit as *const () as usize,
+        },
+        FunctionImpl {
+            name: "_c_exit",
+            dll_name: "MSVCRT.dll",
+            num_params: 0,
+            impl_address: crate::msvcrt::ucrt__c_exit as *const () as usize,
+        },
+        FunctionImpl {
             name: "_crt_atexit",
             dll_name: "MSVCRT.dll",
             num_params: 1,
             impl_address: crate::msvcrt::ucrt__crt_atexit as *const () as usize,
+        },
+        FunctionImpl {
+            name: "_register_thread_local_exe_atexit_callback",
+            dll_name: "MSVCRT.dll",
+            num_params: 1,
+            impl_address: crate::msvcrt::ucrt__register_thread_local_exe_atexit_callback
+                as *const () as usize,
+        },
+        FunctionImpl {
+            name: "_seh_filter_exe",
+            dll_name: "MSVCRT.dll",
+            num_params: 2,
+            impl_address: crate::msvcrt::ucrt__seh_filter_exe as *const () as usize,
+        },
+        FunctionImpl {
+            name: "_initialize_onexit_table",
+            dll_name: "MSVCRT.dll",
+            num_params: 1,
+            impl_address: crate::msvcrt::ucrt__initialize_onexit_table as *const () as usize,
+        },
+        FunctionImpl {
+            name: "_register_onexit_function",
+            dll_name: "MSVCRT.dll",
+            num_params: 2,
+            impl_address: crate::msvcrt::ucrt__register_onexit_function as *const () as usize,
+        },
+        FunctionImpl {
+            name: "_set_fmode",
+            dll_name: "MSVCRT.dll",
+            num_params: 1,
+            impl_address: crate::msvcrt::ucrt__set_fmode as *const () as usize,
+        },
+        FunctionImpl {
+            name: "_set_new_mode",
+            dll_name: "MSVCRT.dll",
+            num_params: 1,
+            impl_address: crate::msvcrt::ucrt__set_new_mode as *const () as usize,
         },
         FunctionImpl {
             name: "__acrt_iob_func",
@@ -3333,6 +3418,34 @@ mod tests {
             assert!(!func.dll_name.is_empty());
             assert_ne!(func.impl_address, 0);
         }
+    }
+
+    #[test]
+    fn test_msvc_hello_cli_compat_exports_present() {
+        let table = get_function_table();
+        let has = |dll: &str, name: &str| {
+            table
+                .iter()
+                .any(|f| f.dll_name.eq_ignore_ascii_case(dll) && f.name == name)
+        };
+
+        assert!(has("KERNEL32.dll", "UnhandledExceptionFilter"));
+        assert!(has("KERNEL32.dll", "InitializeSListHead"));
+        assert!(has("KERNEL32.dll", "WaitForSingleObjectEx"));
+        assert!(has("KERNEL32.dll", "GetSystemTimeAsFileTime"));
+        assert!(has("MSVCRT.dll", "_get_initial_narrow_environment"));
+        assert!(has("MSVCRT.dll", "_set_app_type"));
+        assert!(has("MSVCRT.dll", "_exit"));
+        assert!(has("MSVCRT.dll", "_c_exit"));
+        assert!(has(
+            "MSVCRT.dll",
+            "_register_thread_local_exe_atexit_callback"
+        ));
+        assert!(has("MSVCRT.dll", "_seh_filter_exe"));
+        assert!(has("MSVCRT.dll", "_initialize_onexit_table"));
+        assert!(has("MSVCRT.dll", "_register_onexit_function"));
+        assert!(has("MSVCRT.dll", "_set_fmode"));
+        assert!(has("MSVCRT.dll", "_set_new_mode"));
     }
 
     #[test]
