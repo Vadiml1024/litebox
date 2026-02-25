@@ -113,7 +113,7 @@ __asm__(".globl \"??_7type_info@@6B@\"\n"
 // operations appear in the code. It's normally defined in the CRT.
 int _fltused = 0x9875;
 STUB
-clang --target=x86_64-pc-windows-msvc -c \
+${CLANG_C} --target=x86_64-pc-windows-msvc -c \
     -o "${BUILD_DIR}/crt_stubs.o" "${BUILD_DIR}/crt_stubs.c"
 
 # Step 4: Link into a PE executable

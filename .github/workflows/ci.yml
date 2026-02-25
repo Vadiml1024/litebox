@@ -407,7 +407,7 @@ jobs:
         uses: ./.github/actions/install-mingw
       - name: Install clang for cross-compiled SEH tests
         if: matrix.suite == 'seh'
-        run: sudo apt-get install -y clang
+        run: sudo apt-get install -y clang lld
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: wol-runner

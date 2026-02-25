@@ -2774,7 +2774,7 @@ pub unsafe extern "C" fn kernel32_RtlUnwindEx(
             let exc = exception_record.cast::<ExceptionRecord>();
             // SAFETY: caller guarantees exception_record is a valid ExceptionRecord.
             let code = unsafe { (*exc).exception_code };
-            if code == 0xE06D_7363 {
+            if code == STATUS_MSVC_CPP_EXCEPTION {
                 // MSVC C++ exception: funclet needs RDX = EstablisherFrame.
                 unsafe { ctx_write(ctx, CTX_RDX, target_frame_addr) };
             } else {
