@@ -2497,9 +2497,23 @@ unsafe fn cxx_find_catch_block(
             // For rethrow, use the saved establisher frame from the
             // original catch.  The rethrow's stack walk through
             // intermediate Rust frames computes a wrong frame address.
-            let effective_frame = rethrow_info
-                .as_ref()
-                .map_or(establisher_frame, |r| r.establisher_frame);
+            //
+            // For a NEW throw from a catch funclet (CXX_EXC_RECORD is set
+            // but not a rethrow), the same frame correction is needed:
+            // the funclet was called from Rust code, so the unwinder
+            // computes the funclet's frame instead of the parent's.
+            let in_catch_record = CXX_EXC_RECORD.with(std::cell::Cell::get);
+            let effective_frame = if let Some(ref ri) = rethrow_info {
+                ri.establisher_frame
+            } else if let Some(ref saved) = in_catch_record {
+                if saved.establisher_frame != establisher_frame {
+                    saved.establisher_frame
+                } else {
+                    establisher_frame
+                }
+            } else {
+                establisher_frame
+            };
 
             // Found a matching catch block — copy exception object if needed.
             if !exc_type.is_null() && catchblock.type_info != 0 && catchblock.offset != 0 {
@@ -2575,6 +2589,46 @@ unsafe fn cxx_find_catch_block(
                 }
                 // Fallback: should not reach here.
                 return;
+            }
+
+            if let Some(ref saved) = in_catch_record {
+                if saved.establisher_frame != establisher_frame {
+                    // ── In-catch new-throw shortcut ───────────────────────
+                    // When a NEW exception is thrown from inside a catch
+                    // funclet, `RtlUnwindEx` cannot walk from the funclet
+                    // through Rust frames to the parent PE frame (same
+                    // problem as rethrow).  Use the direct funclet call
+                    // shortcut with the saved establisher frame.
+                    type CatchFunclet = unsafe extern "win64" fn(u64, u64) -> u64;
+                    #[allow(clippy::cast_possible_truncation)]
+                    let funclet: CatchFunclet =
+                        unsafe { core::mem::transmute(handler_ip as usize) };
+                    let continuation = unsafe { funclet(effective_frame, effective_frame) };
+
+                    // Clear TLS exception state — the new exception is now caught.
+                    CXX_EXC_RECORD.with(|c| c.set(None));
+
+                    if !context_record.is_null() {
+                        let ctx = context_record.cast::<u8>();
+                        unsafe {
+                            crate::kernel32::ctx_write(ctx, crate::kernel32::CTX_RIP, continuation);
+                            crate::kernel32::ctx_write(
+                                ctx,
+                                crate::kernel32::CTX_RSP,
+                                effective_frame,
+                            );
+                            if let Some((reg_off, val)) = crate::kernel32::compute_body_frame_reg(
+                                saved.image_base,
+                                saved.function_entry,
+                                effective_frame,
+                            ) {
+                                crate::kernel32::ctx_write(ctx, reg_off, val);
+                            }
+                            crate::kernel32::seh_restore_context_and_jump(ctx);
+                        }
+                    }
+                    return;
+                }
             }
 
             // Initiate unwind to the catch handler.
