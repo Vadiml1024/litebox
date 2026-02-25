@@ -2166,6 +2166,11 @@ struct SavedExcRecord {
     /// frame to `RtlUnwindEx` — the rethrow's stack walk through
     /// intermediate Rust frames may compute a wrong establisher frame.
     establisher_frame: u64,
+    /// Image base of the PE module, for `compute_body_frame_reg`.
+    image_base: u64,
+    /// The RUNTIME_FUNCTION entry for the catching function, needed to
+    /// compute the frame register (RBP) for `seh_restore_context_and_jump`.
+    function_entry: *mut core::ffi::c_void,
 }
 
 thread_local! {
@@ -2529,7 +2534,7 @@ unsafe fn cxx_find_catch_block(
             }
             let handler_ip = image_base + u64::from(catchblock.handler);
 
-            if rethrow_info.is_some() {
+            if let Some(ref rethrow) = rethrow_info {
                 // ── Rethrow shortcut ──────────────────────────────────
                 // On rethrow, `RtlUnwindEx` cannot properly walk from the
                 // funclet (PE) through intermediate Rust frames back to
@@ -2542,13 +2547,24 @@ unsafe fn cxx_find_catch_block(
                 let funclet: CatchFunclet = unsafe { core::mem::transmute(handler_ip as usize) };
                 let continuation = unsafe { funclet(effective_frame, effective_frame) };
 
-                // Build a minimal context with the continuation IP and
-                // the correct frame, then jump there.  We reuse the
-                // context record if available; otherwise just jump.
+                // Build a context for the continuation.  The context from
+                // the rethrow's stack walk has stale RSP/RBP; we must set
+                // them from the saved establisher frame.
                 if !context_record.is_null() {
                     let ctx = context_record.cast::<u8>();
                     unsafe {
                         crate::kernel32::ctx_write(ctx, crate::kernel32::CTX_RIP, continuation);
+                        crate::kernel32::ctx_write(ctx, crate::kernel32::CTX_RSP, effective_frame);
+                        // Compute the frame register (typically RBP) from
+                        // the UNWIND_INFO so the continuation code can
+                        // access locals via RBP-relative addressing.
+                        if let Some((reg_off, val)) = crate::kernel32::compute_body_frame_reg(
+                            rethrow.image_base,
+                            rethrow.function_entry,
+                            effective_frame,
+                        ) {
+                            crate::kernel32::ctx_write(ctx, reg_off, val);
+                        }
                         crate::kernel32::seh_restore_context_and_jump(ctx);
                     }
                 }
@@ -2978,6 +2994,8 @@ pub unsafe extern "C" fn msvcrt___CxxFrameHandler3(
                         catch_level: tb.catch_level,
                         in_catch_end_level: tb.end_level,
                         establisher_frame,
+                        image_base,
+                        function_entry: dc.function_entry,
                     }));
                 });
 

@@ -9928,7 +9928,7 @@ struct NonVolatileRegs {
 /// # Safety
 /// `image_base` must be the PE's load address and `function_entry` must point
 /// to a valid RUNTIME_FUNCTION within the image.
-unsafe fn compute_body_frame_reg(
+pub(crate) unsafe fn compute_body_frame_reg(
     image_base: u64,
     function_entry: *mut core::ffi::c_void,
     body_rsp: u64,
