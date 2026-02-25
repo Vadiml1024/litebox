@@ -18,7 +18,6 @@ runs:
 
     - name: Install MinGW cross-compiler
       shell: bash
-      timeout-minutes: 10
       run: |
         PACKAGES="mingw-w64"
         if [ -n "${{ inputs.extra-packages }}" ]; then
