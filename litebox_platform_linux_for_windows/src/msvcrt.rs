@@ -4064,33 +4064,39 @@ pub unsafe extern "C" fn msvcrt_bsearch(
 
 /// `wcstol(nptr, endptr, base) -> long` — convert wide string to long integer.
 ///
-/// Converts the wide string to a narrow string then delegates to `libc::strtol`.
+/// Converts the ASCII portion of the wide string to a narrow string then
+/// delegates to `libc::strtol`.  Non-ASCII code units terminate the conversion
+/// without being copied, matching MSVCRT behaviour in the "C" locale.
 ///
 /// # Safety
 ///
 /// `nptr` must point to a valid null-terminated wide string.
 /// `endptr`, if non-null, must be a valid pointer to a `*mut u16`.
 #[unsafe(no_mangle)]
-#[allow(clippy::cast_possible_truncation)]
+#[allow(clippy::cast_possible_truncation)] // ch <= 0x7F guaranteed by the guard above
 pub unsafe extern "C" fn msvcrt_wcstol(nptr: *const u16, endptr: *mut *mut u16, base: i32) -> i64 {
     if nptr.is_null() {
         return 0;
     }
-    // Convert wide string to narrow for parsing.
-    let mut narrow = [0u8; 64];
-    let mut i = 0usize;
-    // SAFETY: Caller guarantees nptr is a valid null-terminated wide string.
+    // Copy only ASCII code units into a heap-allocated narrow buffer so we
+    // don't truncate longer strings or mis-handle non-ASCII code units.
+    let mut narrow: Vec<u8> = Vec::new();
     unsafe {
         let mut p = nptr;
-        while *p != 0 && i < narrow.len() - 1 {
-            narrow[i] = *p as u8;
-            i += 1;
+        while *p != 0 {
+            let ch = *p;
+            if ch > 0x7F {
+                break;
+            }
+            narrow.push(ch as u8);
             p = p.add(1);
         }
-        narrow[i] = 0;
     }
-    let mut narrow_end: *mut u8 = std::ptr::null_mut();
-    // SAFETY: narrow is a valid null-terminated string; strtol is safe to call.
+    // NUL-terminate for libc.
+    narrow.push(0);
+
+    let mut narrow_end: *mut u8 = core::ptr::null_mut();
+    // SAFETY: `narrow` is a valid null-terminated string; strtol is safe to call.
     let val = unsafe {
         libc::strtol(
             narrow.as_ptr().cast(),
@@ -4100,6 +4106,7 @@ pub unsafe extern "C" fn msvcrt_wcstol(nptr: *const u16, endptr: *mut *mut u16, 
     };
     if !endptr.is_null() {
         // Map the narrow end pointer offset back to a wide pointer.
+        // Each byte in `narrow` corresponds to exactly one UTF-16 code unit in nptr.
         // SAFETY: narrow_end points within narrow[], so offset_from is non-negative.
         let offset = unsafe { narrow_end.offset_from(narrow.as_ptr()) }.unsigned_abs();
         // SAFETY: Caller guarantees endptr is a valid writable pointer.
@@ -4111,32 +4118,37 @@ pub unsafe extern "C" fn msvcrt_wcstol(nptr: *const u16, endptr: *mut *mut u16, 
 /// `wcstoul(nptr, endptr, base) -> unsigned long` — convert wide string to
 /// unsigned long integer.
 ///
-/// Converts the wide string to a narrow string then delegates to `libc::strtoul`.
+/// Converts the ASCII portion of the wide string to a narrow string then
+/// delegates to `libc::strtoul`.  Non-ASCII code units terminate the conversion
+/// without being copied, matching MSVCRT behaviour in the "C" locale.
 ///
 /// # Safety
 ///
 /// `nptr` must point to a valid null-terminated wide string.
 /// `endptr`, if non-null, must be a valid pointer to a `*mut u16`.
 #[unsafe(no_mangle)]
-#[allow(clippy::cast_possible_truncation)]
+#[allow(clippy::cast_possible_truncation)] // ch <= 0x7F guaranteed by the guard above
 pub unsafe extern "C" fn msvcrt_wcstoul(nptr: *const u16, endptr: *mut *mut u16, base: i32) -> u64 {
     if nptr.is_null() {
         return 0;
     }
-    let mut narrow = [0u8; 64];
-    let mut i = 0usize;
-    // SAFETY: Caller guarantees nptr is a valid null-terminated wide string.
+    // Copy only ASCII code units into a heap-allocated narrow buffer.
+    let mut narrow: Vec<u8> = Vec::new();
     unsafe {
         let mut p = nptr;
-        while *p != 0 && i < narrow.len() - 1 {
-            narrow[i] = *p as u8;
-            i += 1;
+        while *p != 0 {
+            let ch = *p;
+            if ch > 0x7F {
+                break;
+            }
+            narrow.push(ch as u8);
             p = p.add(1);
         }
-        narrow[i] = 0;
     }
-    let mut narrow_end: *mut u8 = std::ptr::null_mut();
-    // SAFETY: narrow is a valid null-terminated string; strtoul is safe to call.
+    narrow.push(0);
+
+    let mut narrow_end: *mut u8 = core::ptr::null_mut();
+    // SAFETY: `narrow` is a valid null-terminated string; strtoul is safe to call.
     let val = unsafe {
         libc::strtoul(
             narrow.as_ptr().cast(),
@@ -4155,32 +4167,37 @@ pub unsafe extern "C" fn msvcrt_wcstoul(nptr: *const u16, endptr: *mut *mut u16,
 
 /// `wcstod(nptr, endptr) -> double` — convert wide string to double.
 ///
-/// Converts the wide string to a narrow string then delegates to `libc::strtod`.
+/// Converts the ASCII portion of the wide string to a narrow string then
+/// delegates to `libc::strtod`.  Non-ASCII code units terminate the conversion
+/// without being copied, matching MSVCRT behaviour in the "C" locale.
 ///
 /// # Safety
 ///
 /// `nptr` must point to a valid null-terminated wide string.
 /// `endptr`, if non-null, must be a valid pointer to a `*mut u16`.
 #[unsafe(no_mangle)]
-#[allow(clippy::cast_possible_truncation)]
+#[allow(clippy::cast_possible_truncation)] // ch <= 0x7F guaranteed by the guard above
 pub unsafe extern "C" fn msvcrt_wcstod(nptr: *const u16, endptr: *mut *mut u16) -> f64 {
     if nptr.is_null() {
         return 0.0;
     }
-    let mut narrow = [0u8; 64];
-    let mut i = 0usize;
-    // SAFETY: Caller guarantees nptr is a valid null-terminated wide string.
+    // Copy only ASCII code units into a heap-allocated narrow buffer.
+    let mut narrow: Vec<u8> = Vec::new();
     unsafe {
         let mut p = nptr;
-        while *p != 0 && i < narrow.len() - 1 {
-            narrow[i] = *p as u8;
-            i += 1;
+        while *p != 0 {
+            let ch = *p;
+            if ch > 0x7F {
+                break;
+            }
+            narrow.push(ch as u8);
             p = p.add(1);
         }
-        narrow[i] = 0;
     }
-    let mut narrow_end: *mut u8 = std::ptr::null_mut();
-    // SAFETY: narrow is a valid null-terminated string; strtod is safe to call.
+    narrow.push(0);
+
+    let mut narrow_end: *mut u8 = core::ptr::null_mut();
+    // SAFETY: `narrow` is a valid null-terminated string; strtod is safe to call.
     let val = unsafe {
         libc::strtod(
             narrow.as_ptr().cast(),

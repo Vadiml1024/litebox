@@ -338,6 +338,18 @@ fn test_dll_manager_has_all_required_exports() {
         let result = dll_manager.get_proc_address(ole32, func_name);
         assert!(result.is_ok(), "ole32.dll should export {func_name}");
     }
+
+    // Check that Phase 32 MSVCRT additions are now resolvable via the DLL manager
+    let msvcrt = dll_manager.load_library("MSVCRT.dll").unwrap();
+    let msvcrt_phase32_functions = vec![
+        "sprintf", "snprintf", "sscanf", "fopen", "fclose", "fread", "qsort", "bsearch", "isalpha",
+        "toupper", "tolower", "wcstol", "wcstoul", "wcstod", "fileno", "_fileno", "fdopen",
+        "_fdopen", "realloc", "remove", "rename",
+    ];
+    for func_name in msvcrt_phase32_functions {
+        let result = dll_manager.get_proc_address(msvcrt, func_name);
+        assert!(result.is_ok(), "MSVCRT.dll should export {func_name}");
+    }
 }
 
 #[cfg(test)]

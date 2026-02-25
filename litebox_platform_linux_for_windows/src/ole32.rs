@@ -154,7 +154,7 @@ pub unsafe extern "C" fn ole32_string_from_guid2(
     let d1 = u32::from_le_bytes([g[0], g[1], g[2], g[3]]);
     let d2 = u16::from_le_bytes([g[4], g[5]]);
     let d3 = u16::from_le_bytes([g[6], g[7]]);
-    // Build the 38-char string (no allocation — write directly into output).
+    // Build the 38-char GUID string and write it into the output buffer.
     let s = format!(
         "{{{:08X}-{:04X}-{:04X}-{:02X}{:02X}-{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}}}",
         d1, d2, d3, g[8], g[9], g[10], g[11], g[12], g[13], g[14], g[15],
@@ -184,7 +184,8 @@ fn parse_hex_byte(hi: u16, lo: u16) -> Option<u8> {
 
 /// `CLSIDFromString(lpsz, pclsid) -> HRESULT`
 ///
-/// Parses a GUID string of the form `{XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX}`
+/// Parses a GUID string of the braced form `{XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX}`
+/// or the unbraced form `XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX`
 /// into the 16-byte buffer at `pclsid`.  Returns `S_OK` on success or
 /// `CO_E_CLASSSTRING` if the string is invalid.
 ///
@@ -199,8 +200,10 @@ pub unsafe extern "C" fn ole32_clsid_from_string(lpsz: *const u16, pclsid: *mut 
     if lpsz.is_null() || pclsid.is_null() {
         return CO_E_CLASSSTRING;
     }
-    // Collect the wide string into a fixed-size buffer.  A GUID string is
-    // exactly 38 chars: {8-4-4-4-12} = 32 hex + 4 dashes + 2 braces.
+    // Collect the wide string into a fixed-size buffer.
+    // Supported formats:
+    //   Braced:   {XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX}  (38 chars)
+    //   Unbraced:  XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX   (36 chars)
     let mut chars = [0u16; 40];
     let mut len = 0usize;
     let mut p = lpsz;
@@ -216,28 +219,35 @@ pub unsafe extern "C" fn ole32_clsid_from_string(lpsz: *const u16, pclsid: *mut 
         len += 1;
         p = unsafe { p.add(1) };
     }
-    if len != 38 {
-        return CO_E_CLASSSTRING;
+
+    // Determine whether we have the braced or unbraced form and set the
+    // offset of the first hex digit within `chars`.
+    let (hex_start, dash_offsets) =
+        if len == 38 && chars[0] == u16::from(b'{') && chars[37] == u16::from(b'}') {
+            // Braced form: dashes at positions 9, 14, 19, 24 (relative to chars[0])
+            (1usize, [9usize, 14, 19, 24])
+        } else if len == 36 {
+            // Unbraced form: dashes at positions 8, 13, 18, 23 (relative to chars[0])
+            (0usize, [8usize, 13, 18, 23])
+        } else {
+            return CO_E_CLASSSTRING;
+        };
+
+    // Verify dash positions.
+    for &d in &dash_offsets {
+        if chars[d] != u16::from(b'-') {
+            return CO_E_CLASSSTRING;
+        }
     }
-    // Expected: {XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX}
-    if chars[0] != u16::from(b'{') || chars[37] != u16::from(b'}') {
-        return CO_E_CLASSSTRING;
-    }
-    if chars[9] != u16::from(b'-')
-        || chars[14] != u16::from(b'-')
-        || chars[19] != u16::from(b'-')
-        || chars[24] != u16::from(b'-')
-    {
-        return CO_E_CLASSSTRING;
-    }
+
     // Helper closure: parse `count` bytes from `chars[off..]`.
     let mut out = [0u8; 16];
     let mut write_idx = 0usize;
-    // Positions of hex pairs within the string (after `{`):
-    // Data1: chars[1..9]  (4 bytes, big-endian printed as LE u32)
-    // Data2: chars[10..14] (2 bytes, LE u16)
-    // Data3: chars[15..19] (2 bytes, LE u16)
-    // Data4: chars[20..24] + chars[25..37] (8 bytes)
+    // Positions of hex pairs within the string (after optional `{`):
+    // Data1: 4 bytes, big-endian printed as LE u32
+    // Data2: 2 bytes, LE u16
+    // Data3: 2 bytes, LE u16
+    // Data4: 8 bytes
     macro_rules! parse_bytes {
         ($start:expr, $count:expr, $le:expr) => {{
             let mut tmp = [0u8; 8];
@@ -258,11 +268,12 @@ pub unsafe extern "C" fn ole32_clsid_from_string(lpsz: *const u16, pclsid: *mut 
             }
         }};
     }
-    parse_bytes!(1, 4, true); // Data1 (4 bytes, stored LE)
-    parse_bytes!(10, 2, true); // Data2 (2 bytes, stored LE)
-    parse_bytes!(15, 2, true); // Data3 (2 bytes, stored LE)
-    parse_bytes!(20, 2, false); // Data4[0..2]
-    parse_bytes!(25, 6, false); // Data4[2..8]
+    let s = hex_start;
+    parse_bytes!(s, 4, true); // Data1 (4 bytes, stored LE)
+    parse_bytes!(s + 9, 2, true); // Data2 (2 bytes, stored LE)
+    parse_bytes!(s + 14, 2, true); // Data3 (2 bytes, stored LE)
+    parse_bytes!(s + 19, 2, false); // Data4[0..2]
+    parse_bytes!(s + 24, 6, false); // Data4[2..8]
 
     // SAFETY: Caller guarantees pclsid points to a 16-byte writable buffer.
     unsafe { core::ptr::copy_nonoverlapping(out.as_ptr(), pclsid, 16) };
@@ -551,6 +562,20 @@ mod tests {
         unsafe {
             // Encode "{78563412-CDAB-01EF-2345-6789ABCDEF01}" as UTF-16
             let s = "{78563412-CDAB-01EF-2345-6789ABCDEF01}";
+            let wide: Vec<u16> = s.encode_utf16().chain(Some(0)).collect();
+            let mut clsid = [0u8; 16];
+            let r = ole32_clsid_from_string(wide.as_ptr(), clsid.as_mut_ptr());
+            assert_eq!(r, S_OK);
+            // Data1 = 0x78563412 stored LE → bytes [0x12, 0x34, 0x56, 0x78]
+            assert_eq!(&clsid[0..4], &[0x12u8, 0x34, 0x56, 0x78]);
+        }
+    }
+
+    #[test]
+    fn test_clsid_from_string_unbraced() {
+        unsafe {
+            // Windows also accepts the unbraced 36-character form.
+            let s = "78563412-CDAB-01EF-2345-6789ABCDEF01";
             let wide: Vec<u16> = s.encode_utf16().chain(Some(0)).collect();
             let mut clsid = [0u8; 16];
             let r = ole32_clsid_from_string(wide.as_ptr(), clsid.as_mut_ptr());

@@ -739,6 +739,69 @@ impl DllManager {
             ("__chkstk", MSVCRT_BASE + 0x7C),
             ("___chkstk_ms", MSVCRT_BASE + 0x7D),
             ("_alloca_probe", MSVCRT_BASE + 0x7E),
+            // Phase 29-31: additional C++ EH / UCRT functions
+            ("_local_unwind", MSVCRT_BASE + 0x89),
+            ("__CxxRegisterExceptionObject", MSVCRT_BASE + 0x8A),
+            ("__CxxUnregisterExceptionObject", MSVCRT_BASE + 0x8B),
+            ("__DestructExceptionObject", MSVCRT_BASE + 0x8C),
+            ("__uncaught_exception", MSVCRT_BASE + 0x8D),
+            ("__uncaught_exceptions", MSVCRT_BASE + 0x8E),
+            // Phase 32: formatted I/O
+            ("sprintf", MSVCRT_BASE + 0x8F),
+            ("snprintf", MSVCRT_BASE + 0x90),
+            ("sscanf", MSVCRT_BASE + 0x91),
+            ("swprintf", MSVCRT_BASE + 0x92),
+            ("wprintf", MSVCRT_BASE + 0x93),
+            // Phase 32: character classification
+            ("isalpha", MSVCRT_BASE + 0x94),
+            ("isdigit", MSVCRT_BASE + 0x95),
+            ("isspace", MSVCRT_BASE + 0x96),
+            ("isupper", MSVCRT_BASE + 0x97),
+            ("islower", MSVCRT_BASE + 0x98),
+            ("isprint", MSVCRT_BASE + 0x99),
+            ("isxdigit", MSVCRT_BASE + 0x9A),
+            ("isalnum", MSVCRT_BASE + 0x9B),
+            ("iscntrl", MSVCRT_BASE + 0x9C),
+            ("ispunct", MSVCRT_BASE + 0x9D),
+            ("toupper", MSVCRT_BASE + 0x9E),
+            ("tolower", MSVCRT_BASE + 0x9F),
+            // Phase 32: sorting / searching
+            ("qsort", MSVCRT_BASE + 0xA0),
+            ("bsearch", MSVCRT_BASE + 0xA1),
+            // Phase 32: wide-string numeric conversions
+            ("wcstol", MSVCRT_BASE + 0xA2),
+            ("wcstoul", MSVCRT_BASE + 0xA3),
+            ("wcstod", MSVCRT_BASE + 0xA4),
+            // Phase 32: file I/O
+            ("fopen", MSVCRT_BASE + 0xA5),
+            ("fclose", MSVCRT_BASE + 0xA6),
+            ("fread", MSVCRT_BASE + 0xA7),
+            ("fseek", MSVCRT_BASE + 0xA8),
+            ("ftell", MSVCRT_BASE + 0xA9),
+            ("fflush", MSVCRT_BASE + 0xAA),
+            ("fgets", MSVCRT_BASE + 0xAB),
+            ("rewind", MSVCRT_BASE + 0xAC),
+            ("feof", MSVCRT_BASE + 0xAD),
+            ("ferror", MSVCRT_BASE + 0xAE),
+            ("clearerr", MSVCRT_BASE + 0xAF),
+            ("fgetc", MSVCRT_BASE + 0xB0),
+            ("ungetc", MSVCRT_BASE + 0xB1),
+            ("fileno", MSVCRT_BASE + 0xB2),
+            ("_fileno", MSVCRT_BASE + 0xB2), // alias
+            ("fdopen", MSVCRT_BASE + 0xB3),
+            ("_fdopen", MSVCRT_BASE + 0xB3), // alias
+            ("tmpfile", MSVCRT_BASE + 0xB4),
+            ("remove", MSVCRT_BASE + 0xB5),
+            ("rename", MSVCRT_BASE + 0xB6),
+            // Phase 32: misc previously-missing functions
+            ("fputs", MSVCRT_BASE + 0xB7),
+            ("puts", MSVCRT_BASE + 0xB8),
+            ("realloc", MSVCRT_BASE + 0xB9),
+            ("_read", MSVCRT_BASE + 0xBA),
+            (
+                "_register_thread_local_exe_atexit_callback",
+                MSVCRT_BASE + 0xBB,
+            ),
         ];
 
         self.register_stub_dll("MSVCRT.dll", exports);

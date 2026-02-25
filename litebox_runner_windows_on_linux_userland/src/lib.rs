@@ -409,14 +409,41 @@ pub fn run(cli_args: CliArgs) -> Result<()> {
         if tls.address_of_callbacks != 0 {
             let actual_callbacks = tls.address_of_callbacks.wrapping_add(delta);
             loader_log!("  Executing TLS callbacks from table at: 0x{actual_callbacks:X}");
-            // Walk the NULL-terminated array of callback function pointers.
+
+            // Validate that the callback table lies within the mapped image range.
+            #[allow(clippy::cast_possible_truncation)]
+            let image_size_u64 = image_size as u64;
+            let image_end = base_address
+                .checked_add(image_size_u64)
+                .ok_or_else(|| anyhow!("image size overflow when computing image end"))?;
+            if actual_callbacks < base_address || actual_callbacks >= image_end {
+                return Err(anyhow!(
+                    "TLS callbacks table address 0x{actual_callbacks:X} is outside image range \
+                     0x{base_address:X}-0x{image_end:X}"
+                ));
+            }
+
+            // Derive a hard cap on the number of callbacks based on remaining image space.
+            // This prevents unbounded reads if the table lacks a NULL terminator.
+            let max_callbacks = (image_end - actual_callbacks) / core::mem::size_of::<u64>() as u64;
+            if max_callbacks == 0 {
+                return Err(anyhow!(
+                    "TLS callbacks table at 0x{actual_callbacks:X} has no room for entries"
+                ));
+            }
+
+            // Walk the NULL-terminated array of callback function pointers, but never
+            // read past the end of the image.
             #[allow(clippy::cast_possible_truncation)]
             let mut cb_ptr = actual_callbacks as *const u64;
-            loop {
-                // SAFETY: cb_ptr points into the loaded image; the loop
-                // terminates at the NULL sentinel that terminates the table.
-                let cb_addr = unsafe { *cb_ptr };
+            let mut found_terminator = false;
+            for _ in 0..max_callbacks {
+                // SAFETY: cb_ptr is derived from a validated address within the mapped image.
+                // We use read_unaligned because the callback array may not be
+                // naturally aligned for u64, and the data comes from a PE file.
+                let cb_addr = unsafe { core::ptr::read_unaligned(cb_ptr) };
                 if cb_addr == 0 {
+                    found_terminator = true;
                     break;
                 }
                 loader_log!("    Calling TLS callback at: 0x{cb_addr:X}");
@@ -426,7 +453,15 @@ pub fn run(cli_args: CliArgs) -> Result<()> {
                 let callback: unsafe extern "C" fn(u64, u32, *mut u8) =
                     unsafe { core::mem::transmute(cb_addr as usize) };
                 unsafe { callback(base_address, 1, core::ptr::null_mut()) };
+                // SAFETY: We stay within the bounds implied by max_callbacks.
                 cb_ptr = unsafe { cb_ptr.add(1) };
+            }
+
+            if !found_terminator {
+                return Err(anyhow!(
+                    "TLS callbacks table at 0x{actual_callbacks:X} is not NULL-terminated \
+                     within the image bounds"
+                ));
             }
         }
     } else {
