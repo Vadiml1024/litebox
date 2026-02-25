@@ -276,7 +276,6 @@ All GDI32 functions operate in headless mode: drawing is silently discarded.
 
 | Feature | Status |
 |---|---|
-| MSVC ABI C++ destructor unwinding | ✅ Fully implemented; all 10 tests pass (`seh_cpp_test_msvc` 21/21) |
 | Full GUI rendering | USER32/GDI32 are headless stubs; no real window/drawing output |
 | Overlapped (async) I/O | `ReadFileEx`, `WriteFileEx`, `GetOverlappedResult` return `ERROR_NOT_SUPPORTED` |
 | Process creation (`CreateProcessW`) | Returns `ERROR_NOT_SUPPORTED`; sandboxed environment |
