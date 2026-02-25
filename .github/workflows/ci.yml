@@ -405,6 +405,9 @@ jobs:
           targets: x86_64-unknown-linux-gnu
       - name: Install MinGW cross-compiler
         uses: ./.github/actions/install-mingw
+      - name: Install clang for cross-compiled SEH tests
+        if: matrix.suite == 'seh'
+        run: sudo apt-get install -y clang
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: wol-runner
@@ -521,6 +524,19 @@ jobs:
           grep -q "Results:.*0 failed" /tmp/seh_cpp_test_out.txt \
             || { echo "✗ seh_cpp_test FAILED (C++ exception support is a work in progress)"; exit 1; }
           echo "✓ seh_cpp_test PASSED"
+      - name: Run seh_cpp_test_clang
+        if: matrix.suite == 'seh'
+        run: |
+          echo "=== seh_cpp_test_clang.exe (clang/LLVM compiled) ==="
+          ./target/debug/litebox_runner_windows_on_linux_userland \
+            windows_test_programs/seh_test/seh_cpp_test_clang.exe \
+            2>&1 | tee /tmp/seh_cpp_test_clang_out.txt
+
+          echo ""
+          echo "--- Verifying test output ---"
+          grep -q "Results:.*0 failed" /tmp/seh_cpp_test_clang_out.txt \
+            || { echo "✗ seh_cpp_test_clang FAILED"; exit 1; }
+          echo "✓ seh_cpp_test_clang PASSED"
       - name: Upload test output on failure
         if: failure()
         uses: actions/upload-artifact@v4
