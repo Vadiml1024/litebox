@@ -1991,6 +1991,35 @@ pub unsafe extern "C" fn kernel32_SetUnhandledExceptionFilter(
     core::ptr::null_mut()
 }
 
+/// UnhandledExceptionFilter
+///
+/// Returns `EXCEPTION_CONTINUE_SEARCH` (0), indicating the exception should
+/// continue propagating.
+///
+/// # Safety
+/// Safe to call with any argument including NULL.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_UnhandledExceptionFilter(
+    _exception_info: *mut core::ffi::c_void,
+) -> i32 {
+    0
+}
+
+/// InitializeSListHead
+///
+/// Initializes a singly-linked list head by clearing its first pointer-sized
+/// field to null.
+///
+/// # Safety
+/// If `list_head` is non-null, it must point to writable memory.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_InitializeSListHead(list_head: *mut core::ffi::c_void) {
+    if list_head.is_null() {
+        return;
+    }
+    unsafe { (list_head.cast::<usize>()).write(0) };
+}
+
 /// Raise an exception and dispatch it through the SEH handler chain.
 ///
 /// Implements Windows x64 SEH phase-1 (search) walk: for each PE frame on
@@ -3274,6 +3303,17 @@ pub unsafe extern "C" fn kernel32_GetSystemTimePreciseAsFileTime(filetime: *mut 
         (*filetime).low_date_time = (intervals & 0xFFFF_FFFF) as u32;
         (*filetime).high_date_time = ((intervals >> 32) & 0xFFFF_FFFF) as u32;
     }
+}
+
+/// GetSystemTimeAsFileTime
+///
+/// Compatibility wrapper over `GetSystemTimePreciseAsFileTime`.
+///
+/// # Safety
+/// `filetime` may be null; otherwise it must point to writable `FileTime`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_GetSystemTimeAsFileTime(filetime: *mut FileTime) {
+    unsafe { kernel32_GetSystemTimePreciseAsFileTime(filetime) };
 }
 
 //
@@ -5516,6 +5556,21 @@ pub unsafe extern "C" fn kernel32_WaitForSingleObject(
         }
         thread::sleep(Duration::from_millis(1));
     }
+}
+
+/// WaitForSingleObjectEx
+///
+/// `alertable` is ignored and behavior matches `WaitForSingleObject`.
+///
+/// # Safety
+/// Safe to call with any handle value.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_WaitForSingleObjectEx(
+    handle: *mut core::ffi::c_void,
+    milliseconds: u32,
+    _alertable: i32,
+) -> u32 {
+    unsafe { kernel32_WaitForSingleObject(handle, milliseconds) }
 }
 
 /// WriteConsoleW - writes a character string to a console screen buffer

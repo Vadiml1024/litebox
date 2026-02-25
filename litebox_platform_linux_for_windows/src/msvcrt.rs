@@ -38,6 +38,9 @@ pub static mut msvcrt__commode: i32 = 0;
 #[unsafe(no_mangle)]
 pub static mut msvcrt___initenv: *mut *mut i8 = ptr::null_mut();
 
+/// Null-terminated empty environment (`char**` with a single null pointer).
+static NULL_ENV_PTR: [usize; 1] = [0];
+
 // ============================================================================
 // Data Access Functions
 // ============================================================================
@@ -415,13 +418,17 @@ pub unsafe extern "C" fn msvcrt___getmainargs(
         // argv_ptrs.0 is a null-terminated array; pass a pointer to its first element.
         *p_argv = argv_ptrs.0.as_ptr().cast_mut().cast();
     }
+    ARGC_STATIC.store(argc, std::sync::atomic::Ordering::Relaxed);
+    ARGV_PTR.store(
+        argv_ptrs.0.as_ptr().cast::<*mut i8>().cast_mut(),
+        std::sync::atomic::Ordering::Relaxed,
+    );
     // env: pass a single-element null-terminated array (no custom env parsing needed;
     // programs that need the environment use GetEnvironmentStringsW instead).
     if !p_env.is_null() {
-        // SAFETY: NULL_ENV_PTR is an array of zeros (null pointers) stored as usize
-        // to avoid the `*mut i8: Sync` restriction on statics.
-        static NULL_ENV_PTR: [usize; 1] = [0];
-        *p_env = NULL_ENV_PTR.as_ptr().cast::<*mut i8>().cast_mut().cast();
+        let env_ptr = NULL_ENV_PTR.as_ptr().cast::<*mut i8>().cast_mut().cast();
+        *p_env = env_ptr;
+        msvcrt___initenv = env_ptr;
     }
 
     0 // Success
@@ -555,7 +562,7 @@ pub unsafe extern "C" fn msvcrt__amsg_exit(code: i32) {
 /// This function is safe to call but marked unsafe for C ABI compatibility.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn msvcrt__cexit() {
-    // Clean exit without terminating process
+    std::process::exit(0)
 }
 
 /// Reset floating point unit (_fpreset)
@@ -956,12 +963,15 @@ pub unsafe extern "C" fn msvcrt__initterm_e(
 /// without additional synchronization (single-threaded CRT init guarantees this).
 static ARGC_STATIC: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
 
+/// Fallback null-terminated argv (`char**`) used before `__getmainargs`.
+static DEFAULT_ARGV_PTR: [usize; 1] = [0];
+
 /// Global argv pointer for `__p___argv`.
 ///
 /// Initialized to null and written once during CRT startup by `__getmainargs`.
 /// After that single write the value is only read.
 static ARGV_PTR: std::sync::atomic::AtomicPtr<*mut i8> =
-    std::sync::atomic::AtomicPtr::new(core::ptr::null_mut());
+    std::sync::atomic::AtomicPtr::new(DEFAULT_ARGV_PTR.as_ptr().cast::<*mut i8>().cast_mut());
 
 /// Get pointer to argc (__p___argc)
 ///
@@ -3479,6 +3489,22 @@ pub unsafe extern "C" fn ucrt__initialize_narrow_environment() -> i32 {
     0
 }
 
+/// `_get_initial_narrow_environment()` — get narrow environment pointer
+///
+/// Returns a pointer to the process environment pointer storage.
+///
+/// # Safety
+/// Returned pointer is valid for process lifetime.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ucrt__get_initial_narrow_environment() -> *mut *mut i8 {
+    if unsafe { msvcrt___initenv.is_null() } {
+        unsafe {
+            msvcrt___initenv = NULL_ENV_PTR.as_ptr().cast::<*mut i8>().cast_mut().cast();
+        }
+    }
+    unsafe { msvcrt___initenv }
+}
+
 /// `_configure_narrow_argv(mode)` — UCRT argv configuration
 ///
 /// Returns 0 (success).  Command-line arguments are supplied by the runner
@@ -3492,6 +3518,35 @@ pub unsafe extern "C" fn ucrt__configure_narrow_argv(_mode: i32) -> i32 {
     0
 }
 
+/// `_set_app_type(type)` — set CRT application type
+///
+/// Delegates to the existing `__set_app_type` implementation.
+///
+/// # Safety
+/// Safe to call unconditionally.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ucrt__set_app_type(app_type: i32) {
+    unsafe { msvcrt___set_app_type(app_type) };
+}
+
+/// `_exit(status)` — terminate process immediately
+///
+/// # Safety
+/// Never returns.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ucrt__exit(status: i32) -> ! {
+    unsafe { msvcrt_exit(status) }
+}
+
+/// `_c_exit()` — clean CRT exit without process termination
+///
+/// # Safety
+/// Safe to call unconditionally.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ucrt__c_exit() {
+    std::process::exit(0)
+}
+
 /// `_crt_atexit(fn)` — UCRT atexit registration
 ///
 /// No-op stub.  The litebox runner does not currently support atexit handlers
@@ -3503,6 +3558,108 @@ pub unsafe extern "C" fn ucrt__configure_narrow_argv(_mode: i32) -> i32 {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ucrt__crt_atexit(_func: *const core::ffi::c_void) -> i32 {
     0
+}
+
+/// `_register_thread_local_exe_atexit_callback(cb)` — TLS atexit callback registration
+///
+/// # Safety
+/// Safe to call; callback is currently ignored.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ucrt__register_thread_local_exe_atexit_callback(
+    _callback: *const core::ffi::c_void,
+) {
+}
+
+/// `_seh_filter_exe(code, ptrs)` — CRT exception filter helper
+///
+/// Returns `EXCEPTION_CONTINUE_SEARCH` (0).
+///
+/// # Safety
+/// Safe to call with any arguments.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ucrt__seh_filter_exe(
+    _exception_code: u32,
+    _exception_pointers: *const core::ffi::c_void,
+) -> i32 {
+    0
+}
+
+/// `_initialize_onexit_table(table)` — initialise on-exit table
+///
+/// Returns 0 (success).
+///
+/// # Safety
+/// Safe to call with any pointer value.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ucrt__initialize_onexit_table(table_ptr: *mut core::ffi::c_void) -> i32 {
+    #[repr(C)]
+    struct OnExitTable {
+        first: *mut *const core::ffi::c_void,
+        last: *mut *const core::ffi::c_void,
+        end: *mut *const core::ffi::c_void,
+    }
+
+    static EMPTY_ONEXIT: std::sync::atomic::AtomicPtr<*const core::ffi::c_void> =
+        std::sync::atomic::AtomicPtr::new(core::ptr::null_mut());
+
+    if table_ptr.is_null() {
+        return -1;
+    }
+
+    let mut empty_ptr = EMPTY_ONEXIT.load(std::sync::atomic::Ordering::Relaxed);
+    if empty_ptr.is_null() {
+        let boxed = Box::new([core::ptr::null::<core::ffi::c_void>()]);
+        empty_ptr = Box::into_raw(boxed).cast::<*const core::ffi::c_void>();
+        EMPTY_ONEXIT.store(empty_ptr, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    let table = table_ptr.cast::<OnExitTable>();
+    unsafe {
+        (*table).first = empty_ptr;
+        (*table).last = empty_ptr;
+        (*table).end = empty_ptr;
+    }
+    0
+}
+
+/// `_register_onexit_function(table, func)` — register on-exit callback
+///
+/// Returns 0 (success).
+///
+/// # Safety
+/// Safe to call with any pointer values.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ucrt__register_onexit_function(
+    table: *mut core::ffi::c_void,
+    _func: *const core::ffi::c_void,
+) -> i32 {
+    unsafe { ucrt__initialize_onexit_table(table) }
+}
+
+/// `_set_fmode(mode)` — set default file mode
+///
+/// Returns 0 (success).
+///
+/// # Safety
+/// Safe to call unconditionally.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ucrt__set_fmode(mode: i32) -> i32 {
+    unsafe {
+        msvcrt__fmode = mode;
+    }
+    0
+}
+
+/// `_set_new_mode(mode)` — set global new-handler mode
+///
+/// Returns the previous mode.
+///
+/// # Safety
+/// Safe to call unconditionally.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ucrt__set_new_mode(mode: i32) -> i32 {
+    static NEW_MODE: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+    NEW_MODE.swap(mode, std::sync::atomic::Ordering::Relaxed)
 }
 
 /// `__acrt_iob_func(index)` — UCRT stdio-stream accessor
