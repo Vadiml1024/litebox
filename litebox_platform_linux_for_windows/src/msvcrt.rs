@@ -2602,7 +2602,12 @@ unsafe fn cxx_find_catch_block(
                 // shortcut with the saved establisher frame.
                 type CatchFunclet = unsafe extern "win64" fn(u64, u64) -> u64;
                 #[allow(clippy::cast_possible_truncation)]
-                let funclet: CatchFunclet = unsafe { core::mem::transmute(handler_ip as usize) };
+                let funclet: CatchFunclet = unsafe {
+                    // SAFETY: handler_ip is derived from catchblock.handler which
+                    // points to a valid PE catch funclet; we call it with the
+                    // Windows x64 calling convention, which matches CatchFunclet.
+                    core::mem::transmute(handler_ip as usize)
+                };
                 let continuation = unsafe { funclet(effective_frame, effective_frame) };
 
                 // Clear TLS exception state — the new exception is now caught.
