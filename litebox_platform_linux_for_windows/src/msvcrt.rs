@@ -270,12 +270,19 @@ unsafe fn read_wide_string(ptr: *const u16) -> Vec<u16> {
 ///
 /// # Safety
 /// `args` must supply arguments of the types implied by the format string.
+/// When `wide_mode` is `true` the specifier meanings for `%s`/`%S` and
+/// `%c`/`%C` are swapped to match Windows wide-printf semantics (where `%s`
+/// expects `wchar_t*` and `%S` expects `char*`).
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_possible_wrap,
     clippy::cast_sign_loss
 )]
-unsafe fn format_printf_va(fmt: &[u8], args: &mut core::ffi::VaList<'_>) -> Vec<u8> {
+unsafe fn format_printf_va(
+    fmt: &[u8],
+    args: &mut core::ffi::VaList<'_>,
+    wide_mode: bool,
+) -> Vec<u8> {
     let mut out: Vec<u8> = Vec::new();
     let mut i = 0;
 
@@ -415,6 +422,21 @@ unsafe fn format_printf_va(fmt: &[u8], args: &mut core::ffi::VaList<'_>) -> Vec<
         }
         let conv = fmt[i];
         i += 1;
+
+        // In wide-printf mode (%w* family), %s expects wchar_t* and %S
+        // expects char*, and similarly %c is wide while %C is narrow.
+        // We normalise here so the match arms below don't need to know.
+        let conv = if wide_mode {
+            match conv {
+                b's' => b'S',
+                b'S' => b's',
+                b'c' => b'C',
+                b'C' => b'c',
+                _ => conv,
+            }
+        } else {
+            conv
+        };
 
         // ── Conversion ────────────────────────────────────────────────────────
         match conv {
@@ -580,6 +602,20 @@ unsafe fn format_printf_va(fmt: &[u8], args: &mut core::ffi::VaList<'_>) -> Vec<
     out
 }
 
+/// In-memory layout of the Linux x86_64 `__va_list_tag` / `core::ffi::VaList`.
+///
+/// This struct is used by [`format_printf_raw`] to bridge a Windows x64
+/// `va_list` (a plain pointer) to the Linux `VaList` type.  It is defined at
+/// module level so that compile-time size and alignment checks can reference it.
+#[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "gnu"))]
+#[repr(C)]
+struct VaListTag {
+    gp_offset: u32,
+    fp_offset: u32,
+    overflow_arg_area: *mut u8,
+    reg_save_area: *mut u8,
+}
+
 /// Format a printf-style string reading variadic arguments from a Windows x64
 /// `va_list` pointer.
 ///
@@ -599,13 +635,26 @@ unsafe fn format_printf_va(fmt: &[u8], args: &mut core::ffi::VaList<'_>) -> Vec<
 /// - `ap` must be a valid Windows x64 `va_list` with at least as many
 ///   8-byte-aligned argument slots as `fmt` requires.
 /// - `fmt` must be a valid ASCII/UTF-8 byte slice (the format string).
-#[cfg(target_arch = "x86_64")]
+/// - When `wide_mode` is `true` the `%s`/`%S` and `%c`/`%C` specifier
+///   semantics are swapped to match Windows wide-printf conventions.
+#[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "gnu"))]
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_possible_wrap,
     clippy::cast_sign_loss
 )]
-unsafe fn format_printf_raw(fmt: &[u8], ap: *mut u8) -> Vec<u8> {
+unsafe fn format_printf_raw(fmt: &[u8], ap: *mut u8, wide_mode: bool) -> Vec<u8> {
+    // Compile-time guard: the reinterpret cast below is only valid when
+    // VaListTag and core::ffi::VaList<'_> have identical size and alignment.
+    const _: () = assert!(
+        core::mem::size_of::<VaListTag>() == 24,
+        "VaListTag size must be 24 bytes (same as __va_list_tag on x86_64-linux-gnu)"
+    );
+    const _: () = assert!(
+        core::mem::align_of::<VaListTag>() == 8,
+        "VaListTag alignment must be 8 bytes"
+    );
+
     // Linux x86_64 __va_list_tag / core::ffi::VaList layout (24 bytes):
     //   [0..4)   gp_offset: u32            — offset into reg_save_area for int
     //   [4..8)   fp_offset: u32            — offset into reg_save_area for float
@@ -615,13 +664,6 @@ unsafe fn format_printf_raw(fmt: &[u8], ap: *mut u8) -> Vec<u8> {
     // Setting gp_offset=48 (6*8) and fp_offset=304 (48+8*32) forces all
     // argument reads to come from overflow_arg_area, which is the Windows
     // va_list pointer.
-    #[repr(C)]
-    struct VaListTag {
-        gp_offset: u32,
-        fp_offset: u32,
-        overflow_arg_area: *mut u8,
-        reg_save_area: *mut u8,
-    }
     let mut tag = VaListTag {
         gp_offset: 48,
         fp_offset: 304,
@@ -629,11 +671,12 @@ unsafe fn format_printf_raw(fmt: &[u8], ap: *mut u8) -> Vec<u8> {
         reg_save_area: core::ptr::null_mut(),
     };
     // SAFETY: `VaListTag` is repr(C) and has the identical layout to
-    // `core::ffi::VaList<'_>` on x86_64-unknown-linux-gnu.  We borrow `tag`
-    // only for the duration of this call, so the lifetime is sound.
+    // `core::ffi::VaList<'_>` on x86_64-unknown-linux-gnu, as verified by the
+    // compile-time size/align assertions above.  We borrow `tag` only for the
+    // duration of this call, so the lifetime is sound.
     let vl: &mut core::ffi::VaList<'_> =
         unsafe { &mut *(&raw mut tag).cast::<core::ffi::VaList<'_>>() };
-    unsafe { format_printf_va(fmt, vl) }
+    unsafe { format_printf_va(fmt, vl, wide_mode) }
 }
 
 // ============================================================================
@@ -900,7 +943,7 @@ pub unsafe extern "C" fn msvcrt_printf(format: *const i8, mut args: ...) -> i32 
     // SAFETY: Caller guarantees format is a valid null-terminated C string.
     let fmt_bytes = unsafe { CStr::from_ptr(format) }.to_bytes();
     // SAFETY: format and args are valid per caller contract.
-    let out = unsafe { format_printf_va(fmt_bytes, &mut args) };
+    let out = unsafe { format_printf_va(fmt_bytes, &mut args, false) };
     match io::stdout().write_all(&out) {
         Ok(()) => {
             let _ = io::stdout().flush();
@@ -959,7 +1002,7 @@ pub unsafe extern "C" fn msvcrt_fprintf(_stream: *mut u8, format: *const i8, mut
     // SAFETY: Caller guarantees format is a valid null-terminated C string.
     let fmt_bytes = unsafe { CStr::from_ptr(format) }.to_bytes();
     // SAFETY: format and args are valid per caller contract.
-    let out = unsafe { format_printf_va(fmt_bytes, &mut args) };
+    let out = unsafe { format_printf_va(fmt_bytes, &mut args, false) };
     let written = unsafe { libc::write(1, out.as_ptr().cast(), out.len()) };
     if written < 0 { -1 } else { written as i32 }
 }
@@ -985,7 +1028,7 @@ pub unsafe extern "C" fn msvcrt_vfprintf(
     // SAFETY: Caller guarantees format is a valid null-terminated C string.
     let fmt_bytes = unsafe { CStr::from_ptr(format) }.to_bytes();
     // SAFETY: args is a valid Windows x64 va_list pointer.
-    let out = unsafe { format_printf_raw(fmt_bytes, args) };
+    let out = unsafe { format_printf_raw(fmt_bytes, args, false) };
     let written = unsafe { libc::write(1, out.as_ptr().cast(), out.len()) };
     if written < 0 { -1 } else { written as i32 }
 }
@@ -1004,7 +1047,7 @@ pub unsafe extern "C" fn msvcrt_vprintf(format: *const i8, args: *mut u8) -> i32
     // SAFETY: Caller guarantees format is a valid null-terminated C string.
     let fmt_bytes = unsafe { CStr::from_ptr(format) }.to_bytes();
     // SAFETY: args is a valid Windows x64 va_list pointer.
-    let out = unsafe { format_printf_raw(fmt_bytes, args) };
+    let out = unsafe { format_printf_raw(fmt_bytes, args, false) };
     match io::stdout().write_all(&out) {
         Ok(()) => {
             let _ = io::stdout().flush();
@@ -1034,7 +1077,7 @@ pub unsafe extern "C" fn msvcrt_vsprintf(buf: *mut i8, format: *const i8, args: 
     // SAFETY: Caller guarantees format is a valid null-terminated C string.
     let fmt_bytes = unsafe { CStr::from_ptr(format) }.to_bytes();
     // SAFETY: args is a valid Windows x64 va_list pointer.
-    let out = unsafe { format_printf_raw(fmt_bytes, args) };
+    let out = unsafe { format_printf_raw(fmt_bytes, args, false) };
     // SAFETY: Caller guarantees buf is large enough.
     unsafe {
         core::ptr::copy_nonoverlapping(out.as_ptr(), buf.cast(), out.len());
@@ -1064,7 +1107,7 @@ pub unsafe extern "C" fn msvcrt_vsnprintf(
     // SAFETY: Caller guarantees format is a valid null-terminated C string.
     let fmt_bytes = unsafe { CStr::from_ptr(format) }.to_bytes();
     // SAFETY: args is a valid Windows x64 va_list pointer.
-    let out = unsafe { format_printf_raw(fmt_bytes, args) };
+    let out = unsafe { format_printf_raw(fmt_bytes, args, false) };
     if buf.is_null() || size == 0 {
         return out.len() as i32;
     }
@@ -1100,7 +1143,7 @@ pub unsafe extern "C" fn msvcrt_vswprintf(buf: *mut u16, format: *const u16, arg
     let fmt_wide = unsafe { read_wide_string(format) };
     let fmt_utf8 = String::from_utf16_lossy(&fmt_wide);
     // SAFETY: args is a valid Windows x64 va_list pointer.
-    let out = unsafe { format_printf_raw(fmt_utf8.as_bytes(), args) };
+    let out = unsafe { format_printf_raw(fmt_utf8.as_bytes(), args, true) };
     let out_str = String::from_utf8_lossy(&out);
     let wide: Vec<u16> = out_str.encode_utf16().collect();
     // SAFETY: Caller guarantees buf is large enough.
@@ -2066,8 +2109,11 @@ pub unsafe extern "C" fn msvcrt__read(fd: i32, buf: *mut core::ffi::c_void, coun
 /// `buf` must be valid for reading `count` bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn msvcrt__write(fd: i32, buf: *const core::ffi::c_void, count: u32) -> i32 {
-    if buf.is_null() || count == 0 {
+    if count == 0 {
         return 0;
+    }
+    if buf.is_null() {
+        return -1;
     }
     // SAFETY: caller guarantees buf is readable for count bytes.
     let n = unsafe { libc::write(fd, buf, count as libc::size_t) };
@@ -2092,14 +2138,18 @@ pub unsafe extern "C" fn msvcrt_getchar() -> i32 {
 
 /// `putchar(c)` — write a single character to stdout.
 ///
-/// Returns the character written as `unsigned char` cast to `int`, or `EOF`
-/// on error.
+/// If `c` is `EOF` (-1), returns `EOF` without writing.  Otherwise writes
+/// the low-order byte of `c` and returns it as `unsigned char` cast to `int`,
+/// or `EOF` on I/O error.
 ///
 /// # Safety
 /// Safe to call; writes to the process stdout file descriptor.
 #[unsafe(no_mangle)]
 #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
 pub unsafe extern "C" fn msvcrt_putchar(c: i32) -> i32 {
+    if c == -1 {
+        return -1; // EOF passthrough — do not write 0xFF
+    }
     let b = [c as u8];
     // SAFETY: b is valid for 1 byte.
     let n = unsafe { libc::write(1, b.as_ptr().cast(), 1) };
@@ -4508,7 +4558,7 @@ pub unsafe extern "C" fn ucrt__stdio_common_vfprintf(
     // SAFETY: Caller guarantees fmt is a valid null-terminated C string.
     let fmt_bytes = unsafe { CStr::from_ptr(fmt.cast::<i8>()) }.to_bytes();
     // SAFETY: arglist is a valid Windows x64 va_list pointer.
-    let out = unsafe { format_printf_raw(fmt_bytes, arglist) };
+    let out = unsafe { format_printf_raw(fmt_bytes, arglist, false) };
     match io::stdout().write_all(&out) {
         Ok(()) => {
             let _ = io::stdout().flush();
@@ -4583,7 +4633,7 @@ pub unsafe extern "C" fn msvcrt_sprintf(buf: *mut i8, format: *const i8, mut arg
     // SAFETY: Caller guarantees format is a valid null-terminated C string.
     let fmt_bytes = unsafe { CStr::from_ptr(format) }.to_bytes();
     // SAFETY: format and args are valid per caller contract.
-    let out = unsafe { format_printf_va(fmt_bytes, &mut args) };
+    let out = unsafe { format_printf_va(fmt_bytes, &mut args, false) };
     // SAFETY: Caller guarantees buf is large enough for `out` + NUL.
     unsafe {
         std::ptr::copy_nonoverlapping(out.as_ptr().cast::<i8>(), buf, out.len());
@@ -4618,7 +4668,7 @@ pub unsafe extern "C" fn msvcrt_snprintf(
     // SAFETY: Caller guarantees format is a valid null-terminated C string.
     let fmt_bytes = unsafe { CStr::from_ptr(format) }.to_bytes();
     // SAFETY: format and args are valid per caller contract.
-    let out = unsafe { format_printf_va(fmt_bytes, &mut args) };
+    let out = unsafe { format_printf_va(fmt_bytes, &mut args, false) };
     let would_write = out.len() as i32;
     if !buf.is_null() && count > 0 {
         let copy_len = out.len().min(count - 1);
@@ -4668,7 +4718,7 @@ pub unsafe extern "C" fn msvcrt_swprintf(buf: *mut u16, format: *const u16, mut 
         return -1;
     };
     // SAFETY: format and args are valid per caller contract.
-    let out_bytes = unsafe { format_printf_va(cstr.to_bytes(), &mut args) };
+    let out_bytes = unsafe { format_printf_va(cstr.to_bytes(), &mut args, true) };
     let out_str = String::from_utf8_lossy(&out_bytes);
     let wide_out: Vec<u16> = out_str.encode_utf16().collect();
     // SAFETY: Caller guarantees buf is large enough.
@@ -4701,7 +4751,7 @@ pub unsafe extern "C" fn msvcrt_wprintf(format: *const u16, mut args: ...) -> i3
         return -1;
     };
     // SAFETY: format and args are valid per caller contract.
-    let out = unsafe { format_printf_va(cstr.to_bytes(), &mut args) };
+    let out = unsafe { format_printf_va(cstr.to_bytes(), &mut args, true) };
     match io::stdout().write_all(&out) {
         Ok(()) => {
             let _ = io::stdout().flush();
@@ -4733,7 +4783,7 @@ pub unsafe extern "C" fn msvcrt_fwprintf(
     let wide_fmt = unsafe { read_wide_string(format) };
     let fmt_utf8 = String::from_utf16_lossy(&wide_fmt);
     // SAFETY: format and args are valid per caller contract.
-    let out = unsafe { format_printf_va(fmt_utf8.as_bytes(), &mut args) };
+    let out = unsafe { format_printf_va(fmt_utf8.as_bytes(), &mut args, true) };
     let written = unsafe { libc::write(1, out.as_ptr().cast(), out.len()) };
     if written < 0 { -1 } else { written as i32 }
 }
@@ -4760,7 +4810,7 @@ pub unsafe extern "C" fn msvcrt_vfwprintf(
     let wide_fmt = unsafe { read_wide_string(format) };
     let fmt_utf8 = String::from_utf16_lossy(&wide_fmt);
     // SAFETY: args is a valid Windows x64 va_list pointer.
-    let out = unsafe { format_printf_raw(fmt_utf8.as_bytes(), args) };
+    let out = unsafe { format_printf_raw(fmt_utf8.as_bytes(), args, true) };
     let written = unsafe { libc::write(1, out.as_ptr().cast(), out.len()) };
     if written < 0 { -1 } else { written as i32 }
 }
@@ -6145,7 +6195,7 @@ mod tests {
     #[allow(improper_ctypes_definitions)]
     unsafe extern "C" fn fmt_helper(fmt: *const i8, mut args: ...) -> Vec<u8> {
         let bytes = unsafe { CStr::from_ptr(fmt) }.to_bytes();
-        unsafe { format_printf_va(bytes, &mut args) }
+        unsafe { format_printf_va(bytes, &mut args, false) }
     }
 
     #[test]
@@ -6324,7 +6374,7 @@ mod tests {
         aligned_args.push(0);
         let ap = aligned_args.as_mut_ptr().cast::<u8>();
         let fmt_bytes = fmt_str.as_bytes();
-        unsafe { format_printf_raw(fmt_bytes, ap) }
+        unsafe { format_printf_raw(fmt_bytes, ap, false) }
     }
 
     #[test]

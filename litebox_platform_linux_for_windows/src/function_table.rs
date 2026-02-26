@@ -152,7 +152,7 @@ pub fn get_function_table() -> Vec<FunctionImpl> {
         FunctionImpl {
             name: "vfprintf",
             dll_name: "MSVCRT.dll",
-            num_params: 3, // Variadic, but at least 3
+            num_params: 3, // Takes FILE*, const char*, va_list
             impl_address: crate::msvcrt::msvcrt_vfprintf as *const () as usize,
         },
         FunctionImpl {
