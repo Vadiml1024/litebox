@@ -808,6 +808,16 @@ impl DllManager {
             ),
             // Phase 33: wide-char file I/O
             ("_wfopen", MSVCRT_BASE + 0xBC),
+            // Phase 34: vprintf family and basic I/O
+            ("vprintf", MSVCRT_BASE + 0xBD),
+            ("vsprintf", MSVCRT_BASE + 0xBE),
+            ("vsnprintf", MSVCRT_BASE + 0xBF),
+            ("vswprintf", MSVCRT_BASE + 0xC0),
+            ("fwprintf", MSVCRT_BASE + 0xC1),
+            ("vfwprintf", MSVCRT_BASE + 0xC2),
+            ("_write", MSVCRT_BASE + 0xC3),
+            ("getchar", MSVCRT_BASE + 0xC4),
+            ("putchar", MSVCRT_BASE + 0xC5),
         ];
 
         self.register_stub_dll("MSVCRT.dll", exports);
