@@ -7,12 +7,15 @@
 //! This is the "South" platform layer that translates Windows API calls
 //! to Linux syscalls.
 
+#![feature(c_variadic)]
+
 pub mod advapi32;
 pub mod function_table;
 pub mod gdi32;
 pub mod kernel32;
 pub mod msvcrt;
 pub mod ntdll_impl;
+pub mod ole32;
 pub mod oleaut32;
 pub mod shell32;
 pub mod shlwapi;

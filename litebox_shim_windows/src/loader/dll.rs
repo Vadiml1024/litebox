@@ -61,6 +61,9 @@ mod stub_addresses {
 
     /// api-ms-win-core-winrt-error-l1-1-0.dll function address range: 0xF000-0xFFFF
     pub const WINRT_ERROR_BASE: usize = 0xF000;
+
+    /// ole32.dll function address range: 0x10000-0x10FFF
+    pub const OLE32_BASE: usize = 0x10000;
 }
 
 /// Type for a DLL function pointer
@@ -143,6 +146,7 @@ impl DllManager {
         manager.load_stub_shlwapi();
         manager.load_stub_oleaut32();
         manager.load_stub_winrt_error();
+        manager.load_stub_ole32();
 
         manager
     }
@@ -735,6 +739,69 @@ impl DllManager {
             ("__chkstk", MSVCRT_BASE + 0x7C),
             ("___chkstk_ms", MSVCRT_BASE + 0x7D),
             ("_alloca_probe", MSVCRT_BASE + 0x7E),
+            // Phase 29-31: additional C++ EH / UCRT functions
+            ("_local_unwind", MSVCRT_BASE + 0x89),
+            ("__CxxRegisterExceptionObject", MSVCRT_BASE + 0x8A),
+            ("__CxxUnregisterExceptionObject", MSVCRT_BASE + 0x8B),
+            ("__DestructExceptionObject", MSVCRT_BASE + 0x8C),
+            ("__uncaught_exception", MSVCRT_BASE + 0x8D),
+            ("__uncaught_exceptions", MSVCRT_BASE + 0x8E),
+            // Phase 32: formatted I/O
+            ("sprintf", MSVCRT_BASE + 0x8F),
+            ("snprintf", MSVCRT_BASE + 0x90),
+            ("sscanf", MSVCRT_BASE + 0x91),
+            ("swprintf", MSVCRT_BASE + 0x92),
+            ("wprintf", MSVCRT_BASE + 0x93),
+            // Phase 32: character classification
+            ("isalpha", MSVCRT_BASE + 0x94),
+            ("isdigit", MSVCRT_BASE + 0x95),
+            ("isspace", MSVCRT_BASE + 0x96),
+            ("isupper", MSVCRT_BASE + 0x97),
+            ("islower", MSVCRT_BASE + 0x98),
+            ("isprint", MSVCRT_BASE + 0x99),
+            ("isxdigit", MSVCRT_BASE + 0x9A),
+            ("isalnum", MSVCRT_BASE + 0x9B),
+            ("iscntrl", MSVCRT_BASE + 0x9C),
+            ("ispunct", MSVCRT_BASE + 0x9D),
+            ("toupper", MSVCRT_BASE + 0x9E),
+            ("tolower", MSVCRT_BASE + 0x9F),
+            // Phase 32: sorting / searching
+            ("qsort", MSVCRT_BASE + 0xA0),
+            ("bsearch", MSVCRT_BASE + 0xA1),
+            // Phase 32: wide-string numeric conversions
+            ("wcstol", MSVCRT_BASE + 0xA2),
+            ("wcstoul", MSVCRT_BASE + 0xA3),
+            ("wcstod", MSVCRT_BASE + 0xA4),
+            // Phase 32: file I/O
+            ("fopen", MSVCRT_BASE + 0xA5),
+            ("fclose", MSVCRT_BASE + 0xA6),
+            ("fread", MSVCRT_BASE + 0xA7),
+            ("fseek", MSVCRT_BASE + 0xA8),
+            ("ftell", MSVCRT_BASE + 0xA9),
+            ("fflush", MSVCRT_BASE + 0xAA),
+            ("fgets", MSVCRT_BASE + 0xAB),
+            ("rewind", MSVCRT_BASE + 0xAC),
+            ("feof", MSVCRT_BASE + 0xAD),
+            ("ferror", MSVCRT_BASE + 0xAE),
+            ("clearerr", MSVCRT_BASE + 0xAF),
+            ("fgetc", MSVCRT_BASE + 0xB0),
+            ("ungetc", MSVCRT_BASE + 0xB1),
+            ("fileno", MSVCRT_BASE + 0xB2),
+            ("_fileno", MSVCRT_BASE + 0xB2), // alias
+            ("fdopen", MSVCRT_BASE + 0xB3),
+            ("_fdopen", MSVCRT_BASE + 0xB3), // alias
+            ("tmpfile", MSVCRT_BASE + 0xB4),
+            ("remove", MSVCRT_BASE + 0xB5),
+            ("rename", MSVCRT_BASE + 0xB6),
+            // Phase 32: misc previously-missing functions
+            ("fputs", MSVCRT_BASE + 0xB7),
+            ("puts", MSVCRT_BASE + 0xB8),
+            ("realloc", MSVCRT_BASE + 0xB9),
+            ("_read", MSVCRT_BASE + 0xBA),
+            (
+                "_register_thread_local_exe_atexit_callback",
+                MSVCRT_BASE + 0xBB,
+            ),
         ];
 
         self.register_stub_dll("MSVCRT.dll", exports);
@@ -1037,6 +1104,33 @@ impl DllManager {
 
         self.register_stub_dll("api-ms-win-core-winrt-error-l1-1-0.dll", exports);
     }
+
+    /// Load stub ole32.dll (COM initialization and memory functions)
+    fn load_stub_ole32(&mut self) {
+        use stub_addresses::OLE32_BASE;
+
+        let exports = vec![
+            // COM initialization
+            ("CoInitialize", OLE32_BASE),
+            ("CoInitializeEx", OLE32_BASE + 1),
+            ("CoUninitialize", OLE32_BASE + 2),
+            // COM object creation
+            ("CoCreateInstance", OLE32_BASE + 3),
+            ("CoGetClassObject", OLE32_BASE + 4),
+            // GUID functions
+            ("CoCreateGuid", OLE32_BASE + 5),
+            ("StringFromGUID2", OLE32_BASE + 6),
+            ("CLSIDFromString", OLE32_BASE + 7),
+            // COM task memory
+            ("CoTaskMemAlloc", OLE32_BASE + 8),
+            ("CoTaskMemFree", OLE32_BASE + 9),
+            ("CoTaskMemRealloc", OLE32_BASE + 10),
+            // Security
+            ("CoSetProxyBlanket", OLE32_BASE + 11),
+        ];
+
+        self.register_stub_dll("ole32.dll", exports);
+    }
 }
 
 /// Map Windows API Set DLL names to their real implementation DLLs
@@ -1112,10 +1206,10 @@ mod tests {
     #[test]
     fn test_dll_manager_creation() {
         let manager = DllManager::new();
-        // Should have 15 pre-loaded stub DLLs (KERNEL32, NTDLL, MSVCRT, bcrypt, USERENV,
+        // Should have 16 pre-loaded stub DLLs (KERNEL32, NTDLL, MSVCRT, bcrypt, USERENV,
         // WS2_32, api-ms-win-core-synch, USER32, ADVAPI32, GDI32, SHELL32, VERSION, SHLWAPI,
-        // OLEAUT32, api-ms-win-core-winrt-error-l1-1-0)
-        assert_eq!(manager.dlls.len(), 15);
+        // OLEAUT32, api-ms-win-core-winrt-error-l1-1-0, ole32)
+        assert_eq!(manager.dlls.len(), 16);
     }
 
     #[test]

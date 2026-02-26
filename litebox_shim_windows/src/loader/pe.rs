@@ -192,6 +192,8 @@ pub struct TlsInfo {
     pub address_of_index: u64,
     /// Size of zero-filled data following the initialized data
     pub size_of_zero_fill: u32,
+    /// Address of callbacks table (VA; 0 if none)
+    pub address_of_callbacks: u64,
 }
 
 /// Exception directory information from the .pdata section
@@ -909,6 +911,7 @@ impl PeLoader {
             end_address: tls_directory.end_address_of_raw_data,
             address_of_index: tls_directory.address_of_index,
             size_of_zero_fill: tls_directory.size_of_zero_fill,
+            address_of_callbacks: tls_directory.address_of_call_backs,
         }))
     }
 
