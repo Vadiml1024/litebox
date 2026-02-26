@@ -92,13 +92,13 @@ pub fn get_function_table() -> Vec<FunctionImpl> {
         FunctionImpl {
             name: "printf",
             dll_name: "MSVCRT.dll",
-            num_params: 1, // Variadic, but at least 1
+            num_params: 8, // Variadic; translate up to 8 params (format + 7 args)
             impl_address: crate::msvcrt::msvcrt_printf as *const () as usize,
         },
         FunctionImpl {
             name: "fprintf",
             dll_name: "MSVCRT.dll",
-            num_params: 2, // Variadic, but at least 2
+            num_params: 8, // Variadic; translate up to 8 params (stream + format + 6 args)
             impl_address: crate::msvcrt::msvcrt_fprintf as *const () as usize,
         },
         FunctionImpl {
@@ -3164,13 +3164,13 @@ pub fn get_function_table() -> Vec<FunctionImpl> {
         FunctionImpl {
             name: "sprintf",
             dll_name: "MSVCRT.dll",
-            num_params: 2,
+            num_params: 9, // Variadic; buf + format + up to 7 args
             impl_address: crate::msvcrt::msvcrt_sprintf as *const () as usize,
         },
         FunctionImpl {
             name: "snprintf",
             dll_name: "MSVCRT.dll",
-            num_params: 3,
+            num_params: 9, // Variadic; buf + count + format + up to 6 args
             impl_address: crate::msvcrt::msvcrt_snprintf as *const () as usize,
         },
         FunctionImpl {
@@ -3182,13 +3182,13 @@ pub fn get_function_table() -> Vec<FunctionImpl> {
         FunctionImpl {
             name: "swprintf",
             dll_name: "MSVCRT.dll",
-            num_params: 2,
+            num_params: 8, // Variadic; buf + format + up to 6 args
             impl_address: crate::msvcrt::msvcrt_swprintf as *const () as usize,
         },
         FunctionImpl {
             name: "wprintf",
             dll_name: "MSVCRT.dll",
-            num_params: 1,
+            num_params: 8, // Variadic; format + up to 7 args
             impl_address: crate::msvcrt::msvcrt_wprintf as *const () as usize,
         },
         // MSVCRT.dll — character classification
@@ -3302,6 +3302,12 @@ pub fn get_function_table() -> Vec<FunctionImpl> {
             dll_name: "MSVCRT.dll",
             num_params: 2,
             impl_address: crate::msvcrt::msvcrt_fopen as *const () as usize,
+        },
+        FunctionImpl {
+            name: "_wfopen",
+            dll_name: "MSVCRT.dll",
+            num_params: 2,
+            impl_address: crate::msvcrt::msvcrt__wfopen as *const () as usize,
         },
         FunctionImpl {
             name: "fclose",
@@ -3551,6 +3557,85 @@ pub fn get_function_table() -> Vec<FunctionImpl> {
             dll_name: "ole32.dll",
             num_params: 8,
             impl_address: crate::ole32::ole32_co_set_proxy_blanket as *const () as usize,
+        },
+        // msvcp140.dll — C++ standard library stubs
+        FunctionImpl {
+            name: "??2@YAPEAX_K@Z",
+            dll_name: "msvcp140.dll",
+            num_params: 1,
+            impl_address: crate::msvcp140::msvcp140_operator_new as *const () as usize,
+        },
+        FunctionImpl {
+            name: "??3@YAXPEAX@Z",
+            dll_name: "msvcp140.dll",
+            num_params: 1,
+            impl_address: crate::msvcp140::msvcp140_operator_delete as *const () as usize,
+        },
+        FunctionImpl {
+            name: "??_U@YAPEAX_K@Z",
+            dll_name: "msvcp140.dll",
+            num_params: 1,
+            impl_address: crate::msvcp140::msvcp140_operator_new_array as *const () as usize,
+        },
+        FunctionImpl {
+            name: "??_V@YAXPEAX@Z",
+            dll_name: "msvcp140.dll",
+            num_params: 1,
+            impl_address: crate::msvcp140::msvcp140_operator_delete_array as *const () as usize,
+        },
+        FunctionImpl {
+            name: "?_Xbad_alloc@std@@YAXXZ",
+            dll_name: "msvcp140.dll",
+            num_params: 0,
+            impl_address: crate::msvcp140::msvcp140__Xbad_alloc as *const () as usize,
+        },
+        FunctionImpl {
+            name: "?_Xlength_error@std@@YAXPEBD@Z",
+            dll_name: "msvcp140.dll",
+            num_params: 1,
+            impl_address: crate::msvcp140::msvcp140__Xlength_error as *const () as usize,
+        },
+        FunctionImpl {
+            name: "?_Xout_of_range@std@@YAXPEBD@Z",
+            dll_name: "msvcp140.dll",
+            num_params: 1,
+            impl_address: crate::msvcp140::msvcp140__Xout_of_range as *const () as usize,
+        },
+        FunctionImpl {
+            name: "?_Xinvalid_argument@std@@YAXPEBD@Z",
+            dll_name: "msvcp140.dll",
+            num_params: 1,
+            impl_address: crate::msvcp140::msvcp140__Xinvalid_argument as *const () as usize,
+        },
+        FunctionImpl {
+            name: "?_Xruntime_error@std@@YAXPEBD@Z",
+            dll_name: "msvcp140.dll",
+            num_params: 1,
+            impl_address: crate::msvcp140::msvcp140__Xruntime_error as *const () as usize,
+        },
+        FunctionImpl {
+            name: "?_Xoverflow_error@std@@YAXPEBD@Z",
+            dll_name: "msvcp140.dll",
+            num_params: 1,
+            impl_address: crate::msvcp140::msvcp140__Xoverflow_error as *const () as usize,
+        },
+        FunctionImpl {
+            name: "?_Getctype@_Locinfo@std@@QEBAPBU_Ctypevec@@XZ",
+            dll_name: "msvcp140.dll",
+            num_params: 1,
+            impl_address: crate::msvcp140::msvcp140__Getctype as *const () as usize,
+        },
+        FunctionImpl {
+            name: "?_Getdays@_Locinfo@std@@QEBAPEBDXZ",
+            dll_name: "msvcp140.dll",
+            num_params: 1,
+            impl_address: crate::msvcp140::msvcp140__Getdays as *const () as usize,
+        },
+        FunctionImpl {
+            name: "?_Getmonths@_Locinfo@std@@QEBAPEBDXZ",
+            dll_name: "msvcp140.dll",
+            num_params: 1,
+            impl_address: crate::msvcp140::msvcp140__Getmonths as *const () as usize,
         },
     ]
 }

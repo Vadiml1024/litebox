@@ -17,6 +17,570 @@ use std::ptr;
 use std::sync::{Mutex, OnceLock};
 
 // ============================================================================
+// Printf format-string helpers
+// ============================================================================
+
+/// Pad `s` to `width` bytes.  Left-aligns when `left` is true, otherwise
+/// right-aligns.  Uses `pad_char` as the fill character.
+fn pad_bytes(s: &[u8], width: usize, left: bool, pad_char: u8) -> Vec<u8> {
+    if width <= s.len() {
+        return s.to_vec();
+    }
+    let pad = width - s.len();
+    let mut out = Vec::with_capacity(width);
+    if left {
+        out.extend_from_slice(s);
+        out.resize(width, b' ');
+    } else {
+        out.resize(pad, pad_char);
+        out.extend_from_slice(s);
+    }
+    out
+}
+
+/// Common printf formatting options.
+#[allow(clippy::struct_excessive_bools)]
+#[derive(Clone, Copy, Default)]
+struct PrintOpts {
+    width: usize,
+    precision: Option<usize>,
+    left: bool,
+    zero: bool,
+    plus: bool,
+    space: bool,
+    alt: bool,
+}
+
+/// Format a signed 64-bit integer with printf flags/width.
+fn format_int(val: i64, opts: PrintOpts) -> Vec<u8> {
+    let abs = val.unsigned_abs();
+    let digits = format_u64_decimal(abs);
+    let sign: &[u8] = if val < 0 {
+        b"-"
+    } else if opts.plus {
+        b"+"
+    } else if opts.space {
+        b" "
+    } else {
+        b""
+    };
+    // When an explicit precision is given, apply it to the digit string (minimum
+    // number of digits).  An explicit precision also overrides zero-padding.
+    let digits = match opts.precision {
+        Some(p) => {
+            if digits.len() < p {
+                let mut padded = vec![b'0'; p - digits.len()];
+                padded.extend_from_slice(&digits);
+                padded
+            } else {
+                digits
+            }
+        }
+        None => digits,
+    };
+    // Zero-padding is suppressed when an explicit precision is provided.
+    let zero_pad = opts.zero && !opts.left && opts.precision.is_none();
+    let pad_char = if zero_pad { b'0' } else { b' ' };
+    // When zero-padding, sign goes before the zeros.
+    if zero_pad && opts.width > sign.len() + digits.len() {
+        let pad = opts.width - sign.len() - digits.len();
+        let mut out = Vec::with_capacity(opts.width);
+        out.extend_from_slice(sign);
+        out.resize(out.len() + pad, b'0');
+        out.extend_from_slice(&digits);
+        out
+    } else {
+        let mut num = Vec::with_capacity(sign.len() + digits.len());
+        num.extend_from_slice(sign);
+        num.extend_from_slice(&digits);
+        pad_bytes(&num, opts.width, opts.left, pad_char)
+    }
+}
+
+/// Format an unsigned 64-bit integer with printf flags/width.
+fn format_uint(val: u64, opts: PrintOpts) -> Vec<u8> {
+    let digits = format_u64_decimal(val);
+    // Apply precision (minimum number of digits) and suppress zero-pad if set.
+    let digits = match opts.precision {
+        Some(p) if digits.len() < p => {
+            let mut padded = vec![b'0'; p - digits.len()];
+            padded.extend_from_slice(&digits);
+            padded
+        }
+        _ => digits,
+    };
+    let zero_pad = opts.zero && !opts.left && opts.precision.is_none();
+    let pad_char = if zero_pad { b'0' } else { b' ' };
+    pad_bytes(&digits, opts.width, opts.left, pad_char)
+}
+
+/// Format a u64 as a decimal ASCII byte string.
+fn format_u64_decimal(val: u64) -> Vec<u8> {
+    if val == 0 {
+        return b"0".to_vec();
+    }
+    let mut buf = [0u8; 20];
+    let mut pos = 20;
+    let mut v = val;
+    while v > 0 {
+        pos -= 1;
+        buf[pos] = b'0' + (v % 10) as u8;
+        v /= 10;
+    }
+    buf[pos..].to_vec()
+}
+
+/// Format a u64 as hex with optional prefix.
+fn format_hex(val: u64, upper: bool, opts: PrintOpts) -> Vec<u8> {
+    let digits: Vec<u8> = if upper {
+        format!("{val:X}").into_bytes()
+    } else {
+        format!("{val:x}").into_bytes()
+    };
+    let prefix: &[u8] = if opts.alt && val != 0 {
+        if upper { b"0X" } else { b"0x" }
+    } else {
+        b""
+    };
+    let pad_char = if opts.zero && !opts.left { b'0' } else { b' ' };
+    if opts.zero && !opts.left && opts.width > prefix.len() + digits.len() {
+        let pad = opts.width - prefix.len() - digits.len();
+        let mut out = Vec::with_capacity(opts.width);
+        out.extend_from_slice(prefix);
+        out.resize(out.len() + pad, b'0');
+        out.extend_from_slice(&digits);
+        out
+    } else {
+        let mut num = Vec::with_capacity(prefix.len() + digits.len());
+        num.extend_from_slice(prefix);
+        num.extend_from_slice(&digits);
+        pad_bytes(&num, opts.width, opts.left, pad_char)
+    }
+}
+
+/// Format a u64 as octal.
+fn format_octal(val: u64, opts: PrintOpts) -> Vec<u8> {
+    let mut s = format!("{val:o}");
+    if opts.alt && !s.starts_with('0') {
+        s.insert(0, '0');
+    }
+    let pad_char = if opts.zero && !opts.left { b'0' } else { b' ' };
+    pad_bytes(s.as_bytes(), opts.width, opts.left, pad_char)
+}
+
+/// Format a floating-point value for printf-style %f/%e/%g conversions.
+///
+/// `conv` must be one of `'f'`, `'e'`/`'E'`, `'g'`/`'G'`.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap
+)]
+fn format_float(val: f64, prec: usize, conv: char, opts: PrintOpts) -> Vec<u8> {
+    let raw = match conv {
+        'e' => format!("{val:.prec$e}"),
+        'E' => format!("{val:.prec$E}"),
+        'g' | 'G' => {
+            // %g: use %e if exponent < -4 or >= prec, else %f; strip trailing zeros
+            // UNLESS the `#` (alternate form) flag is set.
+            let prec = if prec == 0 { 1 } else { prec };
+            let exp: i32 = if val == 0.0 {
+                0
+            } else {
+                val.abs().log10().floor() as i32
+            };
+            let s = if exp < -4 || exp >= prec as i32 {
+                if conv == 'G' {
+                    format!("{val:.prec$E}", prec = prec - 1)
+                } else {
+                    format!("{val:.prec$e}", prec = prec - 1)
+                }
+            } else {
+                let decimal_digits = ((prec as i32 - 1 - exp).max(0)) as usize;
+                format!("{val:.decimal_digits$}")
+            };
+            // Strip trailing zeros only when `#` is NOT set.
+            if !opts.alt && s.contains('.') && !s.contains('e') && !s.contains('E') {
+                s.trim_end_matches('0').trim_end_matches('.').to_string()
+            } else {
+                s
+            }
+        }
+        _ => format!("{val:.prec$}"), // %f default
+    };
+
+    // Add leading sign.
+    let sign: &str = if val.is_sign_negative() && !raw.starts_with('-') {
+        "-"
+    } else if opts.plus && !raw.starts_with('-') {
+        "+"
+    } else if opts.space && !raw.starts_with('-') {
+        " "
+    } else {
+        ""
+    };
+
+    let full = format!("{sign}{raw}");
+
+    // For zero-padding with a sign, place the sign *before* the zeros to
+    // match printf semantics (e.g. `%+08.2f` of 3.14 → "+0003.14").
+    if opts.zero && !opts.left && !sign.is_empty() && opts.width > full.len() {
+        let zeros = opts.width - full.len();
+        let mut out = Vec::with_capacity(opts.width);
+        out.extend_from_slice(sign.as_bytes());
+        out.resize(out.len() + zeros, b'0');
+        out.extend_from_slice(raw.as_bytes());
+        return out;
+    }
+
+    let pad_char = if opts.zero && !opts.left { b'0' } else { b' ' };
+    pad_bytes(full.as_bytes(), opts.width, opts.left, pad_char)
+}
+
+/// Read a null-terminated UTF-16 slice.
+///
+/// # Safety
+/// `ptr` must point to a valid null-terminated UTF-16 string.
+unsafe fn read_wide_string(ptr: *const u16) -> Vec<u16> {
+    let mut v = Vec::new();
+    let mut p = ptr;
+    loop {
+        let ch = unsafe { *p };
+        if ch == 0 {
+            break;
+        }
+        v.push(ch);
+        p = unsafe { p.add(1) };
+    }
+    v
+}
+
+/// Core printf formatter.
+///
+/// Parses `fmt` (a null-terminated byte slice without the trailing `\0`)
+/// and formats each `%…` specifier by consuming the next argument from
+/// `args`.  The result is returned as a `Vec<u8>`.
+///
+/// Supported conversions: `d`, `i`, `u`, `x`, `X`, `o`, `f`, `e`, `E`,
+/// `g`, `G`, `s`, `S` (wide), `p`, `c`, `C` (wide), `n`, `%`.
+///
+/// Supported flags: `-`, `0`, `+`, ` `, `#`.
+/// Width and precision (literal or `*`).
+/// Length modifiers: `h`, `hh`, `l`, `ll`, `I64`, `I32`, `I`, `z`, `t`, `j`.
+///
+/// # Safety
+/// `args` must supply arguments of the types implied by the format string.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss
+)]
+unsafe fn format_printf_va(fmt: &[u8], args: &mut core::ffi::VaList<'_>) -> Vec<u8> {
+    let mut out: Vec<u8> = Vec::new();
+    let mut i = 0;
+
+    while i < fmt.len() {
+        let b = fmt[i];
+        if b != b'%' {
+            out.push(b);
+            i += 1;
+            continue;
+        }
+        i += 1;
+        if i >= fmt.len() {
+            break;
+        }
+        if fmt[i] == b'%' {
+            out.push(b'%');
+            i += 1;
+            continue;
+        }
+
+        // ── Flags ────────────────────────────────────────────────────────────
+        let mut opts = PrintOpts::default();
+        loop {
+            if i >= fmt.len() {
+                return out;
+            }
+            match fmt[i] {
+                b'-' => {
+                    opts.left = true;
+                    i += 1;
+                }
+                b'0' => {
+                    opts.zero = true;
+                    i += 1;
+                }
+                b'+' => {
+                    opts.plus = true;
+                    i += 1;
+                }
+                b' ' => {
+                    opts.space = true;
+                    i += 1;
+                }
+                b'#' => {
+                    opts.alt = true;
+                    i += 1;
+                }
+                _ => break,
+            }
+        }
+
+        // ── Width ─────────────────────────────────────────────────────────────
+        if i < fmt.len() && fmt[i] == b'*' {
+            let w = unsafe { args.arg::<i32>() };
+            if w < 0 {
+                opts.left = true;
+                opts.width = w.unsigned_abs() as usize;
+            } else {
+                opts.width = w as usize;
+            }
+            i += 1;
+        } else {
+            while i < fmt.len() && fmt[i].is_ascii_digit() {
+                opts.width = opts.width * 10 + usize::from(fmt[i] - b'0');
+                i += 1;
+            }
+        }
+
+        // ── Precision ─────────────────────────────────────────────────────────
+        if i < fmt.len() && fmt[i] == b'.' {
+            i += 1;
+            if i < fmt.len() && fmt[i] == b'*' {
+                let p = unsafe { args.arg::<i32>() };
+                // A negative precision from `.*` means "precision not specified"
+                // (matches printf / MSVCRT semantics).
+                opts.precision = if p < 0 { None } else { Some(p as usize) };
+                i += 1;
+            } else {
+                let mut prec: usize = 0;
+                while i < fmt.len() && fmt[i].is_ascii_digit() {
+                    prec = prec * 10 + usize::from(fmt[i] - b'0');
+                    i += 1;
+                }
+                opts.precision = Some(prec);
+            }
+        }
+
+        // ── Length modifier ───────────────────────────────────────────────────
+        let mut is_longlong = false;
+        let mut is_short = false;
+        let mut is_char_len = false;
+        // is_long / is_size are folded into is_longlong below
+
+        if i < fmt.len() {
+            match fmt[i] {
+                b'h' => {
+                    i += 1;
+                    if i < fmt.len() && fmt[i] == b'h' {
+                        is_char_len = true;
+                        i += 1;
+                    } else {
+                        is_short = true;
+                    }
+                }
+                b'l' => {
+                    i += 1;
+                    if i < fmt.len() && fmt[i] == b'l' {
+                        is_longlong = true;
+                        i += 1;
+                    } else {
+                        // `l` on Linux means 64-bit for integer types
+                        is_longlong = true;
+                    }
+                }
+                b'I' => {
+                    // Windows: %I64d / %I32d / %I (pointer-sized)
+                    if i + 2 < fmt.len() && fmt[i + 1] == b'6' && fmt[i + 2] == b'4' {
+                        is_longlong = true;
+                        i += 3;
+                    } else if i + 2 < fmt.len() && fmt[i + 1] == b'3' && fmt[i + 2] == b'2' {
+                        i += 3; // 32-bit — same as unmodified on x64
+                    } else {
+                        is_longlong = true; // %I → pointer-sized (64-bit on x64)
+                        i += 1;
+                    }
+                }
+                b'z' | b'Z' | b't' | b'j' => {
+                    is_longlong = true;
+                    i += 1;
+                }
+                _ => {}
+            }
+        }
+
+        if i >= fmt.len() {
+            break;
+        }
+        let conv = fmt[i];
+        i += 1;
+
+        // ── Conversion ────────────────────────────────────────────────────────
+        match conv {
+            b'd' | b'i' => {
+                let val: i64 = if is_longlong {
+                    unsafe { args.arg::<i64>() }
+                } else if is_short {
+                    i64::from(unsafe { args.arg::<i32>() } as i16)
+                } else if is_char_len {
+                    i64::from(unsafe { args.arg::<i32>() } as i8)
+                } else {
+                    i64::from(unsafe { args.arg::<i32>() })
+                };
+                out.extend(format_int(val, opts));
+            }
+            b'u' => {
+                let val: u64 = if is_longlong {
+                    unsafe { args.arg::<u64>() }
+                } else if is_short {
+                    u64::from(unsafe { args.arg::<u32>() } as u16)
+                } else if is_char_len {
+                    u64::from(unsafe { args.arg::<u32>() } as u8)
+                } else {
+                    u64::from(unsafe { args.arg::<u32>() })
+                };
+                out.extend(format_uint(val, opts));
+            }
+            b'x' | b'X' => {
+                let val: u64 = if is_longlong {
+                    unsafe { args.arg::<u64>() }
+                } else {
+                    u64::from(unsafe { args.arg::<u32>() })
+                };
+                out.extend(format_hex(val, conv == b'X', opts));
+            }
+            b'o' => {
+                let val: u64 = if is_longlong {
+                    unsafe { args.arg::<u64>() }
+                } else {
+                    u64::from(unsafe { args.arg::<u32>() })
+                };
+                out.extend(format_octal(val, opts));
+            }
+            b'f' | b'F' => {
+                let val = unsafe { args.arg::<f64>() };
+                let prec = opts.precision.unwrap_or(6);
+                out.extend(format_float(val, prec, 'f', opts));
+            }
+            b'e' => {
+                let val = unsafe { args.arg::<f64>() };
+                let prec = opts.precision.unwrap_or(6);
+                out.extend(format_float(val, prec, 'e', opts));
+            }
+            b'E' => {
+                let val = unsafe { args.arg::<f64>() };
+                let prec = opts.precision.unwrap_or(6);
+                out.extend(format_float(val, prec, 'E', opts));
+            }
+            b'g' => {
+                let val = unsafe { args.arg::<f64>() };
+                let prec = opts.precision.unwrap_or(6);
+                out.extend(format_float(val, prec, 'g', opts));
+            }
+            b'G' => {
+                let val = unsafe { args.arg::<f64>() };
+                let prec = opts.precision.unwrap_or(6);
+                out.extend(format_float(val, prec, 'G', opts));
+            }
+            b's' => {
+                let ptr = unsafe { args.arg::<*const i8>() };
+                let s: Vec<u8> = if ptr.is_null() {
+                    b"(null)".to_vec()
+                } else {
+                    // SAFETY: caller guarantees a valid null-terminated string
+                    unsafe { CStr::from_ptr(ptr) }.to_bytes().to_vec()
+                };
+                let s = match opts.precision {
+                    Some(p) => s[..s.len().min(p)].to_vec(),
+                    None => s,
+                };
+                out.extend(pad_bytes(&s, opts.width, opts.left, b' '));
+            }
+            b'S' => {
+                // Wide string — Windows-specific
+                let ptr = unsafe { args.arg::<*const u16>() };
+                if !ptr.is_null() {
+                    // SAFETY: caller guarantees a valid null-terminated wide string
+                    let wide = unsafe { read_wide_string(ptr) };
+                    let s = String::from_utf16_lossy(&wide);
+                    let bytes: Vec<u8> = match opts.precision {
+                        Some(p) => s.as_bytes()[..s.len().min(p)].to_vec(),
+                        None => s.into_bytes(),
+                    };
+                    out.extend(pad_bytes(&bytes, opts.width, opts.left, b' '));
+                }
+            }
+            b'p' => {
+                let ptr = unsafe { args.arg::<usize>() };
+                let s = format!("{ptr:#018x}");
+                out.extend(pad_bytes(s.as_bytes(), opts.width, opts.left, b' '));
+            }
+            b'c' => {
+                let c = (unsafe { args.arg::<i32>() } as u32 & 0xFF) as u8;
+                out.extend(pad_bytes(&[c], opts.width, opts.left, b' '));
+            }
+            b'C' => {
+                // Wide character — Windows-specific
+                let c = unsafe { args.arg::<u32>() };
+                if let Some(ch) = char::from_u32(c) {
+                    let mut buf = [0u8; 4];
+                    let s = ch.encode_utf8(&mut buf);
+                    out.extend(pad_bytes(s.as_bytes(), opts.width, opts.left, b' '));
+                }
+            }
+            b'n' => {
+                // %n writes the number of characters written so far into the
+                // pointer argument.  Dispatch on the length modifier to write
+                // the correct type.
+                let written = out.len();
+                if is_longlong {
+                    let ptr = unsafe { args.arg::<*mut i64>() };
+                    if !ptr.is_null() {
+                        // SAFETY: caller guarantees a valid writable pointer.
+                        unsafe { *ptr = written as i64 };
+                    }
+                } else if is_short {
+                    let ptr = unsafe { args.arg::<*mut i16>() };
+                    if !ptr.is_null() {
+                        // SAFETY: caller guarantees a valid writable pointer.
+                        #[allow(clippy::cast_possible_truncation)]
+                        unsafe {
+                            *ptr = written as i16;
+                        };
+                    }
+                } else if is_char_len {
+                    let ptr = unsafe { args.arg::<*mut i8>() };
+                    if !ptr.is_null() {
+                        // SAFETY: caller guarantees a valid writable pointer.
+                        #[allow(clippy::cast_possible_truncation)]
+                        unsafe {
+                            *ptr = written as i8;
+                        };
+                    }
+                } else {
+                    let ptr = unsafe { args.arg::<*mut i32>() };
+                    if !ptr.is_null() {
+                        // SAFETY: caller guarantees a valid writable pointer.
+                        #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+                        unsafe {
+                            *ptr = written as i32;
+                        };
+                    }
+                }
+            }
+            _ => {
+                // Unknown — emit literally
+                out.push(b'%');
+                out.push(conv);
+            }
+        }
+    }
+
+    out
+}
+
+// ============================================================================
 // Data Exports
 // ============================================================================
 // These are global variables that Windows programs import directly.
@@ -268,30 +832,25 @@ pub unsafe extern "C" fn msvcrt_strncmp(s1: *const i8, s2: *const i8, n: usize) 
 
 /// Print formatted string to stdout (printf)
 ///
-/// Note: This is a simplified stub implementation
-///
 /// # Safety
-/// This function is unsafe as it deals with raw pointers.
+/// `format` must point to a valid null-terminated C string.
+/// Variadic arguments must match the format specifiers.
 #[unsafe(no_mangle)]
 #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
-pub unsafe extern "C" fn msvcrt_printf(format: *const i8) -> i32 {
+pub unsafe extern "C" fn msvcrt_printf(format: *const i8, mut args: ...) -> i32 {
     if format.is_null() {
         return -1;
     }
-
-    // SAFETY: Caller guarantees format points to a valid null-terminated string
-    let Some(format_str) = CStr::from_ptr(format).to_str().ok() else {
-        return -1;
-    };
-
-    // Simple implementation: just print the format string as-is
-    // A full implementation would parse varargs and handle format specifiers
-    match write!(io::stdout(), "{format_str}") {
+    // SAFETY: Caller guarantees format is a valid null-terminated C string.
+    let fmt_bytes = unsafe { CStr::from_ptr(format) }.to_bytes();
+    // SAFETY: format and args are valid per caller contract.
+    let out = unsafe { format_printf_va(fmt_bytes, &mut args) };
+    match io::stdout().write_all(&out) {
         Ok(()) => {
             let _ = io::stdout().flush();
-            format_str.len() as i32
+            out.len() as i32
         }
-        Err(_e) => -1,
+        Err(_) => -1,
     }
 }
 
@@ -324,30 +883,64 @@ pub unsafe extern "C" fn msvcrt_fwrite(
     }
 }
 
-/// Simplified fprintf - only supports writing to stdout/stderr
+/// Write a formatted string to a stream (fprintf)
+///
+/// Always writes to stdout (fd 1).  The `stream` parameter is a Windows FILE*
+/// pointer, not a Linux fd, so we cannot reliably distinguish stderr from
+/// stdout by comparing the pointer value.  Most fprintf callers use stdout;
+/// programs that specifically need stderr typically use the `stderr` macro
+/// which is resolved at link time through `__iob_func` / `__acrt_iob_func`.
 ///
 /// # Safety
-/// This function is unsafe as it deals with raw pointers.
+/// `format` must point to a valid null-terminated C string.
+/// Variadic arguments must match the format specifiers.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn msvcrt_fprintf(_stream: *mut u8, format: *const i8) -> i32 {
-    // For simplicity, just use printf implementation
-    // SAFETY: Caller guarantees format is a valid null-terminated string
-    unsafe { msvcrt_printf(format) }
+#[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+pub unsafe extern "C" fn msvcrt_fprintf(_stream: *mut u8, format: *const i8, mut args: ...) -> i32 {
+    if format.is_null() {
+        return -1;
+    }
+    // SAFETY: Caller guarantees format is a valid null-terminated C string.
+    let fmt_bytes = unsafe { CStr::from_ptr(format) }.to_bytes();
+    // SAFETY: format and args are valid per caller contract.
+    let out = unsafe { format_printf_va(fmt_bytes, &mut args) };
+    let written = unsafe { libc::write(1, out.as_ptr().cast(), out.len()) };
+    if written < 0 { -1 } else { written as i32 }
 }
 
-/// Simplified vfprintf stub
+/// Write a formatted string to a stream using a pre-built va_list (vfprintf)
+///
+/// # Known limitation
+/// This stub writes the raw format string to stdout without substituting
+/// format specifiers, because the `args` pointer arrives as an opaque
+/// `void*` that represents a Windows-ABI va_list.  Translating a Windows
+/// va_list into a Linux va_list at runtime is not currently implemented.
+/// Most callers use `fprintf` (which does full formatting) rather than
+/// `vfprintf` directly.
+///
+/// The `stream` parameter is ignored; output always goes to stdout (fd 1).
+/// See `msvcrt_fprintf` for the rationale.
 ///
 /// # Safety
-/// This function is unsafe as it deals with raw pointers.
+/// `format` must point to a valid null-terminated C string.
+/// `args` must be a valid pointer to an initialised Windows va_list.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn msvcrt_vfprintf(
     _stream: *mut u8,
     format: *const i8,
-    _args: *mut u8,
+    args: *mut u8,
 ) -> i32 {
-    // For simplicity, just print the format string
-    // SAFETY: Caller guarantees format is a valid null-terminated string
-    unsafe { msvcrt_printf(format) }
+    if format.is_null() {
+        return -1;
+    }
+    // SAFETY: Caller guarantees format is a valid null-terminated C string.
+    let fmt_bytes = unsafe { CStr::from_ptr(format) }.to_bytes();
+    // Write the raw format bytes.  A full implementation would translate the
+    // Windows va_list in `args` to a Linux va_list and call libc::vdprintf.
+    let _ = args;
+    let written = unsafe { libc::write(1, fmt_bytes.as_ptr().cast(), fmt_bytes.len()) };
+    #[allow(clippy::cast_possible_truncation)]
+    if written < 0 { -1 } else { written as i32 }
 }
 
 /// Get I/O buffer array (__iob_func)
@@ -3744,61 +4337,70 @@ pub unsafe extern "C" fn msvcrt_chkstk_nop() {}
 
 /// `sprintf(buf, format, ...) -> int` — write formatted string to buffer.
 ///
-/// This is a simplified stub: copies the format string into `buf` unchanged
-/// (no format-specifier substitution).  Returns the number of characters
-/// written, or -1 on error.
+/// Parses format specifiers and substitutes variadic arguments.
+/// Returns the number of characters written (excluding the NUL terminator),
+/// or -1 on error.
 ///
 /// # Safety
 ///
 /// `buf` must point to a writable buffer large enough to hold the output.
 /// `format` must be a valid null-terminated string.
+/// Variadic arguments must match the format specifiers.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn msvcrt_sprintf(buf: *mut i8, format: *const i8, _args: ...) -> i32 {
+#[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+pub unsafe extern "C" fn msvcrt_sprintf(buf: *mut i8, format: *const i8, mut args: ...) -> i32 {
     if buf.is_null() || format.is_null() {
         return -1;
     }
     // SAFETY: Caller guarantees format is a valid null-terminated C string.
-    let fmt = unsafe { std::ffi::CStr::from_ptr(format) };
-    let bytes = fmt.to_bytes_with_nul();
-    // SAFETY: Caller guarantees buf is large enough.
-    unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr().cast::<i8>(), buf, bytes.len()) };
-    #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
-    let len = (bytes.len() - 1) as i32;
-    len
+    let fmt_bytes = unsafe { CStr::from_ptr(format) }.to_bytes();
+    // SAFETY: format and args are valid per caller contract.
+    let out = unsafe { format_printf_va(fmt_bytes, &mut args) };
+    // SAFETY: Caller guarantees buf is large enough for `out` + NUL.
+    unsafe {
+        std::ptr::copy_nonoverlapping(out.as_ptr().cast::<i8>(), buf, out.len());
+        *buf.add(out.len()) = 0;
+    }
+    out.len() as i32
 }
 
 /// `snprintf(buf, count, format, ...) -> int` — write formatted string to
 /// size-limited buffer.
 ///
-/// Simplified stub: copies at most `count-1` bytes of `format` into `buf`
-/// and appends a NUL terminator.
+/// Writes at most `count-1` bytes of the formatted output and appends a
+/// NUL terminator.  Returns the number of characters that would have been
+/// written (as per C99 semantics), or -1 on error.
 ///
 /// # Safety
 ///
 /// `buf` must point to a writable buffer of at least `count` bytes.
 /// `format` must be a valid null-terminated string.
+/// Variadic arguments must match the format specifiers.
 #[unsafe(no_mangle)]
+#[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
 pub unsafe extern "C" fn msvcrt_snprintf(
     buf: *mut i8,
     count: usize,
     format: *const i8,
-    _args: ...
+    mut args: ...
 ) -> i32 {
-    if buf.is_null() || format.is_null() || count == 0 {
+    if format.is_null() {
         return -1;
     }
     // SAFETY: Caller guarantees format is a valid null-terminated C string.
-    let fmt = unsafe { std::ffi::CStr::from_ptr(format) };
-    let bytes = fmt.to_bytes();
-    let copy_len = bytes.len().min(count - 1);
-    // SAFETY: Caller guarantees buf is at least `count` bytes.
-    unsafe {
-        std::ptr::copy_nonoverlapping(bytes.as_ptr().cast::<i8>(), buf, copy_len);
-        *buf.add(copy_len) = 0;
+    let fmt_bytes = unsafe { CStr::from_ptr(format) }.to_bytes();
+    // SAFETY: format and args are valid per caller contract.
+    let out = unsafe { format_printf_va(fmt_bytes, &mut args) };
+    let would_write = out.len() as i32;
+    if !buf.is_null() && count > 0 {
+        let copy_len = out.len().min(count - 1);
+        // SAFETY: Caller guarantees buf is at least `count` bytes.
+        unsafe {
+            std::ptr::copy_nonoverlapping(out.as_ptr().cast::<i8>(), buf, copy_len);
+            *buf.add(copy_len) = 0;
+        }
     }
-    #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
-    let len = copy_len as i32;
-    len
+    would_write
 }
 
 /// `sscanf(buf, format, ...) -> int` — parse formatted string from buffer.
@@ -3813,70 +4415,69 @@ pub unsafe extern "C" fn msvcrt_sscanf(_buf: *const i8, _format: *const i8, _arg
     0
 }
 
-/// `swprintf(buf, format, ...) -> int` — write formatted string to wide buffer.
+/// `swprintf(buf, format, ...) -> int` — write formatted wide string to buffer.
 ///
-/// Stub implementation; copies the wide format string into `buf` unchanged.
-/// Returns the number of wide characters written, or -1 on error.
+/// Converts the format string to UTF-8, runs the printf formatter, then
+/// re-encodes the result as UTF-16 into `buf`.  Returns the number of wide
+/// characters written (excluding the NUL terminator), or -1 on error.
 ///
 /// # Safety
 ///
 /// `buf` must point to a writable wide-character buffer large enough for the output.
 /// `format` must be a valid null-terminated wide string.
+/// Variadic arguments must match the format specifiers.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn msvcrt_swprintf(buf: *mut u16, format: *const u16, _args: ...) -> i32 {
+#[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+pub unsafe extern "C" fn msvcrt_swprintf(buf: *mut u16, format: *const u16, mut args: ...) -> i32 {
     if buf.is_null() || format.is_null() {
         return -1;
     }
-    let mut len = 0usize;
     // SAFETY: Caller guarantees format is a valid null-terminated wide string.
+    let wide_fmt = unsafe { read_wide_string(format) };
+    let fmt_utf8 = String::from_utf16_lossy(&wide_fmt);
+    // Build a temporary CString so we can use our formatter.
+    let Ok(cstr) = CString::new(fmt_utf8.as_bytes()) else {
+        return -1;
+    };
+    // SAFETY: format and args are valid per caller contract.
+    let out_bytes = unsafe { format_printf_va(cstr.to_bytes(), &mut args) };
+    let out_str = String::from_utf8_lossy(&out_bytes);
+    let wide_out: Vec<u16> = out_str.encode_utf16().collect();
+    // SAFETY: Caller guarantees buf is large enough.
     unsafe {
-        let mut src = format;
-        loop {
-            let ch = *src;
-            *buf.add(len) = ch;
-            if ch == 0 {
-                break;
-            }
-            len += 1;
-            src = src.add(1);
-        }
+        std::ptr::copy_nonoverlapping(wide_out.as_ptr(), buf, wide_out.len());
+        *buf.add(wide_out.len()) = 0;
     }
-    #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
-    let count = len as i32;
-    count
+    wide_out.len() as i32
 }
 
-/// `wprintf(format, ...) -> int` — print wide formatted string to stdout.
+/// `wprintf(format, ...) -> int` — print formatted wide string to stdout.
 ///
-/// Stub: converts to UTF-8 and prints via stdout.
+/// Converts the wide format string to UTF-8, runs the printf formatter,
+/// then writes the result to stdout.
 ///
 /// # Safety
 ///
 /// `format` must be a valid null-terminated wide string.
+/// Variadic arguments must match the format specifiers.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn msvcrt_wprintf(format: *const u16, _args: ...) -> i32 {
+#[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+pub unsafe extern "C" fn msvcrt_wprintf(format: *const u16, mut args: ...) -> i32 {
     if format.is_null() {
         return -1;
     }
-    // Collect the wide string.
-    let mut len = 0usize;
     // SAFETY: Caller guarantees format is a valid null-terminated wide string.
-    unsafe {
-        let mut p = format;
-        while *p != 0 {
-            len += 1;
-            p = p.add(1);
-        }
-    }
-    // SAFETY: We just measured the length above.
-    let wide = unsafe { std::slice::from_raw_parts(format, len) };
-    let s = String::from_utf16_lossy(wide);
-    match std::io::Write::write_all(&mut std::io::stdout(), s.as_bytes()) {
+    let wide_fmt = unsafe { read_wide_string(format) };
+    let fmt_utf8 = String::from_utf16_lossy(&wide_fmt);
+    let Ok(cstr) = CString::new(fmt_utf8.as_bytes()) else {
+        return -1;
+    };
+    // SAFETY: format and args are valid per caller contract.
+    let out = unsafe { format_printf_va(cstr.to_bytes(), &mut args) };
+    match io::stdout().write_all(&out) {
         Ok(()) => {
-            let _ = std::io::stdout().flush();
-            #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
-            let count = len as i32;
-            count
+            let _ = io::stdout().flush();
+            out.len() as i32
         }
         Err(_) => -1,
     }
@@ -4226,6 +4827,36 @@ pub unsafe extern "C" fn msvcrt_wcstod(nptr: *const u16, endptr: *mut *mut u16) 
 pub unsafe extern "C" fn msvcrt_fopen(filename: *const i8, mode: *const i8) -> *mut u8 {
     // SAFETY: Caller guarantees filename and mode are valid C strings.
     unsafe { libc::fopen(filename.cast(), mode.cast()).cast() }
+}
+
+/// `_wfopen(filename, mode) -> FILE*` — open a file with wide-character paths.
+///
+/// Converts the wide-character `filename` and `mode` strings to UTF-8 and
+/// delegates to `libc::fopen`.  Returns null on conversion failure or if
+/// `libc::fopen` fails.
+///
+/// # Safety
+///
+/// `filename` and `mode` must be valid null-terminated wide-character (UTF-16)
+/// strings.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt__wfopen(filename: *const u16, mode: *const u16) -> *mut u8 {
+    if filename.is_null() || mode.is_null() {
+        return ptr::null_mut();
+    }
+    // SAFETY: Caller guarantees valid null-terminated wide strings.
+    let wide_name = unsafe { read_wide_string(filename) };
+    let wide_mode = unsafe { read_wide_string(mode) };
+    let name_utf8 = String::from_utf16_lossy(&wide_name);
+    let mode_utf8 = String::from_utf16_lossy(&wide_mode);
+    let Ok(name_cstr) = CString::new(name_utf8.as_str()) else {
+        return ptr::null_mut();
+    };
+    let Ok(mode_cstr) = CString::new(mode_utf8.as_str()) else {
+        return ptr::null_mut();
+    };
+    // SAFETY: Both CStrings are valid null-terminated C strings.
+    unsafe { libc::fopen(name_cstr.as_ptr(), mode_cstr.as_ptr()).cast() }
 }
 
 /// `fclose(stream) -> int` — close a file.
@@ -5222,5 +5853,178 @@ mod tests {
             flags: 0,
         };
         assert_eq!(cxx_ip_to_state(&fi, 0x1000, 0x1100), -1);
+    }
+
+    // ── printf formatter unit tests ──────────────────────────────────────────
+
+    /// Helper: run `format_printf_va` via a variadic wrapper so that the
+    /// `VaList` is properly initialised by the Rust calling-convention machinery.
+    #[cfg(test)]
+    #[allow(improper_ctypes_definitions)]
+    unsafe extern "C" fn fmt_helper(fmt: *const i8, mut args: ...) -> Vec<u8> {
+        let bytes = unsafe { CStr::from_ptr(fmt) }.to_bytes();
+        unsafe { format_printf_va(bytes, &mut args) }
+    }
+
+    #[test]
+    fn test_printf_literal() {
+        let fmt = CString::new("hello world").unwrap();
+        let out = unsafe { fmt_helper(fmt.as_ptr(), 0i32) };
+        assert_eq!(out, b"hello world");
+    }
+
+    #[test]
+    fn test_printf_percent() {
+        let fmt = CString::new("100%%").unwrap();
+        let out = unsafe { fmt_helper(fmt.as_ptr(), 0i32) };
+        assert_eq!(out, b"100%");
+    }
+
+    #[test]
+    fn test_printf_d() {
+        let fmt = CString::new("%d").unwrap();
+        let out = unsafe { fmt_helper(fmt.as_ptr(), 42i32) };
+        assert_eq!(out, b"42");
+    }
+
+    #[test]
+    fn test_printf_d_negative() {
+        let fmt = CString::new("%d").unwrap();
+        let out = unsafe { fmt_helper(fmt.as_ptr(), -99i32) };
+        assert_eq!(out, b"-99");
+    }
+
+    #[test]
+    fn test_printf_width_zero_pad() {
+        let fmt = CString::new("%05d").unwrap();
+        let out = unsafe { fmt_helper(fmt.as_ptr(), 7i32) };
+        assert_eq!(out, b"00007");
+    }
+
+    #[test]
+    fn test_printf_left_align() {
+        let fmt = CString::new("%-5d|").unwrap();
+        let out = unsafe { fmt_helper(fmt.as_ptr(), 7i32) };
+        assert_eq!(out, b"7    |");
+    }
+
+    #[test]
+    fn test_printf_plus_sign() {
+        let fmt = CString::new("%+d %+d").unwrap();
+        let out = unsafe { fmt_helper(fmt.as_ptr(), 3i32, -5i32) };
+        assert_eq!(out, b"+3 -5");
+    }
+
+    #[test]
+    fn test_printf_x() {
+        let fmt = CString::new("%x %X").unwrap();
+        let out = unsafe { fmt_helper(fmt.as_ptr(), 255u32, 255u32) };
+        assert_eq!(out, b"ff FF");
+    }
+
+    #[test]
+    fn test_printf_x_alt() {
+        let fmt = CString::new("%#x").unwrap();
+        let out = unsafe { fmt_helper(fmt.as_ptr(), 255u32) };
+        assert_eq!(out, b"0xff");
+    }
+
+    #[test]
+    fn test_printf_o() {
+        let fmt = CString::new("%o").unwrap();
+        let out = unsafe { fmt_helper(fmt.as_ptr(), 8u32) };
+        assert_eq!(out, b"10");
+    }
+
+    #[test]
+    fn test_printf_s() {
+        let s = CString::new("world").unwrap();
+        let fmt = CString::new("hello %s").unwrap();
+        let out = unsafe { fmt_helper(fmt.as_ptr(), s.as_ptr()) };
+        assert_eq!(out, b"hello world");
+    }
+
+    #[test]
+    fn test_printf_s_width() {
+        let s = CString::new("hi").unwrap();
+        let fmt = CString::new("[%5s]").unwrap();
+        let out = unsafe { fmt_helper(fmt.as_ptr(), s.as_ptr()) };
+        assert_eq!(out, b"[   hi]");
+    }
+
+    #[test]
+    fn test_printf_s_precision() {
+        let s = CString::new("hello").unwrap();
+        let fmt = CString::new("%.3s").unwrap();
+        let out = unsafe { fmt_helper(fmt.as_ptr(), s.as_ptr()) };
+        assert_eq!(out, b"hel");
+    }
+
+    #[test]
+    fn test_printf_u() {
+        let fmt = CString::new("%u").unwrap();
+        let out = unsafe { fmt_helper(fmt.as_ptr(), 4294967295u32) };
+        assert_eq!(out, b"4294967295");
+    }
+
+    #[test]
+    fn test_printf_lld() {
+        let fmt = CString::new("%lld").unwrap();
+        let out = unsafe { fmt_helper(fmt.as_ptr(), -1i64) };
+        assert_eq!(out, b"-1");
+    }
+
+    #[test]
+    fn test_printf_i64d() {
+        // Windows-style %I64d
+        let fmt = CString::new("%I64d").unwrap();
+        let out = unsafe { fmt_helper(fmt.as_ptr(), 123i64) };
+        assert_eq!(out, b"123");
+    }
+
+    #[test]
+    fn test_printf_p() {
+        let fmt = CString::new("%p").unwrap();
+        let out = unsafe { fmt_helper(fmt.as_ptr(), 0usize) };
+        // Should produce "0x" followed by 16 hex digits
+        assert!(std::str::from_utf8(&out).unwrap().starts_with("0x"));
+    }
+
+    #[test]
+    fn test_printf_c() {
+        let fmt = CString::new("%c").unwrap();
+        let out = unsafe { fmt_helper(fmt.as_ptr(), b'A' as i32) };
+        assert_eq!(out, b"A");
+    }
+
+    #[test]
+    fn test_sprintf_basic() {
+        let mut buf = [0i8; 64];
+        let fmt = CString::new("val=%d").unwrap();
+        let n = unsafe { msvcrt_sprintf(buf.as_mut_ptr(), fmt.as_ptr(), 42i32, 0i32, 0i32, 0i32) };
+        assert_eq!(n, 6);
+        let s = unsafe { CStr::from_ptr(buf.as_ptr()) }.to_str().unwrap();
+        assert_eq!(s, "val=42");
+    }
+
+    #[test]
+    fn test_snprintf_truncate() {
+        let mut buf = [0i8; 5];
+        let fmt = CString::new("%d").unwrap();
+        let n = unsafe {
+            msvcrt_snprintf(
+                buf.as_mut_ptr(),
+                5,
+                fmt.as_ptr(),
+                12345i32,
+                0i32,
+                0i32,
+                0i32,
+            )
+        };
+        // Would-write = 5, but buf only holds 4 chars + NUL
+        assert_eq!(n, 5);
+        let s = unsafe { CStr::from_ptr(buf.as_ptr()) }.to_str().unwrap();
+        assert_eq!(s, "1234"); // truncated to 4 chars
     }
 }

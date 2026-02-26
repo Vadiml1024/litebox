@@ -64,6 +64,9 @@ mod stub_addresses {
 
     /// ole32.dll function address range: 0x10000-0x10FFF
     pub const OLE32_BASE: usize = 0x10000;
+
+    /// msvcp140.dll function address range: 0x11000-0x11FFF
+    pub const MSVCP140_BASE: usize = 0x11000;
 }
 
 /// Type for a DLL function pointer
@@ -147,6 +150,7 @@ impl DllManager {
         manager.load_stub_oleaut32();
         manager.load_stub_winrt_error();
         manager.load_stub_ole32();
+        manager.load_stub_msvcp140();
 
         manager
     }
@@ -802,6 +806,8 @@ impl DllManager {
                 "_register_thread_local_exe_atexit_callback",
                 MSVCRT_BASE + 0xBB,
             ),
+            // Phase 33: wide-char file I/O
+            ("_wfopen", MSVCRT_BASE + 0xBC),
         ];
 
         self.register_stub_dll("MSVCRT.dll", exports);
@@ -1131,6 +1137,39 @@ impl DllManager {
 
         self.register_stub_dll("ole32.dll", exports);
     }
+
+    /// Load stub msvcp140.dll (Microsoft C++ Standard Library)
+    ///
+    /// Registers stub exports for the most commonly imported symbols from
+    /// `msvcp140.dll`.  The C++ mangled names are used as export names so
+    /// that the PE import resolver can match them.
+    fn load_stub_msvcp140(&mut self) {
+        use stub_addresses::MSVCP140_BASE;
+
+        let exports = vec![
+            // Global operator new / delete
+            ("??2@YAPEAX_K@Z", MSVCP140_BASE), // operator new(size_t)
+            ("??3@YAXPEAX@Z", MSVCP140_BASE + 1), // operator delete(void*)
+            ("??_U@YAPEAX_K@Z", MSVCP140_BASE + 2), // operator new[](size_t)
+            ("??_V@YAXPEAX@Z", MSVCP140_BASE + 3), // operator delete[](void*)
+            // Standard exception helpers
+            ("?_Xbad_alloc@std@@YAXXZ", MSVCP140_BASE + 4),
+            ("?_Xlength_error@std@@YAXPEBD@Z", MSVCP140_BASE + 5),
+            ("?_Xout_of_range@std@@YAXPEBD@Z", MSVCP140_BASE + 6),
+            ("?_Xinvalid_argument@std@@YAXPEBD@Z", MSVCP140_BASE + 7),
+            ("?_Xruntime_error@std@@YAXPEBD@Z", MSVCP140_BASE + 8),
+            ("?_Xoverflow_error@std@@YAXPEBD@Z", MSVCP140_BASE + 9),
+            // Locale helpers
+            (
+                "?_Getctype@_Locinfo@std@@QEBAPBU_Ctypevec@@XZ",
+                MSVCP140_BASE + 10,
+            ),
+            ("?_Getdays@_Locinfo@std@@QEBAPEBDXZ", MSVCP140_BASE + 11),
+            ("?_Getmonths@_Locinfo@std@@QEBAPEBDXZ", MSVCP140_BASE + 12),
+        ];
+
+        self.register_stub_dll("msvcp140.dll", exports);
+    }
 }
 
 /// Map Windows API Set DLL names to their real implementation DLLs
@@ -1206,10 +1245,10 @@ mod tests {
     #[test]
     fn test_dll_manager_creation() {
         let manager = DllManager::new();
-        // Should have 16 pre-loaded stub DLLs (KERNEL32, NTDLL, MSVCRT, bcrypt, USERENV,
+        // Should have 17 pre-loaded stub DLLs (KERNEL32, NTDLL, MSVCRT, bcrypt, USERENV,
         // WS2_32, api-ms-win-core-synch, USER32, ADVAPI32, GDI32, SHELL32, VERSION, SHLWAPI,
-        // OLEAUT32, api-ms-win-core-winrt-error-l1-1-0, ole32)
-        assert_eq!(manager.dlls.len(), 16);
+        // OLEAUT32, api-ms-win-core-winrt-error-l1-1-0, ole32, msvcp140)
+        assert_eq!(manager.dlls.len(), 17);
     }
 
     #[test]

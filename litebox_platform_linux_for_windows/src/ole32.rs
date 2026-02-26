@@ -422,7 +422,13 @@ mod tests {
         unsafe {
             let mut ppv: *mut u8 = ptr::null_mut();
             assert_eq!(
-                ole32_co_create_instance(ptr::null(), ptr::null_mut(), 0, ptr::null(), &mut ppv),
+                ole32_co_create_instance(
+                    ptr::null(),
+                    ptr::null_mut(),
+                    0,
+                    ptr::null(),
+                    &raw mut ppv
+                ),
                 E_NOTIMPL
             );
             assert!(ppv.is_null());
@@ -450,8 +456,8 @@ mod tests {
             let n = ole32_string_from_guid2(guid.as_ptr(), buf.as_mut_ptr(), 40);
             assert_eq!(n, 39);
             // Verify it starts with '{' and ends with '}'
-            assert_eq!(buf[0], b'{' as u16);
-            assert_eq!(buf[37], b'}' as u16);
+            assert_eq!(buf[0], u16::from(b'{'));
+            assert_eq!(buf[37], u16::from(b'}'));
             assert_eq!(buf[38], 0); // NUL terminator
         }
     }
@@ -517,8 +523,13 @@ mod tests {
     fn test_co_get_class_object() {
         unsafe {
             let mut ppv: *mut u8 = ptr::null_mut();
-            let r =
-                ole32_co_get_class_object(ptr::null(), 0, ptr::null_mut(), ptr::null(), &mut ppv);
+            let r = ole32_co_get_class_object(
+                ptr::null(),
+                0,
+                ptr::null_mut(),
+                ptr::null(),
+                &raw mut ppv,
+            );
             assert_eq!(r, REGDB_E_CLASSNOTREG);
             assert!(ppv.is_null());
         }
