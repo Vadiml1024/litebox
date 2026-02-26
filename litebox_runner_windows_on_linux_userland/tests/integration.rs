@@ -339,6 +339,26 @@ fn test_dll_manager_has_all_required_exports() {
         assert!(result.is_ok(), "ole32.dll should export {func_name}");
     }
 
+    // Check msvcp140.dll exports (Phase 33)
+    let msvcp140 = dll_manager.load_library("msvcp140.dll").unwrap();
+    let msvcp140_functions = vec![
+        "??2@YAPEAX_K@Z",
+        "??3@YAXPEAX@Z",
+        "??_U@YAPEAX_K@Z",
+        "??_V@YAXPEAX@Z",
+        "?_Xbad_alloc@std@@YAXXZ",
+        "?_Xlength_error@std@@YAXPEBD@Z",
+        "?_Xout_of_range@std@@YAXPEBD@Z",
+        "?_Xinvalid_argument@std@@YAXPEBD@Z",
+        "?_Xruntime_error@std@@YAXPEBD@Z",
+        "?_Xoverflow_error@std@@YAXPEBD@Z",
+    ];
+
+    for func_name in msvcp140_functions {
+        let result = dll_manager.get_proc_address(msvcp140, func_name);
+        assert!(result.is_ok(), "msvcp140.dll should export {func_name}");
+    }
+
     // Check that Phase 32 MSVCRT additions are now resolvable via the DLL manager
     let msvcrt = dll_manager.load_library("MSVCRT.dll").unwrap();
     let msvcrt_phase32_functions = vec![
