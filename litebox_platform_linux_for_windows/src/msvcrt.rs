@@ -64,9 +64,25 @@ fn format_int(val: i64, opts: PrintOpts) -> Vec<u8> {
     } else {
         b""
     };
-    let pad_char = if opts.zero && !opts.left { b'0' } else { b' ' };
+    // When an explicit precision is given, apply it to the digit string (minimum
+    // number of digits).  An explicit precision also overrides zero-padding.
+    let digits = match opts.precision {
+        Some(p) => {
+            if digits.len() < p {
+                let mut padded = vec![b'0'; p - digits.len()];
+                padded.extend_from_slice(&digits);
+                padded
+            } else {
+                digits
+            }
+        }
+        None => digits,
+    };
+    // Zero-padding is suppressed when an explicit precision is provided.
+    let zero_pad = opts.zero && !opts.left && opts.precision.is_none();
+    let pad_char = if zero_pad { b'0' } else { b' ' };
     // When zero-padding, sign goes before the zeros.
-    if opts.zero && !opts.left && opts.width > sign.len() + digits.len() {
+    if zero_pad && opts.width > sign.len() + digits.len() {
         let pad = opts.width - sign.len() - digits.len();
         let mut out = Vec::with_capacity(opts.width);
         out.extend_from_slice(sign);
@@ -84,7 +100,17 @@ fn format_int(val: i64, opts: PrintOpts) -> Vec<u8> {
 /// Format an unsigned 64-bit integer with printf flags/width.
 fn format_uint(val: u64, opts: PrintOpts) -> Vec<u8> {
     let digits = format_u64_decimal(val);
-    let pad_char = if opts.zero && !opts.left { b'0' } else { b' ' };
+    // Apply precision (minimum number of digits) and suppress zero-pad if set.
+    let digits = match opts.precision {
+        Some(p) if digits.len() < p => {
+            let mut padded = vec![b'0'; p - digits.len()];
+            padded.extend_from_slice(&digits);
+            padded
+        }
+        _ => digits,
+    };
+    let zero_pad = opts.zero && !opts.left && opts.precision.is_none();
+    let pad_char = if zero_pad { b'0' } else { b' ' };
     pad_bytes(&digits, opts.width, opts.left, pad_char)
 }
 
@@ -156,6 +182,7 @@ fn format_float(val: f64, prec: usize, conv: char, opts: PrintOpts) -> Vec<u8> {
         'E' => format!("{val:.prec$E}"),
         'g' | 'G' => {
             // %g: use %e if exponent < -4 or >= prec, else %f; strip trailing zeros
+            // UNLESS the `#` (alternate form) flag is set.
             let prec = if prec == 0 { 1 } else { prec };
             let exp: i32 = if val == 0.0 {
                 0
@@ -172,9 +199,8 @@ fn format_float(val: f64, prec: usize, conv: char, opts: PrintOpts) -> Vec<u8> {
                 let decimal_digits = ((prec as i32 - 1 - exp).max(0)) as usize;
                 format!("{val:.decimal_digits$}")
             };
-            // Strip trailing zeros after decimal point (but keep at least one digit
-            // before the exponent marker)
-            if s.contains('.') && !s.contains('e') && !s.contains('E') {
+            // Strip trailing zeros only when `#` is NOT set.
+            if !opts.alt && s.contains('.') && !s.contains('e') && !s.contains('E') {
                 s.trim_end_matches('0').trim_end_matches('.').to_string()
             } else {
                 s
@@ -195,6 +221,18 @@ fn format_float(val: f64, prec: usize, conv: char, opts: PrintOpts) -> Vec<u8> {
     };
 
     let full = format!("{sign}{raw}");
+
+    // For zero-padding with a sign, place the sign *before* the zeros to
+    // match printf semantics (e.g. `%+08.2f` of 3.14 → "+0003.14").
+    if opts.zero && !opts.left && !sign.is_empty() && opts.width > full.len() {
+        let zeros = opts.width - full.len();
+        let mut out = Vec::with_capacity(opts.width);
+        out.extend_from_slice(sign.as_bytes());
+        out.resize(out.len() + zeros, b'0');
+        out.extend_from_slice(raw.as_bytes());
+        return out;
+    }
+
     let pad_char = if opts.zero && !opts.left { b'0' } else { b' ' };
     pad_bytes(full.as_bytes(), opts.width, opts.left, pad_char)
 }
@@ -309,18 +347,20 @@ unsafe fn format_printf_va(fmt: &[u8], args: &mut core::ffi::VaList<'_>) -> Vec<
         // ── Precision ─────────────────────────────────────────────────────────
         if i < fmt.len() && fmt[i] == b'.' {
             i += 1;
-            let mut prec: usize = 0;
             if i < fmt.len() && fmt[i] == b'*' {
                 let p = unsafe { args.arg::<i32>() };
-                prec = if p < 0 { 0 } else { p as usize };
+                // A negative precision from `.*` means "precision not specified"
+                // (matches printf / MSVCRT semantics).
+                opts.precision = if p < 0 { None } else { Some(p as usize) };
                 i += 1;
             } else {
+                let mut prec: usize = 0;
                 while i < fmt.len() && fmt[i].is_ascii_digit() {
                     prec = prec * 10 + usize::from(fmt[i] - b'0');
                     i += 1;
                 }
+                opts.precision = Some(prec);
             }
-            opts.precision = Some(prec);
         }
 
         // ── Length modifier ───────────────────────────────────────────────────
@@ -490,10 +530,43 @@ unsafe fn format_printf_va(fmt: &[u8], args: &mut core::ffi::VaList<'_>) -> Vec<
                 }
             }
             b'n' => {
-                let ptr = unsafe { args.arg::<*mut i32>() };
-                if !ptr.is_null() {
-                    // SAFETY: caller guarantees a valid writable pointer
-                    unsafe { *ptr = out.len() as i32 };
+                // %n writes the number of characters written so far into the
+                // pointer argument.  Dispatch on the length modifier to write
+                // the correct type.
+                let written = out.len();
+                if is_longlong {
+                    let ptr = unsafe { args.arg::<*mut i64>() };
+                    if !ptr.is_null() {
+                        // SAFETY: caller guarantees a valid writable pointer.
+                        unsafe { *ptr = written as i64 };
+                    }
+                } else if is_short {
+                    let ptr = unsafe { args.arg::<*mut i16>() };
+                    if !ptr.is_null() {
+                        // SAFETY: caller guarantees a valid writable pointer.
+                        #[allow(clippy::cast_possible_truncation)]
+                        unsafe {
+                            *ptr = written as i16;
+                        };
+                    }
+                } else if is_char_len {
+                    let ptr = unsafe { args.arg::<*mut i8>() };
+                    if !ptr.is_null() {
+                        // SAFETY: caller guarantees a valid writable pointer.
+                        #[allow(clippy::cast_possible_truncation)]
+                        unsafe {
+                            *ptr = written as i8;
+                        };
+                    }
+                } else {
+                    let ptr = unsafe { args.arg::<*mut i32>() };
+                    if !ptr.is_null() {
+                        // SAFETY: caller guarantees a valid writable pointer.
+                        #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+                        unsafe {
+                            *ptr = written as i32;
+                        };
+                    }
                 }
             }
             _ => {
@@ -812,14 +885,18 @@ pub unsafe extern "C" fn msvcrt_fwrite(
 
 /// Write a formatted string to a stream (fprintf)
 ///
-/// Simplified: stderr (stream==2) writes to stderr, all others to stdout.
+/// Always writes to stdout (fd 1).  The `stream` parameter is a Windows FILE*
+/// pointer, not a Linux fd, so we cannot reliably distinguish stderr from
+/// stdout by comparing the pointer value.  Most fprintf callers use stdout;
+/// programs that specifically need stderr typically use the `stderr` macro
+/// which is resolved at link time through `__iob_func` / `__acrt_iob_func`.
 ///
 /// # Safety
 /// `format` must point to a valid null-terminated C string.
 /// Variadic arguments must match the format specifiers.
 #[unsafe(no_mangle)]
 #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
-pub unsafe extern "C" fn msvcrt_fprintf(stream: *mut u8, format: *const i8, mut args: ...) -> i32 {
+pub unsafe extern "C" fn msvcrt_fprintf(_stream: *mut u8, format: *const i8, mut args: ...) -> i32 {
     if format.is_null() {
         return -1;
     }
@@ -827,37 +904,42 @@ pub unsafe extern "C" fn msvcrt_fprintf(stream: *mut u8, format: *const i8, mut 
     let fmt_bytes = unsafe { CStr::from_ptr(format) }.to_bytes();
     // SAFETY: format and args are valid per caller contract.
     let out = unsafe { format_printf_va(fmt_bytes, &mut args) };
-    let fd: libc::c_int = if stream as usize == 2 { 2 } else { 1 };
-    let written = unsafe { libc::write(fd, out.as_ptr().cast(), out.len()) };
+    let written = unsafe { libc::write(1, out.as_ptr().cast(), out.len()) };
     if written < 0 { -1 } else { written as i32 }
 }
 
 /// Write a formatted string to a stream using a pre-built va_list (vfprintf)
 ///
 /// # Known limitation
-/// This stub writes the raw format string to the stream without substituting
+/// This stub writes the raw format string to stdout without substituting
 /// format specifiers, because the `args` pointer arrives as an opaque
 /// `void*` that represents a Windows-ABI va_list.  Translating a Windows
 /// va_list into a Linux va_list at runtime is not currently implemented.
 /// Most callers use `fprintf` (which does full formatting) rather than
 /// `vfprintf` directly.
 ///
+/// The `stream` parameter is ignored; output always goes to stdout (fd 1).
+/// See `msvcrt_fprintf` for the rationale.
+///
 /// # Safety
 /// `format` must point to a valid null-terminated C string.
 /// `args` must be a valid pointer to an initialised Windows va_list.
 #[unsafe(no_mangle)]
-#[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
-pub unsafe extern "C" fn msvcrt_vfprintf(stream: *mut u8, format: *const i8, args: *mut u8) -> i32 {
+pub unsafe extern "C" fn msvcrt_vfprintf(
+    _stream: *mut u8,
+    format: *const i8,
+    args: *mut u8,
+) -> i32 {
     if format.is_null() {
         return -1;
     }
     // SAFETY: Caller guarantees format is a valid null-terminated C string.
     let fmt_bytes = unsafe { CStr::from_ptr(format) }.to_bytes();
-    let fd = if stream as usize == 2 { 2i32 } else { 1i32 };
     // Write the raw format bytes.  A full implementation would translate the
     // Windows va_list in `args` to a Linux va_list and call libc::vdprintf.
     let _ = args;
-    let written = unsafe { libc::write(fd, fmt_bytes.as_ptr().cast(), fmt_bytes.len()) };
+    let written = unsafe { libc::write(1, fmt_bytes.as_ptr().cast(), fmt_bytes.len()) };
+    #[allow(clippy::cast_possible_truncation)]
     if written < 0 { -1 } else { written as i32 }
 }
 
@@ -5778,6 +5860,7 @@ mod tests {
     /// Helper: run `format_printf_va` via a variadic wrapper so that the
     /// `VaList` is properly initialised by the Rust calling-convention machinery.
     #[cfg(test)]
+    #[allow(improper_ctypes_definitions)]
     unsafe extern "C" fn fmt_helper(fmt: *const i8, mut args: ...) -> Vec<u8> {
         let bytes = unsafe { CStr::from_ptr(fmt) }.to_bytes();
         unsafe { format_printf_va(bytes, &mut args) }

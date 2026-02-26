@@ -448,9 +448,14 @@ pub fn run(cli_args: CliArgs) -> Result<()> {
                 }
                 loader_log!("    Calling TLS callback at: 0x{cb_addr:X}");
                 // Call with (base_address, DLL_PROCESS_ATTACH=1, NULL).
+                // Windows TLS callbacks use the Windows x64 calling convention
+                // (args in RCX, RDX, R8 with 32-byte shadow space), not System V
+                // (args in RDI, RSI, RDX).  Use `extern "win64"` to generate the
+                // correct call sequence from this Linux Rust binary.
+                //
                 // SAFETY: cb_addr is a valid code address inside the loaded image.
                 #[allow(clippy::cast_possible_truncation)]
-                let callback: unsafe extern "C" fn(u64, u32, *mut u8) =
+                let callback: unsafe extern "win64" fn(u64, u32, *mut u8) =
                     unsafe { core::mem::transmute(cb_addr as usize) };
                 unsafe { callback(base_address, 1, core::ptr::null_mut()) };
                 // SAFETY: We stay within the bounds implied by max_callbacks.

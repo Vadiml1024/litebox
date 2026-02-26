@@ -30,12 +30,11 @@ use std::ptr;
 /// Returns a valid non-null pointer on success, null on failure.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn msvcp140_operator_new(size: usize) -> *mut u8 {
-    if size == 0 {
-        // Return a unique non-null pointer for zero-size allocations.
-        return ptr::NonNull::dangling().as_ptr();
-    }
-    // SAFETY: size > 0.
-    unsafe { libc::malloc(size).cast() }
+    // Always allocate at least 1 byte so the returned pointer can safely be
+    // passed to `msvcp140_operator_delete`, which always calls `libc::free`.
+    let alloc_size = if size == 0 { 1 } else { size };
+    // SAFETY: alloc_size > 0.
+    unsafe { libc::malloc(alloc_size).cast() }
 }
 
 /// `operator delete(ptr)` — free a pointer allocated by `operator new`.

@@ -339,19 +339,25 @@ fn test_dll_manager_has_all_required_exports() {
         assert!(result.is_ok(), "ole32.dll should export {func_name}");
     }
 
-    // Check msvcp140.dll exports (Phase 33)
+    // Check msvcp140.dll exports (Phase 33) — all 13 stub symbols
     let msvcp140 = dll_manager.load_library("msvcp140.dll").unwrap();
     let msvcp140_functions = vec![
+        // operator new / delete
         "??2@YAPEAX_K@Z",
         "??3@YAXPEAX@Z",
         "??_U@YAPEAX_K@Z",
         "??_V@YAXPEAX@Z",
+        // exception helpers
         "?_Xbad_alloc@std@@YAXXZ",
         "?_Xlength_error@std@@YAXPEBD@Z",
         "?_Xout_of_range@std@@YAXPEBD@Z",
         "?_Xinvalid_argument@std@@YAXPEBD@Z",
         "?_Xruntime_error@std@@YAXPEBD@Z",
         "?_Xoverflow_error@std@@YAXPEBD@Z",
+        // locale C++ member functions
+        "?_Getctype@_Locinfo@std@@QEBAPBU_Ctypevec@@XZ",
+        "?_Getdays@_Locinfo@std@@QEBAPEBDXZ",
+        "?_Getmonths@_Locinfo@std@@QEBAPEBDXZ",
     ];
 
     for func_name in msvcp140_functions {
