@@ -3958,7 +3958,7 @@ pub fn get_function_table() -> Vec<FunctionImpl> {
         FunctionImpl {
             name: "scanf",
             dll_name: "MSVCRT.dll",
-            num_params: 18,
+            num_params: 17, // 1 fixed (format) + 16 pointer args
             impl_address: crate::msvcrt::msvcrt_scanf as *const () as usize,
         },
         FunctionImpl {

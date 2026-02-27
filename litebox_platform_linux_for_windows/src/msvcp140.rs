@@ -501,10 +501,17 @@ pub unsafe extern "C" fn msvcp140__basic_string_dtor(this: *mut u8) {
 /// # Safety
 /// `this` must point to a valid (possibly empty) `basic_string<char>`.
 /// `s` must point to at least `len` readable bytes.
+/// `s` must NOT alias the existing character buffer of `this`; callers that
+/// may alias (e.g. self-assignment) must copy `s` to a temporary first.
 unsafe fn msvcp140_basic_string_assign_impl(this: *mut u8, s: *const i8, len: usize) {
     if this.is_null() {
         return;
     }
+    // Guard against length overflow when computing malloc size.
+    let Some(alloc_size) = len.checked_add(1) else {
+        // Length overflow — leave the string unchanged.
+        return;
+    };
     // Free existing heap allocation if any.
     let old_cap = unsafe { bstr_myres(this) };
     if old_cap != MSVCRT_STR_SSO_CAP {
@@ -526,8 +533,8 @@ unsafe fn msvcp140_basic_string_assign_impl(this: *mut u8, s: *const i8, len: us
         unsafe { ptr::write_unaligned(this.add(24).cast::<usize>(), MSVCRT_STR_SSO_CAP) };
     } else {
         // Heap allocation.
-        // SAFETY: len + 1 > 0.
-        let buf = unsafe { libc::malloc(len + 1).cast::<i8>() };
+        // SAFETY: alloc_size > 0 (checked above).
+        let buf = unsafe { libc::malloc(alloc_size).cast::<i8>() };
         if buf.is_null() {
             // Allocation failed: leave the string in a valid empty SSO state
             // rather than storing a null heap pointer with non-zero size.
@@ -602,6 +609,12 @@ pub unsafe extern "C" fn msvcp140__basic_string_assign_op(
     other: *const u8,
 ) -> *mut u8 {
     if !other.is_null() {
+        // Guard against self-assignment: if this == other and the string is
+        // heap-backed, msvcp140_basic_string_assign_impl would free the buffer
+        // before copying from it, causing use-after-free.
+        if std::ptr::eq(this, other) {
+            return this;
+        }
         let len = unsafe { bstr_mysize(other) };
         let src = unsafe { bstr_data(other) };
         unsafe { msvcp140_basic_string_assign_impl(this, src, len) };
@@ -649,12 +662,21 @@ pub unsafe extern "C" fn msvcp140__basic_string_append_cstr(
     }
     let cur_len = unsafe { bstr_mysize(this) };
     let add_len = unsafe { libc::strlen(s) };
-    let new_len = cur_len + add_len;
+
+    // Guard against length overflow.
+    let Some(new_len) = cur_len.checked_add(add_len) else {
+        // Overflow — leave string unchanged.
+        return this;
+    };
+    let Some(alloc_size) = new_len.checked_add(1) else {
+        // Allocation size overflow — leave string unchanged.
+        return this;
+    };
 
     // Build a temporary buffer with the concatenated result.
     let cur_data = unsafe { bstr_data(this) };
-    // SAFETY: new_len + 1 > 0.
-    let tmp = unsafe { libc::malloc(new_len + 1).cast::<i8>() };
+    // SAFETY: alloc_size > 0 and was computed with checked_add.
+    let tmp = unsafe { libc::malloc(alloc_size).cast::<i8>() };
     if tmp.is_null() {
         return this;
     }
@@ -806,6 +828,37 @@ mod tests {
                 "this_is_twenty_chars"
             );
             msvcp140__basic_string_dtor(obj.as_mut_ptr());
+        }
+    }
+
+    #[test]
+    fn test_basic_string_self_assign_does_not_corrupt() {
+        // SSO string: self-assignment should be a no-op.
+        let mut sso = [0u8; 32];
+        unsafe {
+            msvcp140__basic_string_ctor_cstr(sso.as_mut_ptr(), c"hello".as_ptr());
+            let ret = msvcp140__basic_string_assign_op(sso.as_mut_ptr(), sso.as_ptr());
+            assert_eq!(ret, sso.as_mut_ptr());
+            assert_eq!(msvcp140__basic_string_size(sso.as_ptr()), 5);
+            let cs = msvcp140__basic_string_c_str(sso.as_ptr());
+            assert_eq!(std::ffi::CStr::from_ptr(cs).to_str().unwrap(), "hello");
+            msvcp140__basic_string_dtor(sso.as_mut_ptr());
+        }
+
+        // Heap-backed string: self-assignment must not free the buffer before copying.
+        let mut heap = [0u8; 32];
+        unsafe {
+            // "this_is_twenty_chars" (20 chars) forces heap allocation.
+            msvcp140__basic_string_ctor_cstr(heap.as_mut_ptr(), c"this_is_twenty_chars".as_ptr());
+            let ret = msvcp140__basic_string_assign_op(heap.as_mut_ptr(), heap.as_ptr());
+            assert_eq!(ret, heap.as_mut_ptr());
+            assert_eq!(msvcp140__basic_string_size(heap.as_ptr()), 20);
+            let cs = msvcp140__basic_string_c_str(heap.as_ptr());
+            assert_eq!(
+                std::ffi::CStr::from_ptr(cs).to_str().unwrap(),
+                "this_is_twenty_chars"
+            );
+            msvcp140__basic_string_dtor(heap.as_mut_ptr());
         }
     }
 }

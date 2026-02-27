@@ -4977,12 +4977,15 @@ pub unsafe extern "C" fn ucrt__stdio_common_vsscanf(
 /// `__stdio_common_vsprintf(options, buf, buf_count, fmt, locale, arglist)` — UCRT vsprintf
 ///
 /// Formats a string into `buf` according to `fmt` using the Windows x64 `arglist`.
-/// `_options`, `_buf_count`, and `_locale` are ignored.
-/// Returns the number of characters written (excluding the NUL terminator), or -1 on error.
+/// `_options` and `_locale` are ignored.
+/// `buf_count` is the total byte capacity of `buf` (including the NUL terminator slot).
+/// Returns the number of characters that would be written (excluding the NUL terminator),
+/// or -1 on error.  When `buf` is non-null the output is NUL-terminated and capped at
+/// `buf_count - 1` characters.
 ///
 /// # Safety
 ///
-/// `buf` must be a writable buffer of at least `_buf_count` bytes, or null for a count-only call.
+/// `buf` must be a writable buffer of at least `buf_count` bytes, or null for a count-only call.
 /// `fmt` must be a valid null-terminated C string.
 /// `arglist` must be a valid Windows x64 va_list pointer.
 #[unsafe(no_mangle)]
@@ -5134,9 +5137,11 @@ pub unsafe extern "C" fn ucrt__stdio_common_vswprintf(
     // SAFETY: arglist is a valid Windows x64 va_list pointer; wide_mode=true so
     // %s / %c specifiers handle wide strings correctly.
     let out = unsafe { format_printf_raw(fmt_utf8, arglist, true) };
-    let would_write = out.len() as i32;
+    // Convert the UTF-8 output to UTF-16 so we can compute the correct return value
+    // (number of UTF-16 code units written, excluding NUL) and fill the wide buffer.
+    let utf16: Vec<u16> = String::from_utf8_lossy(&out).encode_utf16().collect();
+    let would_write = utf16.len() as i32;
     if !buf.is_null() && buf_count > 0 {
-        let utf16: Vec<u16> = String::from_utf8_lossy(&out).encode_utf16().collect();
         let copy_wchars = utf16.len().min(buf_count - 1);
         // SAFETY: buf is at least buf_count u16 values per caller contract.
         unsafe {
@@ -5152,9 +5157,9 @@ pub unsafe extern "C" fn ucrt__stdio_common_vswprintf(
 /// Parses stdin according to `format`, writing results through the pointer
 /// arguments.  Returns the number of items matched and stored, or -1 on EOF.
 ///
-/// **Limit**: at most `MAX_SCANF_ARGS` (16) conversion specifiers are handled.
-/// Providing more than 16 non-suppressed specifiers leads to undefined behaviour
-/// because the excess arguments are never extracted from the variadic list.
+/// Returns -1 immediately if the format string contains more than `MAX_SCANF_ARGS`
+/// (16) non-suppressed conversion specifiers, to avoid undefined behaviour when
+/// `libc::scanf` would try to read more variadic arguments than were provided.
 ///
 /// # Safety
 ///
@@ -5170,15 +5175,21 @@ pub unsafe extern "C" fn msvcrt_scanf(format: *const i8, mut args: ...) -> i32 {
         return -1;
     }
     let fmt_bytes = unsafe { CStr::from_ptr(format) }.to_bytes();
-    let n_specs = count_scanf_specifiers(fmt_bytes).min(MAX_SCANF_ARGS);
+    let total_specs = count_scanf_specifiers(fmt_bytes);
+    // Fail fast: if the format requires more output pointers than our fixed buffer
+    // holds, calling libc::scanf with the original format would be UB.
+    if total_specs > MAX_SCANF_ARGS {
+        return -1;
+    }
+    let n_specs = total_specs;
     let mut ptrs: [*mut core::ffi::c_void; MAX_SCANF_ARGS] =
         [core::ptr::null_mut(); MAX_SCANF_ARGS];
     for p in ptrs.iter_mut().take(n_specs) {
         // SAFETY: caller guarantees enough pointer args are in the va_list.
         *p = unsafe { args.arg::<*mut core::ffi::c_void>() };
     }
-    // SAFETY: format is a valid null-terminated string; each non-null ptr is a valid writable
-    // pointer for its specifier.
+    // SAFETY: format is a valid null-terminated string; n_specs <= MAX_SCANF_ARGS so
+    // libc::scanf will not read more variadic arguments than we supply here.
     unsafe {
         libc::scanf(
             format, ptrs[0], ptrs[1], ptrs[2], ptrs[3], ptrs[4], ptrs[5], ptrs[6], ptrs[7],
@@ -5187,18 +5198,68 @@ pub unsafe extern "C" fn msvcrt_scanf(format: *const i8, mut args: ...) -> i32 {
     }
 }
 
+// ── Windows FILE* → Linux FILE* resolution ────────────────────────────────────
+//
+// Windows programs compiled against UCRT obtain their stdio FILE* pointers via
+// `__acrt_iob_func(index)` (or the legacy `__iob_func()`).  In this emulation
+// those functions return pointers into a small static IOB buffer — NOT real
+// Linux `FILE*` values.  We must detect these sentinel addresses and map them
+// to real Linux file handles before passing them to libc functions.
+//
+// `msvcrt_fopen` and its variants DO return real libc `FILE*` pointers; such
+// pointers will have addresses well above the IOB buffer range and are passed
+// through unchanged.
+
+/// Return a cached Linux `FILE*` for stdin (fd 0), opening it lazily on first
+/// call.  Stored as `usize` to satisfy `Sync` requirements on the `OnceLock`.
+fn get_linux_stdin() -> *mut libc::FILE {
+    static STDIN_FILE: OnceLock<usize> = OnceLock::new();
+    *STDIN_FILE.get_or_init(|| {
+        // SAFETY: fdopen(0, "r") is a standard POSIX call; fd 0 is always open.
+        unsafe { libc::fdopen(0, c"r".as_ptr()) as usize }
+    }) as *mut libc::FILE
+}
+
+/// Translate a Windows `FILE*` pointer to a Linux `FILE*` suitable for reading.
+///
+/// If `stream` falls within the 24-byte IOB sentinel buffer (returned by
+/// `__iob_func` / `__acrt_iob_func`), it is mapped:
+/// - offset 0  (stdin)  → cached Linux stdin FILE*
+/// - offset 8  (stdout) → null (stdout is write-only)
+/// - offset 16 (stderr) → null (stderr  is write-only)
+///
+/// Any other pointer is assumed to be a real libc `FILE*` from `msvcrt_fopen`
+/// and is returned as-is.
+///
+/// # Safety
+///
+/// `stream` must have been obtained from `__acrt_iob_func`, `__iob_func`, or
+/// `msvcrt_fopen` / `msvcrt_fdopen`.
+unsafe fn resolve_read_stream(stream: *mut u8) -> *mut libc::FILE {
+    let iob_base = unsafe { msvcrt___iob_func() } as usize;
+    let stream_addr = stream as usize;
+    match stream_addr.wrapping_sub(iob_base) {
+        0 => get_linux_stdin(),          // stdin  (offset 0)
+        8 | 16 => core::ptr::null_mut(), // stdout / stderr: not readable
+        _ => stream.cast::<libc::FILE>(), // real libc FILE* from fopen/fdopen
+    }
+}
+
 /// `fscanf(stream, format, ...) -> int` — read formatted input from a FILE stream.
 ///
 /// Parses `stream` according to `format`, writing results through the pointer
 /// arguments.  Returns the number of items matched and stored, or -1 on EOF.
 ///
-/// **Limit**: at most `MAX_SCANF_ARGS` (16) conversion specifiers are handled.
-/// Providing more than 16 non-suppressed specifiers leads to undefined behaviour
-/// because the excess arguments are never extracted from the variadic list.
+/// Returns -1 immediately if the format string contains more than `MAX_SCANF_ARGS`
+/// (16) non-suppressed conversion specifiers.
+///
+/// Windows stdio stream pointers obtained from `__acrt_iob_func` / `__iob_func`
+/// are translated to real Linux `FILE*` values before calling `libc::fscanf`.
 ///
 /// # Safety
 ///
-/// `stream` must be a valid Linux FILE* (returned by fopen / _wfopen / fdopen).
+/// `stream` must have been obtained from `__acrt_iob_func`, `__iob_func`, or
+/// `msvcrt_fopen` / `msvcrt_fdopen`.
 /// `format` must be a valid null-terminated string.
 /// The format string must contain no more than `MAX_SCANF_ARGS` (16) non-suppressed
 /// conversion specifiers.
@@ -5210,18 +5271,30 @@ pub unsafe extern "C" fn msvcrt_fscanf(stream: *mut u8, format: *const i8, mut a
     if stream.is_null() || format.is_null() {
         return -1;
     }
+    // Translate Windows FILE* (IOB-backed sentinel or real libc FILE*) to Linux FILE*.
+    let file_ptr = unsafe { resolve_read_stream(stream) };
+    if file_ptr.is_null() {
+        return -1;
+    }
     let fmt_bytes = unsafe { CStr::from_ptr(format) }.to_bytes();
-    let n_specs = count_scanf_specifiers(fmt_bytes).min(MAX_SCANF_ARGS);
+    let total_specs = count_scanf_specifiers(fmt_bytes);
+    // Fail fast: more specifiers than our fixed buffer can hold would be UB.
+    if total_specs > MAX_SCANF_ARGS {
+        return -1;
+    }
+    let n_specs = total_specs;
     let mut ptrs: [*mut core::ffi::c_void; MAX_SCANF_ARGS] =
         [core::ptr::null_mut(); MAX_SCANF_ARGS];
     for p in ptrs.iter_mut().take(n_specs) {
         // SAFETY: caller guarantees enough pointer args are in the va_list.
         *p = unsafe { args.arg::<*mut core::ffi::c_void>() };
     }
-    // SAFETY: stream is a valid Linux FILE*; format is null-terminated; each non-null ptr is valid.
+    // SAFETY: file_ptr is a valid Linux FILE*; format is null-terminated;
+    // n_specs <= MAX_SCANF_ARGS so libc::fscanf will not read more variadic
+    // arguments than we supply here.
     unsafe {
         libc::fscanf(
-            stream.cast::<libc::FILE>(),
+            file_ptr,
             format,
             ptrs[0],
             ptrs[1],
@@ -5251,10 +5324,16 @@ pub unsafe extern "C" fn msvcrt_fscanf(stream: *mut u8, format: *const i8, mut a
 ///
 /// `_options` and `_locale` are ignored.
 ///
+/// Returns -1 immediately if the format string contains more than `MAX_SCANF_ARGS`
+/// (16) non-suppressed conversion specifiers.
+///
+/// Windows stdio stream pointers obtained from `__acrt_iob_func` / `__iob_func`
+/// are translated to real Linux `FILE*` values before calling `libc::fscanf`.
+///
 /// # Safety
 ///
-/// `stream` must be a valid Linux FILE* (returned by fopen / _wfopen / fdopen),
-/// or a sentinel value for stdin (0) / stdout (1) / stderr (2).
+/// `stream` must have been obtained from `__acrt_iob_func`, `__iob_func`, or
+/// `msvcrt_fopen` / `msvcrt_fdopen`.
 /// `fmt` must be a valid null-terminated C string.
 /// `arglist` must be a valid Windows x64 va_list pointer.
 #[unsafe(no_mangle)]
@@ -5276,10 +5355,21 @@ pub unsafe extern "C" fn ucrt__stdio_common_vfscanf(
     if fmt.is_null() {
         return -1;
     }
+    // Translate Windows FILE* (IOB-backed sentinel or real libc FILE*) to Linux FILE*.
+    let file_ptr = unsafe { resolve_read_stream(stream) };
+    if file_ptr.is_null() {
+        return -1;
+    }
+
     // SAFETY: fmt is a valid null-terminated C string; arglist is a valid Windows va_list.
     let fmt_c = fmt.cast::<i8>();
     let fmt_bytes = unsafe { CStr::from_ptr(fmt_c) }.to_bytes();
-    let n_specs = count_scanf_specifiers(fmt_bytes).min(MAX_SCANF_ARGS);
+    let total_specs = count_scanf_specifiers(fmt_bytes);
+    // Fail fast: more specifiers than our fixed buffer can hold would be UB.
+    if total_specs > MAX_SCANF_ARGS {
+        return -1;
+    }
+    let n_specs = total_specs;
 
     // Build Linux va_list from Windows arglist pointer.
     let mut tag = VaListTag {
@@ -5298,18 +5388,9 @@ pub unsafe extern "C" fn ucrt__stdio_common_vfscanf(
         *p = unsafe { vl.arg::<*mut core::ffi::c_void>() };
     }
 
-    let file_ptr: *mut libc::FILE = if stream.is_null() || stream as usize == 0 {
-        // stdin
-        unsafe { libc::fdopen(0, c"r".as_ptr()) }
-    } else {
-        stream.cast::<libc::FILE>()
-    };
-
-    if file_ptr.is_null() {
-        return -1;
-    }
-
-    // SAFETY: file_ptr is a valid Linux FILE*; fmt_c is null-terminated; ptrs are valid.
+    // SAFETY: file_ptr is a valid Linux FILE*; fmt_c is null-terminated;
+    // n_specs <= MAX_SCANF_ARGS so libc::fscanf will not read more variadic
+    // arguments than we supply here.
     unsafe {
         libc::fscanf(
             file_ptr, fmt_c, ptrs[0], ptrs[1], ptrs[2], ptrs[3], ptrs[4], ptrs[5], ptrs[6],
