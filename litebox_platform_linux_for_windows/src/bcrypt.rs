@@ -46,8 +46,8 @@ pub unsafe extern "C" fn bcrypt_ProcessPrng(pb_data: *mut u8, cb_data: u32) -> u
                 0, // flags: blocking, no GRND_NONBLOCK
             )
         };
-        if ret < 0 {
-            return 0; // syscall error
+        if ret <= 0 {
+            return 0; // syscall error or unexpected empty read
         }
         filled += ret.cast_unsigned();
     }
