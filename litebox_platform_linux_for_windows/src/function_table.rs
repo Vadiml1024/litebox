@@ -152,8 +152,44 @@ pub fn get_function_table() -> Vec<FunctionImpl> {
         FunctionImpl {
             name: "vfprintf",
             dll_name: "MSVCRT.dll",
-            num_params: 3, // Variadic, but at least 3
+            num_params: 3, // Takes FILE*, const char*, va_list
             impl_address: crate::msvcrt::msvcrt_vfprintf as *const () as usize,
+        },
+        FunctionImpl {
+            name: "vprintf",
+            dll_name: "MSVCRT.dll",
+            num_params: 2,
+            impl_address: crate::msvcrt::msvcrt_vprintf as *const () as usize,
+        },
+        FunctionImpl {
+            name: "vsprintf",
+            dll_name: "MSVCRT.dll",
+            num_params: 3,
+            impl_address: crate::msvcrt::msvcrt_vsprintf as *const () as usize,
+        },
+        FunctionImpl {
+            name: "vsnprintf",
+            dll_name: "MSVCRT.dll",
+            num_params: 4,
+            impl_address: crate::msvcrt::msvcrt_vsnprintf as *const () as usize,
+        },
+        FunctionImpl {
+            name: "vswprintf",
+            dll_name: "MSVCRT.dll",
+            num_params: 3,
+            impl_address: crate::msvcrt::msvcrt_vswprintf as *const () as usize,
+        },
+        FunctionImpl {
+            name: "fwprintf",
+            dll_name: "MSVCRT.dll",
+            num_params: 8, // variadic: stream + format + up to 6 args via trampoline
+            impl_address: crate::msvcrt::msvcrt_fwprintf as *const () as usize,
+        },
+        FunctionImpl {
+            name: "vfwprintf",
+            dll_name: "MSVCRT.dll",
+            num_params: 3,
+            impl_address: crate::msvcrt::msvcrt_vfwprintf as *const () as usize,
         },
         FunctionImpl {
             name: "_onexit",
@@ -233,6 +269,24 @@ pub fn get_function_table() -> Vec<FunctionImpl> {
             dll_name: "MSVCRT.dll",
             num_params: 3,
             impl_address: crate::msvcrt::msvcrt__read as *const () as usize,
+        },
+        FunctionImpl {
+            name: "_write",
+            dll_name: "MSVCRT.dll",
+            num_params: 3,
+            impl_address: crate::msvcrt::msvcrt__write as *const () as usize,
+        },
+        FunctionImpl {
+            name: "getchar",
+            dll_name: "MSVCRT.dll",
+            num_params: 0,
+            impl_address: crate::msvcrt::msvcrt_getchar as *const () as usize,
+        },
+        FunctionImpl {
+            name: "putchar",
+            dll_name: "MSVCRT.dll",
+            num_params: 1,
+            impl_address: crate::msvcrt::msvcrt_putchar as *const () as usize,
         },
         FunctionImpl {
             name: "realloc",
@@ -3151,7 +3205,7 @@ pub fn get_function_table() -> Vec<FunctionImpl> {
         FunctionImpl {
             name: "__stdio_common_vfprintf",
             dll_name: "MSVCRT.dll",
-            num_params: 4,
+            num_params: 5,
             impl_address: crate::msvcrt::ucrt__stdio_common_vfprintf as *const () as usize,
         },
         FunctionImpl {

@@ -270,12 +270,19 @@ unsafe fn read_wide_string(ptr: *const u16) -> Vec<u16> {
 ///
 /// # Safety
 /// `args` must supply arguments of the types implied by the format string.
+/// When `wide_mode` is `true` the specifier meanings for `%s`/`%S` and
+/// `%c`/`%C` are swapped to match Windows wide-printf semantics (where `%s`
+/// expects `wchar_t*` and `%S` expects `char*`).
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_possible_wrap,
     clippy::cast_sign_loss
 )]
-unsafe fn format_printf_va(fmt: &[u8], args: &mut core::ffi::VaList<'_>) -> Vec<u8> {
+unsafe fn format_printf_va(
+    fmt: &[u8],
+    args: &mut core::ffi::VaList<'_>,
+    wide_mode: bool,
+) -> Vec<u8> {
     let mut out: Vec<u8> = Vec::new();
     let mut i = 0;
 
@@ -415,6 +422,21 @@ unsafe fn format_printf_va(fmt: &[u8], args: &mut core::ffi::VaList<'_>) -> Vec<
         }
         let conv = fmt[i];
         i += 1;
+
+        // In wide-printf mode (%w* family), %s expects wchar_t* and %S
+        // expects char*, and similarly %c is wide while %C is narrow.
+        // We normalise here so the match arms below don't need to know.
+        let conv = if wide_mode {
+            match conv {
+                b's' => b'S',
+                b'S' => b's',
+                b'c' => b'C',
+                b'C' => b'c',
+                _ => conv,
+            }
+        } else {
+            conv
+        };
 
         // ── Conversion ────────────────────────────────────────────────────────
         match conv {
@@ -578,6 +600,83 @@ unsafe fn format_printf_va(fmt: &[u8], args: &mut core::ffi::VaList<'_>) -> Vec<
     }
 
     out
+}
+
+/// In-memory layout of the Linux x86_64 `__va_list_tag` / `core::ffi::VaList`.
+///
+/// This struct is used by [`format_printf_raw`] to bridge a Windows x64
+/// `va_list` (a plain pointer) to the Linux `VaList` type.  It is defined at
+/// module level so that compile-time size and alignment checks can reference it.
+#[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "gnu"))]
+#[repr(C)]
+struct VaListTag {
+    gp_offset: u32,
+    fp_offset: u32,
+    overflow_arg_area: *mut u8,
+    reg_save_area: *mut u8,
+}
+
+/// Format a printf-style string reading variadic arguments from a Windows x64
+/// `va_list` pointer.
+///
+/// On Windows x64, a `va_list` is a `char*` that points directly to the first
+/// variadic argument.  Each argument occupies exactly 8 bytes in memory
+/// (integers/pointers sign/zero-extended; floats promoted to `double`).
+///
+/// We construct a Linux `__va_list_tag` with `gp_offset=48`
+/// (all six integer registers already "consumed") and `fp_offset=304`
+/// (all eight float registers already "consumed"), so every call to
+/// `VaList::arg::<T>()` reads from `overflow_arg_area`, which we set to the
+/// Windows `va_list` pointer.  The in-memory layout of `__va_list_tag` is
+/// identical to `core::ffi::VaList<'_>` on x86_64-unknown-linux-gnu (both
+/// are 24 bytes, same field order).
+///
+/// # Safety
+/// - `ap` must be a valid Windows x64 `va_list` with at least as many
+///   8-byte-aligned argument slots as `fmt` requires.
+/// - `fmt` must be a valid ASCII/UTF-8 byte slice (the format string).
+/// - When `wide_mode` is `true` the `%s`/`%S` and `%c`/`%C` specifier
+///   semantics are swapped to match Windows wide-printf conventions.
+#[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "gnu"))]
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss
+)]
+unsafe fn format_printf_raw(fmt: &[u8], ap: *mut u8, wide_mode: bool) -> Vec<u8> {
+    // Compile-time guard: the reinterpret cast below is only valid when
+    // VaListTag and core::ffi::VaList<'_> have identical size and alignment.
+    const _: () = assert!(
+        core::mem::size_of::<VaListTag>() == 24,
+        "VaListTag size must be 24 bytes (same as __va_list_tag on x86_64-linux-gnu)"
+    );
+    const _: () = assert!(
+        core::mem::align_of::<VaListTag>() == 8,
+        "VaListTag alignment must be 8 bytes"
+    );
+
+    // Linux x86_64 __va_list_tag / core::ffi::VaList layout (24 bytes):
+    //   [0..4)   gp_offset: u32            — offset into reg_save_area for int
+    //   [4..8)   fp_offset: u32            — offset into reg_save_area for float
+    //   [8..16)  overflow_arg_area: *mut u8 — pointer to stack args
+    //   [16..24) reg_save_area: *mut u8    — pointer to register save area
+    //
+    // Setting gp_offset=48 (6*8) and fp_offset=304 (48+8*32) forces all
+    // argument reads to come from overflow_arg_area, which is the Windows
+    // va_list pointer.
+    let mut tag = VaListTag {
+        gp_offset: 48,
+        fp_offset: 304,
+        overflow_arg_area: ap,
+        reg_save_area: core::ptr::null_mut(),
+    };
+    // SAFETY: `VaListTag` is repr(C) and has the identical layout to
+    // `core::ffi::VaList<'_>` on x86_64-unknown-linux-gnu, as verified by the
+    // compile-time size/align assertions above.  We borrow `tag` only for the
+    // duration of this call, so the lifetime is sound.
+    let vl: &mut core::ffi::VaList<'_> =
+        unsafe { &mut *(&raw mut tag).cast::<core::ffi::VaList<'_>>() };
+    unsafe { format_printf_va(fmt, vl, wide_mode) }
 }
 
 // ============================================================================
@@ -844,7 +943,7 @@ pub unsafe extern "C" fn msvcrt_printf(format: *const i8, mut args: ...) -> i32 
     // SAFETY: Caller guarantees format is a valid null-terminated C string.
     let fmt_bytes = unsafe { CStr::from_ptr(format) }.to_bytes();
     // SAFETY: format and args are valid per caller contract.
-    let out = unsafe { format_printf_va(fmt_bytes, &mut args) };
+    let out = unsafe { format_printf_va(fmt_bytes, &mut args, false) };
     match io::stdout().write_all(&out) {
         Ok(()) => {
             let _ = io::stdout().flush();
@@ -903,28 +1002,21 @@ pub unsafe extern "C" fn msvcrt_fprintf(_stream: *mut u8, format: *const i8, mut
     // SAFETY: Caller guarantees format is a valid null-terminated C string.
     let fmt_bytes = unsafe { CStr::from_ptr(format) }.to_bytes();
     // SAFETY: format and args are valid per caller contract.
-    let out = unsafe { format_printf_va(fmt_bytes, &mut args) };
+    let out = unsafe { format_printf_va(fmt_bytes, &mut args, false) };
     let written = unsafe { libc::write(1, out.as_ptr().cast(), out.len()) };
     if written < 0 { -1 } else { written as i32 }
 }
 
 /// Write a formatted string to a stream using a pre-built va_list (vfprintf)
 ///
-/// # Known limitation
-/// This stub writes the raw format string to stdout without substituting
-/// format specifiers, because the `args` pointer arrives as an opaque
-/// `void*` that represents a Windows-ABI va_list.  Translating a Windows
-/// va_list into a Linux va_list at runtime is not currently implemented.
-/// Most callers use `fprintf` (which does full formatting) rather than
-/// `vfprintf` directly.
-///
 /// The `stream` parameter is ignored; output always goes to stdout (fd 1).
 /// See `msvcrt_fprintf` for the rationale.
 ///
 /// # Safety
 /// `format` must point to a valid null-terminated C string.
-/// `args` must be a valid pointer to an initialised Windows va_list.
+/// `args` must be a valid Windows x64 va_list pointer.
 #[unsafe(no_mangle)]
+#[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
 pub unsafe extern "C" fn msvcrt_vfprintf(
     _stream: *mut u8,
     format: *const i8,
@@ -935,12 +1027,131 @@ pub unsafe extern "C" fn msvcrt_vfprintf(
     }
     // SAFETY: Caller guarantees format is a valid null-terminated C string.
     let fmt_bytes = unsafe { CStr::from_ptr(format) }.to_bytes();
-    // Write the raw format bytes.  A full implementation would translate the
-    // Windows va_list in `args` to a Linux va_list and call libc::vdprintf.
-    let _ = args;
-    let written = unsafe { libc::write(1, fmt_bytes.as_ptr().cast(), fmt_bytes.len()) };
-    #[allow(clippy::cast_possible_truncation)]
+    // SAFETY: args is a valid Windows x64 va_list pointer.
+    let out = unsafe { format_printf_raw(fmt_bytes, args, false) };
+    let written = unsafe { libc::write(1, out.as_ptr().cast(), out.len()) };
     if written < 0 { -1 } else { written as i32 }
+}
+
+/// Write a formatted string to stdout using a pre-built va_list (vprintf)
+///
+/// # Safety
+/// `format` must point to a valid null-terminated C string.
+/// `args` must be a valid Windows x64 va_list pointer.
+#[unsafe(no_mangle)]
+#[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+pub unsafe extern "C" fn msvcrt_vprintf(format: *const i8, args: *mut u8) -> i32 {
+    if format.is_null() {
+        return -1;
+    }
+    // SAFETY: Caller guarantees format is a valid null-terminated C string.
+    let fmt_bytes = unsafe { CStr::from_ptr(format) }.to_bytes();
+    // SAFETY: args is a valid Windows x64 va_list pointer.
+    let out = unsafe { format_printf_raw(fmt_bytes, args, false) };
+    match io::stdout().write_all(&out) {
+        Ok(()) => {
+            let _ = io::stdout().flush();
+            out.len() as i32
+        }
+        Err(_) => -1,
+    }
+}
+
+/// Write a formatted string into a buffer using a pre-built va_list (vsprintf)
+///
+/// **No bounds checking is performed.**  This matches the Windows MSVCRT
+/// `vsprintf` ABI, which has no `size` parameter.  Callers that do not know
+/// the output length at compile time should use `vsnprintf` instead.
+///
+/// # Safety
+/// `buf` must point to a buffer large enough for the formatted output plus a
+/// null terminator.  Writing beyond the buffer boundary is undefined
+/// behaviour.  `format` must be a valid null-terminated C string.
+/// `args` must be a valid Windows x64 va_list pointer.
+#[unsafe(no_mangle)]
+#[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+pub unsafe extern "C" fn msvcrt_vsprintf(buf: *mut i8, format: *const i8, args: *mut u8) -> i32 {
+    if buf.is_null() || format.is_null() {
+        return -1;
+    }
+    // SAFETY: Caller guarantees format is a valid null-terminated C string.
+    let fmt_bytes = unsafe { CStr::from_ptr(format) }.to_bytes();
+    // SAFETY: args is a valid Windows x64 va_list pointer.
+    let out = unsafe { format_printf_raw(fmt_bytes, args, false) };
+    // SAFETY: Caller guarantees buf is large enough.
+    unsafe {
+        core::ptr::copy_nonoverlapping(out.as_ptr(), buf.cast(), out.len());
+        *buf.add(out.len()) = 0;
+    }
+    out.len() as i32
+}
+
+/// Write a formatted string into a buffer with size limit using a va_list
+/// (vsnprintf)
+///
+/// # Safety
+/// `buf` must point to a buffer of at least `size` bytes.
+/// `format` must be a valid null-terminated C string.
+/// `args` must be a valid Windows x64 va_list pointer.
+#[unsafe(no_mangle)]
+#[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+pub unsafe extern "C" fn msvcrt_vsnprintf(
+    buf: *mut i8,
+    size: usize,
+    format: *const i8,
+    args: *mut u8,
+) -> i32 {
+    if format.is_null() {
+        return -1;
+    }
+    // SAFETY: Caller guarantees format is a valid null-terminated C string.
+    let fmt_bytes = unsafe { CStr::from_ptr(format) }.to_bytes();
+    // SAFETY: args is a valid Windows x64 va_list pointer.
+    let out = unsafe { format_printf_raw(fmt_bytes, args, false) };
+    if buf.is_null() || size == 0 {
+        return out.len() as i32;
+    }
+    let copy_len = out.len().min(size - 1);
+    // SAFETY: Caller guarantees buf has at least `size` bytes.
+    unsafe {
+        core::ptr::copy_nonoverlapping(out.as_ptr(), buf.cast(), copy_len);
+        *buf.add(copy_len) = 0;
+    }
+    out.len() as i32
+}
+
+/// Write a wide formatted string into a buffer using a pre-built va_list
+/// (vswprintf)
+///
+/// **No bounds checking is performed.**  This matches the Windows MSVCRT
+/// `vswprintf` ABI which has no `count` parameter.  Use `_vsnwprintf` for
+/// size-limited wide formatting.
+///
+/// # Safety
+/// `buf` must point to a buffer large enough for the formatted output plus a
+/// null terminator (in `u16` units).  Writing beyond the buffer boundary is
+/// undefined behaviour.  `format` must be a valid null-terminated wide
+/// string.  `args` must be a valid Windows x64 va_list.
+#[unsafe(no_mangle)]
+#[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+pub unsafe extern "C" fn msvcrt_vswprintf(buf: *mut u16, format: *const u16, args: *mut u8) -> i32 {
+    if buf.is_null() || format.is_null() {
+        return -1;
+    }
+    // Convert the wide format string to UTF-8.
+    // SAFETY: Caller guarantees format is a valid null-terminated wide string.
+    let fmt_wide = unsafe { read_wide_string(format) };
+    let fmt_utf8 = String::from_utf16_lossy(&fmt_wide);
+    // SAFETY: args is a valid Windows x64 va_list pointer.
+    let out = unsafe { format_printf_raw(fmt_utf8.as_bytes(), args, true) };
+    let out_str = String::from_utf8_lossy(&out);
+    let wide: Vec<u16> = out_str.encode_utf16().collect();
+    // SAFETY: Caller guarantees buf is large enough.
+    unsafe {
+        core::ptr::copy_nonoverlapping(wide.as_ptr(), buf, wide.len());
+        *buf.add(wide.len()) = 0;
+    }
+    wide.len() as i32
 }
 
 /// Get I/O buffer array (__iob_func)
@@ -1887,6 +2098,62 @@ pub unsafe extern "C" fn msvcrt__read(fd: i32, buf: *mut core::ffi::c_void, coun
     let n = unsafe { libc::read(fd, buf, count as libc::size_t) };
     #[allow(clippy::cast_possible_truncation)]
     if n < 0 { -1 } else { n as i32 }
+}
+
+/// `_write(fd, buf, count)` — low-level CRT write to a file descriptor.
+///
+/// Writes up to `count` bytes from `buf` to `fd`.
+/// Returns the number of bytes written, or -1 on error.
+///
+/// # Safety
+/// `buf` must be valid for reading `count` bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt__write(fd: i32, buf: *const core::ffi::c_void, count: u32) -> i32 {
+    if count == 0 {
+        return 0;
+    }
+    if buf.is_null() {
+        return -1;
+    }
+    // SAFETY: caller guarantees buf is readable for count bytes.
+    let n = unsafe { libc::write(fd, buf, count as libc::size_t) };
+    #[allow(clippy::cast_possible_truncation)]
+    if n < 0 { -1 } else { n as i32 }
+}
+
+/// `getchar()` — read a single character from stdin.
+///
+/// Returns the character read as `unsigned char` cast to `int`, or `EOF` (-1)
+/// on end-of-file or error.
+///
+/// # Safety
+/// Safe to call; reads from the process stdin file descriptor.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_getchar() -> i32 {
+    let mut buf = [0u8; 1];
+    // SAFETY: buf is valid for 1 byte.
+    let n = unsafe { libc::read(0, buf.as_mut_ptr().cast(), 1) };
+    if n == 1 { i32::from(buf[0]) } else { -1 }
+}
+
+/// `putchar(c)` — write a single character to stdout.
+///
+/// If `c` is `EOF` (-1), returns `EOF` without writing.  Otherwise writes
+/// the low-order byte of `c` and returns it as `unsigned char` cast to `int`,
+/// or `EOF` on I/O error.
+///
+/// # Safety
+/// Safe to call; writes to the process stdout file descriptor.
+#[unsafe(no_mangle)]
+#[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+pub unsafe extern "C" fn msvcrt_putchar(c: i32) -> i32 {
+    if c == -1 {
+        return -1; // EOF passthrough — do not write 0xFF
+    }
+    let b = [c as u8];
+    // SAFETY: b is valid for 1 byte.
+    let n = unsafe { libc::write(1, b.as_ptr().cast(), 1) };
+    if n == 1 { c & 0xFF } else { -1 }
 }
 
 /// `realloc` – resize a previously allocated memory block.
@@ -4267,27 +4534,38 @@ pub unsafe extern "C" fn ucrt__acrt_iob_func(index: u32) -> *mut u8 {
     unsafe { base.add((index as usize) * IOB_ENTRY_SIZE) }
 }
 
-/// `__stdio_common_vfprintf(options, stream, fmt, locale, ...)` — UCRT printf
+/// `__stdio_common_vfprintf(options, stream, fmt, locale, arglist)` — UCRT printf
 ///
-/// Minimal stub that ignores the `options`, `locale`, and variadic arguments
-/// and delegates to `fprintf`.  This is sufficient for debug/trace output from
-/// UCRT-linked programs; full format-string support is not required for the
-/// test suite.
+/// Implements the UCRT formatted-output function used by UCRT-linked programs.
+/// `_options` and `_locale` are ignored.  Output always goes to stdout.
 ///
 /// # Safety
 ///
-/// `stream` and `fmt` must be valid pointers for the duration of the call.
+/// `fmt` must be a valid null-terminated C string.
+/// `arglist` must be a valid Windows x64 va_list pointer.
 #[unsafe(no_mangle)]
+#[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
 pub unsafe extern "C" fn ucrt__stdio_common_vfprintf(
     _options: u64,
     _stream: *mut u8,
-    _fmt: *const u8,
+    fmt: *const u8,
     _locale: *const u8,
-    // Variadic arguments (va_list) are not accessible from safe Rust;
-    // the stub returns -1 (error) which the UCRT caller will ignore for
-    // non-critical output paths.
+    arglist: *mut u8,
 ) -> i32 {
-    -1
+    if fmt.is_null() {
+        return -1;
+    }
+    // SAFETY: Caller guarantees fmt is a valid null-terminated C string.
+    let fmt_bytes = unsafe { CStr::from_ptr(fmt.cast::<i8>()) }.to_bytes();
+    // SAFETY: arglist is a valid Windows x64 va_list pointer.
+    let out = unsafe { format_printf_raw(fmt_bytes, arglist, false) };
+    match io::stdout().write_all(&out) {
+        Ok(()) => {
+            let _ = io::stdout().flush();
+            out.len() as i32
+        }
+        Err(_) => -1,
+    }
 }
 
 /// `_configthreadlocale(mode)` — UCRT per-thread locale configuration
@@ -4355,7 +4633,7 @@ pub unsafe extern "C" fn msvcrt_sprintf(buf: *mut i8, format: *const i8, mut arg
     // SAFETY: Caller guarantees format is a valid null-terminated C string.
     let fmt_bytes = unsafe { CStr::from_ptr(format) }.to_bytes();
     // SAFETY: format and args are valid per caller contract.
-    let out = unsafe { format_printf_va(fmt_bytes, &mut args) };
+    let out = unsafe { format_printf_va(fmt_bytes, &mut args, false) };
     // SAFETY: Caller guarantees buf is large enough for `out` + NUL.
     unsafe {
         std::ptr::copy_nonoverlapping(out.as_ptr().cast::<i8>(), buf, out.len());
@@ -4390,7 +4668,7 @@ pub unsafe extern "C" fn msvcrt_snprintf(
     // SAFETY: Caller guarantees format is a valid null-terminated C string.
     let fmt_bytes = unsafe { CStr::from_ptr(format) }.to_bytes();
     // SAFETY: format and args are valid per caller contract.
-    let out = unsafe { format_printf_va(fmt_bytes, &mut args) };
+    let out = unsafe { format_printf_va(fmt_bytes, &mut args, false) };
     let would_write = out.len() as i32;
     if !buf.is_null() && count > 0 {
         let copy_len = out.len().min(count - 1);
@@ -4440,7 +4718,7 @@ pub unsafe extern "C" fn msvcrt_swprintf(buf: *mut u16, format: *const u16, mut 
         return -1;
     };
     // SAFETY: format and args are valid per caller contract.
-    let out_bytes = unsafe { format_printf_va(cstr.to_bytes(), &mut args) };
+    let out_bytes = unsafe { format_printf_va(cstr.to_bytes(), &mut args, true) };
     let out_str = String::from_utf8_lossy(&out_bytes);
     let wide_out: Vec<u16> = out_str.encode_utf16().collect();
     // SAFETY: Caller guarantees buf is large enough.
@@ -4473,7 +4751,7 @@ pub unsafe extern "C" fn msvcrt_wprintf(format: *const u16, mut args: ...) -> i3
         return -1;
     };
     // SAFETY: format and args are valid per caller contract.
-    let out = unsafe { format_printf_va(cstr.to_bytes(), &mut args) };
+    let out = unsafe { format_printf_va(cstr.to_bytes(), &mut args, true) };
     match io::stdout().write_all(&out) {
         Ok(()) => {
             let _ = io::stdout().flush();
@@ -4481,6 +4759,60 @@ pub unsafe extern "C" fn msvcrt_wprintf(format: *const u16, mut args: ...) -> i3
         }
         Err(_) => -1,
     }
+}
+
+/// `fwprintf(stream, format, ...) -> int` — write wide formatted string to a
+/// FILE stream.
+///
+/// The `stream` parameter is ignored; output always goes to stdout (fd 1).
+///
+/// # Safety
+/// `format` must point to a valid null-terminated wide string.
+/// Variadic arguments must match the format specifiers.
+#[unsafe(no_mangle)]
+#[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+pub unsafe extern "C" fn msvcrt_fwprintf(
+    _stream: *mut u8,
+    format: *const u16,
+    mut args: ...
+) -> i32 {
+    if format.is_null() {
+        return -1;
+    }
+    // SAFETY: Caller guarantees format is a valid null-terminated wide string.
+    let wide_fmt = unsafe { read_wide_string(format) };
+    let fmt_utf8 = String::from_utf16_lossy(&wide_fmt);
+    // SAFETY: format and args are valid per caller contract.
+    let out = unsafe { format_printf_va(fmt_utf8.as_bytes(), &mut args, true) };
+    let written = unsafe { libc::write(1, out.as_ptr().cast(), out.len()) };
+    if written < 0 { -1 } else { written as i32 }
+}
+
+/// `vfwprintf(stream, format, args) -> int` — write wide formatted string to a
+/// FILE stream using a pre-built va_list.
+///
+/// The `stream` parameter is ignored; output always goes to stdout (fd 1).
+///
+/// # Safety
+/// `format` must point to a valid null-terminated wide string.
+/// `args` must be a valid Windows x64 va_list pointer.
+#[unsafe(no_mangle)]
+#[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+pub unsafe extern "C" fn msvcrt_vfwprintf(
+    _stream: *mut u8,
+    format: *const u16,
+    args: *mut u8,
+) -> i32 {
+    if format.is_null() {
+        return -1;
+    }
+    // SAFETY: Caller guarantees format is a valid null-terminated wide string.
+    let wide_fmt = unsafe { read_wide_string(format) };
+    let fmt_utf8 = String::from_utf16_lossy(&wide_fmt);
+    // SAFETY: args is a valid Windows x64 va_list pointer.
+    let out = unsafe { format_printf_raw(fmt_utf8.as_bytes(), args, true) };
+    let written = unsafe { libc::write(1, out.as_ptr().cast(), out.len()) };
+    if written < 0 { -1 } else { written as i32 }
 }
 
 // ── Character classification ─────────────────────────────────────────────────
@@ -5863,7 +6195,7 @@ mod tests {
     #[allow(improper_ctypes_definitions)]
     unsafe extern "C" fn fmt_helper(fmt: *const i8, mut args: ...) -> Vec<u8> {
         let bytes = unsafe { CStr::from_ptr(fmt) }.to_bytes();
-        unsafe { format_printf_va(bytes, &mut args) }
+        unsafe { format_printf_va(bytes, &mut args, false) }
     }
 
     #[test]
@@ -5993,7 +6325,7 @@ mod tests {
     #[test]
     fn test_printf_c() {
         let fmt = CString::new("%c").unwrap();
-        let out = unsafe { fmt_helper(fmt.as_ptr(), b'A' as i32) };
+        let out = unsafe { fmt_helper(fmt.as_ptr(), i32::from(b'A')) };
         assert_eq!(out, b"A");
     }
 
@@ -6026,5 +6358,104 @@ mod tests {
         assert_eq!(n, 5);
         let s = unsafe { CStr::from_ptr(buf.as_ptr()) }.to_str().unwrap();
         assert_eq!(s, "1234"); // truncated to 4 chars
+    }
+
+    // ── vprintf-family tests (format_printf_raw) ─────────────────────────────
+
+    /// Helper: build a Windows va_list from a slice of i64 values and call
+    /// `format_printf_raw`.  All args are packed as 8-byte slots, matching the
+    /// Windows x64 va_list convention.
+    unsafe fn raw_fmt(fmt_str: &str, args: &[i64]) -> Vec<u8> {
+        // Copy args to ensure 8-byte alignment.
+        let mut aligned_args: Vec<i64> = args.to_vec();
+        // Always append at least one slot so the pointer passed to
+        // format_printf_raw is valid even when `args` is empty (a zero-length
+        // slice's .as_ptr() is allowed to be non-dereferenceable).
+        aligned_args.push(0);
+        let ap = aligned_args.as_mut_ptr().cast::<u8>();
+        let fmt_bytes = fmt_str.as_bytes();
+        unsafe { format_printf_raw(fmt_bytes, ap, false) }
+    }
+
+    #[test]
+    fn test_format_raw_empty() {
+        // Empty format string: no output, no args needed.
+        let out = unsafe { raw_fmt("", &[]) };
+        assert_eq!(out, b"");
+    }
+
+    #[test]
+    fn test_format_raw_no_specifiers() {
+        // Format with no % specifiers: output equals the input.
+        let out = unsafe { raw_fmt("no specifiers here", &[]) };
+        assert_eq!(out, b"no specifiers here");
+    }
+
+    #[test]
+    fn test_format_raw_literal() {
+        let out = unsafe { raw_fmt("hello", &[]) };
+        assert_eq!(out, b"hello");
+    }
+
+    #[test]
+    fn test_format_raw_int() {
+        let out = unsafe { raw_fmt("%d", &[42]) };
+        assert_eq!(out, b"42");
+    }
+
+    #[test]
+    fn test_format_raw_string() {
+        let s = CString::new("world").unwrap();
+        let ptr = s.as_ptr() as i64;
+        let out = unsafe { raw_fmt("%s", &[ptr]) };
+        assert_eq!(out, b"world");
+    }
+
+    #[test]
+    fn test_format_raw_multi() {
+        let out = unsafe { raw_fmt("%d %d", &[1, 2]) };
+        assert_eq!(out, b"1 2");
+    }
+
+    #[test]
+    fn test_vsprintf_basic() {
+        // Build a Windows va_list with [42i64]
+        let args: [i64; 1] = [42];
+        let fmt = CString::new("val=%d").unwrap();
+        let mut buf = [0i8; 64];
+        let n =
+            unsafe { msvcrt_vsprintf(buf.as_mut_ptr(), fmt.as_ptr(), args.as_ptr() as *mut u8) };
+        assert_eq!(n, 6);
+        let s = unsafe { CStr::from_ptr(buf.as_ptr()) }.to_str().unwrap();
+        assert_eq!(s, "val=42");
+    }
+
+    #[test]
+    fn test_vsnprintf_truncate() {
+        let args: [i64; 1] = [12345];
+        let fmt = CString::new("%d").unwrap();
+        let mut buf = [0i8; 5];
+        let n = unsafe {
+            msvcrt_vsnprintf(buf.as_mut_ptr(), 5, fmt.as_ptr(), args.as_ptr() as *mut u8)
+        };
+        assert_eq!(n, 5); // would write 5 chars
+        let s = unsafe { CStr::from_ptr(buf.as_ptr()) }.to_str().unwrap();
+        assert_eq!(s, "1234"); // truncated
+    }
+
+    #[test]
+    fn test_vsnprintf_null_buf() {
+        let args: [i64; 1] = [99];
+        let fmt = CString::new("%d").unwrap();
+        // null buf: should return the would-be length
+        let n = unsafe {
+            msvcrt_vsnprintf(
+                core::ptr::null_mut(),
+                0,
+                fmt.as_ptr(),
+                args.as_ptr() as *mut u8,
+            )
+        };
+        assert_eq!(n, 2); // "99" is 2 chars
     }
 }

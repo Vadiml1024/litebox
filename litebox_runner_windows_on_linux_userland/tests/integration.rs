@@ -376,6 +376,23 @@ fn test_dll_manager_has_all_required_exports() {
         let result = dll_manager.get_proc_address(msvcrt, func_name);
         assert!(result.is_ok(), "MSVCRT.dll should export {func_name}");
     }
+
+    // Check that Phase 34 MSVCRT additions are now resolvable via the DLL manager
+    let msvcrt_phase34_functions = vec![
+        "vprintf",
+        "vsprintf",
+        "vsnprintf",
+        "vswprintf",
+        "fwprintf",
+        "vfwprintf",
+        "_write",
+        "getchar",
+        "putchar",
+    ];
+    for func_name in msvcrt_phase34_functions {
+        let result = dll_manager.get_proc_address(msvcrt, func_name);
+        assert!(result.is_ok(), "MSVCRT.dll should export {func_name}");
+    }
 }
 
 #[cfg(test)]
