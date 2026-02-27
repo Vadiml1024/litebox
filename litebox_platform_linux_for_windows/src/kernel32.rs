@@ -3594,6 +3594,41 @@ pub unsafe extern "C" fn kernel32_CreateFileW(
     }
 }
 
+/// CreateFileA - creates or opens a file (ANSI version)
+///
+/// Converts the narrow-character file name to UTF-16 and delegates to
+/// `kernel32_CreateFileW`.
+///
+/// # Safety
+/// `file_name` must be a valid null-terminated C string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_CreateFileA(
+    file_name: *const u8,
+    desired_access: u32,
+    share_mode: u32,
+    security_attributes: *mut core::ffi::c_void,
+    creation_disposition: u32,
+    flags_and_attributes: u32,
+    template_file: *mut core::ffi::c_void,
+) -> *mut core::ffi::c_void {
+    const INVALID_HANDLE_VALUE: *mut core::ffi::c_void = usize::MAX as *mut core::ffi::c_void;
+    if file_name.is_null() {
+        kernel32_SetLastError(87); // ERROR_INVALID_PARAMETER
+        return INVALID_HANDLE_VALUE;
+    }
+    let path = std::ffi::CStr::from_ptr(file_name.cast::<i8>()).to_string_lossy();
+    let wide: Vec<u16> = path.encode_utf16().chain(Some(0)).collect();
+    kernel32_CreateFileW(
+        wide.as_ptr(),
+        desired_access,
+        share_mode,
+        security_attributes,
+        creation_disposition,
+        flags_and_attributes,
+        template_file,
+    )
+}
+
 /// Read from a file (ReadFile)
 ///
 /// When `overlapped` is non-null and the file handle is associated with an
@@ -4626,6 +4661,24 @@ pub unsafe extern "C" fn kernel32_DeleteFileW(file_name: *const u16) -> i32 {
             0 // FALSE
         }
     }
+}
+
+/// DeleteFileA - deletes a file (ANSI version)
+///
+/// Converts the narrow-character path to UTF-16 and delegates to
+/// `kernel32_DeleteFileW`.
+///
+/// # Safety
+/// `file_name` must be a valid null-terminated C string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_DeleteFileA(file_name: *const u8) -> i32 {
+    if file_name.is_null() {
+        kernel32_SetLastError(87); // ERROR_INVALID_PARAMETER
+        return 0;
+    }
+    let path = std::ffi::CStr::from_ptr(file_name.cast::<i8>()).to_string_lossy();
+    let wide: Vec<u16> = path.encode_utf16().chain(Some(0)).collect();
+    kernel32_DeleteFileW(wide.as_ptr())
 }
 
 /// DeleteProcThreadAttributeList - deletes a process/thread attribute list
@@ -6165,6 +6218,35 @@ pub unsafe extern "C" fn kernel32_GetTempPathW(buffer_length: u32, buffer: *mut 
     }
 
     (utf16.len() - 1) as u32 // length without null terminator
+}
+
+/// GetTempPathA - retrieves the path of the directory for temporary files (ANSI version)
+///
+/// Returns the same path as `GetTempPathW` encoded as a null-terminated ANSI
+/// (UTF-8) string.  The trailing directory separator is included.
+///
+/// If `buffer` is null or `buffer_length` is too small, returns the required
+/// buffer size (in bytes, including the null terminator); otherwise copies
+/// the path and returns the length excluding the null terminator.
+///
+/// # Safety
+/// `buffer`, if non-null, must point to a writable area of at least
+/// `buffer_length` bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_GetTempPathA(buffer_length: u32, buffer: *mut u8) -> u32 {
+    let temp_dir = std::env::temp_dir();
+    let mut dir_str = temp_dir.to_string_lossy().into_owned();
+    if !dir_str.ends_with('/') {
+        dir_str.push('/');
+    }
+    let bytes = dir_str.as_bytes();
+    let required = bytes.len() as u32 + 1; // +1 for null terminator
+    if buffer.is_null() || buffer_length < required {
+        return required;
+    }
+    std::ptr::copy_nonoverlapping(bytes.as_ptr(), buffer, bytes.len());
+    *buffer.add(bytes.len()) = 0; // null terminator
+    bytes.len() as u32 // length without null terminator
 }
 
 /// GetWindowsDirectoryW - returns the Windows directory path

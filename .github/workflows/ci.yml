@@ -396,6 +396,8 @@ jobs:
             test_dir: windows_test_programs/sync_test
           - suite: seh
             test_dir: windows_test_programs/seh_test
+          - suite: async_io
+            test_dir: windows_test_programs/async_io_test
     steps:
       - name: Check out repo
         uses: actions/checkout@v4
@@ -537,6 +539,19 @@ jobs:
           grep -q "Results:.*0 failed" /tmp/seh_cpp_test_clang_out.txt \
             || { echo "✗ seh_cpp_test_clang FAILED"; exit 1; }
           echo "✓ seh_cpp_test_clang PASSED"
+      - name: Run async_io_test
+        if: matrix.suite == 'async_io'
+        run: |
+          echo "=== async_io_test.exe ==="
+          ./target/debug/litebox_runner_windows_on_linux_userland \
+            windows_test_programs/async_io_test/async_io_test.exe \
+            2>&1 | tee /tmp/async_io_test_out.txt
+
+          echo ""
+          echo "--- Verifying test output ---"
+          grep -q "Async I/O Tests PASSED" /tmp/async_io_test_out.txt \
+            || { echo "✗ async_io_test FAILED"; exit 1; }
+          echo "✓ async_io_test PASSED"
       - name: Upload test output on failure
         if: failure()
         uses: actions/upload-artifact@v4

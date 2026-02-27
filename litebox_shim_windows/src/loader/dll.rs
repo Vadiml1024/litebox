@@ -558,6 +558,15 @@ impl DllManager {
             ("RemoveVectoredExceptionHandler", KERNEL32_BASE + 0xDD),
             // ANSI console write (used by MSVC-ABI programs)
             ("WriteConsoleA", KERNEL32_BASE + 0xDE),
+            // Async I/O / IOCP
+            ("CreateIoCompletionPort", KERNEL32_BASE + 0xE3),
+            ("PostQueuedCompletionStatus", KERNEL32_BASE + 0xE4),
+            ("GetQueuedCompletionStatus", KERNEL32_BASE + 0xE5),
+            ("GetQueuedCompletionStatusEx", KERNEL32_BASE + 0xE6),
+            // ANSI file helpers used by async_io_test and similar programs
+            ("CreateFileA", KERNEL32_BASE + 0xE7),
+            ("GetTempPathA", KERNEL32_BASE + 0xE8),
+            ("DeleteFileA", KERNEL32_BASE + 0xE9),
         ];
 
         self.register_stub_dll("KERNEL32.dll", exports);
@@ -828,6 +837,8 @@ impl DllManager {
             ("_open_osfhandle", MSVCRT_BASE + 0xCC),
             ("_wcsdup", MSVCRT_BASE + 0xCD),
             ("__stdio_common_vsscanf", MSVCRT_BASE + 0xCE),
+            // Secure formatted I/O
+            ("_snprintf_s", MSVCRT_BASE + 0xCF),
         ];
 
         self.register_stub_dll("MSVCRT.dll", exports);
