@@ -6325,7 +6325,7 @@ mod tests {
     #[test]
     fn test_printf_c() {
         let fmt = CString::new("%c").unwrap();
-        let out = unsafe { fmt_helper(fmt.as_ptr(), b'A' as i32) };
+        let out = unsafe { fmt_helper(fmt.as_ptr(), i32::from(b'A')) };
         assert_eq!(out, b"A");
     }
 
