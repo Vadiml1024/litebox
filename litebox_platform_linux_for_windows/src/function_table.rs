@@ -3815,7 +3815,8 @@ pub fn get_function_table() -> Vec<FunctionImpl> {
             name: "PostQueuedCompletionStatus",
             dll_name: "KERNEL32.dll",
             num_params: 4,
-            impl_address: crate::kernel32::kernel32_PostQueuedCompletionStatus as *const () as usize,
+            impl_address: crate::kernel32::kernel32_PostQueuedCompletionStatus as *const ()
+                as usize,
         },
         // bcryptprimitives.dll functions
         FunctionImpl {

@@ -460,10 +460,7 @@ unsafe fn set_overlapped_result(overlapped: *mut core::ffi::c_void, status: u64,
         return;
     }
     let base = overlapped.cast::<u8>();
-    core::ptr::write_unaligned(
-        base.add(OVERLAPPED_INTERNAL_OFFSET).cast::<u64>(),
-        status,
-    );
+    core::ptr::write_unaligned(base.add(OVERLAPPED_INTERNAL_OFFSET).cast::<u64>(), status);
     core::ptr::write_unaligned(
         base.add(OVERLAPPED_INTERNAL_HIGH_OFFSET).cast::<u64>(),
         bytes,
@@ -479,10 +476,8 @@ unsafe fn get_overlapped_result(overlapped: *const core::ffi::c_void) -> (u64, u
         return (u64::MAX, 0);
     }
     let base = overlapped.cast::<u8>();
-    let status =
-        core::ptr::read_unaligned(base.add(OVERLAPPED_INTERNAL_OFFSET).cast::<u64>());
-    let bytes =
-        core::ptr::read_unaligned(base.add(OVERLAPPED_INTERNAL_HIGH_OFFSET).cast::<u64>());
+    let status = core::ptr::read_unaligned(base.add(OVERLAPPED_INTERNAL_OFFSET).cast::<u64>());
+    let bytes = core::ptr::read_unaligned(base.add(OVERLAPPED_INTERNAL_HIGH_OFFSET).cast::<u64>());
     (status, bytes)
 }
 
@@ -3649,13 +3644,7 @@ pub unsafe extern "C" fn kernel32_ReadFile(
         // post the completion to the port and mark the result in OVERLAPPED.
         if !overlapped.is_null() && iocp_handle != 0 {
             set_overlapped_result(overlapped, 0, u64::from(bytes));
-            post_iocp_completion(
-                iocp_handle,
-                bytes,
-                completion_key,
-                overlapped as usize,
-                0,
-            );
+            post_iocp_completion(iocp_handle, bytes, completion_key, overlapped as usize, 0);
         }
         1 // TRUE
     } else {
@@ -3746,13 +3735,7 @@ pub unsafe extern "C" fn kernel32_WriteFile(
             }
             if !overlapped.is_null() && iocp_handle != 0 {
                 set_overlapped_result(overlapped, 0, u64::from(bytes));
-                post_iocp_completion(
-                    iocp_handle,
-                    bytes,
-                    completion_key,
-                    overlapped as usize,
-                    0,
-                );
+                post_iocp_completion(iocp_handle, bytes, completion_key, overlapped as usize, 0);
             }
             1 // TRUE
         } else {
@@ -6086,9 +6069,7 @@ pub unsafe extern "C" fn kernel32_GetOverlappedResult(
     } else {
         // Convert NTSTATUS to a Windows error code (best-effort: use the low
         // 16-bit facility/code, which for common I/O errors is a valid Win32 code).
-        let win_err = u32::try_from(status)
-            .map(|s| s & 0xFFFF)
-            .unwrap_or(87); // ERROR_INVALID_PARAMETER as fallback
+        let win_err = u32::try_from(status).map(|s| s & 0xFFFF).unwrap_or(87); // ERROR_INVALID_PARAMETER as fallback
         kernel32_SetLastError(win_err);
         0 // FALSE
     }
@@ -10693,7 +10674,13 @@ pub unsafe extern "C" fn kernel32_PostQueuedCompletionStatus(
     overlapped: *mut core::ffi::c_void,
 ) -> i32 {
     let port_val = completion_port as usize;
-    if post_iocp_completion(port_val, bytes_transferred, completion_key, overlapped as usize, 0) {
+    if post_iocp_completion(
+        port_val,
+        bytes_transferred,
+        completion_key,
+        overlapped as usize,
+        0,
+    ) {
         1 // TRUE
     } else {
         kernel32_SetLastError(6); // ERROR_INVALID_HANDLE
@@ -10729,9 +10716,7 @@ pub unsafe extern "C" fn kernel32_GetQueuedCompletionStatus(
     let port_val = completion_port as usize;
 
     // Retrieve the Arc holding the shared state for this port.
-    let state_arc = with_iocp_handles(|map| {
-        map.get(&port_val).map(|e| Arc::clone(&e.state))
-    });
+    let state_arc = with_iocp_handles(|map| map.get(&port_val).map(|e| Arc::clone(&e.state)));
     let Some(state_arc) = state_arc else {
         kernel32_SetLastError(6); // ERROR_INVALID_HANDLE
         if !overlapped.is_null() {
@@ -10817,9 +10802,10 @@ pub unsafe extern "C" fn kernel32_GetQueuedCompletionStatus(
 /// # Safety
 /// `completion_port` must be a valid IOCP handle.  `completion_port_entries`
 /// must point to a writable array of at least `count`
-/// `OVERLAPPED_ENTRY`-like structures (8 bytes each: key usize, overlapped
-/// *mut c_void, internal usize, bytes u32).  `num_entries_removed` must be
-/// a valid writable `u32`.
+/// `OVERLAPPED_ENTRY`-like structures (32 bytes each: key usize,
+/// overlapped *mut c_void, internal usize, bytes u32, for 28 bytes of
+/// fields padded to 32).  `num_entries_removed` must be a valid writable
+/// `u32`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_GetQueuedCompletionStatusEx(
     completion_port: *mut core::ffi::c_void,
@@ -10847,9 +10833,7 @@ pub unsafe extern "C" fn kernel32_GetQueuedCompletionStatusEx(
     }
 
     let port_val = completion_port as usize;
-    let state_arc = with_iocp_handles(|map| {
-        map.get(&port_val).map(|e| Arc::clone(&e.state))
-    });
+    let state_arc = with_iocp_handles(|map| map.get(&port_val).map(|e| Arc::clone(&e.state)));
     let Some(state_arc) = state_arc else {
         kernel32_SetLastError(6); // ERROR_INVALID_HANDLE
         return 0;
@@ -15201,12 +15185,14 @@ mod tests {
                 0,
             )
         };
-        assert!(!port.is_null(), "CreateIoCompletionPort should return a valid handle");
+        assert!(
+            !port.is_null(),
+            "CreateIoCompletionPort should return a valid handle"
+        );
 
         // Post a completion packet.
-        let res = unsafe {
-            kernel32_PostQueuedCompletionStatus(port, 42, 0x1234, core::ptr::null_mut())
-        };
+        let res =
+            unsafe { kernel32_PostQueuedCompletionStatus(port, 42, 0x1234, core::ptr::null_mut()) };
         assert_eq!(res, 1, "PostQueuedCompletionStatus should return TRUE");
 
         // Dequeue it immediately (non-blocking via milliseconds=0).
@@ -15266,14 +15252,18 @@ mod tests {
         }
 
         // Open the file.
-        let path_wide: Vec<u16> = path.to_string_lossy().encode_utf16().chain(Some(0)).collect();
+        let path_wide: Vec<u16> = path
+            .to_string_lossy()
+            .encode_utf16()
+            .chain(Some(0))
+            .collect();
         let handle = unsafe {
             kernel32_CreateFileW(
                 path_wide.as_ptr(),
                 0x8000_0000u32, // GENERIC_READ
                 0,
                 core::ptr::null_mut(),
-                3,              // OPEN_EXISTING
+                3, // OPEN_EXISTING
                 0,
                 core::ptr::null_mut(),
             )
@@ -15288,11 +15278,7 @@ mod tests {
         static CALLBACK_BYTES: std::sync::atomic::AtomicU32 =
             std::sync::atomic::AtomicU32::new(u32::MAX);
 
-        unsafe extern "win64" fn my_callback(
-            _err: u32,
-            bytes: u32,
-            _ov: *mut core::ffi::c_void,
-        ) {
+        unsafe extern "win64" fn my_callback(_err: u32, bytes: u32, _ov: *mut core::ffi::c_void) {
             CALLBACK_BYTES.store(bytes, std::sync::atomic::Ordering::SeqCst);
         }
 
@@ -15341,14 +15327,18 @@ mod tests {
         let dir = std::env::temp_dir();
         let path = dir.join(format!("litebox_wfex_test_{}.tmp", std::process::id()));
 
-        let path_wide: Vec<u16> = path.to_string_lossy().encode_utf16().chain(Some(0)).collect();
+        let path_wide: Vec<u16> = path
+            .to_string_lossy()
+            .encode_utf16()
+            .chain(Some(0))
+            .collect();
         let handle = unsafe {
             kernel32_CreateFileW(
                 path_wide.as_ptr(),
                 0x4000_0000u32, // GENERIC_WRITE
                 0,
                 core::ptr::null_mut(),
-                2,              // CREATE_ALWAYS
+                2, // CREATE_ALWAYS
                 0,
                 core::ptr::null_mut(),
             )
@@ -15361,11 +15351,7 @@ mod tests {
         static WFX_CALLBACK_BYTES: std::sync::atomic::AtomicU32 =
             std::sync::atomic::AtomicU32::new(u32::MAX);
 
-        unsafe extern "win64" fn wfx_callback(
-            _err: u32,
-            bytes: u32,
-            _ov: *mut core::ffi::c_void,
-        ) {
+        unsafe extern "win64" fn wfx_callback(_err: u32, bytes: u32, _ov: *mut core::ffi::c_void) {
             WFX_CALLBACK_BYTES.store(bytes, std::sync::atomic::Ordering::SeqCst);
         }
 
@@ -15394,7 +15380,10 @@ mod tests {
                 1, // alertable
             )
         };
-        assert_eq!(wait_res, 0xC0, "WaitForSingleObjectEx should return WAIT_IO_COMPLETION");
+        assert_eq!(
+            wait_res, 0xC0,
+            "WaitForSingleObjectEx should return WAIT_IO_COMPLETION"
+        );
         assert_eq!(
             WFX_CALLBACK_BYTES.load(std::sync::atomic::Ordering::SeqCst),
             data.len() as u32
@@ -15416,14 +15405,18 @@ mod tests {
             f.write_all(b"iocp read").unwrap();
         }
 
-        let path_wide: Vec<u16> = path.to_string_lossy().encode_utf16().chain(Some(0)).collect();
+        let path_wide: Vec<u16> = path
+            .to_string_lossy()
+            .encode_utf16()
+            .chain(Some(0))
+            .collect();
         let handle = unsafe {
             kernel32_CreateFileW(
                 path_wide.as_ptr(),
                 0x8000_0000u32, // GENERIC_READ
                 0,
                 core::ptr::null_mut(),
-                3,              // OPEN_EXISTING
+                3, // OPEN_EXISTING
                 0,
                 core::ptr::null_mut(),
             )
@@ -15441,10 +15434,11 @@ mod tests {
         };
         assert!(!port.is_null());
 
-        let assoc = unsafe {
-            kernel32_CreateIoCompletionPort(handle, port, 0xDEAD, 0)
-        };
-        assert_eq!(assoc, port, "Association should return the same port handle");
+        let assoc = unsafe { kernel32_CreateIoCompletionPort(handle, port, 0xDEAD, 0) };
+        assert_eq!(
+            assoc, port,
+            "Association should return the same port handle"
+        );
 
         // ReadFile with non-null OVERLAPPED should post a completion.
         let mut ov = [0u8; 32];
