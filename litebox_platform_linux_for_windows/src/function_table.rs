@@ -682,6 +682,12 @@ pub fn get_function_table() -> Vec<FunctionImpl> {
             impl_address: crate::kernel32::kernel32_CreateHardLinkW as *const () as usize,
         },
         FunctionImpl {
+            name: "CreateIoCompletionPort",
+            dll_name: "KERNEL32.dll",
+            num_params: 4,
+            impl_address: crate::kernel32::kernel32_CreateIoCompletionPort as *const () as usize,
+        },
+        FunctionImpl {
             name: "CreatePipe",
             dll_name: "KERNEL32.dll",
             num_params: 4,
@@ -808,6 +814,19 @@ pub fn get_function_table() -> Vec<FunctionImpl> {
             dll_name: "KERNEL32.dll",
             num_params: 2,
             impl_address: crate::kernel32::kernel32_GetProcAddress as *const () as usize,
+        },
+        FunctionImpl {
+            name: "GetQueuedCompletionStatus",
+            dll_name: "KERNEL32.dll",
+            num_params: 5,
+            impl_address: crate::kernel32::kernel32_GetQueuedCompletionStatus as *const () as usize,
+        },
+        FunctionImpl {
+            name: "GetQueuedCompletionStatusEx",
+            dll_name: "KERNEL32.dll",
+            num_params: 6,
+            impl_address: crate::kernel32::kernel32_GetQueuedCompletionStatusEx as *const ()
+                as usize,
         },
         FunctionImpl {
             name: "GetStdHandle",
@@ -3791,6 +3810,12 @@ pub fn get_function_table() -> Vec<FunctionImpl> {
             dll_name: "MSVCRT.dll",
             num_params: 2,
             impl_address: crate::msvcrt::msvcrt__open_osfhandle as *const () as usize,
+        },
+        FunctionImpl {
+            name: "PostQueuedCompletionStatus",
+            dll_name: "KERNEL32.dll",
+            num_params: 4,
+            impl_address: crate::kernel32::kernel32_PostQueuedCompletionStatus as *const () as usize,
         },
         // bcryptprimitives.dll functions
         FunctionImpl {

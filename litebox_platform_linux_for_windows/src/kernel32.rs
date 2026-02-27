@@ -18,8 +18,8 @@
 #![allow(clippy::cast_ptr_alignment)]
 
 use std::alloc;
-use std::cell::Cell;
-use std::collections::HashMap;
+use std::cell::{Cell, RefCell};
+use std::collections::{HashMap, VecDeque};
 use std::ffi::CString;
 use std::fs::File;
 use std::io::{Read, Seek, Write};
@@ -149,6 +149,10 @@ static FILE_HANDLE_COUNTER: AtomicUsize = AtomicUsize::new(0x1_0000);
 
 struct FileEntry {
     file: File,
+    /// If non-zero, this file is associated with an IOCP (handle value stored here).
+    iocp_handle: usize,
+    /// Completion key supplied when associating this file with an IOCP.
+    completion_key: usize,
 }
 
 /// Global file-handle map: handle_value → FileEntry
@@ -316,6 +320,160 @@ fn with_sync_handles<R>(f: impl FnOnce(&mut HashMap<usize, SyncObjectEntry>) -> 
 
 fn alloc_sync_handle() -> usize {
     SYNC_HANDLE_COUNTER.fetch_add(4, Ordering::SeqCst)
+}
+
+// ── IOCP (I/O Completion Port) handle registry ────────────────────────────
+// Maps synthetic HANDLE values (usize) to I/O completion port state.
+// Used by CreateIoCompletionPort, GetQueuedCompletionStatus, and
+// PostQueuedCompletionStatus.
+
+static IOCP_HANDLE_COUNTER: AtomicUsize = AtomicUsize::new(0x8_0000);
+
+/// A single completion packet dequeued from an I/O completion port.
+struct IocpCompletionPacket {
+    /// Number of bytes transferred by the I/O operation.
+    bytes_transferred: u32,
+    /// Per-file completion key supplied to `CreateIoCompletionPort`.
+    completion_key: usize,
+    /// OVERLAPPED pointer associated with the operation (as raw address).
+    overlapped: usize,
+    /// Windows error code for the operation (0 = success).
+    error_code: u32,
+}
+
+/// Shared IOCP queue state (referenced by Arc so it can be cloned across
+/// file-handle entries that are associated with the same port).
+struct IocpSharedState {
+    queue: VecDeque<IocpCompletionPacket>,
+}
+
+struct IocpEntry {
+    state: Arc<(Mutex<IocpSharedState>, Condvar)>,
+}
+
+static IOCP_HANDLES: Mutex<Option<HashMap<usize, IocpEntry>>> = Mutex::new(None);
+
+fn with_iocp_handles<R>(f: impl FnOnce(&mut HashMap<usize, IocpEntry>) -> R) -> R {
+    let mut guard = IOCP_HANDLES.lock().unwrap();
+    let map = guard.get_or_insert_with(HashMap::new);
+    f(map)
+}
+
+fn alloc_iocp_handle() -> usize {
+    IOCP_HANDLE_COUNTER.fetch_add(4, Ordering::SeqCst)
+}
+
+/// Post a completion packet to an IOCP identified by its handle value.
+/// Returns `true` if the port was found and the packet was enqueued.
+fn post_iocp_completion(
+    iocp_handle: usize,
+    bytes_transferred: u32,
+    completion_key: usize,
+    overlapped: usize,
+    error_code: u32,
+) -> bool {
+    with_iocp_handles(|map| {
+        let Some(entry) = map.get(&iocp_handle) else {
+            return false;
+        };
+        let (lock, cvar) = entry.state.as_ref();
+        let mut state = lock.lock().unwrap();
+        state.queue.push_back(IocpCompletionPacket {
+            bytes_transferred,
+            completion_key,
+            overlapped,
+            error_code,
+        });
+        cvar.notify_one();
+        true
+    })
+}
+
+// ── APC (Asynchronous Procedure Call) queue ────────────────────────────────
+// Each thread has its own APC queue.  ReadFileEx / WriteFileEx enqueue an APC
+// on the calling thread; SleepEx / WaitForSingleObjectEx with alertable=TRUE
+// drain the queue by invoking each callback.
+//
+// LPOVERLAPPED_COMPLETION_ROUTINE:
+//   VOID WINAPI CompletionRoutine(DWORD errCode, DWORD bytesTransferred, LPOVERLAPPED);
+
+type OverlappedCompletionRoutine = unsafe extern "win64" fn(u32, u32, *mut core::ffi::c_void);
+
+struct ApcEntry {
+    error_code: u32,
+    bytes_transferred: u32,
+    /// Stored as a raw address so it can live in a thread_local without
+    /// requiring the pointer itself to be `Send`.
+    overlapped: usize,
+    callback: OverlappedCompletionRoutine,
+}
+
+thread_local! {
+    static APC_QUEUE: RefCell<Vec<ApcEntry>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Drain all pending APCs for the current thread.
+/// Returns `true` if at least one APC was executed.
+/// # Safety
+/// Calls Windows-ABI function pointers; the caller must ensure that the
+/// stored callbacks and OVERLAPPED pointers remain valid.
+unsafe fn drain_apc_queue() -> bool {
+    let entries: Vec<ApcEntry> = APC_QUEUE.with(|q| std::mem::take(&mut *q.borrow_mut()));
+    if entries.is_empty() {
+        return false;
+    }
+    for entry in entries {
+        let overlapped = entry.overlapped as *mut core::ffi::c_void;
+        (entry.callback)(entry.error_code, entry.bytes_transferred, overlapped);
+    }
+    true
+}
+
+// ── OVERLAPPED structure layout (Windows x64) ─────────────────────────────
+// offset  0 : Internal      (u64) – NTSTATUS / error code
+// offset  8 : InternalHigh  (u64) – bytes transferred
+// offset 16 : Offset        (u32) – file-offset low  (union with Pointer)
+// offset 20 : OffsetHigh    (u32) – file-offset high
+// offset 24 : hEvent        (*mut c_void)
+//
+// We only read/write Internal and InternalHigh.
+
+const OVERLAPPED_INTERNAL_OFFSET: usize = 0;
+const OVERLAPPED_INTERNAL_HIGH_OFFSET: usize = 8;
+
+/// Write the result fields of an OVERLAPPED structure.
+/// `status` is 0 (STATUS_SUCCESS) on success.
+/// # Safety
+/// `overlapped` must point to a writable Windows OVERLAPPED structure.
+unsafe fn set_overlapped_result(overlapped: *mut core::ffi::c_void, status: u64, bytes: u64) {
+    if overlapped.is_null() {
+        return;
+    }
+    let base = overlapped.cast::<u8>();
+    core::ptr::write_unaligned(
+        base.add(OVERLAPPED_INTERNAL_OFFSET).cast::<u64>(),
+        status,
+    );
+    core::ptr::write_unaligned(
+        base.add(OVERLAPPED_INTERNAL_HIGH_OFFSET).cast::<u64>(),
+        bytes,
+    );
+}
+
+/// Read the result fields of an OVERLAPPED structure.
+/// Returns `(status, bytes_transferred)`.
+/// # Safety
+/// `overlapped` must point to a readable Windows OVERLAPPED structure.
+unsafe fn get_overlapped_result(overlapped: *const core::ffi::c_void) -> (u64, u64) {
+    if overlapped.is_null() {
+        return (u64::MAX, 0);
+    }
+    let base = overlapped.cast::<u8>();
+    let status =
+        core::ptr::read_unaligned(base.add(OVERLAPPED_INTERNAL_OFFSET).cast::<u64>());
+    let bytes =
+        core::ptr::read_unaligned(base.add(OVERLAPPED_INTERNAL_HIGH_OFFSET).cast::<u64>());
+    (status, bytes)
 }
 
 // ── Console title ─────────────────────────────────────────────────────────
@@ -3408,7 +3566,7 @@ pub unsafe extern "C" fn kernel32_CreateFileW(
                 if map.len() >= MAX_OPEN_FILE_HANDLES {
                     return false;
                 }
-                map.insert(handle_val, FileEntry { file });
+                map.insert(handle_val, FileEntry { file, iocp_handle: 0, completion_key: 0 });
                 true
             });
             if inserted {
@@ -3433,6 +3591,10 @@ pub unsafe extern "C" fn kernel32_CreateFileW(
 
 /// Read from a file (ReadFile)
 ///
+/// When `overlapped` is non-null and the file handle is associated with an
+/// I/O Completion Port, the completion packet is posted to that port after
+/// a successful synchronous read.
+///
 /// # Safety
 /// `file` must be a valid handle, `buffer` must be writable for
 /// `number_of_bytes_to_read` bytes, and `number_of_bytes_read` must be
@@ -3443,7 +3605,7 @@ pub unsafe extern "C" fn kernel32_ReadFile(
     buffer: *mut u8,
     number_of_bytes_to_read: u32,
     number_of_bytes_read: *mut u32,
-    _overlapped: *mut core::ffi::c_void,
+    overlapped: *mut core::ffi::c_void,
 ) -> i32 {
     if buffer.is_null() {
         kernel32_SetLastError(87);
@@ -3455,18 +3617,35 @@ pub unsafe extern "C" fn kernel32_ReadFile(
     // SAFETY: Caller guarantees buffer is valid for `count` bytes.
     let slice = std::slice::from_raw_parts_mut(buffer, count);
 
-    let bytes_read = with_file_handles(|map| {
+    // Read and capture IOCP association in one lock.
+    let result = with_file_handles(|map| {
         if let Some(entry) = map.get_mut(&handle_val) {
-            entry.file.read(slice).ok()
+            let n = entry.file.read(slice).ok();
+            let iocp = entry.iocp_handle;
+            let key = entry.completion_key;
+            (n, iocp, key)
         } else {
-            None
+            (None, 0, 0)
         }
     });
 
-    if let Some(n) = bytes_read {
+    let (bytes_opt, iocp_handle, completion_key) = result;
+    if let Some(n) = bytes_opt {
+        let bytes = u32::try_from(n).unwrap_or(u32::MAX);
         if !number_of_bytes_read.is_null() {
-            // Windows API uses u32 for byte counts; saturate rather than truncate.
-            *number_of_bytes_read = u32::try_from(n).unwrap_or(u32::MAX);
+            *number_of_bytes_read = bytes;
+        }
+        // If the file is IOCP-associated and an OVERLAPPED was provided,
+        // post the completion to the port and mark the result in OVERLAPPED.
+        if !overlapped.is_null() && iocp_handle != 0 {
+            set_overlapped_result(overlapped, 0, u64::from(bytes));
+            post_iocp_completion(
+                iocp_handle,
+                bytes,
+                completion_key,
+                overlapped as usize,
+                0,
+            );
         }
         1 // TRUE
     } else {
@@ -3481,6 +3660,9 @@ pub unsafe extern "C" fn kernel32_ReadFile(
 /// Write to a file (WriteFile)
 ///
 /// Writes to stdout/stderr or to a regular file opened by `CreateFileW`.
+/// When `overlapped` is non-null and the file handle is associated with an
+/// I/O Completion Port, the completion packet is posted to that port after
+/// a successful synchronous write.
 ///
 /// # Safety
 /// This function is unsafe as it dereferences raw pointers.
@@ -3490,7 +3672,7 @@ pub unsafe extern "C" fn kernel32_WriteFile(
     buffer: *const u8,
     number_of_bytes_to_write: u32,
     number_of_bytes_written: *mut u32,
-    _overlapped: *mut core::ffi::c_void,
+    overlapped: *mut core::ffi::c_void,
 ) -> i32 {
     // STD_OUTPUT_HANDLE = -11, STD_ERROR_HANDLE = -12
     let stdout_handle = kernel32_GetStdHandle((-11i32) as u32);
@@ -3536,17 +3718,31 @@ pub unsafe extern "C" fn kernel32_WriteFile(
     } else {
         // Try regular file handle
         let handle_val = file as usize;
-        let written = with_file_handles(|map| {
+        let result = with_file_handles(|map| {
             if let Some(entry) = map.get_mut(&handle_val) {
-                entry.file.write(data).ok()
+                let n = entry.file.write(data).ok();
+                let iocp = entry.iocp_handle;
+                let key = entry.completion_key;
+                (n, iocp, key)
             } else {
-                None
+                (None, 0, 0)
             }
         });
-        if let Some(n) = written {
+        let (bytes_opt, iocp_handle, completion_key) = result;
+        if let Some(n) = bytes_opt {
+            let bytes = u32::try_from(n).unwrap_or(u32::MAX);
             if !number_of_bytes_written.is_null() {
-                // Windows API uses u32 for byte counts; saturate rather than truncate.
-                *number_of_bytes_written = u32::try_from(n).unwrap_or(u32::MAX);
+                *number_of_bytes_written = bytes;
+            }
+            if !overlapped.is_null() && iocp_handle != 0 {
+                set_overlapped_result(overlapped, 0, u64::from(bytes));
+                post_iocp_completion(
+                    iocp_handle,
+                    bytes,
+                    completion_key,
+                    overlapped as usize,
+                    0,
+                );
             }
             1 // TRUE
         } else {
@@ -4246,8 +4442,8 @@ pub unsafe extern "C" fn kernel32_CreatePipe(
         if map.len() + 2 > MAX_OPEN_FILE_HANDLES {
             return false;
         }
-        map.insert(read_handle, FileEntry { file: read_file });
-        map.insert(write_handle, FileEntry { file: write_file });
+        map.insert(read_handle, FileEntry { file: read_file, iocp_handle: 0, completion_key: 0 });
+        map.insert(write_handle, FileEntry { file: write_file, iocp_handle: 0, completion_key: 0 });
         true
     });
 
@@ -4513,7 +4709,7 @@ pub unsafe extern "C" fn kernel32_DuplicateHandle(
             if map.len() >= MAX_OPEN_FILE_HANDLES {
                 return false;
             }
-            map.insert(new_handle, FileEntry { file: cloned_file });
+            map.insert(new_handle, FileEntry { file: cloned_file, iocp_handle: 0, completion_key: 0 });
             true
         });
         if inserted {
@@ -5560,7 +5756,10 @@ pub unsafe extern "C" fn kernel32_WaitForSingleObject(
 
 /// WaitForSingleObjectEx
 ///
-/// `alertable` is ignored and behavior matches `WaitForSingleObject`.
+/// When `alertable` is non-zero, any pending APC callbacks queued by
+/// `ReadFileEx` or `WriteFileEx` are executed and `WAIT_IO_COMPLETION`
+/// (0x00C0) is returned immediately without waiting on the handle.
+/// When `alertable` is zero the behaviour matches `WaitForSingleObject`.
 ///
 /// # Safety
 /// Safe to call with any handle value.
@@ -5568,8 +5767,14 @@ pub unsafe extern "C" fn kernel32_WaitForSingleObject(
 pub unsafe extern "C" fn kernel32_WaitForSingleObjectEx(
     handle: *mut core::ffi::c_void,
     milliseconds: u32,
-    _alertable: i32,
+    alertable: i32,
 ) -> u32 {
+    if alertable != 0 {
+        let had_apcs = drain_apc_queue();
+        if had_apcs {
+            return 0xC0; // WAIT_IO_COMPLETION
+        }
+    }
     unsafe { kernel32_WaitForSingleObject(handle, milliseconds) }
 }
 
@@ -5836,20 +6041,47 @@ pub unsafe extern "C" fn kernel32_GetFinalPathNameByHandleW(
 
 /// GetOverlappedResult - retrieves the result of an overlapped operation
 ///
-/// All I/O in this sandboxed environment is synchronous; overlapped (async)
-/// I/O is not supported.  Returns FALSE and sets `ERROR_NOT_SUPPORTED` (50).
+/// Reads the `Internal` (status code) and `InternalHigh` (bytes transferred)
+/// fields from the supplied OVERLAPPED structure, which are populated by
+/// `ReadFileEx`, `WriteFileEx`, `ReadFile` (when IOCP-associated), and
+/// `WriteFile` (when IOCP-associated).  The `wait` parameter is accepted but
+/// ignored; all I/O completions recorded in the OVERLAPPED structure are
+/// already finished by the time these functions return.
+///
+/// Returns TRUE if `Internal == 0` (STATUS_SUCCESS), FALSE otherwise.
+/// On failure sets the last error to the Windows error code stored in
+/// `Internal`.
 ///
 /// # Safety
-/// All pointer arguments are accepted as opaque values; none are dereferenced.
+/// `overlapped` must point to a readable Windows OVERLAPPED structure when
+/// non-null.  `number_of_bytes_transferred`, if non-null, must be a valid
+/// writable `u32`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_GetOverlappedResult(
     _file: *mut core::ffi::c_void,
-    _overlapped: *mut core::ffi::c_void,
-    _number_of_bytes_transferred: *mut u32,
+    overlapped: *mut core::ffi::c_void,
+    number_of_bytes_transferred: *mut u32,
     _wait: i32,
 ) -> i32 {
-    kernel32_SetLastError(50); // ERROR_NOT_SUPPORTED
-    0 // FALSE
+    if overlapped.is_null() {
+        kernel32_SetLastError(87); // ERROR_INVALID_PARAMETER
+        return 0;
+    }
+    let (status, bytes) = get_overlapped_result(overlapped.cast_const());
+    if !number_of_bytes_transferred.is_null() {
+        *number_of_bytes_transferred = u32::try_from(bytes).unwrap_or(u32::MAX);
+    }
+    if status == 0 {
+        1 // TRUE - success
+    } else {
+        // Convert NTSTATUS to a Windows error code (best-effort: use the low
+        // 16-bit facility/code, which for common I/O errors is a valid Win32 code).
+        let win_err = u32::try_from(status)
+            .map(|s| s & 0xFFFF)
+            .unwrap_or(87); // ERROR_INVALID_PARAMETER as fallback
+        kernel32_SetLastError(win_err);
+        0 // FALSE
+    }
 }
 
 /// GetProcessId - retrieves the process identifier of the specified process
@@ -6273,23 +6505,73 @@ pub unsafe extern "C" fn kernel32_MoveFileExW(
     }
 }
 
-/// ReadFileEx - reads from a file using an asynchronous (overlapped) operation
+/// ReadFileEx - reads from a file using an overlapped (APC-based) async operation
 ///
-/// Asynchronous file I/O is not supported in this sandboxed environment.
-/// Returns FALSE and sets `ERROR_NOT_SUPPORTED` (50).
+/// Performs a synchronous read and then queues an APC (Asynchronous Procedure
+/// Call) on the current thread's APC queue.  The completion routine is invoked
+/// the next time the thread enters an alertable wait via `SleepEx` or
+/// `WaitForSingleObjectEx` with `alertable=TRUE`.
+///
+/// Returns TRUE on success (the operation was initiated and a completion
+/// will be delivered), FALSE on error.
 ///
 /// # Safety
-/// All pointer arguments are accepted as opaque values; none are dereferenced.
+/// `file` must be a valid handle.  `buffer` must be writable for at least
+/// `number_of_bytes_to_read` bytes.  `overlapped` must point to a writable
+/// OVERLAPPED structure.  `completion_routine` must be a valid
+/// `LPOVERLAPPED_COMPLETION_ROUTINE` when non-null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_ReadFileEx(
-    _file: *mut core::ffi::c_void,
-    _buffer: *mut u8,
-    _number_of_bytes_to_read: u32,
-    _overlapped: *mut core::ffi::c_void,
-    _completion_routine: *mut core::ffi::c_void,
+    file: *mut core::ffi::c_void,
+    buffer: *mut u8,
+    number_of_bytes_to_read: u32,
+    overlapped: *mut core::ffi::c_void,
+    completion_routine: *mut core::ffi::c_void,
 ) -> i32 {
-    kernel32_SetLastError(50); // ERROR_NOT_SUPPORTED
-    0 // FALSE
+    if buffer.is_null() || overlapped.is_null() {
+        kernel32_SetLastError(87); // ERROR_INVALID_PARAMETER
+        return 0;
+    }
+
+    let handle_val = file as usize;
+    let count = number_of_bytes_to_read as usize;
+    // SAFETY: Caller guarantees buffer is valid for `count` bytes.
+    let slice = std::slice::from_raw_parts_mut(buffer, count);
+
+    let bytes_read = with_file_handles(|map| {
+        if let Some(entry) = map.get_mut(&handle_val) {
+            entry.file.read(slice).ok()
+        } else {
+            None
+        }
+    });
+
+    let Some(n) = bytes_read else {
+        kernel32_SetLastError(6); // ERROR_INVALID_HANDLE
+        return 0;
+    };
+    let error_code: u32 = 0;
+    let bytes = u32::try_from(n).unwrap_or(u32::MAX);
+
+    // Record the result in the OVERLAPPED structure.
+    set_overlapped_result(overlapped, u64::from(error_code), u64::from(bytes));
+
+    // Queue an APC for the completion routine, if provided.
+    if !completion_routine.is_null() {
+        // SAFETY: The caller guarantees completion_routine is a valid
+        // LPOVERLAPPED_COMPLETION_ROUTINE (win64 ABI).
+        let callback: OverlappedCompletionRoutine = std::mem::transmute(completion_routine);
+        APC_QUEUE.with(|q| {
+            q.borrow_mut().push(ApcEntry {
+                error_code,
+                bytes_transferred: bytes,
+                overlapped: overlapped as usize,
+                callback,
+            });
+        });
+    }
+
+    1 // TRUE
 }
 
 /// RemoveDirectoryW - removes an existing empty directory
@@ -6566,23 +6848,72 @@ pub unsafe extern "C" fn kernel32_UpdateProcThreadAttribute(
     1 // TRUE
 }
 
-/// WriteFileEx - writes to a file using an asynchronous (overlapped) operation
+/// WriteFileEx - writes to a file using an overlapped (APC-based) async operation
 ///
-/// Asynchronous file I/O is not supported in this sandboxed environment.
-/// Returns FALSE and sets `ERROR_NOT_SUPPORTED` (50).
+/// Performs a synchronous write and then queues an APC (Asynchronous Procedure
+/// Call) on the current thread's APC queue.  The completion routine is invoked
+/// the next time the thread enters an alertable wait via `SleepEx` or
+/// `WaitForSingleObjectEx` with `alertable=TRUE`.
+///
+/// Returns TRUE on success (the operation was initiated and a completion
+/// will be delivered), FALSE on error.
 ///
 /// # Safety
-/// All pointer arguments are accepted as opaque values; none are dereferenced.
+/// `file` must be a valid handle.  `buffer` must be readable for at least
+/// `number_of_bytes_to_write` bytes.  `overlapped` must point to a writable
+/// OVERLAPPED structure.  `completion_routine` must be a valid
+/// `LPOVERLAPPED_COMPLETION_ROUTINE` when non-null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_WriteFileEx(
-    _file: *mut core::ffi::c_void,
-    _buffer: *const u8,
-    _number_of_bytes_to_write: u32,
-    _overlapped: *mut core::ffi::c_void,
-    _completion_routine: *mut core::ffi::c_void,
+    file: *mut core::ffi::c_void,
+    buffer: *const u8,
+    number_of_bytes_to_write: u32,
+    overlapped: *mut core::ffi::c_void,
+    completion_routine: *mut core::ffi::c_void,
 ) -> i32 {
-    kernel32_SetLastError(50); // ERROR_NOT_SUPPORTED
-    0 // FALSE
+    if buffer.is_null() || overlapped.is_null() {
+        kernel32_SetLastError(87); // ERROR_INVALID_PARAMETER
+        return 0;
+    }
+
+    let handle_val = file as usize;
+    // SAFETY: Caller guarantees buffer is valid for `number_of_bytes_to_write` bytes.
+    let data = std::slice::from_raw_parts(buffer, number_of_bytes_to_write as usize);
+
+    let bytes_written = with_file_handles(|map| {
+        if let Some(entry) = map.get_mut(&handle_val) {
+            entry.file.write(data).ok()
+        } else {
+            None
+        }
+    });
+
+    let Some(n) = bytes_written else {
+        kernel32_SetLastError(6); // ERROR_INVALID_HANDLE
+        return 0;
+    };
+    let error_code: u32 = 0;
+    let bytes = u32::try_from(n).unwrap_or(u32::MAX);
+
+    // Record the result in the OVERLAPPED structure.
+    set_overlapped_result(overlapped, u64::from(error_code), u64::from(bytes));
+
+    // Queue an APC for the completion routine, if provided.
+    if !completion_routine.is_null() {
+        // SAFETY: The caller guarantees completion_routine is a valid
+        // LPOVERLAPPED_COMPLETION_ROUTINE (win64 ABI).
+        let callback: OverlappedCompletionRoutine = std::mem::transmute(completion_routine);
+        APC_QUEUE.with(|q| {
+            q.borrow_mut().push(ApcEntry {
+                error_code,
+                bytes_transferred: bytes,
+                overlapped: overlapped as usize,
+                callback,
+            });
+        });
+    }
+
+    1 // TRUE
 }
 
 /// SetThreadStackGuarantee - sets the minimum stack size for the current thread
@@ -6620,17 +6951,28 @@ pub unsafe extern "C" fn kernel32_SetWaitableTimer(
 
 /// SleepEx - suspends the current thread with optional alertable wait
 ///
-/// Sleeps for `milliseconds` milliseconds.  The `alertable` flag is ignored
-/// (I/O completion callbacks are not supported), and this always returns 0.
+/// Sleeps for `milliseconds` milliseconds.  When `alertable` is non-zero,
+/// any pending APC callbacks queued by `ReadFileEx` or `WriteFileEx` are
+/// executed before sleeping and `WAIT_IO_COMPLETION` (0xC0) is returned.
+/// If `alertable` is zero, this behaves identically to `Sleep` and returns 0.
 ///
 /// # Safety
 /// This function is safe to call.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn kernel32_SleepEx(milliseconds: u32, _alertable: i32) -> u32 {
+pub unsafe extern "C" fn kernel32_SleepEx(milliseconds: u32, alertable: i32) -> u32 {
+    if alertable != 0 {
+        // Drain the APC queue before sleeping.
+        let had_apcs = drain_apc_queue();
+        if had_apcs {
+            // Remaining sleep is skipped when APCs are delivered, matching
+            // Windows behaviour (SleepEx returns early).
+            return 0xC0; // WAIT_IO_COMPLETION
+        }
+    }
     if milliseconds > 0 {
         thread::sleep(Duration::from_millis(u64::from(milliseconds)));
     }
-    0 // WAIT_IO_COMPLETION not supported; always return 0
+    0
 }
 
 /// SwitchToThread - yields execution to another runnable thread
@@ -10246,6 +10588,323 @@ unsafe fn seh_walk_stack_dispatch(
     found
 }
 
+// ── IOCP API ────────────────────────────────────────────────────────────────
+
+/// CreateIoCompletionPort - creates an I/O completion port, or associates a
+/// file handle with an existing I/O completion port.
+///
+/// When `file_handle` is `INVALID_HANDLE_VALUE` (-1 as isize), a new
+/// completion port is created and its handle is returned.
+///
+/// When `file_handle` is a regular file handle, it is associated with the
+/// port identified by `existing_completion_port` using `completion_key`.
+/// Subsequent overlapped `ReadFile`/`WriteFile` operations on the file will
+/// post a completion packet to the port.  The existing port handle is
+/// returned on success.
+///
+/// Returns NULL on failure.
+///
+/// # Safety
+/// `file_handle` and `existing_completion_port` must be valid handles or
+/// the sentinel `INVALID_HANDLE_VALUE`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_CreateIoCompletionPort(
+    file_handle: *mut core::ffi::c_void,
+    existing_completion_port: *mut core::ffi::c_void,
+    completion_key: usize,
+    _number_of_concurrent_threads: u32,
+) -> *mut core::ffi::c_void {
+    let is_invalid = file_handle as isize == -1;
+
+    if is_invalid {
+        // Create a new I/O completion port.
+        let handle = alloc_iocp_handle();
+        let entry = IocpEntry {
+            state: Arc::new((
+                Mutex::new(IocpSharedState {
+                    queue: VecDeque::new(),
+                }),
+                Condvar::new(),
+            )),
+        };
+        with_iocp_handles(|map| {
+            map.insert(handle, entry);
+        });
+        return handle as *mut core::ffi::c_void;
+    }
+
+    // Associate an existing file handle with a completion port.
+    let port_val = existing_completion_port as usize;
+    let file_val = file_handle as usize;
+
+    // Verify the port exists.
+    let port_exists = with_iocp_handles(|map| map.contains_key(&port_val));
+    if !port_exists {
+        kernel32_SetLastError(6); // ERROR_INVALID_HANDLE
+        return core::ptr::null_mut();
+    }
+
+    // Record the IOCP association in the file entry.
+    let associated = with_file_handles(|map| {
+        if let Some(entry) = map.get_mut(&file_val) {
+            entry.iocp_handle = port_val;
+            entry.completion_key = completion_key;
+            true
+        } else {
+            false
+        }
+    });
+
+    if associated {
+        existing_completion_port
+    } else {
+        kernel32_SetLastError(6); // ERROR_INVALID_HANDLE
+        core::ptr::null_mut()
+    }
+}
+
+/// PostQueuedCompletionStatus - posts an I/O completion packet to an I/O
+/// completion port.
+///
+/// Enqueues a completion packet with the supplied `bytes_transferred`,
+/// `completion_key`, and `overlapped` pointer.  Any thread blocked in
+/// `GetQueuedCompletionStatus` waiting on this port will be woken.
+///
+/// Returns TRUE on success, FALSE if the port handle is invalid.
+///
+/// # Safety
+/// `completion_port` must be a valid IOCP handle returned by
+/// `CreateIoCompletionPort`.  `overlapped` is stored as an opaque address.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_PostQueuedCompletionStatus(
+    completion_port: *mut core::ffi::c_void,
+    bytes_transferred: u32,
+    completion_key: usize,
+    overlapped: *mut core::ffi::c_void,
+) -> i32 {
+    let port_val = completion_port as usize;
+    if post_iocp_completion(port_val, bytes_transferred, completion_key, overlapped as usize, 0) {
+        1 // TRUE
+    } else {
+        kernel32_SetLastError(6); // ERROR_INVALID_HANDLE
+        0 // FALSE
+    }
+}
+
+/// GetQueuedCompletionStatus - dequeues an I/O completion packet from an
+/// I/O completion port.
+///
+/// Waits up to `milliseconds` milliseconds for a completion packet to
+/// arrive on `completion_port`, then dequeues it and fills the output
+/// parameters.
+///
+/// Returns TRUE if a packet was dequeued.  Returns FALSE with last error
+/// `WAIT_TIMEOUT` (258) if the timeout expires, or `ERROR_INVALID_HANDLE`
+/// (6) if the port handle is unknown.
+///
+/// # Panics
+/// Panics if the internal IOCP mutex is poisoned.
+///
+/// # Safety
+/// `completion_port` must be a valid IOCP handle.  All output pointer
+/// arguments must be valid writable locations or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_GetQueuedCompletionStatus(
+    completion_port: *mut core::ffi::c_void,
+    bytes_transferred: *mut u32,
+    completion_key: *mut usize,
+    overlapped: *mut *mut core::ffi::c_void,
+    milliseconds: u32,
+) -> i32 {
+    let port_val = completion_port as usize;
+
+    // Retrieve the Arc holding the shared state for this port.
+    let state_arc = with_iocp_handles(|map| {
+        map.get(&port_val).map(|e| Arc::clone(&e.state))
+    });
+    let Some(state_arc) = state_arc else {
+        kernel32_SetLastError(6); // ERROR_INVALID_HANDLE
+        if !overlapped.is_null() {
+            *overlapped = core::ptr::null_mut();
+        }
+        return 0;
+    };
+
+    let (lock, cvar) = state_arc.as_ref();
+    let mut guard = lock.lock().unwrap();
+
+    let packet = if milliseconds == 0 {
+        // Non-blocking: dequeue only if a packet is already available.
+        guard.queue.pop_front()
+    } else if milliseconds == u32::MAX {
+        // Infinite wait.
+        loop {
+            if let Some(p) = guard.queue.pop_front() {
+                break Some(p);
+            }
+            guard = cvar.wait(guard).unwrap();
+        }
+    } else {
+        // Timed wait.
+        let deadline = std::time::Instant::now() + Duration::from_millis(u64::from(milliseconds));
+        loop {
+            if let Some(p) = guard.queue.pop_front() {
+                break Some(p);
+            }
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                break None;
+            }
+            let (new_guard, timeout_result) = cvar.wait_timeout(guard, remaining).unwrap();
+            guard = new_guard;
+            if timeout_result.timed_out() {
+                // One last attempt before giving up.
+                if let Some(p) = guard.queue.pop_front() {
+                    break Some(p);
+                }
+                break None;
+            }
+        }
+    };
+
+    if let Some(p) = packet {
+        if !bytes_transferred.is_null() {
+            *bytes_transferred = p.bytes_transferred;
+        }
+        if !completion_key.is_null() {
+            *completion_key = p.completion_key;
+        }
+        if !overlapped.is_null() {
+            *overlapped = p.overlapped as *mut core::ffi::c_void;
+        }
+        if p.error_code != 0 {
+            kernel32_SetLastError(p.error_code);
+        }
+        1 // TRUE
+    } else {
+        kernel32_SetLastError(258); // WAIT_TIMEOUT (ERROR_TIMEOUT)
+        if !overlapped.is_null() {
+            *overlapped = core::ptr::null_mut();
+        }
+        0 // FALSE
+    }
+}
+
+/// GetQueuedCompletionStatusEx - dequeues multiple I/O completion packets
+/// from an I/O completion port.
+///
+/// Fills up to `count` entries in the `completion_port_entries` array.
+/// Sets `*num_entries_removed` to the number of entries actually dequeued.
+///
+/// If `alertable` is non-zero, pending APC callbacks are also executed.
+///
+/// Returns TRUE if at least one entry was dequeued, FALSE on timeout or
+/// error.
+///
+/// # Panics
+/// Panics if the internal IOCP mutex is poisoned.
+///
+/// # Safety
+/// `completion_port` must be a valid IOCP handle.  `completion_port_entries`
+/// must point to a writable array of at least `count`
+/// `OVERLAPPED_ENTRY`-like structures (8 bytes each: key usize, overlapped
+/// *mut c_void, internal usize, bytes u32).  `num_entries_removed` must be
+/// a valid writable `u32`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_GetQueuedCompletionStatusEx(
+    completion_port: *mut core::ffi::c_void,
+    completion_port_entries: *mut core::ffi::c_void,
+    count: u32,
+    num_entries_removed: *mut u32,
+    milliseconds: u32,
+    alertable: i32,
+) -> i32 {
+    // OVERLAPPED_ENTRY layout (Windows x64):
+    // offset  0: lpCompletionKey   (usize, 8 bytes)
+    // offset  8: lpOverlapped      (*mut c_void, 8 bytes)
+    // offset 16: Internal          (usize, 8 bytes)  – reserved
+    // offset 24: dwNumberOfBytesTransferred (u32, 4 bytes)
+    // Total: 28 bytes, but typically padded to 32.
+    const ENTRY_SIZE: usize = 32;
+
+    if alertable != 0 {
+        drain_apc_queue();
+    }
+
+    if completion_port_entries.is_null() || num_entries_removed.is_null() || count == 0 {
+        kernel32_SetLastError(87); // ERROR_INVALID_PARAMETER
+        return 0;
+    }
+
+    let port_val = completion_port as usize;
+    let state_arc = with_iocp_handles(|map| {
+        map.get(&port_val).map(|e| Arc::clone(&e.state))
+    });
+    let Some(state_arc) = state_arc else {
+        kernel32_SetLastError(6); // ERROR_INVALID_HANDLE
+        return 0;
+    };
+
+    let (lock, cvar) = state_arc.as_ref();
+    let mut guard = lock.lock().unwrap();
+
+    // Wait for at least one packet (same logic as GetQueuedCompletionStatus).
+    if guard.queue.is_empty() {
+        if milliseconds == 0 {
+            // No packets available and non-blocking.
+            *num_entries_removed = 0;
+            kernel32_SetLastError(258); // WAIT_TIMEOUT
+            return 0;
+        } else if milliseconds == u32::MAX {
+            loop {
+                if !guard.queue.is_empty() {
+                    break;
+                }
+                guard = cvar.wait(guard).unwrap();
+            }
+        } else {
+            let deadline =
+                std::time::Instant::now() + Duration::from_millis(u64::from(milliseconds));
+            loop {
+                if !guard.queue.is_empty() {
+                    break;
+                }
+                let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                if remaining.is_zero() {
+                    *num_entries_removed = 0;
+                    kernel32_SetLastError(258); // WAIT_TIMEOUT
+                    return 0;
+                }
+                let (new_guard, timed_out) = cvar.wait_timeout(guard, remaining).unwrap();
+                guard = new_guard;
+                if timed_out.timed_out() && guard.queue.is_empty() {
+                    *num_entries_removed = 0;
+                    kernel32_SetLastError(258); // WAIT_TIMEOUT
+                    return 0;
+                }
+            }
+        }
+    }
+
+    // Drain up to `count` packets.
+    let base = completion_port_entries.cast::<u8>();
+    let max = (count as usize).min(guard.queue.len());
+    for i in 0..max {
+        let packet = guard.queue.pop_front().unwrap();
+        let entry_ptr = base.add(i * ENTRY_SIZE);
+        // SAFETY: caller guarantees the array is large enough.
+        core::ptr::write_unaligned(entry_ptr.cast::<usize>(), packet.completion_key);
+        core::ptr::write_unaligned(
+            entry_ptr.add(8).cast::<*mut core::ffi::c_void>(),
+            packet.overlapped as *mut core::ffi::c_void,
+        );
+        core::ptr::write_unaligned(entry_ptr.add(16).cast::<usize>(), 0usize); // Internal
+        core::ptr::write_unaligned(entry_ptr.add(24).cast::<u32>(), packet.bytes_transferred);
+    }
+    *num_entries_removed = max as u32;
+    1 // TRUE
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -13846,7 +14505,7 @@ mod tests {
 
         let handle_val = alloc_file_handle();
         with_file_handles(|map| {
-            map.insert(handle_val, FileEntry { file });
+            map.insert(handle_val, FileEntry { file, iocp_handle: 0, completion_key: 0 });
         });
         let handle = handle_val as *mut core::ffi::c_void;
 
@@ -14516,5 +15175,301 @@ mod tests {
         };
         assert!(result.is_null());
         assert!(base.is_null());
+    }
+
+    // ── IOCP and async I/O tests ───────────────────────────────────────────
+
+    /// PostQueuedCompletionStatus / GetQueuedCompletionStatus round-trip.
+    #[test]
+    fn test_iocp_post_and_dequeue() {
+        // Create a new IOCP.
+        let port = unsafe {
+            kernel32_CreateIoCompletionPort(
+                (-1isize) as *mut core::ffi::c_void,
+                core::ptr::null_mut(),
+                0,
+                0,
+            )
+        };
+        assert!(!port.is_null(), "CreateIoCompletionPort should return a valid handle");
+
+        // Post a completion packet.
+        let res = unsafe {
+            kernel32_PostQueuedCompletionStatus(port, 42, 0x1234, core::ptr::null_mut())
+        };
+        assert_eq!(res, 1, "PostQueuedCompletionStatus should return TRUE");
+
+        // Dequeue it immediately (non-blocking via milliseconds=0).
+        let mut bytes: u32 = 0;
+        let mut key: usize = 0;
+        let mut ov: *mut core::ffi::c_void = core::ptr::null_mut();
+        let res = unsafe {
+            kernel32_GetQueuedCompletionStatus(port, &raw mut bytes, &raw mut key, &raw mut ov, 0)
+        };
+        assert_eq!(res, 1, "GetQueuedCompletionStatus should return TRUE");
+        assert_eq!(bytes, 42);
+        assert_eq!(key, 0x1234);
+        assert!(ov.is_null());
+
+        // Close the port.
+        unsafe { kernel32_CloseHandle(port) };
+    }
+
+    /// GetQueuedCompletionStatus times out when the queue is empty.
+    #[test]
+    fn test_iocp_timeout() {
+        let port = unsafe {
+            kernel32_CreateIoCompletionPort(
+                (-1isize) as *mut core::ffi::c_void,
+                core::ptr::null_mut(),
+                0,
+                0,
+            )
+        };
+        assert!(!port.is_null());
+
+        let mut bytes: u32 = u32::MAX;
+        let mut key: usize = usize::MAX;
+        let mut ov: *mut core::ffi::c_void = core::ptr::without_provenance_mut(1);
+        // Non-blocking: should return FALSE immediately.
+        let res = unsafe {
+            kernel32_GetQueuedCompletionStatus(port, &raw mut bytes, &raw mut key, &raw mut ov, 0)
+        };
+        assert_eq!(res, 0, "Should time out immediately");
+        let err = unsafe { kernel32_GetLastError() };
+        assert_eq!(err, 258, "Last error should be WAIT_TIMEOUT (258)");
+
+        unsafe { kernel32_CloseHandle(port) };
+    }
+
+    /// ReadFileEx enqueues an APC; SleepEx with alertable=TRUE drains it.
+    #[test]
+    fn test_read_file_ex_apc() {
+        use std::io::Write as _;
+
+        // Create a temporary file and write some data.
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("litebox_rfex_test_{}.tmp", std::process::id()));
+        {
+            let mut f = std::fs::File::create(&path).unwrap();
+            f.write_all(b"hello async").unwrap();
+        }
+
+        // Open the file.
+        let path_wide: Vec<u16> = path.to_string_lossy().encode_utf16().chain(Some(0)).collect();
+        let handle = unsafe {
+            kernel32_CreateFileW(
+                path_wide.as_ptr(),
+                0x8000_0000u32, // GENERIC_READ
+                0,
+                core::ptr::null_mut(),
+                3,              // OPEN_EXISTING
+                0,
+                core::ptr::null_mut(),
+            )
+        };
+        assert_ne!(handle as usize, usize::MAX, "CreateFileW should succeed");
+
+        // Prepare OVERLAPPED and buffer.
+        let mut ov = [0u8; 32];
+        let mut buf = [0u8; 16];
+
+        // Static callback that stores the byte count.
+        static CALLBACK_BYTES: std::sync::atomic::AtomicU32 =
+            std::sync::atomic::AtomicU32::new(u32::MAX);
+
+        unsafe extern "win64" fn my_callback(
+            _err: u32,
+            bytes: u32,
+            _ov: *mut core::ffi::c_void,
+        ) {
+            CALLBACK_BYTES.store(bytes, std::sync::atomic::Ordering::SeqCst);
+        }
+
+        // Issue the async read.
+        let res = unsafe {
+            kernel32_ReadFileEx(
+                handle,
+                buf.as_mut_ptr(),
+                buf.len() as u32,
+                ov.as_mut_ptr().cast(),
+                my_callback as *mut core::ffi::c_void,
+            )
+        };
+        assert_eq!(res, 1, "ReadFileEx should return TRUE");
+
+        // APC has not fired yet.
+        assert_eq!(
+            CALLBACK_BYTES.load(std::sync::atomic::Ordering::SeqCst),
+            u32::MAX,
+            "APC should not have fired before alertable wait"
+        );
+
+        // SleepEx with alertable=TRUE should drain the APC queue.
+        let sleep_res = unsafe { kernel32_SleepEx(0, 1) };
+        assert_eq!(sleep_res, 0xC0, "SleepEx should return WAIT_IO_COMPLETION");
+
+        // Callback should have been invoked.
+        let cb_bytes = CALLBACK_BYTES.load(std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(cb_bytes, b"hello async".len() as u32);
+
+        // Verify GetOverlappedResult.
+        let mut transferred: u32 = 0;
+        let gor = unsafe {
+            kernel32_GetOverlappedResult(handle, ov.as_mut_ptr().cast(), &raw mut transferred, 0)
+        };
+        assert_eq!(gor, 1, "GetOverlappedResult should return TRUE");
+        assert_eq!(transferred, b"hello async".len() as u32);
+
+        unsafe { kernel32_CloseHandle(handle) };
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// WriteFileEx enqueues an APC; WaitForSingleObjectEx with alertable=TRUE drains it.
+    #[test]
+    fn test_write_file_ex_apc() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("litebox_wfex_test_{}.tmp", std::process::id()));
+
+        let path_wide: Vec<u16> = path.to_string_lossy().encode_utf16().chain(Some(0)).collect();
+        let handle = unsafe {
+            kernel32_CreateFileW(
+                path_wide.as_ptr(),
+                0x4000_0000u32, // GENERIC_WRITE
+                0,
+                core::ptr::null_mut(),
+                2,              // CREATE_ALWAYS
+                0,
+                core::ptr::null_mut(),
+            )
+        };
+        assert_ne!(handle as usize, usize::MAX, "CreateFileW should succeed");
+
+        let mut ov = [0u8; 32];
+        let data = b"write async";
+
+        static WFX_CALLBACK_BYTES: std::sync::atomic::AtomicU32 =
+            std::sync::atomic::AtomicU32::new(u32::MAX);
+
+        unsafe extern "win64" fn wfx_callback(
+            _err: u32,
+            bytes: u32,
+            _ov: *mut core::ffi::c_void,
+        ) {
+            WFX_CALLBACK_BYTES.store(bytes, std::sync::atomic::Ordering::SeqCst);
+        }
+
+        let res = unsafe {
+            kernel32_WriteFileEx(
+                handle,
+                data.as_ptr(),
+                data.len() as u32,
+                ov.as_mut_ptr().cast(),
+                wfx_callback as *mut core::ffi::c_void,
+            )
+        };
+        assert_eq!(res, 1, "WriteFileEx should return TRUE");
+
+        // APC not fired yet.
+        assert_eq!(
+            WFX_CALLBACK_BYTES.load(std::sync::atomic::Ordering::SeqCst),
+            u32::MAX
+        );
+
+        // Use WaitForSingleObjectEx with alertable=TRUE to drain APCs.
+        let wait_res = unsafe {
+            kernel32_WaitForSingleObjectEx(
+                core::ptr::null_mut(),
+                0,
+                1, // alertable
+            )
+        };
+        assert_eq!(wait_res, 0xC0, "WaitForSingleObjectEx should return WAIT_IO_COMPLETION");
+        assert_eq!(
+            WFX_CALLBACK_BYTES.load(std::sync::atomic::Ordering::SeqCst),
+            data.len() as u32
+        );
+
+        unsafe { kernel32_CloseHandle(handle) };
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// IOCP-associated ReadFile posts a completion packet.
+    #[test]
+    fn test_iocp_associated_read_file() {
+        use std::io::Write as _;
+
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("litebox_iocp_rf_test_{}.tmp", std::process::id()));
+        {
+            let mut f = std::fs::File::create(&path).unwrap();
+            f.write_all(b"iocp read").unwrap();
+        }
+
+        let path_wide: Vec<u16> = path.to_string_lossy().encode_utf16().chain(Some(0)).collect();
+        let handle = unsafe {
+            kernel32_CreateFileW(
+                path_wide.as_ptr(),
+                0x8000_0000u32, // GENERIC_READ
+                0,
+                core::ptr::null_mut(),
+                3,              // OPEN_EXISTING
+                0,
+                core::ptr::null_mut(),
+            )
+        };
+        assert_ne!(handle as usize, usize::MAX);
+
+        // Create IOCP and associate the file.
+        let port = unsafe {
+            kernel32_CreateIoCompletionPort(
+                (-1isize) as *mut core::ffi::c_void,
+                core::ptr::null_mut(),
+                0,
+                0,
+            )
+        };
+        assert!(!port.is_null());
+
+        let assoc = unsafe {
+            kernel32_CreateIoCompletionPort(handle, port, 0xDEAD, 0)
+        };
+        assert_eq!(assoc, port, "Association should return the same port handle");
+
+        // ReadFile with non-null OVERLAPPED should post a completion.
+        let mut ov = [0u8; 32];
+        let mut buf = [0u8; 16];
+        let mut bytes_read: u32 = 0;
+        let res = unsafe {
+            kernel32_ReadFile(
+                handle,
+                buf.as_mut_ptr(),
+                buf.len() as u32,
+                &raw mut bytes_read,
+                ov.as_mut_ptr().cast(),
+            )
+        };
+        assert_eq!(res, 1, "ReadFile should succeed");
+
+        // Dequeue the completion.
+        let mut comp_bytes: u32 = 0;
+        let mut comp_key: usize = 0;
+        let mut comp_ov: *mut core::ffi::c_void = core::ptr::null_mut();
+        let deq = unsafe {
+            kernel32_GetQueuedCompletionStatus(
+                port,
+                &raw mut comp_bytes,
+                &raw mut comp_key,
+                &raw mut comp_ov,
+                0,
+            )
+        };
+        assert_eq!(deq, 1, "Should dequeue the ReadFile completion");
+        assert_eq!(comp_key, 0xDEAD);
+        assert_eq!(comp_bytes, b"iocp read".len() as u32);
+
+        unsafe { kernel32_CloseHandle(handle) };
+        unsafe { kernel32_CloseHandle(port) };
+        let _ = std::fs::remove_file(&path);
     }
 }

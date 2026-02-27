@@ -139,6 +139,7 @@ const SKIP_FILES: &[&str] = &[
     "litebox/src/sync/mutex.rs",
     "litebox/src/sync/rwlock.rs",
     "litebox_rtld_audit/Makefile",
+    "windows_test_programs/async_io_test/Makefile",
     "windows_test_programs/winsock_test/Makefile",
     "windows_test_programs/registry_test/Makefile",
     "windows_test_programs/dynload_test/Makefile",
