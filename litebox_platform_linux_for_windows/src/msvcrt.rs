@@ -5472,6 +5472,192 @@ pub unsafe extern "C" fn msvcrt_rename(oldname: *const i8, newname: *const i8) -
     unsafe { libc::rename(oldname, newname) }
 }
 
+// ── Phase 35: printf length-counting helpers ──────────────────────────────────
+
+/// `_vsnwprintf(buf, count, format, args)` — size-limited wide-char vsnprintf.
+///
+/// Formats a wide string using `format` and the Windows x64 va_list `args`,
+/// writing at most `count` wide characters (including the NUL terminator) into
+/// `buf`.  Returns the number of wide characters written (excluding NUL), or
+/// -1 if the output was truncated.  If `buf` is null and `count` is 0, returns
+/// the would-be length without writing anything.
+///
+/// # Safety
+/// `buf` must point to a buffer of at least `count` wide characters.
+/// `format` must be a valid null-terminated wide string.
+/// `args` must be a valid Windows x64 va_list pointer.
+#[unsafe(no_mangle)]
+#[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+pub unsafe extern "C" fn msvcrt__vsnwprintf(
+    buf: *mut u16,
+    count: usize,
+    format: *const u16,
+    args: *mut u8,
+) -> i32 {
+    if format.is_null() {
+        return -1;
+    }
+    // SAFETY: Caller guarantees format is a valid null-terminated wide string.
+    let fmt_wide = unsafe { read_wide_string(format) };
+    let fmt_utf8 = String::from_utf16_lossy(&fmt_wide);
+    // SAFETY: args is a valid Windows x64 va_list pointer.
+    let out_bytes = unsafe { format_printf_raw(fmt_utf8.as_bytes(), args, true) };
+    let out_str = String::from_utf8_lossy(&out_bytes);
+    let wide: Vec<u16> = out_str.encode_utf16().collect();
+    if buf.is_null() || count == 0 {
+        return wide.len() as i32;
+    }
+    // Write min(wide.len(), count - 1) characters plus NUL.
+    let copy_len = wide.len().min(count - 1);
+    // SAFETY: Caller guarantees buf has at least `count` wide characters.
+    unsafe {
+        core::ptr::copy_nonoverlapping(wide.as_ptr(), buf, copy_len);
+        *buf.add(copy_len) = 0;
+    }
+    if wide.len() >= count {
+        // Truncated — Windows MSVCRT returns -1 in this case.
+        -1
+    } else {
+        wide.len() as i32
+    }
+}
+
+/// `_scprintf(format, ...) -> int` — count the characters that `printf` would write.
+///
+/// Returns the number of characters that would be written (excluding the NUL
+/// terminator) without actually writing anything.
+///
+/// # Safety
+/// `format` must be a valid null-terminated C string.
+/// Variadic arguments must match the format specifiers.
+#[unsafe(no_mangle)]
+#[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+pub unsafe extern "C" fn msvcrt__scprintf(format: *const i8, mut args: ...) -> i32 {
+    if format.is_null() {
+        return -1;
+    }
+    // SAFETY: Caller guarantees format is a valid null-terminated C string.
+    let fmt_bytes = unsafe { CStr::from_ptr(format) }.to_bytes();
+    // SAFETY: args is a valid variadic argument list.
+    let out = unsafe { format_printf_va(fmt_bytes, &mut args, false) };
+    out.len() as i32
+}
+
+/// `_vscprintf(format, args) -> int` — count the characters that `vprintf` would write.
+///
+/// Same as `_scprintf` but takes a Windows x64 va_list instead of `...`.
+///
+/// # Safety
+/// `format` must be a valid null-terminated C string.
+/// `args` must be a valid Windows x64 va_list pointer.
+#[unsafe(no_mangle)]
+#[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+pub unsafe extern "C" fn msvcrt__vscprintf(format: *const i8, args: *mut u8) -> i32 {
+    if format.is_null() {
+        return -1;
+    }
+    // SAFETY: Caller guarantees format is a valid null-terminated C string.
+    let fmt_bytes = unsafe { CStr::from_ptr(format) }.to_bytes();
+    // SAFETY: args is a valid Windows x64 va_list pointer.
+    let out = unsafe { format_printf_raw(fmt_bytes, args, false) };
+    out.len() as i32
+}
+
+/// `_scwprintf(format, ...) -> int` — count the wide chars that `wprintf` would write.
+///
+/// Returns the number of wide characters that would be written (excluding NUL)
+/// without actually writing anything.
+///
+/// # Safety
+/// `format` must be a valid null-terminated wide string.
+/// Variadic arguments must match the format specifiers.
+#[unsafe(no_mangle)]
+#[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+pub unsafe extern "C" fn msvcrt__scwprintf(format: *const u16, mut args: ...) -> i32 {
+    if format.is_null() {
+        return -1;
+    }
+    // SAFETY: Caller guarantees format is a valid null-terminated wide string.
+    let fmt_wide = unsafe { read_wide_string(format) };
+    let fmt_utf8 = String::from_utf16_lossy(&fmt_wide);
+    // SAFETY: args is a valid variadic argument list.
+    let out_bytes = unsafe { format_printf_va(fmt_utf8.as_bytes(), &mut args, true) };
+    let out_str = String::from_utf8_lossy(&out_bytes);
+    let wide: Vec<u16> = out_str.encode_utf16().collect();
+    wide.len() as i32
+}
+
+/// `_vscwprintf(format, args) -> int` — count the wide chars that `vwprintf` would write.
+///
+/// Same as `_scwprintf` but takes a Windows x64 va_list instead of `...`.
+///
+/// # Safety
+/// `format` must be a valid null-terminated wide string.
+/// `args` must be a valid Windows x64 va_list pointer.
+#[unsafe(no_mangle)]
+#[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+pub unsafe extern "C" fn msvcrt__vscwprintf(format: *const u16, args: *mut u8) -> i32 {
+    if format.is_null() {
+        return -1;
+    }
+    // SAFETY: Caller guarantees format is a valid null-terminated wide string.
+    let fmt_wide = unsafe { read_wide_string(format) };
+    let fmt_utf8 = String::from_utf16_lossy(&fmt_wide);
+    // SAFETY: args is a valid Windows x64 va_list pointer.
+    let out_bytes = unsafe { format_printf_raw(fmt_utf8.as_bytes(), args, true) };
+    let out_str = String::from_utf8_lossy(&out_bytes);
+    let wide: Vec<u16> = out_str.encode_utf16().collect();
+    wide.len() as i32
+}
+
+// ── Phase 35: CRT fd / Win32 handle interop ──────────────────────────────────
+
+/// `_get_osfhandle(fd) -> intptr_t` — return the Win32 `HANDLE` for a CRT file descriptor.
+///
+/// For standard file descriptors (0 = stdin, 1 = stdout, 2 = stderr) this
+/// returns the well-known pseudo-handles used by Windows programs.  For other
+/// descriptors we return the fd value itself (cast to `isize`), which is
+/// compatible with our synthetic Win32 handle scheme used in `kernel32.rs`.
+///
+/// Returns -1 (`INVALID_HANDLE_VALUE`) if `fd` is negative.
+///
+/// # Safety
+/// Always safe to call with any `fd` value.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt__get_osfhandle(fd: i32) -> isize {
+    const INVALID_HANDLE_VALUE: isize = -1;
+    match fd {
+        0 => -10_isize, // STD_INPUT_HANDLE  (-(10) cast to usize in Win32)
+        1 => -11_isize, // STD_OUTPUT_HANDLE
+        2 => -12_isize, // STD_ERROR_HANDLE
+        fd if fd < 0 => INVALID_HANDLE_VALUE,
+        fd => fd as isize,
+    }
+}
+
+/// `_open_osfhandle(osfhandle, flags) -> int` — associate a CRT file descriptor with a Win32 handle.
+///
+/// For the standard pseudo-handles (-10/-11/-12) this returns fd 0/1/2.
+/// For other handle values that fit in a `u32` we cast the handle to an `i32`
+/// and return it as the CRT fd (our synthetic handle scheme stores the real fd
+/// as the handle value).  Returns -1 on failure.
+///
+/// `flags` are accepted but ignored (they only affect text/binary mode).
+///
+/// # Safety
+/// Always safe to call with any handle and flags values.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt__open_osfhandle(osfhandle: isize, _flags: i32) -> i32 {
+    match osfhandle {
+        -10 => 0, // STD_INPUT_HANDLE  -> stdin fd
+        -11 => 1, // STD_OUTPUT_HANDLE -> stdout fd
+        -12 => 2, // STD_ERROR_HANDLE  -> stderr fd
+        h if h < 0 => -1,
+        #[allow(clippy::cast_possible_truncation)]
+        h => h as i32,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -6457,5 +6643,125 @@ mod tests {
             )
         };
         assert_eq!(n, 2); // "99" is 2 chars
+    }
+
+    // ── Phase 35 tests ───────────────────────────────────────────────────────
+
+    #[test]
+    fn test_vsnwprintf_basic() {
+        // "_vsnwprintf(buf, 16, L"%d", [42])" should write L"42\0"
+        let args: [i64; 1] = [42];
+        let fmt_wide: Vec<u16> = "%d\0".encode_utf16().collect();
+        let mut buf = [0u16; 16];
+        let n = unsafe {
+            msvcrt__vsnwprintf(
+                buf.as_mut_ptr(),
+                16,
+                fmt_wide.as_ptr(),
+                args.as_ptr() as *mut u8,
+            )
+        };
+        assert_eq!(n, 2); // "42" is 2 wide chars
+        assert_eq!(buf[0], b'4' as u16);
+        assert_eq!(buf[1], b'2' as u16);
+        assert_eq!(buf[2], 0); // NUL terminator
+    }
+
+    #[test]
+    fn test_vsnwprintf_truncated() {
+        // Buffer of 3 wide chars: can hold at most "12\0", should truncate "1234"
+        let args: [i64; 1] = [1234];
+        let fmt_wide: Vec<u16> = "%d\0".encode_utf16().collect();
+        let mut buf = [0u16; 3];
+        let n = unsafe {
+            msvcrt__vsnwprintf(
+                buf.as_mut_ptr(),
+                3,
+                fmt_wide.as_ptr(),
+                args.as_ptr() as *mut u8,
+            )
+        };
+        // Truncated: returns -1 on Windows MSVCRT
+        assert_eq!(n, -1);
+        assert_eq!(buf[2], 0); // NUL at copy_len position
+    }
+
+    #[test]
+    fn test_vscprintf_basic() {
+        // "_vscprintf("%d", [12345])" should return 5
+        let args: [i64; 1] = [12345];
+        let fmt = CString::new("%d").unwrap();
+        let n = unsafe { msvcrt__vscprintf(fmt.as_ptr(), args.as_ptr() as *mut u8) };
+        assert_eq!(n, 5);
+    }
+
+    #[test]
+    fn test_vscprintf_empty() {
+        let args: [i64; 0] = [];
+        let fmt = CString::new("hello").unwrap();
+        // Need at least one slot in the args array (even if unused).
+        let dummy: [i64; 1] = [0];
+        let n = unsafe { msvcrt__vscprintf(fmt.as_ptr(), dummy.as_ptr() as *mut u8) };
+        assert_eq!(n, 5);
+    }
+
+    #[test]
+    fn test_get_osfhandle_stdin() {
+        let h = unsafe { msvcrt__get_osfhandle(0) };
+        assert_eq!(h, -10); // STD_INPUT_HANDLE
+    }
+
+    #[test]
+    fn test_get_osfhandle_stdout() {
+        let h = unsafe { msvcrt__get_osfhandle(1) };
+        assert_eq!(h, -11); // STD_OUTPUT_HANDLE
+    }
+
+    #[test]
+    fn test_get_osfhandle_stderr() {
+        let h = unsafe { msvcrt__get_osfhandle(2) };
+        assert_eq!(h, -12); // STD_ERROR_HANDLE
+    }
+
+    #[test]
+    fn test_get_osfhandle_invalid() {
+        let h = unsafe { msvcrt__get_osfhandle(-1) };
+        assert_eq!(h, -1); // INVALID_HANDLE_VALUE
+    }
+
+    #[test]
+    fn test_get_osfhandle_regular_fd() {
+        let h = unsafe { msvcrt__get_osfhandle(5) };
+        assert_eq!(h, 5);
+    }
+
+    #[test]
+    fn test_open_osfhandle_stdin() {
+        let fd = unsafe { msvcrt__open_osfhandle(-10, 0) };
+        assert_eq!(fd, 0);
+    }
+
+    #[test]
+    fn test_open_osfhandle_stdout() {
+        let fd = unsafe { msvcrt__open_osfhandle(-11, 0) };
+        assert_eq!(fd, 1);
+    }
+
+    #[test]
+    fn test_open_osfhandle_stderr() {
+        let fd = unsafe { msvcrt__open_osfhandle(-12, 0) };
+        assert_eq!(fd, 2);
+    }
+
+    #[test]
+    fn test_open_osfhandle_invalid() {
+        let fd = unsafe { msvcrt__open_osfhandle(-1, 0) };
+        assert_eq!(fd, -1);
+    }
+
+    #[test]
+    fn test_open_osfhandle_regular() {
+        let fd = unsafe { msvcrt__open_osfhandle(7, 0) };
+        assert_eq!(fd, 7);
     }
 }

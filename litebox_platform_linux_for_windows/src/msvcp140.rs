@@ -259,6 +259,105 @@ pub unsafe extern "C" fn msvcp140__concurrency_acquire_read(_lock: *mut u8) {}
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn msvcp140__concurrency_release_read(_lock: *mut u8) {}
 
+// ============================================================================
+// Phase 35: std::exception and additional std:: stubs
+// ============================================================================
+
+/// `std::exception::what() const` — returns the exception message.
+///
+/// Exported as `?what@exception@std@@UEBAPEBDXZ` (mangled MSVC name).
+/// Stub: ignores `this` and returns an empty string pointer.
+///
+/// # Safety
+/// Returns a pointer to a static string literal; always safe to call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__exception_what(_this: *const u8) -> *const i8 {
+    c"".as_ptr()
+}
+
+/// `std::exception::~exception()` — destructor.
+///
+/// Exported as `??1exception@std@@UEAA@XZ`.
+/// Stub: no-op since our exception objects have no owned resources.
+///
+/// # Safety
+/// Always safe to call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__exception_dtor(_this: *mut u8) {}
+
+/// `std::exception::exception()` — default constructor.
+///
+/// Exported as `??0exception@std@@QEAA@XZ`.
+/// Stub: no-op.
+///
+/// # Safety
+/// Always safe to call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__exception_ctor(_this: *mut u8) {}
+
+/// `std::exception::exception(char const*)` — message constructor.
+///
+/// Exported as `??0exception@std@@QEAA@PEBD@Z`.
+/// Stub: no-op (message string is not stored).
+///
+/// # Safety
+/// Always safe to call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__exception_ctor_msg(_this: *mut u8, _msg: *const i8) {}
+
+/// `std::locale::_Getgloballocale()` — returns the global locale object pointer.
+///
+/// Exported as `?_Getgloballocale@locale@std@@CAPEAV_Lobj@12@XZ`.
+/// Stub: returns null; programs that use locale operations will need real
+/// locale support in a future phase.
+///
+/// # Safety
+/// Always safe to call; the return value must not be dereferenced.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__Getgloballocale() -> *mut u8 {
+    ptr::null_mut()
+}
+
+/// `std::_Lockit::_Lockit(int)` — locale lock constructor.
+///
+/// Exported as `??0_Lockit@std@@QEAA@H@Z`.
+/// Stub: no-op (single-threaded environment).
+///
+/// # Safety
+/// Always safe to call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__Lockit_ctor(_this: *mut u8, _kind: i32) {}
+
+/// `std::_Lockit::~_Lockit()` — locale lock destructor.
+///
+/// Exported as `??1_Lockit@std@@QEAA@XZ`.
+/// Stub: no-op.
+///
+/// # Safety
+/// Always safe to call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__Lockit_dtor(_this: *mut u8) {}
+
+/// `std::ios_base::Init::Init()` — `ios` base initializer constructor.
+///
+/// Exported as `??0Init@ios_base@std@@QEAA@XZ`.
+/// Stub: no-op (we don't maintain C++ iostream state).
+///
+/// # Safety
+/// Always safe to call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__ios_base_Init_ctor(_this: *mut u8) {}
+
+/// `std::ios_base::Init::~Init()` — `ios` base initializer destructor.
+///
+/// Exported as `??1Init@ios_base@std@@QEAA@XZ`.
+/// Stub: no-op.
+///
+/// # Safety
+/// Always safe to call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__ios_base_Init_dtor(_this: *mut u8) {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -295,5 +394,29 @@ mod tests {
     fn test_operator_delete_null() {
         // Deleting null must not crash
         unsafe { msvcp140_operator_delete(ptr::null_mut()) };
+    }
+
+    #[test]
+    fn test_exception_what_returns_nonnull() {
+        let p = unsafe { msvcp140__exception_what(ptr::null()) };
+        assert!(!p.is_null());
+    }
+
+    #[test]
+    fn test_exception_ctor_dtor_noop() {
+        let mut obj = [0u8; 32];
+        unsafe {
+            msvcp140__exception_ctor(obj.as_mut_ptr());
+            msvcp140__exception_dtor(obj.as_mut_ptr());
+        }
+    }
+
+    #[test]
+    fn test_lockit_ctor_dtor_noop() {
+        let mut obj = [0u8; 16];
+        unsafe {
+            msvcp140__Lockit_ctor(obj.as_mut_ptr(), 0);
+            msvcp140__Lockit_dtor(obj.as_mut_ptr());
+        }
     }
 }
