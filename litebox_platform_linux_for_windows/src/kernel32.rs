@@ -155,6 +155,16 @@ struct FileEntry {
     completion_key: usize,
 }
 
+impl FileEntry {
+    fn new(file: File) -> Self {
+        Self {
+            file,
+            iocp_handle: 0,
+            completion_key: 0,
+        }
+    }
+}
+
 /// Global file-handle map: handle_value → FileEntry
 static FILE_HANDLES: Mutex<Option<HashMap<usize, FileEntry>>> = Mutex::new(None);
 
@@ -3566,7 +3576,7 @@ pub unsafe extern "C" fn kernel32_CreateFileW(
                 if map.len() >= MAX_OPEN_FILE_HANDLES {
                     return false;
                 }
-                map.insert(handle_val, FileEntry { file, iocp_handle: 0, completion_key: 0 });
+                map.insert(handle_val, FileEntry::new(file));
                 true
             });
             if inserted {
@@ -4442,8 +4452,8 @@ pub unsafe extern "C" fn kernel32_CreatePipe(
         if map.len() + 2 > MAX_OPEN_FILE_HANDLES {
             return false;
         }
-        map.insert(read_handle, FileEntry { file: read_file, iocp_handle: 0, completion_key: 0 });
-        map.insert(write_handle, FileEntry { file: write_file, iocp_handle: 0, completion_key: 0 });
+        map.insert(read_handle, FileEntry::new(read_file));
+        map.insert(write_handle, FileEntry::new(write_file));
         true
     });
 
@@ -4709,7 +4719,7 @@ pub unsafe extern "C" fn kernel32_DuplicateHandle(
             if map.len() >= MAX_OPEN_FILE_HANDLES {
                 return false;
             }
-            map.insert(new_handle, FileEntry { file: cloned_file, iocp_handle: 0, completion_key: 0 });
+            map.insert(new_handle, FileEntry::new(cloned_file));
             true
         });
         if inserted {
@@ -14505,7 +14515,7 @@ mod tests {
 
         let handle_val = alloc_file_handle();
         with_file_handles(|map| {
-            map.insert(handle_val, FileEntry { file, iocp_handle: 0, completion_key: 0 });
+            map.insert(handle_val, FileEntry::new(file));
         });
         let handle = handle_val as *mut core::ffi::c_void;
 

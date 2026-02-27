@@ -1,2 +1,2 @@
-# Compiled Windows executables are build artefacts – do not commit them.
+# Compiled Windows executables are build artifacts – do not commit them.
 *.exe
