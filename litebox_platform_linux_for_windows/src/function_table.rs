@@ -3792,6 +3792,20 @@ pub fn get_function_table() -> Vec<FunctionImpl> {
             num_params: 2,
             impl_address: crate::msvcrt::msvcrt__open_osfhandle as *const () as usize,
         },
+        // bcryptprimitives.dll functions
+        FunctionImpl {
+            name: "ProcessPrng",
+            dll_name: "bcryptprimitives.dll",
+            num_params: 2,
+            impl_address: crate::bcrypt::bcrypt_ProcessPrng as *const () as usize,
+        },
+        // USERENV.dll functions
+        FunctionImpl {
+            name: "GetUserProfileDirectoryW",
+            dll_name: "USERENV.dll",
+            num_params: 3,
+            impl_address: crate::userenv::userenv_GetUserProfileDirectoryW as *const () as usize,
+        },
     ]
 }
 
