@@ -7020,7 +7020,6 @@ mod tests {
 
     #[test]
     fn test_vscprintf_empty() {
-        let args: [i64; 0] = [];
         let fmt = CString::new("hello").unwrap();
         // Need at least one slot in the args array (even if unused).
         let dummy: [i64; 1] = [0];

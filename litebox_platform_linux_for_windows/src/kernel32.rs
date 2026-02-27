@@ -15243,6 +15243,14 @@ mod tests {
     fn test_read_file_ex_apc() {
         use std::io::Write as _;
 
+        // Static callback that stores the byte count.
+        static CALLBACK_BYTES: std::sync::atomic::AtomicU32 =
+            std::sync::atomic::AtomicU32::new(u32::MAX);
+
+        unsafe extern "win64" fn my_callback(_err: u32, bytes: u32, _ov: *mut core::ffi::c_void) {
+            CALLBACK_BYTES.store(bytes, std::sync::atomic::Ordering::SeqCst);
+        }
+
         // Create a temporary file and write some data.
         let dir = std::env::temp_dir();
         let path = dir.join(format!("litebox_rfex_test_{}.tmp", std::process::id()));
@@ -15273,14 +15281,6 @@ mod tests {
         // Prepare OVERLAPPED and buffer.
         let mut ov = [0u8; 32];
         let mut buf = [0u8; 16];
-
-        // Static callback that stores the byte count.
-        static CALLBACK_BYTES: std::sync::atomic::AtomicU32 =
-            std::sync::atomic::AtomicU32::new(u32::MAX);
-
-        unsafe extern "win64" fn my_callback(_err: u32, bytes: u32, _ov: *mut core::ffi::c_void) {
-            CALLBACK_BYTES.store(bytes, std::sync::atomic::Ordering::SeqCst);
-        }
 
         // Issue the async read.
         let res = unsafe {
@@ -15324,6 +15324,13 @@ mod tests {
     /// WriteFileEx enqueues an APC; WaitForSingleObjectEx with alertable=TRUE drains it.
     #[test]
     fn test_write_file_ex_apc() {
+        static WFX_CALLBACK_BYTES: std::sync::atomic::AtomicU32 =
+            std::sync::atomic::AtomicU32::new(u32::MAX);
+
+        unsafe extern "win64" fn wfx_callback(_err: u32, bytes: u32, _ov: *mut core::ffi::c_void) {
+            WFX_CALLBACK_BYTES.store(bytes, std::sync::atomic::Ordering::SeqCst);
+        }
+
         let dir = std::env::temp_dir();
         let path = dir.join(format!("litebox_wfex_test_{}.tmp", std::process::id()));
 
@@ -15347,13 +15354,6 @@ mod tests {
 
         let mut ov = [0u8; 32];
         let data = b"write async";
-
-        static WFX_CALLBACK_BYTES: std::sync::atomic::AtomicU32 =
-            std::sync::atomic::AtomicU32::new(u32::MAX);
-
-        unsafe extern "win64" fn wfx_callback(_err: u32, bytes: u32, _ov: *mut core::ffi::c_void) {
-            WFX_CALLBACK_BYTES.store(bytes, std::sync::atomic::Ordering::SeqCst);
-        }
 
         let res = unsafe {
             kernel32_WriteFileEx(
