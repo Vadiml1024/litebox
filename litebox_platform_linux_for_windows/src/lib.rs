@@ -10,6 +10,7 @@
 #![feature(c_variadic)]
 
 pub mod advapi32;
+pub mod bcrypt;
 pub mod function_table;
 pub mod gdi32;
 pub mod kernel32;
@@ -22,6 +23,7 @@ pub mod shell32;
 pub mod shlwapi;
 pub mod trampoline;
 pub mod user32;
+pub mod userenv;
 pub mod version;
 pub mod ws2_32;
 
