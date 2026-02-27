@@ -6985,8 +6985,8 @@ mod tests {
             )
         };
         assert_eq!(n, 2); // "42" is 2 wide chars
-        assert_eq!(buf[0], b'4' as u16);
-        assert_eq!(buf[1], b'2' as u16);
+        assert_eq!(buf[0], u16::from(b'4'));
+        assert_eq!(buf[1], u16::from(b'2'));
         assert_eq!(buf[2], 0); // NUL terminator
     }
 
