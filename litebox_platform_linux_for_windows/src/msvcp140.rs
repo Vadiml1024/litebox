@@ -358,6 +358,320 @@ pub unsafe extern "C" fn msvcp140__ios_base_Init_ctor(_this: *mut u8) {}
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn msvcp140__ios_base_Init_dtor(_this: *mut u8) {}
 
+// ============================================================================
+// Phase 37: std::basic_string<char> — MSVC x64 ABI implementation
+// ============================================================================
+//
+// MSVC x64 `std::string` (`basic_string<char>`) internal layout (32 bytes):
+//
+//   [0..16)  union { char _Buf[16]; char* _Ptr; }   — SSO buffer or heap pointer
+//   [16..24) size_t _Mysize                          — current length (excl. NUL)
+//   [24..32) size_t _Myres                           — capacity (excl. NUL)
+//
+// SSO threshold: strings up to 15 chars use the inline buffer (`_Myres == 15`);
+// longer strings use a heap allocation via `libc::malloc` / `libc::free`.
+
+/// SSO capacity for MSVC `std::string` (inline buffer size minus NUL byte).
+const MSVCRT_STR_SSO_CAP: usize = 15;
+
+/// Read `_Mysize` field from a `basic_string<char>` object at `this`.
+///
+/// # Safety
+/// `this` must point to a valid, initialized `basic_string<char>` (32 bytes).
+#[inline]
+unsafe fn bstr_mysize(this: *const u8) -> usize {
+    // The `basic_string` object is received as a `*const u8` (byte pointer) and
+    // its alignment is only guaranteed to be 1-byte aligned from our perspective.
+    // Even though the 16-byte union field that precedes `_Mysize` ensures 8-byte
+    // natural alignment in practice, `read_unaligned` is used defensively to avoid
+    // triggering alignment-related undefined behaviour if the pointer is ever
+    // less than 8-byte aligned.
+    unsafe { ptr::read_unaligned(this.add(16).cast::<usize>()) }
+}
+
+/// Read `_Myres` (capacity) from a `basic_string<char>` object at `this`.
+///
+/// # Safety
+/// `this` must point to a valid, initialized `basic_string<char>` (32 bytes).
+#[inline]
+unsafe fn bstr_myres(this: *const u8) -> usize {
+    // See `bstr_mysize` for the rationale for using `read_unaligned`.
+    unsafe { ptr::read_unaligned(this.add(24).cast::<usize>()) }
+}
+
+/// Return a pointer to the character data of a `basic_string<char>` object.
+///
+/// # Safety
+/// `this` must point to a valid, initialized `basic_string<char>` (32 bytes).
+#[inline]
+unsafe fn bstr_data(this: *const u8) -> *const i8 {
+    let cap = unsafe { bstr_myres(this) };
+    if cap == MSVCRT_STR_SSO_CAP {
+        // SSO: data is inline at offset 0.
+        this.cast::<i8>()
+    } else {
+        // Heap: first 8 bytes hold the pointer; may not be pointer-aligned.
+        unsafe { ptr::read_unaligned(this.cast::<*const i8>()) }
+    }
+}
+
+/// `std::basic_string<char>::basic_string()` — default constructor.
+///
+/// Exported as `??0?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@QEAA@XZ`.
+/// Initialises to an empty string using SSO.
+///
+/// # Safety
+/// `this` must point to at least 32 bytes of writable memory.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__basic_string_ctor(this: *mut u8) {
+    if this.is_null() {
+        return;
+    }
+    // Zero the SSO buffer and set _Mysize = 0, _Myres = SSO_CAP.
+    unsafe {
+        ptr::write_bytes(this, 0, 16);
+        ptr::write_unaligned(this.add(16).cast::<usize>(), 0);
+        ptr::write_unaligned(this.add(24).cast::<usize>(), MSVCRT_STR_SSO_CAP);
+    }
+}
+
+/// `std::basic_string<char>::basic_string(char const*)` — construct from C string.
+///
+/// Exported as `??0?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@QEAA@PEBD@Z`.
+///
+/// # Safety
+/// `this` must point to at least 32 bytes of writable memory.
+/// `s` must be a valid null-terminated C string or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__basic_string_ctor_cstr(this: *mut u8, s: *const i8) {
+    unsafe { msvcp140__basic_string_ctor(this) };
+    if s.is_null() {
+        return;
+    }
+    // SAFETY: s is a valid null-terminated C string per caller contract.
+    let len = unsafe { libc::strlen(s) };
+    unsafe { msvcp140_basic_string_assign_impl(this, s, len) };
+}
+
+/// `std::basic_string<char>::basic_string(basic_string const&)` — copy constructor.
+///
+/// Exported as `??0?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@QEAA@AEBV01@@Z`.
+///
+/// # Safety
+/// `this` must point to at least 32 bytes of writable memory.
+/// `other` must point to a valid initialized `basic_string<char>`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__basic_string_copy_ctor(this: *mut u8, other: *const u8) {
+    unsafe { msvcp140__basic_string_ctor(this) };
+    if other.is_null() {
+        return;
+    }
+    let len = unsafe { bstr_mysize(other) };
+    let src = unsafe { bstr_data(other) };
+    unsafe { msvcp140_basic_string_assign_impl(this, src, len) };
+}
+
+/// `std::basic_string<char>::~basic_string()` — destructor.
+///
+/// Exported as `??1?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@QEAA@XZ`.
+/// Frees the heap buffer if SSO is not active.
+///
+/// # Safety
+/// `this` must point to a valid initialized `basic_string<char>`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__basic_string_dtor(this: *mut u8) {
+    if this.is_null() {
+        return;
+    }
+    let cap = unsafe { bstr_myres(this) };
+    if cap != MSVCRT_STR_SSO_CAP {
+        // Heap allocation: free the pointer stored at offset 0.
+        let ptr_val = unsafe { ptr::read_unaligned(this.cast::<*mut u8>()) };
+        if !ptr_val.is_null() {
+            // SAFETY: ptr_val was allocated by libc::malloc in msvcp140_basic_string_assign_impl.
+            unsafe { libc::free(ptr_val.cast()) };
+        }
+    }
+    // Zero the object to prevent use-after-free.
+    unsafe { ptr::write_bytes(this, 0, 32) };
+}
+
+/// Internal helper: assign `len` bytes from `s` into `this`.
+///
+/// # Safety
+/// `this` must point to a valid (possibly empty) `basic_string<char>`.
+/// `s` must point to at least `len` readable bytes.
+unsafe fn msvcp140_basic_string_assign_impl(this: *mut u8, s: *const i8, len: usize) {
+    if this.is_null() {
+        return;
+    }
+    // Free existing heap allocation if any.
+    let old_cap = unsafe { bstr_myres(this) };
+    if old_cap != MSVCRT_STR_SSO_CAP {
+        let old_ptr = unsafe { ptr::read_unaligned(this.cast::<*mut u8>()) };
+        if !old_ptr.is_null() {
+            unsafe { libc::free(old_ptr.cast()) };
+        }
+    }
+
+    if len <= MSVCRT_STR_SSO_CAP {
+        // Use SSO buffer.
+        if !s.is_null() && len > 0 {
+            // SAFETY: s points to at least `len` readable bytes; buf is 16 bytes.
+            unsafe { ptr::copy_nonoverlapping(s, this.cast::<i8>(), len) };
+        }
+        // NUL terminate.
+        unsafe { *this.add(len).cast::<i8>() = 0 };
+        unsafe { ptr::write_unaligned(this.add(16).cast::<usize>(), len) };
+        unsafe { ptr::write_unaligned(this.add(24).cast::<usize>(), MSVCRT_STR_SSO_CAP) };
+    } else {
+        // Heap allocation.
+        // SAFETY: len + 1 > 0.
+        let buf = unsafe { libc::malloc(len + 1).cast::<i8>() };
+        if buf.is_null() {
+            // Allocation failed: leave the string in a valid empty SSO state
+            // rather than storing a null heap pointer with non-zero size.
+            unsafe { ptr::write_bytes(this, 0, 16) };
+            unsafe { ptr::write_unaligned(this.add(16).cast::<usize>(), 0) };
+            unsafe { ptr::write_unaligned(this.add(24).cast::<usize>(), MSVCRT_STR_SSO_CAP) };
+            return;
+        }
+        if !s.is_null() {
+            // SAFETY: s points to at least `len` readable bytes.
+            unsafe { ptr::copy_nonoverlapping(s, buf, len) };
+        }
+        // NUL terminate.
+        unsafe { *buf.add(len) = 0 };
+        // Store heap pointer at offset 0.
+        unsafe { ptr::write_unaligned(this.cast::<*mut i8>(), buf) };
+        unsafe { ptr::write_unaligned(this.add(16).cast::<usize>(), len) };
+        unsafe { ptr::write_unaligned(this.add(24).cast::<usize>(), len) };
+    }
+}
+
+/// `std::basic_string<char>::c_str() const` — return null-terminated character pointer.
+///
+/// Exported as `?c_str@?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@QEBAPEBDXZ`.
+///
+/// # Safety
+/// `this` must point to a valid initialized `basic_string<char>`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__basic_string_c_str(this: *const u8) -> *const i8 {
+    if this.is_null() {
+        return c"".as_ptr();
+    }
+    unsafe { bstr_data(this) }
+}
+
+/// `std::basic_string<char>::size() const` — return string length.
+///
+/// Exported as `?size@?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@QEBA_KXZ`.
+///
+/// # Safety
+/// `this` must point to a valid initialized `basic_string<char>`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__basic_string_size(this: *const u8) -> usize {
+    if this.is_null() {
+        return 0;
+    }
+    unsafe { bstr_mysize(this) }
+}
+
+/// `std::basic_string<char>::empty() const` — return true if string is empty.
+///
+/// Exported as `?empty@?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@QEBA_NXZ`.
+///
+/// # Safety
+/// `this` must point to a valid initialized `basic_string<char>`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__basic_string_empty(this: *const u8) -> bool {
+    unsafe { msvcp140__basic_string_size(this) == 0 }
+}
+
+/// `std::basic_string<char>::operator=(basic_string const&)` — copy assignment.
+///
+/// Exported as
+/// `??4?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@QEAAAEAV01@AEBV01@@Z`.
+/// Returns `this`.
+///
+/// # Safety
+/// `this` and `other` must each point to valid initialized `basic_string<char>` objects.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__basic_string_assign_op(
+    this: *mut u8,
+    other: *const u8,
+) -> *mut u8 {
+    if !other.is_null() {
+        let len = unsafe { bstr_mysize(other) };
+        let src = unsafe { bstr_data(other) };
+        unsafe { msvcp140_basic_string_assign_impl(this, src, len) };
+    }
+    this
+}
+
+/// `std::basic_string<char>::operator=(char const*)` — assign from C string.
+///
+/// Exported as
+/// `??4?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@QEAAAEAV01@PEBD@Z`.
+/// Returns `this`.
+///
+/// # Safety
+/// `this` must point to a valid initialized `basic_string<char>`.
+/// `s` must be a valid null-terminated C string or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__basic_string_assign_cstr(
+    this: *mut u8,
+    s: *const i8,
+) -> *mut u8 {
+    if !s.is_null() {
+        let len = unsafe { libc::strlen(s) };
+        unsafe { msvcp140_basic_string_assign_impl(this, s, len) };
+    }
+    this
+}
+
+/// `std::basic_string<char>::append(char const*)` — append a C string.
+///
+/// Exported as
+/// `?append@?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@QEAAAEAV12@PEBD@Z`.
+/// Returns `this`.
+///
+/// # Safety
+/// `this` must point to a valid initialized `basic_string<char>`.
+/// `s` must be a valid null-terminated C string or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__basic_string_append_cstr(
+    this: *mut u8,
+    s: *const i8,
+) -> *mut u8 {
+    if this.is_null() || s.is_null() {
+        return this;
+    }
+    let cur_len = unsafe { bstr_mysize(this) };
+    let add_len = unsafe { libc::strlen(s) };
+    let new_len = cur_len + add_len;
+
+    // Build a temporary buffer with the concatenated result.
+    let cur_data = unsafe { bstr_data(this) };
+    // SAFETY: new_len + 1 > 0.
+    let tmp = unsafe { libc::malloc(new_len + 1).cast::<i8>() };
+    if tmp.is_null() {
+        return this;
+    }
+    if cur_len > 0 {
+        // SAFETY: cur_data points to at least cur_len readable bytes.
+        unsafe { ptr::copy_nonoverlapping(cur_data, tmp, cur_len) };
+    }
+    // SAFETY: s points to add_len readable bytes.
+    unsafe { ptr::copy_nonoverlapping(s, tmp.add(cur_len), add_len) };
+    unsafe { *tmp.add(new_len) = 0 };
+
+    unsafe { msvcp140_basic_string_assign_impl(this, tmp, new_len) };
+    // SAFETY: tmp was allocated by libc::malloc above.
+    unsafe { libc::free(tmp.cast()) };
+    this
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -417,6 +731,81 @@ mod tests {
         unsafe {
             msvcp140__Lockit_ctor(obj.as_mut_ptr(), 0);
             msvcp140__Lockit_dtor(obj.as_mut_ptr());
+        }
+    }
+
+    #[test]
+    fn test_basic_string_default_ctor_is_empty() {
+        let mut obj = [0u8; 32];
+        unsafe {
+            msvcp140__basic_string_ctor(obj.as_mut_ptr());
+            assert_eq!(msvcp140__basic_string_size(obj.as_ptr()), 0);
+            assert!(msvcp140__basic_string_empty(obj.as_ptr()));
+            let cs = msvcp140__basic_string_c_str(obj.as_ptr());
+            assert!(!cs.is_null());
+            assert_eq!(*cs, 0);
+            msvcp140__basic_string_dtor(obj.as_mut_ptr());
+        }
+    }
+
+    #[test]
+    fn test_basic_string_ctor_from_cstr() {
+        let mut obj = [0u8; 32];
+        let hello = c"hello";
+        unsafe {
+            msvcp140__basic_string_ctor_cstr(obj.as_mut_ptr(), hello.as_ptr());
+            assert_eq!(msvcp140__basic_string_size(obj.as_ptr()), 5);
+            assert!(!msvcp140__basic_string_empty(obj.as_ptr()));
+            let cs = msvcp140__basic_string_c_str(obj.as_ptr());
+            assert!(!cs.is_null());
+            assert_eq!(std::ffi::CStr::from_ptr(cs).to_str().unwrap(), "hello");
+            msvcp140__basic_string_dtor(obj.as_mut_ptr());
+        }
+    }
+
+    #[test]
+    fn test_basic_string_copy_ctor() {
+        let mut src = [0u8; 32];
+        let mut dst = [0u8; 32];
+        let text = c"copy me";
+        unsafe {
+            msvcp140__basic_string_ctor_cstr(src.as_mut_ptr(), text.as_ptr());
+            msvcp140__basic_string_copy_ctor(dst.as_mut_ptr(), src.as_ptr());
+            assert_eq!(msvcp140__basic_string_size(dst.as_ptr()), 7);
+            let cs = msvcp140__basic_string_c_str(dst.as_ptr());
+            assert_eq!(std::ffi::CStr::from_ptr(cs).to_str().unwrap(), "copy me");
+            msvcp140__basic_string_dtor(src.as_mut_ptr());
+            msvcp140__basic_string_dtor(dst.as_mut_ptr());
+        }
+    }
+
+    #[test]
+    fn test_basic_string_append() {
+        let mut obj = [0u8; 32];
+        unsafe {
+            msvcp140__basic_string_ctor_cstr(obj.as_mut_ptr(), c"hel".as_ptr());
+            msvcp140__basic_string_append_cstr(obj.as_mut_ptr(), c"lo".as_ptr());
+            assert_eq!(msvcp140__basic_string_size(obj.as_ptr()), 5);
+            let cs = msvcp140__basic_string_c_str(obj.as_ptr());
+            assert_eq!(std::ffi::CStr::from_ptr(cs).to_str().unwrap(), "hello");
+            msvcp140__basic_string_dtor(obj.as_mut_ptr());
+        }
+    }
+
+    #[test]
+    fn test_basic_string_long_string_uses_heap() {
+        let mut obj = [0u8; 32];
+        // A 20-char string exceeds the SSO threshold (15 chars).
+        let long_str = c"this_is_twenty_chars"; // 20 chars
+        unsafe {
+            msvcp140__basic_string_ctor_cstr(obj.as_mut_ptr(), long_str.as_ptr());
+            assert_eq!(msvcp140__basic_string_size(obj.as_ptr()), 20);
+            let cs = msvcp140__basic_string_c_str(obj.as_ptr());
+            assert_eq!(
+                std::ffi::CStr::from_ptr(cs).to_str().unwrap(),
+                "this_is_twenty_chars"
+            );
+            msvcp140__basic_string_dtor(obj.as_mut_ptr());
         }
     }
 }

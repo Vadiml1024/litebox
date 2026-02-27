@@ -2605,6 +2605,197 @@ pub unsafe extern "C" fn msvcrt__ltoa(value: i64, buffer: *mut i8, radix: i32) -
     buffer
 }
 
+/// `_ultoa(value, buffer, radix)` — convert unsigned long to string.
+///
+/// # Safety
+/// `buffer` must be a writable buffer large enough to hold the result.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt__ultoa(value: u64, buffer: *mut i8, radix: i32) -> *mut i8 {
+    if buffer.is_null() {
+        return core::ptr::null_mut();
+    }
+    let s = if radix == 10 {
+        format!("{value}")
+    } else if radix == 16 {
+        format!("{value:x}")
+    } else if radix == 8 {
+        format!("{value:o}")
+    } else if radix == 2 {
+        format!("{value:b}")
+    } else {
+        format!("{value}")
+    };
+    let bytes = s.as_bytes();
+    // SAFETY: buffer has enough space per caller contract.
+    core::ptr::copy_nonoverlapping(bytes.as_ptr().cast::<i8>(), buffer, bytes.len());
+    // SAFETY: buffer is writable for at least bytes.len() + 1 bytes.
+    unsafe { *buffer.add(bytes.len()) = 0 };
+    buffer
+}
+
+/// `_i64toa(value, buffer, radix)` — convert signed 64-bit integer to string.
+///
+/// # Safety
+/// `buffer` must be a writable buffer large enough to hold the result.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt__i64toa(value: i64, buffer: *mut i8, radix: i32) -> *mut i8 {
+    // _i64toa and _ltoa have identical semantics; delegate.
+    unsafe { msvcrt__ltoa(value, buffer, radix) }
+}
+
+/// `_ui64toa(value, buffer, radix)` — convert unsigned 64-bit integer to string.
+///
+/// # Safety
+/// `buffer` must be a writable buffer large enough to hold the result.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt__ui64toa(value: u64, buffer: *mut i8, radix: i32) -> *mut i8 {
+    // _ui64toa and _ultoa have identical semantics; delegate.
+    unsafe { msvcrt__ultoa(value, buffer, radix) }
+}
+
+/// `_strtoi64(nptr, endptr, base)` — convert string to signed 64-bit integer.
+///
+/// # Safety
+/// `nptr` must be a valid null-terminated C string.
+/// `endptr`, if non-null, receives a pointer to the character after the last one consumed.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt__strtoi64(nptr: *const i8, endptr: *mut *mut i8, base: i32) -> i64 {
+    if nptr.is_null() {
+        if !endptr.is_null() {
+            unsafe { *endptr = nptr.cast_mut() };
+        }
+        return 0;
+    }
+    // SAFETY: nptr is a valid null-terminated C string per caller contract.
+    unsafe { libc::strtoll(nptr, endptr, base) }
+}
+
+/// `_strtoui64(nptr, endptr, base)` — convert string to unsigned 64-bit integer.
+///
+/// # Safety
+/// `nptr` must be a valid null-terminated C string.
+/// `endptr`, if non-null, receives a pointer to the character after the last one consumed.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt__strtoui64(
+    nptr: *const i8,
+    endptr: *mut *mut i8,
+    base: i32,
+) -> u64 {
+    if nptr.is_null() {
+        if !endptr.is_null() {
+            unsafe { *endptr = nptr.cast_mut() };
+        }
+        return 0;
+    }
+    // SAFETY: nptr is a valid null-terminated C string per caller contract.
+    unsafe { libc::strtoull(nptr, endptr, base) }
+}
+
+/// `_itow(value, buffer, radix)` — convert integer to wide string.
+///
+/// # Safety
+/// `buffer` must be a writable buffer large enough to hold the result (at least 33 wide chars).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt__itow(value: i32, buffer: *mut u16, radix: i32) -> *mut u16 {
+    if buffer.is_null() {
+        return core::ptr::null_mut();
+    }
+    let s = if radix == 10 {
+        format!("{value}")
+    } else if radix == 16 {
+        format!("{:x}", value.cast_unsigned())
+    } else if radix == 8 {
+        format!("{:o}", value.cast_unsigned())
+    } else if radix == 2 {
+        format!("{:b}", value.cast_unsigned())
+    } else {
+        format!("{value}")
+    };
+    for (i, c) in s.bytes().enumerate() {
+        // SAFETY: buffer has enough space per caller contract.
+        unsafe { *buffer.add(i) = u16::from(c) };
+    }
+    // SAFETY: buffer is writable for at least s.len() + 1 wide chars.
+    unsafe { *buffer.add(s.len()) = 0 };
+    buffer
+}
+
+/// `_ltow(value, buffer, radix)` — convert long to wide string.
+///
+/// # Safety
+/// `buffer` must be a writable buffer large enough to hold the result (at least 66 wide chars).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt__ltow(value: i64, buffer: *mut u16, radix: i32) -> *mut u16 {
+    if buffer.is_null() {
+        return core::ptr::null_mut();
+    }
+    let s = if radix == 10 {
+        format!("{value}")
+    } else if radix == 16 {
+        format!("{:x}", value.cast_unsigned())
+    } else if radix == 8 {
+        format!("{:o}", value.cast_unsigned())
+    } else if radix == 2 {
+        format!("{:b}", value.cast_unsigned())
+    } else {
+        format!("{value}")
+    };
+    for (i, c) in s.bytes().enumerate() {
+        // SAFETY: buffer has enough space per caller contract.
+        unsafe { *buffer.add(i) = u16::from(c) };
+    }
+    // SAFETY: buffer is writable for at least s.len() + 1 wide chars.
+    unsafe { *buffer.add(s.len()) = 0 };
+    buffer
+}
+
+/// `_ultow(value, buffer, radix)` — convert unsigned long to wide string.
+///
+/// # Safety
+/// `buffer` must be a writable buffer large enough to hold the result (at least 66 wide chars).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt__ultow(value: u64, buffer: *mut u16, radix: i32) -> *mut u16 {
+    if buffer.is_null() {
+        return core::ptr::null_mut();
+    }
+    let s = if radix == 10 {
+        format!("{value}")
+    } else if radix == 16 {
+        format!("{value:x}")
+    } else if radix == 8 {
+        format!("{value:o}")
+    } else if radix == 2 {
+        format!("{value:b}")
+    } else {
+        format!("{value}")
+    };
+    for (i, c) in s.bytes().enumerate() {
+        // SAFETY: buffer has enough space per caller contract.
+        unsafe { *buffer.add(i) = u16::from(c) };
+    }
+    // SAFETY: buffer is writable for at least s.len() + 1 wide chars.
+    unsafe { *buffer.add(s.len()) = 0 };
+    buffer
+}
+
+/// `_i64tow(value, buffer, radix)` — convert signed 64-bit integer to wide string.
+///
+/// # Safety
+/// `buffer` must be a writable buffer large enough to hold the result.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt__i64tow(value: i64, buffer: *mut u16, radix: i32) -> *mut u16 {
+    unsafe { msvcrt__ltow(value, buffer, radix) }
+}
+
+/// `_ui64tow(value, buffer, radix)` — convert unsigned 64-bit integer to wide string.
+///
+/// # Safety
+/// `buffer` must be a writable buffer large enough to hold the result.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt__ui64tow(value: u64, buffer: *mut u16, radix: i32) -> *mut u16 {
+    unsafe { msvcrt__ultow(value, buffer, radix) }
+}
+
 // ── String Extras ─────────────────────────────────────────────────────────
 
 /// # Safety
@@ -4781,6 +4972,350 @@ pub unsafe extern "C" fn ucrt__stdio_common_vsscanf(
     // SAFETY: Caller guarantees buf and fmt are valid null-terminated C strings
     // and arglist is a valid Windows x64 va_list pointer.
     unsafe { format_scanf_raw(buf.cast::<i8>(), fmt.cast::<i8>(), arglist) }
+}
+
+/// `__stdio_common_vsprintf(options, buf, buf_count, fmt, locale, arglist)` — UCRT vsprintf
+///
+/// Formats a string into `buf` according to `fmt` using the Windows x64 `arglist`.
+/// `_options`, `_buf_count`, and `_locale` are ignored.
+/// Returns the number of characters written (excluding the NUL terminator), or -1 on error.
+///
+/// # Safety
+///
+/// `buf` must be a writable buffer of at least `_buf_count` bytes, or null for a count-only call.
+/// `fmt` must be a valid null-terminated C string.
+/// `arglist` must be a valid Windows x64 va_list pointer.
+#[unsafe(no_mangle)]
+#[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "gnu"))]
+#[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+pub unsafe extern "C" fn ucrt__stdio_common_vsprintf(
+    _options: u64,
+    buf: *mut u8,
+    buf_count: usize,
+    fmt: *const u8,
+    _locale: *const u8,
+    arglist: *mut u8,
+) -> i32 {
+    if fmt.is_null() {
+        return -1;
+    }
+    // SAFETY: Caller guarantees fmt is a valid null-terminated C string.
+    let fmt_bytes = unsafe { CStr::from_ptr(fmt.cast::<i8>()) }.to_bytes();
+    // SAFETY: arglist is a valid Windows x64 va_list pointer.
+    let out = unsafe { format_printf_raw(fmt_bytes, arglist, false) };
+    let would_write = out.len() as i32;
+    if !buf.is_null() && buf_count > 0 {
+        let copy_len = out.len().min(buf_count - 1);
+        // SAFETY: Caller guarantees buf is at least buf_count bytes.
+        unsafe {
+            std::ptr::copy_nonoverlapping(out.as_ptr(), buf, copy_len);
+            *buf.add(copy_len) = 0;
+        }
+    }
+    would_write
+}
+
+/// `__stdio_common_vsnprintf_s(options, buf, buf_count, max_count, fmt, locale, arglist)` — UCRT vsnprintf_s
+///
+/// Like `__stdio_common_vsprintf` but with an extra `max_count` parameter (MSVC `_TRUNCATE`
+/// semantics: `usize::MAX` means truncate without error; any other value is a character limit
+/// that causes -1 to be returned on truncation).
+///
+/// # Safety
+///
+/// Same as `ucrt__stdio_common_vsprintf`.
+#[unsafe(no_mangle)]
+#[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "gnu"))]
+#[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+pub unsafe extern "C" fn ucrt__stdio_common_vsnprintf_s(
+    _options: u64,
+    buf: *mut u8,
+    buf_count: usize,
+    max_count: usize,
+    fmt: *const u8,
+    _locale: *const u8,
+    arglist: *mut u8,
+) -> i32 {
+    if fmt.is_null() || buf.is_null() || buf_count == 0 {
+        return -1;
+    }
+    // SAFETY: fmt is a valid null-terminated C string; arglist is a valid Windows va_list.
+    let fmt_bytes = unsafe { CStr::from_ptr(fmt.cast::<i8>()) }.to_bytes();
+    let out = unsafe { format_printf_raw(fmt_bytes, arglist, false) };
+
+    // Effective write limit: min(max_count, buf_count - 1), with _TRUNCATE = unbounded.
+    let effective = if max_count == usize::MAX {
+        buf_count - 1
+    } else {
+        max_count.min(buf_count - 1)
+    };
+    let copy_len = out.len().min(effective);
+    // SAFETY: buf is at least buf_count bytes per caller contract.
+    unsafe {
+        std::ptr::copy_nonoverlapping(out.as_ptr(), buf, copy_len);
+        *buf.add(copy_len) = 0;
+    }
+    // If truncation occurred and this is not a _TRUNCATE call, return -1.
+    if out.len() > copy_len && max_count != usize::MAX {
+        return -1;
+    }
+    copy_len as i32
+}
+
+/// `__stdio_common_vsprintf_s(options, buf, buf_count, fmt, locale, arglist)` — UCRT vsprintf_s
+///
+/// Overflow-checked variant of `__stdio_common_vsprintf`.  Returns -1 if the
+/// formatted output would exceed `buf_count - 1` characters.
+///
+/// # Safety
+///
+/// Same as `ucrt__stdio_common_vsprintf`.
+#[unsafe(no_mangle)]
+#[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "gnu"))]
+#[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+pub unsafe extern "C" fn ucrt__stdio_common_vsprintf_s(
+    _options: u64,
+    buf: *mut u8,
+    buf_count: usize,
+    fmt: *const u8,
+    _locale: *const u8,
+    arglist: *mut u8,
+) -> i32 {
+    if fmt.is_null() || buf.is_null() || buf_count == 0 {
+        return -1;
+    }
+    // SAFETY: fmt is a valid null-terminated C string; arglist is a valid Windows va_list.
+    let fmt_bytes = unsafe { CStr::from_ptr(fmt.cast::<i8>()) }.to_bytes();
+    let out = unsafe { format_printf_raw(fmt_bytes, arglist, false) };
+    if out.len() >= buf_count {
+        // Overflow — NUL-terminate and return -1.
+        // SAFETY: buf is at least 1 byte per buf_count > 0 check.
+        unsafe { *buf = 0 };
+        return -1;
+    }
+    let copy_len = out.len();
+    // SAFETY: copy_len < buf_count, so buf has room for copy_len + 1 bytes.
+    unsafe {
+        std::ptr::copy_nonoverlapping(out.as_ptr(), buf, copy_len);
+        *buf.add(copy_len) = 0;
+    }
+    copy_len as i32
+}
+
+/// `__stdio_common_vswprintf(options, buf, buf_count, fmt, locale, arglist)` — UCRT wide vsprintf
+///
+/// Formats a wide string into `buf` (UTF-16LE) according to the wide format `fmt`.
+/// `_options` and `_locale` are ignored.
+/// Returns the number of wide characters written (excluding the NUL terminator), or -1 on error.
+///
+/// # Safety
+///
+/// `buf` must be a writable buffer of at least `buf_count` UTF-16 code units, or null.
+/// `fmt` must be a valid null-terminated UTF-16 string.
+/// `arglist` must be a valid Windows x64 va_list pointer.
+#[unsafe(no_mangle)]
+#[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "gnu"))]
+#[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+pub unsafe extern "C" fn ucrt__stdio_common_vswprintf(
+    _options: u64,
+    buf: *mut u16,
+    buf_count: usize,
+    fmt: *const u16,
+    _locale: *const u16,
+    arglist: *mut u8,
+) -> i32 {
+    if fmt.is_null() {
+        return -1;
+    }
+    // Convert wide format string to UTF-8 so we can run our printf formatter.
+    let fmt_wide = unsafe { read_wide_string(fmt) };
+    let fmt_utf8_str = String::from_utf16_lossy(&fmt_wide);
+    let fmt_utf8 = fmt_utf8_str.as_bytes();
+    // SAFETY: arglist is a valid Windows x64 va_list pointer; wide_mode=true so
+    // %s / %c specifiers handle wide strings correctly.
+    let out = unsafe { format_printf_raw(fmt_utf8, arglist, true) };
+    let would_write = out.len() as i32;
+    if !buf.is_null() && buf_count > 0 {
+        let utf16: Vec<u16> = String::from_utf8_lossy(&out).encode_utf16().collect();
+        let copy_wchars = utf16.len().min(buf_count - 1);
+        // SAFETY: buf is at least buf_count u16 values per caller contract.
+        unsafe {
+            std::ptr::copy_nonoverlapping(utf16.as_ptr(), buf, copy_wchars);
+            *buf.add(copy_wchars) = 0;
+        }
+    }
+    would_write
+}
+
+/// `scanf(format, ...) -> int` — read formatted input from stdin.
+///
+/// Parses stdin according to `format`, writing results through the pointer
+/// arguments.  Returns the number of items matched and stored, or -1 on EOF.
+///
+/// **Limit**: at most `MAX_SCANF_ARGS` (16) conversion specifiers are handled.
+/// Providing more than 16 non-suppressed specifiers leads to undefined behaviour
+/// because the excess arguments are never extracted from the variadic list.
+///
+/// # Safety
+///
+/// `format` must be a valid null-terminated string.
+/// The format string must contain no more than `MAX_SCANF_ARGS` (16) non-suppressed
+/// conversion specifiers.
+/// Each variadic argument must be a writable pointer of the type implied by
+/// the corresponding format specifier.
+#[unsafe(no_mangle)]
+#[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "gnu"))]
+pub unsafe extern "C" fn msvcrt_scanf(format: *const i8, mut args: ...) -> i32 {
+    if format.is_null() {
+        return -1;
+    }
+    let fmt_bytes = unsafe { CStr::from_ptr(format) }.to_bytes();
+    let n_specs = count_scanf_specifiers(fmt_bytes).min(MAX_SCANF_ARGS);
+    let mut ptrs: [*mut core::ffi::c_void; MAX_SCANF_ARGS] =
+        [core::ptr::null_mut(); MAX_SCANF_ARGS];
+    for p in ptrs.iter_mut().take(n_specs) {
+        // SAFETY: caller guarantees enough pointer args are in the va_list.
+        *p = unsafe { args.arg::<*mut core::ffi::c_void>() };
+    }
+    // SAFETY: format is a valid null-terminated string; each non-null ptr is a valid writable
+    // pointer for its specifier.
+    unsafe {
+        libc::scanf(
+            format, ptrs[0], ptrs[1], ptrs[2], ptrs[3], ptrs[4], ptrs[5], ptrs[6], ptrs[7],
+            ptrs[8], ptrs[9], ptrs[10], ptrs[11], ptrs[12], ptrs[13], ptrs[14], ptrs[15],
+        )
+    }
+}
+
+/// `fscanf(stream, format, ...) -> int` — read formatted input from a FILE stream.
+///
+/// Parses `stream` according to `format`, writing results through the pointer
+/// arguments.  Returns the number of items matched and stored, or -1 on EOF.
+///
+/// **Limit**: at most `MAX_SCANF_ARGS` (16) conversion specifiers are handled.
+/// Providing more than 16 non-suppressed specifiers leads to undefined behaviour
+/// because the excess arguments are never extracted from the variadic list.
+///
+/// # Safety
+///
+/// `stream` must be a valid Linux FILE* (returned by fopen / _wfopen / fdopen).
+/// `format` must be a valid null-terminated string.
+/// The format string must contain no more than `MAX_SCANF_ARGS` (16) non-suppressed
+/// conversion specifiers.
+/// Each variadic argument must be a writable pointer of the type implied by
+/// the corresponding format specifier.
+#[unsafe(no_mangle)]
+#[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "gnu"))]
+pub unsafe extern "C" fn msvcrt_fscanf(stream: *mut u8, format: *const i8, mut args: ...) -> i32 {
+    if stream.is_null() || format.is_null() {
+        return -1;
+    }
+    let fmt_bytes = unsafe { CStr::from_ptr(format) }.to_bytes();
+    let n_specs = count_scanf_specifiers(fmt_bytes).min(MAX_SCANF_ARGS);
+    let mut ptrs: [*mut core::ffi::c_void; MAX_SCANF_ARGS] =
+        [core::ptr::null_mut(); MAX_SCANF_ARGS];
+    for p in ptrs.iter_mut().take(n_specs) {
+        // SAFETY: caller guarantees enough pointer args are in the va_list.
+        *p = unsafe { args.arg::<*mut core::ffi::c_void>() };
+    }
+    // SAFETY: stream is a valid Linux FILE*; format is null-terminated; each non-null ptr is valid.
+    unsafe {
+        libc::fscanf(
+            stream.cast::<libc::FILE>(),
+            format,
+            ptrs[0],
+            ptrs[1],
+            ptrs[2],
+            ptrs[3],
+            ptrs[4],
+            ptrs[5],
+            ptrs[6],
+            ptrs[7],
+            ptrs[8],
+            ptrs[9],
+            ptrs[10],
+            ptrs[11],
+            ptrs[12],
+            ptrs[13],
+            ptrs[14],
+            ptrs[15],
+        )
+    }
+}
+
+/// `__stdio_common_vfscanf(options, stream, fmt, locale, arglist)` — UCRT fscanf
+///
+/// Reads from `stream` according to `fmt`, writing results through the
+/// pointer arguments in `arglist` (a Windows x64 va_list).  Returns the
+/// number of items matched and stored, or -1 on EOF / failure.
+///
+/// `_options` and `_locale` are ignored.
+///
+/// # Safety
+///
+/// `stream` must be a valid Linux FILE* (returned by fopen / _wfopen / fdopen),
+/// or a sentinel value for stdin (0) / stdout (1) / stderr (2).
+/// `fmt` must be a valid null-terminated C string.
+/// `arglist` must be a valid Windows x64 va_list pointer.
+#[unsafe(no_mangle)]
+#[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "gnu"))]
+#[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+pub unsafe extern "C" fn ucrt__stdio_common_vfscanf(
+    _options: u64,
+    stream: *mut u8,
+    fmt: *const u8,
+    _locale: *const u8,
+    arglist: *mut u8,
+) -> i32 {
+    // Compile-time size assertion must appear before any non-const statements.
+    const _: () = assert!(
+        core::mem::size_of::<VaListTag>() == 24,
+        "VaListTag size must be 24 bytes"
+    );
+
+    if fmt.is_null() {
+        return -1;
+    }
+    // SAFETY: fmt is a valid null-terminated C string; arglist is a valid Windows va_list.
+    let fmt_c = fmt.cast::<i8>();
+    let fmt_bytes = unsafe { CStr::from_ptr(fmt_c) }.to_bytes();
+    let n_specs = count_scanf_specifiers(fmt_bytes).min(MAX_SCANF_ARGS);
+
+    // Build Linux va_list from Windows arglist pointer.
+    let mut tag = VaListTag {
+        gp_offset: 48,
+        fp_offset: 304,
+        overflow_arg_area: arglist,
+        reg_save_area: core::ptr::null_mut(),
+    };
+    let vl: &mut core::ffi::VaList<'_> =
+        unsafe { &mut *(&raw mut tag).cast::<core::ffi::VaList<'_>>() };
+
+    let mut ptrs: [*mut core::ffi::c_void; MAX_SCANF_ARGS] =
+        [core::ptr::null_mut(); MAX_SCANF_ARGS];
+    for p in ptrs.iter_mut().take(n_specs) {
+        // SAFETY: caller guarantees enough pointer args are in arglist.
+        *p = unsafe { vl.arg::<*mut core::ffi::c_void>() };
+    }
+
+    let file_ptr: *mut libc::FILE = if stream.is_null() || stream as usize == 0 {
+        // stdin
+        unsafe { libc::fdopen(0, c"r".as_ptr()) }
+    } else {
+        stream.cast::<libc::FILE>()
+    };
+
+    if file_ptr.is_null() {
+        return -1;
+    }
+
+    // SAFETY: file_ptr is a valid Linux FILE*; fmt_c is null-terminated; ptrs are valid.
+    unsafe {
+        libc::fscanf(
+            file_ptr, fmt_c, ptrs[0], ptrs[1], ptrs[2], ptrs[3], ptrs[4], ptrs[5], ptrs[6],
+            ptrs[7], ptrs[8], ptrs[9], ptrs[10], ptrs[11], ptrs[12], ptrs[13], ptrs[14], ptrs[15],
+        )
+    }
 }
 
 /// `_configthreadlocale(mode)` — UCRT per-thread locale configuration
@@ -7274,5 +7809,132 @@ mod tests {
         assert_eq!(n, -1);
         let s = unsafe { CStr::from_ptr(buf.as_ptr()) }.to_str().unwrap();
         assert_eq!(s, "hel");
+    }
+
+    // ── Phase 37: numeric conversion tests ───────────────────────────────────
+
+    #[test]
+    fn test_ultoa_decimal() {
+        let mut buf = [0i8; 32];
+        let p = unsafe { msvcrt__ultoa(12345u64, buf.as_mut_ptr(), 10) };
+        assert!(!p.is_null());
+        let s = unsafe { CStr::from_ptr(buf.as_ptr()) }.to_str().unwrap();
+        assert_eq!(s, "12345");
+    }
+
+    #[test]
+    fn test_ultoa_hex() {
+        let mut buf = [0i8; 32];
+        let p = unsafe { msvcrt__ultoa(255u64, buf.as_mut_ptr(), 16) };
+        assert!(!p.is_null());
+        let s = unsafe { CStr::from_ptr(buf.as_ptr()) }.to_str().unwrap();
+        assert_eq!(s, "ff");
+    }
+
+    #[test]
+    fn test_i64toa_negative() {
+        let mut buf = [0i8; 32];
+        let p = unsafe { msvcrt__i64toa(-42i64, buf.as_mut_ptr(), 10) };
+        assert!(!p.is_null());
+        let s = unsafe { CStr::from_ptr(buf.as_ptr()) }.to_str().unwrap();
+        assert_eq!(s, "-42");
+    }
+
+    #[test]
+    fn test_ui64toa_large() {
+        let mut buf = [0i8; 32];
+        let p = unsafe { msvcrt__ui64toa(u64::MAX, buf.as_mut_ptr(), 10) };
+        assert!(!p.is_null());
+        let s = unsafe { CStr::from_ptr(buf.as_ptr()) }.to_str().unwrap();
+        assert_eq!(s, "18446744073709551615");
+    }
+
+    #[test]
+    fn test_strtoi64() {
+        let n = unsafe { msvcrt__strtoi64(c"42".as_ptr(), core::ptr::null_mut(), 10) };
+        assert_eq!(n, 42i64);
+    }
+
+    #[test]
+    fn test_strtoi64_negative() {
+        let n = unsafe { msvcrt__strtoi64(c"-99".as_ptr(), core::ptr::null_mut(), 10) };
+        assert_eq!(n, -99i64);
+    }
+
+    #[test]
+    fn test_strtoui64() {
+        let n = unsafe {
+            msvcrt__strtoui64(c"18446744073709551615".as_ptr(), core::ptr::null_mut(), 10)
+        };
+        assert_eq!(n, u64::MAX);
+    }
+
+    #[test]
+    fn test_itow_decimal() {
+        let mut buf = [0u16; 16];
+        let p = unsafe { msvcrt__itow(255, buf.as_mut_ptr(), 10) };
+        assert!(!p.is_null());
+        let s: String = buf
+            .iter()
+            .take_while(|&&c| c != 0)
+            .map(|&c| char::from(c as u8))
+            .collect();
+        assert_eq!(s, "255");
+    }
+
+    #[test]
+    fn test_ltow_negative() {
+        let mut buf = [0u16; 32];
+        let p = unsafe { msvcrt__ltow(-7i64, buf.as_mut_ptr(), 10) };
+        assert!(!p.is_null());
+        let s: String = buf
+            .iter()
+            .take_while(|&&c| c != 0)
+            .map(|&c| char::from(c as u8))
+            .collect();
+        assert_eq!(s, "-7");
+    }
+
+    // ── Phase 37: UCRT vsprintf tests ─────────────────────────────────────────
+
+    #[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "gnu"))]
+    #[test]
+    fn test_ucrt_stdio_common_vsprintf_basic() {
+        // Build a Windows-style va_list: two 8-byte slots: [42i64, 0i64]
+        let args: [u64; 2] = [42, 0];
+        let mut buf = [0u8; 32];
+        let fmt = c"%d";
+        let n = unsafe {
+            ucrt__stdio_common_vsprintf(
+                0,
+                buf.as_mut_ptr(),
+                buf.len(),
+                fmt.as_ptr().cast::<u8>(),
+                core::ptr::null(),
+                args.as_ptr() as *mut u8,
+            )
+        };
+        assert_eq!(n, 2); // "42" has 2 chars
+        let s = unsafe { CStr::from_ptr(buf.as_ptr().cast::<i8>()) }
+            .to_str()
+            .unwrap();
+        assert_eq!(s, "42");
+    }
+
+    #[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "gnu"))]
+    #[test]
+    fn test_ucrt_stdio_common_vsprintf_null_fmt() {
+        let mut buf = [0u8; 32];
+        let n = unsafe {
+            ucrt__stdio_common_vsprintf(
+                0,
+                buf.as_mut_ptr(),
+                buf.len(),
+                core::ptr::null(),
+                core::ptr::null(),
+                core::ptr::null_mut(),
+            )
+        };
+        assert_eq!(n, -1);
     }
 }

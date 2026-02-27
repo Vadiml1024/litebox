@@ -1,4 +1,112 @@
-# Windows-on-Linux Support — Session Summary (Phase 36)
+# Windows-on-Linux Support — Session Summary (Phase 37)
+
+## ⚡ CURRENT STATUS ⚡
+
+**Branch:** `copilot/continue-windows-on-linux-support-another-one`
+**Goal:** Phase 37 — UCRT sprintf/snprintf entry points, fscanf/scanf, numeric conversions, std::basic_string<char>.
+
+### Status at checkpoint
+
+| Component | State |
+|-----------|-------|
+| All tests (585 total) | ✅ Passing |
+| Ratchet tests (5) | ✅ Passing |
+| Clippy (`-Dwarnings`) | ✅ Clean |
+
+### Files changed in this session
+- `litebox_platform_linux_for_windows/src/msvcrt.rs`
+  - Added `ucrt__stdio_common_vsprintf` — UCRT vsprintf entry point (writes to buffer)
+  - Added `ucrt__stdio_common_vsnprintf_s` — UCRT vsnprintf_s with `_TRUNCATE` semantics
+  - Added `ucrt__stdio_common_vsprintf_s` — UCRT vsprintf_s (overflow-checking)
+  - Added `ucrt__stdio_common_vswprintf` — UCRT wide vsprintf (UTF-16 output buffer)
+  - Added `msvcrt_scanf` — scanf from stdin (up to 16 specifiers)
+  - Added `msvcrt_fscanf` — fscanf from FILE* (up to 16 specifiers)
+  - Added `ucrt__stdio_common_vfscanf` — UCRT fscanf entry point
+  - Added `msvcrt__ultoa` — unsigned long to string
+  - Added `msvcrt__i64toa` — i64 to string (delegates to `_ltoa`)
+  - Added `msvcrt__ui64toa` — u64 to string (delegates to `_ultoa`)
+  - Added `msvcrt__strtoi64` — string to i64 (via `libc::strtoll`)
+  - Added `msvcrt__strtoui64` — string to u64 (via `libc::strtoull`)
+  - Added `msvcrt__itow`, `msvcrt__ltow`, `msvcrt__ultow`, `msvcrt__i64tow`, `msvcrt__ui64tow` — integer to wide string
+  - Added 17 new unit tests
+- `litebox_platform_linux_for_windows/src/msvcp140.rs`
+  - Implemented `std::basic_string<char>` with MSVC x64 ABI layout (SSO threshold 15):
+    - `msvcp140__basic_string_ctor` — default constructor (empty SSO)
+    - `msvcp140__basic_string_ctor_cstr` — construct from C string
+    - `msvcp140__basic_string_copy_ctor` — copy constructor
+    - `msvcp140__basic_string_dtor` — destructor (frees heap if not SSO)
+    - `msvcp140__basic_string_c_str` — returns data pointer
+    - `msvcp140__basic_string_size` — returns length
+    - `msvcp140__basic_string_empty` — returns true if empty
+    - `msvcp140__basic_string_assign_op` — copy assignment operator
+    - `msvcp140__basic_string_assign_cstr` — assign from C string
+    - `msvcp140__basic_string_append_cstr` — append C string
+  - Added 5 new unit tests
+- `litebox_platform_linux_for_windows/src/function_table.rs`
+  - Added `FunctionImpl` entries for all new MSVCRT and msvcp140 functions
+- `litebox_shim_windows/src/loader/dll.rs`
+  - Added MSVCRT.dll stub exports (0xD0–0xE0) for Phase 37 functions
+  - Added msvcp140.dll stub exports (22–31) for `basic_string<char>` members
+- `litebox_runner_windows_on_linux_userland/tests/integration.rs`
+  - Added Phase 37 assertion block for MSVCRT.dll and msvcp140.dll new exports
+
+### Key design decisions
+- **`std::basic_string<char>` ABI**: Matches MSVC x64 layout: 16-byte SSO buffer union + 8-byte size + 8-byte capacity. SSO threshold is 15 chars. Uses `ptr::read_unaligned`/`ptr::write_unaligned` defensively.
+- **Malloc failure handling**: If heap allocation fails in `basic_string`, the object is left in a valid empty SSO state instead of storing a null heap pointer with non-zero size.
+- **`ucrt__stdio_common_vfscanf`**: For stdin (stream == null), uses `libc::fdopen(0, "r")` to obtain a FILE*. All actual FILE* values are valid Linux FILE* handles.
+- **Wide integer conversion**: `_itow`/`_ltow`/etc. produce ASCII-only wide strings (each char fits in u16); this covers all practical cases for decimal/hex output.
+
+### What the next session should consider
+
+**Possible Phase 38 directions:**
+1. **WriteFile round-trip fix (Phase 10)** — unify kernel32 file handle registry with NtWriteFile/NtReadFile
+2. **`std::basic_string<wchar_t>`** — wide string stubs analogous to `basic_string<char>`
+3. **More msvcp140.dll** — `std::vector<T>` operations, `std::ostringstream`, `std::cout`/`std::cerr` objects
+4. **More UCRT** — `_printf_l`, `_fprintf_l`, `_sprintf_l` (locale-aware variants)
+5. **`_wfindfirst`/`_wfindnext`/`_findclose`** — directory enumeration via CRT
+6. **WinSock completions** — `WSAEventSelect`, `WSAEnumNetworkEvents`, `gethostbyname`
+
+### Build & test commands
+
+```bash
+cd /home/runner/work/litebox/litebox
+
+# Quick build
+cargo build -p litebox_platform_linux_for_windows
+
+# Full build + runner
+cargo build -p litebox_runner_windows_on_linux_userland
+
+# Run all Windows-specific tests
+cargo nextest run -p litebox_shim_windows \
+                 -p litebox_platform_linux_for_windows \
+                 -p litebox_runner_windows_on_linux_userland
+
+# Lint (with CI-equivalent flags)
+RUSTFLAGS="-Dwarnings" cargo clippy -p litebox_shim_windows \
+             -p litebox_platform_linux_for_windows \
+             -p litebox_runner_windows_on_linux_userland
+
+# Ratchet tests
+cargo test -p dev_tests
+```
+
+### Key source locations
+
+| What | File | ~Line |
+|------|------|-------|
+| `ucrt__stdio_common_vsprintf` | `litebox_platform_linux_for_windows/src/msvcrt.rs` | ~4786 |
+| `ucrt__stdio_common_vfscanf` | same | ~5242 |
+| `msvcrt_scanf` | same | ~5148 |
+| `msvcrt_fscanf` | same | ~5190 |
+| `msvcrt__ultoa` | same | ~2608 |
+| `msvcrt__strtoi64` / `_strtoui64` | same | ~2660 |
+| `msvcrt__itow` and wide variants | same | ~2720 |
+| `std::basic_string<char>` | `litebox_platform_linux_for_windows/src/msvcp140.rs` | ~370 |
+| Function table | `litebox_platform_linux_for_windows/src/function_table.rs` | — |
+| DLL manager stubs | `litebox_shim_windows/src/loader/dll.rs` | — |
+
+
 
 ## ⚡ CURRENT STATUS ⚡
 

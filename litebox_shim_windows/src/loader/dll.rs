@@ -839,6 +839,24 @@ impl DllManager {
             ("__stdio_common_vsscanf", MSVCRT_BASE + 0xCE),
             // Secure formatted I/O
             ("_snprintf_s", MSVCRT_BASE + 0xCF),
+            // Phase 37 additions
+            ("__stdio_common_vsprintf", MSVCRT_BASE + 0xD0),
+            ("__stdio_common_vsnprintf_s", MSVCRT_BASE + 0xD1),
+            ("__stdio_common_vsprintf_s", MSVCRT_BASE + 0xD2),
+            ("__stdio_common_vswprintf", MSVCRT_BASE + 0xD3),
+            ("scanf", MSVCRT_BASE + 0xD4),
+            ("fscanf", MSVCRT_BASE + 0xD5),
+            ("__stdio_common_vfscanf", MSVCRT_BASE + 0xD6),
+            ("_ultoa", MSVCRT_BASE + 0xD7),
+            ("_i64toa", MSVCRT_BASE + 0xD8),
+            ("_ui64toa", MSVCRT_BASE + 0xD9),
+            ("_strtoi64", MSVCRT_BASE + 0xDA),
+            ("_strtoui64", MSVCRT_BASE + 0xDB),
+            ("_itow", MSVCRT_BASE + 0xDC),
+            ("_ltow", MSVCRT_BASE + 0xDD),
+            ("_ultow", MSVCRT_BASE + 0xDE),
+            ("_i64tow", MSVCRT_BASE + 0xDF),
+            ("_ui64tow", MSVCRT_BASE + 0xE0),
         ];
 
         self.register_stub_dll("MSVCRT.dll", exports);
@@ -1212,6 +1230,47 @@ impl DllManager {
             // Phase 35: ios_base::Init stubs
             ("??0Init@ios_base@std@@QEAA@XZ", MSVCP140_BASE + 20),
             ("??1Init@ios_base@std@@QEAA@XZ", MSVCP140_BASE + 21),
+            // Phase 37: std::basic_string<char> member functions
+            (
+                "??0?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@QEAA@XZ",
+                MSVCP140_BASE + 22,
+            ),
+            (
+                "??0?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@QEAA@PEBD@Z",
+                MSVCP140_BASE + 23,
+            ),
+            (
+                "??0?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@QEAA@AEBV01@@Z",
+                MSVCP140_BASE + 24,
+            ),
+            (
+                "??1?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@QEAA@XZ",
+                MSVCP140_BASE + 25,
+            ),
+            (
+                "?c_str@?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@QEBAPEBDXZ",
+                MSVCP140_BASE + 26,
+            ),
+            (
+                "?size@?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@QEBA_KXZ",
+                MSVCP140_BASE + 27,
+            ),
+            (
+                "?empty@?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@QEBA_NXZ",
+                MSVCP140_BASE + 28,
+            ),
+            (
+                "??4?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@QEAAAEAV01@AEBV01@@Z",
+                MSVCP140_BASE + 29,
+            ),
+            (
+                "??4?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@QEAAAEAV01@PEBD@Z",
+                MSVCP140_BASE + 30,
+            ),
+            (
+                "?append@?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@QEAAAEAV12@PEBD@Z",
+                MSVCP140_BASE + 31,
+            ),
         ];
 
         self.register_stub_dll("msvcp140.dll", exports);

@@ -432,6 +432,49 @@ fn test_dll_manager_has_all_required_exports() {
         let result = dll_manager.get_proc_address(msvcp140, func_name);
         assert!(result.is_ok(), "msvcp140.dll should export {func_name}");
     }
+
+    // Check that Phase 37 MSVCRT additions are resolvable via the DLL manager
+    let msvcrt_phase37_functions = vec![
+        "__stdio_common_vsprintf",
+        "__stdio_common_vsnprintf_s",
+        "__stdio_common_vsprintf_s",
+        "__stdio_common_vswprintf",
+        "scanf",
+        "fscanf",
+        "__stdio_common_vfscanf",
+        "_ultoa",
+        "_i64toa",
+        "_ui64toa",
+        "_strtoi64",
+        "_strtoui64",
+        "_itow",
+        "_ltow",
+        "_ultow",
+        "_i64tow",
+        "_ui64tow",
+    ];
+    for func_name in msvcrt_phase37_functions {
+        let result = dll_manager.get_proc_address(msvcrt, func_name);
+        assert!(result.is_ok(), "MSVCRT.dll should export {func_name}");
+    }
+
+    // Check that Phase 37 msvcp140.dll basic_string additions are resolvable
+    let msvcp140_phase37_functions = vec![
+        "??0?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@QEAA@XZ",
+        "??0?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@QEAA@PEBD@Z",
+        "??0?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@QEAA@AEBV01@@Z",
+        "??1?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@QEAA@XZ",
+        "?c_str@?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@QEBAPEBDXZ",
+        "?size@?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@QEBA_KXZ",
+        "?empty@?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@QEBA_NXZ",
+        "??4?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@QEAAAEAV01@AEBV01@@Z",
+        "??4?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@QEAAAEAV01@PEBD@Z",
+        "?append@?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@QEAAAEAV12@PEBD@Z",
+    ];
+    for func_name in msvcp140_phase37_functions {
+        let result = dll_manager.get_proc_address(msvcp140, func_name);
+        assert!(result.is_ok(), "msvcp140.dll should export {func_name}");
+    }
 }
 
 #[cfg(test)]
