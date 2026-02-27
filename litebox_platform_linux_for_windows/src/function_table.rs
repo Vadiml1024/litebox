@@ -3249,7 +3249,7 @@ pub fn get_function_table() -> Vec<FunctionImpl> {
         FunctionImpl {
             name: "sscanf",
             dll_name: "MSVCRT.dll",
-            num_params: 2,
+            num_params: 18, // Variadic; buf + format + up to 16 pointer args
             impl_address: crate::msvcrt::msvcrt_sscanf as *const () as usize,
         },
         FunctionImpl {
@@ -3810,6 +3810,18 @@ pub fn get_function_table() -> Vec<FunctionImpl> {
             dll_name: "MSVCRT.dll",
             num_params: 2,
             impl_address: crate::msvcrt::msvcrt__open_osfhandle as *const () as usize,
+        },
+        FunctionImpl {
+            name: "_wcsdup",
+            dll_name: "MSVCRT.dll",
+            num_params: 1,
+            impl_address: crate::msvcrt::msvcrt__wcsdup as *const () as usize,
+        },
+        FunctionImpl {
+            name: "__stdio_common_vsscanf",
+            dll_name: "MSVCRT.dll",
+            num_params: 6,
+            impl_address: crate::msvcrt::ucrt__stdio_common_vsscanf as *const () as usize,
         },
         FunctionImpl {
             name: "PostQueuedCompletionStatus",

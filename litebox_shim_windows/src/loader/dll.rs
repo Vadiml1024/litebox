@@ -826,6 +826,8 @@ impl DllManager {
             ("_vscwprintf", MSVCRT_BASE + 0xCA),
             ("_get_osfhandle", MSVCRT_BASE + 0xCB),
             ("_open_osfhandle", MSVCRT_BASE + 0xCC),
+            ("_wcsdup", MSVCRT_BASE + 0xCD),
+            ("__stdio_common_vsscanf", MSVCRT_BASE + 0xCE),
         ];
 
         self.register_stub_dll("MSVCRT.dll", exports);
