@@ -527,6 +527,12 @@ pub fn get_function_table() -> Vec<FunctionImpl> {
             impl_address: crate::kernel32::kernel32_CreateFileW as *const () as usize,
         },
         FunctionImpl {
+            name: "CreateFileA",
+            dll_name: "KERNEL32.dll",
+            num_params: 7,
+            impl_address: crate::kernel32::kernel32_CreateFileA as *const () as usize,
+        },
+        FunctionImpl {
             name: "ReadFile",
             dll_name: "KERNEL32.dll",
             num_params: 5,
@@ -730,6 +736,12 @@ pub fn get_function_table() -> Vec<FunctionImpl> {
             impl_address: crate::kernel32::kernel32_DeleteFileW as *const () as usize,
         },
         FunctionImpl {
+            name: "DeleteFileA",
+            dll_name: "KERNEL32.dll",
+            num_params: 1,
+            impl_address: crate::kernel32::kernel32_DeleteFileA as *const () as usize,
+        },
+        FunctionImpl {
             name: "DeleteProcThreadAttributeList",
             dll_name: "KERNEL32.dll",
             num_params: 1,
@@ -930,6 +942,12 @@ pub fn get_function_table() -> Vec<FunctionImpl> {
             dll_name: "KERNEL32.dll",
             num_params: 2,
             impl_address: crate::kernel32::kernel32_GetTempPathW as *const () as usize,
+        },
+        FunctionImpl {
+            name: "GetTempPathA",
+            dll_name: "KERNEL32.dll",
+            num_params: 2,
+            impl_address: crate::kernel32::kernel32_GetTempPathA as *const () as usize,
         },
         FunctionImpl {
             name: "GetWindowsDirectoryW",
@@ -3245,6 +3263,12 @@ pub fn get_function_table() -> Vec<FunctionImpl> {
             dll_name: "MSVCRT.dll",
             num_params: 9, // Variadic; buf + count + format + up to 6 args
             impl_address: crate::msvcrt::msvcrt_snprintf as *const () as usize,
+        },
+        FunctionImpl {
+            name: "_snprintf_s",
+            dll_name: "MSVCRT.dll",
+            num_params: 10, // Variadic; buf + sizeOfBuffer + count + format + up to 6 args
+            impl_address: crate::msvcrt::msvcrt_snprintf_s as *const () as usize,
         },
         FunctionImpl {
             name: "sscanf",

@@ -4896,6 +4896,54 @@ pub unsafe extern "C" fn msvcrt_snprintf(
     would_write
 }
 
+/// `_snprintf_s(buf, size_of_buffer, count, format, ...) -> int` — write formatted
+/// string to a size-limited buffer with overflow protection.
+///
+/// Writes at most `min(count, size_of_buffer - 1)` bytes of the formatted output
+/// and appends a NUL terminator.  When `count` is `_TRUNCATE` (`usize::MAX`),
+/// the output is truncated to `size_of_buffer - 1` characters.
+/// Returns the number of characters that would have been written (C99 semantics),
+/// or -1 on error.
+///
+/// # Safety
+///
+/// `buf` must point to a writable buffer of at least `size_of_buffer` bytes.
+/// `format` must be a valid null-terminated string.
+/// Variadic arguments must match the format specifiers.
+#[unsafe(no_mangle)]
+#[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+pub unsafe extern "C" fn msvcrt_snprintf_s(
+    buf: *mut i8,
+    size_of_buffer: usize,
+    count: usize,
+    format: *const i8,
+    mut args: ...
+) -> i32 {
+    if format.is_null() {
+        return -1;
+    }
+    // SAFETY: Caller guarantees format is a valid null-terminated C string.
+    let fmt_bytes = unsafe { CStr::from_ptr(format) }.to_bytes();
+    // SAFETY: format and args are valid per caller contract.
+    let out = unsafe { format_printf_va(fmt_bytes, &mut args, false) };
+    let would_write = out.len() as i32;
+    if !buf.is_null() && size_of_buffer > 0 {
+        // Effective limit: min(count, size_of_buffer - 1), treating _TRUNCATE as unbounded.
+        let effective = if count == usize::MAX {
+            size_of_buffer - 1
+        } else {
+            count.min(size_of_buffer - 1)
+        };
+        let copy_len = out.len().min(effective);
+        // SAFETY: Caller guarantees buf is at least `size_of_buffer` bytes.
+        unsafe {
+            std::ptr::copy_nonoverlapping(out.as_ptr().cast::<i8>(), buf, copy_len);
+            *buf.add(copy_len) = 0;
+        }
+    }
+    would_write
+}
+
 /// `sscanf(buf, format, ...) -> int` — parse formatted string into variables.
 ///
 /// Parses `buf` according to `format`, writing results through the pointer
