@@ -393,6 +393,38 @@ fn test_dll_manager_has_all_required_exports() {
         let result = dll_manager.get_proc_address(msvcrt, func_name);
         assert!(result.is_ok(), "MSVCRT.dll should export {func_name}");
     }
+
+    // Check that Phase 35 MSVCRT additions are resolvable via the DLL manager
+    let msvcrt_phase35_functions = vec![
+        "_vsnwprintf",
+        "_scprintf",
+        "_vscprintf",
+        "_scwprintf",
+        "_vscwprintf",
+        "_get_osfhandle",
+        "_open_osfhandle",
+    ];
+    for func_name in msvcrt_phase35_functions {
+        let result = dll_manager.get_proc_address(msvcrt, func_name);
+        assert!(result.is_ok(), "MSVCRT.dll should export {func_name}");
+    }
+
+    // Check that Phase 35 msvcp140.dll additions are resolvable
+    let msvcp140_phase35_functions = vec![
+        "?what@exception@std@@UEBAPEBDXZ",
+        "??1exception@std@@UEAA@XZ",
+        "??0exception@std@@QEAA@XZ",
+        "??0exception@std@@QEAA@PEBD@Z",
+        "?_Getgloballocale@locale@std@@CAPEAV_Lobj@12@XZ",
+        "??0_Lockit@std@@QEAA@H@Z",
+        "??1_Lockit@std@@QEAA@XZ",
+        "??0Init@ios_base@std@@QEAA@XZ",
+        "??1Init@ios_base@std@@QEAA@XZ",
+    ];
+    for func_name in msvcp140_phase35_functions {
+        let result = dll_manager.get_proc_address(msvcp140, func_name);
+        assert!(result.is_ok(), "msvcp140.dll should export {func_name}");
+    }
 }
 
 #[cfg(test)]

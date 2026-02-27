@@ -3691,6 +3691,107 @@ pub fn get_function_table() -> Vec<FunctionImpl> {
             num_params: 1,
             impl_address: crate::msvcp140::msvcp140__Getmonths as *const () as usize,
         },
+        // Phase 35: std::exception stubs
+        FunctionImpl {
+            name: "?what@exception@std@@UEBAPEBDXZ",
+            dll_name: "msvcp140.dll",
+            num_params: 1,
+            impl_address: crate::msvcp140::msvcp140__exception_what as *const () as usize,
+        },
+        FunctionImpl {
+            name: "??1exception@std@@UEAA@XZ",
+            dll_name: "msvcp140.dll",
+            num_params: 1,
+            impl_address: crate::msvcp140::msvcp140__exception_dtor as *const () as usize,
+        },
+        FunctionImpl {
+            name: "??0exception@std@@QEAA@XZ",
+            dll_name: "msvcp140.dll",
+            num_params: 1,
+            impl_address: crate::msvcp140::msvcp140__exception_ctor as *const () as usize,
+        },
+        FunctionImpl {
+            name: "??0exception@std@@QEAA@PEBD@Z",
+            dll_name: "msvcp140.dll",
+            num_params: 2,
+            impl_address: crate::msvcp140::msvcp140__exception_ctor_msg as *const () as usize,
+        },
+        // Phase 35: locale / lockit stubs
+        FunctionImpl {
+            name: "?_Getgloballocale@locale@std@@CAPEAV_Lobj@12@XZ",
+            dll_name: "msvcp140.dll",
+            num_params: 0,
+            impl_address: crate::msvcp140::msvcp140__Getgloballocale as *const () as usize,
+        },
+        FunctionImpl {
+            name: "??0_Lockit@std@@QEAA@H@Z",
+            dll_name: "msvcp140.dll",
+            num_params: 2,
+            impl_address: crate::msvcp140::msvcp140__Lockit_ctor as *const () as usize,
+        },
+        FunctionImpl {
+            name: "??1_Lockit@std@@QEAA@XZ",
+            dll_name: "msvcp140.dll",
+            num_params: 1,
+            impl_address: crate::msvcp140::msvcp140__Lockit_dtor as *const () as usize,
+        },
+        // Phase 35: ios_base::Init stubs
+        FunctionImpl {
+            name: "??0Init@ios_base@std@@QEAA@XZ",
+            dll_name: "msvcp140.dll",
+            num_params: 1,
+            impl_address: crate::msvcp140::msvcp140__ios_base_Init_ctor as *const () as usize,
+        },
+        FunctionImpl {
+            name: "??1Init@ios_base@std@@QEAA@XZ",
+            dll_name: "msvcp140.dll",
+            num_params: 1,
+            impl_address: crate::msvcp140::msvcp140__ios_base_Init_dtor as *const () as usize,
+        },
+        // Phase 35: MSVCRT width-counting and wide vsnprintf
+        FunctionImpl {
+            name: "_vsnwprintf",
+            dll_name: "MSVCRT.dll",
+            num_params: 4,
+            impl_address: crate::msvcrt::msvcrt__vsnwprintf as *const () as usize,
+        },
+        FunctionImpl {
+            name: "_scprintf",
+            dll_name: "MSVCRT.dll",
+            num_params: 7,
+            impl_address: crate::msvcrt::msvcrt__scprintf as *const () as usize,
+        },
+        FunctionImpl {
+            name: "_vscprintf",
+            dll_name: "MSVCRT.dll",
+            num_params: 2,
+            impl_address: crate::msvcrt::msvcrt__vscprintf as *const () as usize,
+        },
+        FunctionImpl {
+            name: "_scwprintf",
+            dll_name: "MSVCRT.dll",
+            num_params: 7,
+            impl_address: crate::msvcrt::msvcrt__scwprintf as *const () as usize,
+        },
+        FunctionImpl {
+            name: "_vscwprintf",
+            dll_name: "MSVCRT.dll",
+            num_params: 2,
+            impl_address: crate::msvcrt::msvcrt__vscwprintf as *const () as usize,
+        },
+        // Phase 35: CRT fd/Win32 handle interop
+        FunctionImpl {
+            name: "_get_osfhandle",
+            dll_name: "MSVCRT.dll",
+            num_params: 1,
+            impl_address: crate::msvcrt::msvcrt__get_osfhandle as *const () as usize,
+        },
+        FunctionImpl {
+            name: "_open_osfhandle",
+            dll_name: "MSVCRT.dll",
+            num_params: 2,
+            impl_address: crate::msvcrt::msvcrt__open_osfhandle as *const () as usize,
+        },
     ]
 }
 

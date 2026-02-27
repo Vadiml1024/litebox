@@ -818,6 +818,14 @@ impl DllManager {
             ("_write", MSVCRT_BASE + 0xC3),
             ("getchar", MSVCRT_BASE + 0xC4),
             ("putchar", MSVCRT_BASE + 0xC5),
+            // Phase 35 additions
+            ("_vsnwprintf", MSVCRT_BASE + 0xC6),
+            ("_scprintf", MSVCRT_BASE + 0xC7),
+            ("_vscprintf", MSVCRT_BASE + 0xC8),
+            ("_scwprintf", MSVCRT_BASE + 0xC9),
+            ("_vscwprintf", MSVCRT_BASE + 0xCA),
+            ("_get_osfhandle", MSVCRT_BASE + 0xCB),
+            ("_open_osfhandle", MSVCRT_BASE + 0xCC),
         ];
 
         self.register_stub_dll("MSVCRT.dll", exports);
@@ -1176,6 +1184,21 @@ impl DllManager {
             ),
             ("?_Getdays@_Locinfo@std@@QEBAPEBDXZ", MSVCP140_BASE + 11),
             ("?_Getmonths@_Locinfo@std@@QEBAPEBDXZ", MSVCP140_BASE + 12),
+            // Phase 35: std::exception stubs
+            ("?what@exception@std@@UEBAPEBDXZ", MSVCP140_BASE + 13),
+            ("??1exception@std@@UEAA@XZ", MSVCP140_BASE + 14),
+            ("??0exception@std@@QEAA@XZ", MSVCP140_BASE + 15),
+            ("??0exception@std@@QEAA@PEBD@Z", MSVCP140_BASE + 16),
+            // Phase 35: locale / lockit stubs
+            (
+                "?_Getgloballocale@locale@std@@CAPEAV_Lobj@12@XZ",
+                MSVCP140_BASE + 17,
+            ),
+            ("??0_Lockit@std@@QEAA@H@Z", MSVCP140_BASE + 18),
+            ("??1_Lockit@std@@QEAA@XZ", MSVCP140_BASE + 19),
+            // Phase 35: ios_base::Init stubs
+            ("??0Init@ios_base@std@@QEAA@XZ", MSVCP140_BASE + 20),
+            ("??1Init@ios_base@std@@QEAA@XZ", MSVCP140_BASE + 21),
         ];
 
         self.register_stub_dll("msvcp140.dll", exports);
