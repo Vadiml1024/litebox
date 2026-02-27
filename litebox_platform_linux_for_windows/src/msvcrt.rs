@@ -679,6 +679,155 @@ unsafe fn format_printf_raw(fmt: &[u8], ap: *mut u8, wide_mode: bool) -> Vec<u8>
     unsafe { format_printf_va(fmt, vl, wide_mode) }
 }
 
+// ── scanf helpers ─────────────────────────────────────────────────────────────
+
+/// Count the number of conversion specifiers in `fmt` that consume a
+/// va_list argument.  Suppressed specifiers (`%*d`) and `%%` are excluded.
+///
+/// This is used to know how many pointer arguments to extract from the
+/// va_list before calling `libc::sscanf`.
+fn count_scanf_specifiers(fmt: &[u8]) -> usize {
+    let mut count = 0usize;
+    let mut i = 0;
+    while i < fmt.len() {
+        if fmt[i] != b'%' {
+            i += 1;
+            continue;
+        }
+        i += 1;
+        if i >= fmt.len() {
+            break;
+        }
+        // %% — literal percent, no argument consumed
+        if fmt[i] == b'%' {
+            i += 1;
+            continue;
+        }
+        // Suppression flag '*' — argument is parsed but NOT stored (no pointer consumed)
+        let suppressed = fmt[i] == b'*';
+        if suppressed {
+            i += 1;
+        }
+        // Skip optional maximum field width (digits)
+        while i < fmt.len() && fmt[i].is_ascii_digit() {
+            i += 1;
+        }
+        // Skip length modifier(s): h, hh, l, ll, L, q, Z, z, j, t
+        while i < fmt.len()
+            && matches!(
+                fmt[i],
+                b'h' | b'l' | b'L' | b'q' | b'Z' | b'z' | b'j' | b't'
+            )
+        {
+            i += 1;
+        }
+        if i >= fmt.len() {
+            break;
+        }
+        // Handle %[…] character-class specifier — scan past the closing ']'
+        if fmt[i] == b'[' {
+            i += 1;
+            // '^' inverts the class
+            if i < fmt.len() && fmt[i] == b'^' {
+                i += 1;
+            }
+            // A ']' immediately after '[' or '[^' is a literal ']' in the class
+            if i < fmt.len() && fmt[i] == b']' {
+                i += 1;
+            }
+            while i < fmt.len() && fmt[i] != b']' {
+                i += 1;
+            }
+            if i < fmt.len() {
+                i += 1; // skip ']'
+            }
+        } else {
+            i += 1; // skip conversion char (d, i, u, x, f, s, c, p, n, …)
+        }
+        if !suppressed {
+            count += 1;
+        }
+    }
+    count
+}
+
+/// Maximum number of scanf output pointer arguments we handle.
+const MAX_SCANF_ARGS: usize = 16;
+
+/// Parse `buf` according to `fmt`, writing results through the pointers
+/// obtained from the Linux `VaList`.
+///
+/// Up to `MAX_SCANF_ARGS` (16) specifiers are supported.  Returns the number
+/// of items successfully matched and stored (same as `libc::sscanf`).
+///
+/// # Safety
+/// - `buf` must be a valid null-terminated C string.
+/// - `fmt` must be a valid null-terminated C string.
+/// - Every pointer argument in `args` must be a valid, writable pointer of
+///   the type implied by the corresponding format specifier.
+#[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "gnu"))]
+#[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+unsafe fn format_scanf_va(buf: *const i8, fmt: *const i8, args: &mut core::ffi::VaList<'_>) -> i32 {
+    let fmt_bytes = unsafe { CStr::from_ptr(fmt.cast::<i8>()) }.to_bytes();
+    let n_specs = count_scanf_specifiers(fmt_bytes).min(MAX_SCANF_ARGS);
+
+    // Extract exactly n_specs pointer arguments from the va_list.
+    // Remaining slots are left as null; libc::sscanf will never access them
+    // because the format string controls how many pointers are consumed.
+    let mut ptrs: [*mut core::ffi::c_void; MAX_SCANF_ARGS] =
+        [core::ptr::null_mut(); MAX_SCANF_ARGS];
+    for p in ptrs.iter_mut().take(n_specs) {
+        // SAFETY: caller guarantees enough pointer args are in the va_list.
+        *p = unsafe { args.arg::<*mut core::ffi::c_void>() };
+    }
+
+    // Call libc::sscanf with a fixed 16-slot argument list.  sscanf only
+    // reads as many arguments as the format string specifies, so the trailing
+    // null pointers are never accessed.
+    // SAFETY: buf and fmt are valid null-terminated strings; each non-null
+    // ptr in ptrs[0..n_specs] is a valid writable pointer for its specifier.
+    unsafe {
+        libc::sscanf(
+            buf, fmt, ptrs[0], ptrs[1], ptrs[2], ptrs[3], ptrs[4], ptrs[5], ptrs[6], ptrs[7],
+            ptrs[8], ptrs[9], ptrs[10], ptrs[11], ptrs[12], ptrs[13], ptrs[14], ptrs[15],
+        )
+    }
+}
+
+/// Parse `buf` according to `fmt` using a Windows x64 `va_list` pointer.
+///
+/// Bridges the Windows x64 `va_list` (a plain pointer into 8-byte-aligned
+/// argument slots) to `format_scanf_va` by constructing a synthetic Linux
+/// `__va_list_tag` that reads all arguments from the overflow area.
+///
+/// # Safety
+/// - `buf` must be a valid null-terminated C string.
+/// - `fmt` must be a valid null-terminated C string byte slice.
+/// - `ap` must be a valid Windows x64 `va_list` with at least as many
+///   8-byte pointer slots as `fmt` contains non-suppressed specifiers.
+#[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "gnu"))]
+#[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+unsafe fn format_scanf_raw(buf: *const i8, fmt: *const i8, ap: *mut u8) -> i32 {
+    // Construct a Linux __va_list_tag with gp_offset=48 and fp_offset=304 so
+    // that every VaList::arg::<T>() call reads from overflow_arg_area (= ap).
+    // See format_printf_raw for a detailed explanation of this technique.
+    const _: () = assert!(
+        core::mem::size_of::<VaListTag>() == 24,
+        "VaListTag size must be 24 bytes"
+    );
+    let mut tag = VaListTag {
+        gp_offset: 48,
+        fp_offset: 304,
+        overflow_arg_area: ap,
+        reg_save_area: core::ptr::null_mut(),
+    };
+    // SAFETY: VaListTag is repr(C) with the same layout as core::ffi::VaList
+    // on x86_64-linux-gnu (verified by the size assertion above).
+    let vl: &mut core::ffi::VaList<'_> =
+        unsafe { &mut *(&raw mut tag).cast::<core::ffi::VaList<'_>>() };
+    unsafe { format_scanf_va(buf, fmt, vl) }
+}
+
 // ============================================================================
 // Data Exports
 // ============================================================================
@@ -2906,6 +3055,40 @@ pub unsafe extern "C" fn msvcrt__wcsnicmp(s1: *const u16, s2: *const u16, n: usi
     0
 }
 
+/// `_wcsdup(s)` — allocate a heap copy of the wide string `s`.
+///
+/// Returns a null-terminated wide string allocated with `malloc`, or null if
+/// `s` is null or allocation fails.  The caller is responsible for freeing
+/// the returned pointer with `free`.
+///
+/// # Safety
+/// `s` must be a valid null-terminated wide string or null.
+///
+/// # Panics
+/// Panics if the array layout computation overflows (extremely large strings).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt__wcsdup(s: *const u16) -> *mut u16 {
+    if s.is_null() {
+        return core::ptr::null_mut();
+    }
+    // SAFETY: caller guarantees s is null-terminated.
+    let len = unsafe { msvcrt_wcslen(s) };
+    // +1 for the null terminator
+    let layout = Layout::array::<u16>(len + 1).unwrap();
+    // SAFETY: layout has non-zero size (len+1 >= 1).
+    let raw = unsafe { alloc(layout) };
+    if raw.is_null() {
+        return core::ptr::null_mut();
+    }
+    // SAFETY: alloc returns memory aligned to layout's alignment (alignof u16 = 2).
+    // We verified the pointer is non-null above.
+    #[allow(clippy::cast_ptr_alignment)]
+    let ptr = raw.cast::<u16>();
+    // SAFETY: ptr is freshly allocated for len+1 u16 elements; s is valid for the same.
+    unsafe { core::ptr::copy_nonoverlapping(s, ptr, len + 1) };
+    ptr
+}
+
 /// # Safety
 /// `dest` if non-null must be writable for `n` bytes; `src` must be a valid null-terminated wide string.
 #[unsafe(no_mangle)]
@@ -4568,6 +4751,38 @@ pub unsafe extern "C" fn ucrt__stdio_common_vfprintf(
     }
 }
 
+/// `__stdio_common_vsscanf(options, buf, buf_count, fmt, locale, arglist)` — UCRT sscanf
+///
+/// Parses the string `buf` according to `fmt`, writing results through the
+/// pointer arguments in `arglist` (a Windows x64 va_list).  Returns the
+/// number of items matched and stored, or -1 on failure.
+///
+/// `_options`, `_buf_count`, and `_locale` are ignored.
+///
+/// # Safety
+///
+/// `buf` must be a valid null-terminated C string (or at least `_buf_count`
+/// bytes long).  `fmt` must be a valid null-terminated C string.
+/// `arglist` must be a valid Windows x64 va_list pointer.
+#[unsafe(no_mangle)]
+#[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "gnu"))]
+#[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+pub unsafe extern "C" fn ucrt__stdio_common_vsscanf(
+    _options: u64,
+    buf: *const u8,
+    _buf_count: usize,
+    fmt: *const u8,
+    _locale: *const u8,
+    arglist: *mut u8,
+) -> i32 {
+    if buf.is_null() || fmt.is_null() {
+        return -1;
+    }
+    // SAFETY: Caller guarantees buf and fmt are valid null-terminated C strings
+    // and arglist is a valid Windows x64 va_list pointer.
+    unsafe { format_scanf_raw(buf.cast::<i8>(), fmt.cast::<i8>(), arglist) }
+}
+
 /// `_configthreadlocale(mode)` — UCRT per-thread locale configuration
 ///
 /// Returns 0 (the legacy "global locale" mode).  Locale-sensitive operations
@@ -4681,16 +4896,28 @@ pub unsafe extern "C" fn msvcrt_snprintf(
     would_write
 }
 
-/// `sscanf(buf, format, ...) -> int` — parse formatted string from buffer.
+/// `sscanf(buf, format, ...) -> int` — parse formatted string into variables.
 ///
-/// Stub implementation; always returns 0 (no fields matched).
+/// Parses `buf` according to `format`, writing results through the pointer
+/// arguments.  Returns the number of items matched and stored, or -1 on
+/// input failure before any conversion.
+///
+/// Supports up to `MAX_SCANF_ARGS` (16) conversion specifiers.
 ///
 /// # Safety
 ///
 /// `buf` and `format` must be valid null-terminated strings.
+/// Each variadic argument must be a writable pointer of the type implied by
+/// the corresponding format specifier.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn msvcrt_sscanf(_buf: *const i8, _format: *const i8, _args: ...) -> i32 {
-    0
+#[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "gnu"))]
+pub unsafe extern "C" fn msvcrt_sscanf(buf: *const i8, format: *const i8, mut args: ...) -> i32 {
+    if buf.is_null() || format.is_null() {
+        return -1;
+    }
+    // SAFETY: buf and format are valid null-terminated strings; variadic args
+    // are writable pointers matching the format specifiers (caller contract).
+    unsafe { format_scanf_va(buf, format, &mut args) }
 }
 
 /// `swprintf(buf, format, ...) -> int` — write formatted wide string to buffer.
@@ -6223,6 +6450,102 @@ mod tests {
             let result = core::ffi::CStr::from_ptr(dup).to_str().unwrap();
             assert_eq!(result, "hello");
             msvcrt_free(dup.cast());
+        }
+    }
+
+    #[test]
+    fn test_wcsdup() {
+        unsafe {
+            let src: Vec<u16> = "hello\0".encode_utf16().collect();
+            let dup = msvcrt__wcsdup(src.as_ptr());
+            assert!(!dup.is_null());
+            let len = msvcrt_wcslen(dup);
+            assert_eq!(len, 5);
+            let result = String::from_utf16_lossy(std::slice::from_raw_parts(dup, len));
+            assert_eq!(result, "hello");
+            msvcrt_free(dup.cast());
+        }
+    }
+
+    #[test]
+    fn test_wcsdup_null() {
+        unsafe {
+            let dup = msvcrt__wcsdup(core::ptr::null());
+            assert!(dup.is_null());
+        }
+    }
+
+    #[test]
+    fn test_count_scanf_specifiers() {
+        // Basic specifiers
+        assert_eq!(count_scanf_specifiers(b"%d"), 1);
+        assert_eq!(count_scanf_specifiers(b"%d %s"), 2);
+        assert_eq!(count_scanf_specifiers(b"%d %i %u %x"), 4);
+        // Suppressed specifier — consumes input but NOT a pointer arg
+        assert_eq!(count_scanf_specifiers(b"%*d %s"), 1);
+        // Literal percent
+        assert_eq!(count_scanf_specifiers(b"100%%"), 0);
+        // Width and length modifiers
+        assert_eq!(count_scanf_specifiers(b"%10s %ld"), 2);
+        // Character class
+        assert_eq!(count_scanf_specifiers(b"%[abc]"), 1);
+        assert_eq!(count_scanf_specifiers(b"%[^abc]"), 1);
+        // %n counts as consuming an arg
+        assert_eq!(count_scanf_specifiers(b"%d%n"), 2);
+        // Empty format
+        assert_eq!(count_scanf_specifiers(b""), 0);
+    }
+
+    #[test]
+    fn test_sscanf_int() {
+        unsafe {
+            let mut n: i32 = 0;
+            let ret = msvcrt_sscanf(c"42".as_ptr(), c"%d".as_ptr(), &raw mut n, 0usize, 0usize);
+            assert_eq!(ret, 1);
+            assert_eq!(n, 42);
+        }
+    }
+
+    #[test]
+    fn test_sscanf_two_ints() {
+        unsafe {
+            let mut a: i32 = 0;
+            let mut b: i32 = 0;
+            let ret = msvcrt_sscanf(
+                c"10 20".as_ptr(),
+                c"%d %d".as_ptr(),
+                &raw mut a,
+                &raw mut b,
+                0usize,
+            );
+            assert_eq!(ret, 2);
+            assert_eq!(a, 10);
+            assert_eq!(b, 20);
+        }
+    }
+
+    #[test]
+    fn test_sscanf_string() {
+        unsafe {
+            let mut buf = [0i8; 32];
+            let ret = msvcrt_sscanf(
+                c"hello world".as_ptr(),
+                c"%31s".as_ptr(),
+                buf.as_mut_ptr(),
+                0usize,
+            );
+            assert_eq!(ret, 1);
+            let s = core::ffi::CStr::from_ptr(buf.as_ptr()).to_str().unwrap();
+            assert_eq!(s, "hello");
+        }
+    }
+
+    #[test]
+    fn test_sscanf_null_input() {
+        unsafe {
+            let mut n: i32 = 0;
+            let ret = msvcrt_sscanf(core::ptr::null(), c"%d".as_ptr(), &raw mut n, 0usize);
+            assert_eq!(ret, -1);
         }
     }
 

@@ -409,6 +409,13 @@ fn test_dll_manager_has_all_required_exports() {
         assert!(result.is_ok(), "MSVCRT.dll should export {func_name}");
     }
 
+    // Check that Phase 36 MSVCRT additions are resolvable via the DLL manager
+    let msvcrt_phase36_functions = vec!["_wcsdup", "__stdio_common_vsscanf"];
+    for func_name in msvcrt_phase36_functions {
+        let result = dll_manager.get_proc_address(msvcrt, func_name);
+        assert!(result.is_ok(), "MSVCRT.dll should export {func_name}");
+    }
+
     // Check that Phase 35 msvcp140.dll additions are resolvable
     let msvcp140_phase35_functions = vec![
         "?what@exception@std@@UEBAPEBDXZ",

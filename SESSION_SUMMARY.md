@@ -1,4 +1,94 @@
-# Windows-on-Linux Support — Session Summary (Phase 35)
+# Windows-on-Linux Support — Session Summary (Phase 36)
+
+## ⚡ CURRENT STATUS ⚡
+
+**Branch:** `copilot/continue-windows-on-linux-support-again`
+**Goal:** Phase 36 — `sscanf` real implementation, `_wcsdup`, and `__stdio_common_vsscanf`.
+
+### Status at checkpoint
+
+| Component | State |
+|-----------|-------|
+| `seh_c_test.exe` | ✅ **21/21 PASS** |
+| `seh_cpp_test.exe` | ✅ **26/26 PASS** |
+| `seh_cpp_test_clang.exe` | ✅ **26/26 PASS** |
+| `seh_cpp_test_msvc.exe` | ✅ **21/21 PASS** |
+| All tests (563 total) | ✅ Passing |
+| Ratchet tests (5) | ✅ Passing |
+| Clippy (`-Dwarnings`) | ✅ Clean |
+
+### Files changed in this session
+- `litebox_platform_linux_for_windows/src/msvcrt.rs`
+  - Added `count_scanf_specifiers(fmt: &[u8]) -> usize` — counts non-suppressed format conversion specifiers in a scanf format string (handles `%%`, `%*d`, `%[...]`, length modifiers, etc.)
+  - Added `format_scanf_va(buf, fmt, args: &mut VaList) -> i32` — extracts up to 16 output pointers from a Linux VaList, calls `libc::sscanf` with those 16 explicit args
+  - Added `format_scanf_raw(buf, fmt, ap: *mut u8) -> i32` — bridges a Windows x64 va_list pointer (via the same `VaListTag` trick as `format_printf_raw`) to `format_scanf_va`
+  - Replaced `msvcrt_sscanf` stub (always returned 0) with real implementation calling `format_scanf_va`
+  - Added `msvcrt__wcsdup` — heap duplicate of a null-terminated wide string (analogous to `_strdup`)
+  - Added `ucrt__stdio_common_vsscanf` — UCRT `__stdio_common_vsscanf(options, buf, buf_count, fmt, locale, arglist)` entry point; delegates to `format_scanf_raw`
+  - Added 7 new unit tests (`test_wcsdup`, `test_wcsdup_null`, `test_count_scanf_specifiers`, `test_sscanf_int`, `test_sscanf_two_ints`, `test_sscanf_string`, `test_sscanf_null_input`)
+- `litebox_platform_linux_for_windows/src/function_table.rs`
+  - Fixed `sscanf` `num_params` from 2 → 18 (buf + fmt + up to 16 pointer args, so the trampoline actually passes all pointer arguments)
+  - Added `FunctionImpl` entries for `_wcsdup` and `__stdio_common_vsscanf`
+- `litebox_shim_windows/src/loader/dll.rs`
+  - Added `_wcsdup` (MSVCRT_BASE + 0xCD) and `__stdio_common_vsscanf` (MSVCRT_BASE + 0xCE) stub exports
+- `litebox_runner_windows_on_linux_userland/tests/integration.rs`
+  - Added Phase 36 assertion block checking both new exports are resolvable
+
+### Key design decisions
+- **sscanf strategy**: Parse the format string to count non-suppressed specifiers, extract exactly that many `*mut c_void` pointers from the Linux VaList, fill the remaining 16 slots with null, then call `libc::sscanf` with all 16 explicit args. libc::sscanf only dereferences as many pointers as the format specifies, so the trailing nulls are never accessed.
+- **`num_params: 18`**: The trampoline translates N positional Windows arguments to Linux System V. Setting this to 18 allows up to 16 scanf output pointers (plus buf + fmt) to pass through the trampoline correctly.
+- **`MAX_SCANF_ARGS: 16`**: Constant limiting the maximum number of format specifiers handled. Sufficient for all practical use cases.
+
+### What the next session should consider
+
+**Possible Phase 37 directions:**
+1. **`fscanf` / `scanf`** — similar to sscanf but reading from a FILE* or stdin
+2. **More `msvcp140.dll`** — `std::basic_string` member functions, `std::vector` operations, `std::cout`/`std::cerr` stream stubs
+3. **WriteFile round-trip fix** — unify kernel32 file handle registry with NtWriteFile/NtReadFile
+4. **`__stdio_common_vsprintf`** — UCRT's `sprintf`/`snprintf` entry point (similar to `__stdio_common_vfprintf`)
+5. **WinSock completions** — `WSAEventSelect`, `WSAEnumNetworkEvents`, `GetHostByName`
+6. **More numeric conversion** — `_itoa`, `_itow`, `_ultoa`, `_ui64toa`
+
+### Build & test commands
+
+```bash
+cd /home/runner/work/litebox/litebox
+
+# Quick build
+cargo build -p litebox_platform_linux_for_windows
+
+# Full build + runner
+cargo build -p litebox_runner_windows_on_linux_userland
+
+# Run all Windows-specific tests
+cargo nextest run -p litebox_shim_windows \
+                 -p litebox_platform_linux_for_windows \
+                 -p litebox_runner_windows_on_linux_userland
+
+# Lint (with CI-equivalent flags)
+RUSTFLAGS="-Dwarnings" cargo clippy -p litebox_shim_windows \
+             -p litebox_platform_linux_for_windows \
+             -p litebox_runner_windows_on_linux_userland
+
+# Ratchet tests
+cargo test -p dev_tests
+```
+
+### Key source locations
+
+| What | File | ~Line |
+|------|------|-------|
+| `count_scanf_specifiers` | `litebox_platform_linux_for_windows/src/msvcrt.rs` | ~683 |
+| `format_scanf_va` | same | ~745 |
+| `format_scanf_raw` | same | ~785 |
+| `msvcrt_sscanf` | same | ~4865 |
+| `ucrt__stdio_common_vsscanf` | same | ~4780 |
+| `msvcrt__wcsdup` | same | ~3060 |
+| `format_printf_raw` | same | ~646 |
+| `msvcrt_vprintf` | same | ~1003 |
+| Function table | `litebox_platform_linux_for_windows/src/function_table.rs` | — |
+| DLL manager stubs | `litebox_shim_windows/src/loader/dll.rs` | — |
+
 
 ## ⚡ CURRENT STATUS ⚡
 
