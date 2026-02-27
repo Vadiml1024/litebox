@@ -4901,9 +4901,12 @@ pub unsafe extern "C" fn msvcrt_snprintf(
 ///
 /// Writes at most `min(count, size_of_buffer - 1)` bytes of the formatted output
 /// and appends a NUL terminator.  When `count` is `_TRUNCATE` (`usize::MAX`),
-/// the output is truncated to `size_of_buffer - 1` characters.
-/// Returns the number of characters that would have been written (C99 semantics),
-/// or -1 on error.
+/// the output is truncated to `size_of_buffer - 1` characters and the number of
+/// written characters is returned.  For any other `count` value, truncation
+/// returns -1 (MSVCRT-compatible behaviour).
+///
+/// Returns -1 when `buf` is null, `size_of_buffer` is 0, `format` is null, or
+/// truncation occurs with a non-`_TRUNCATE` count.
 ///
 /// # Safety
 ///
@@ -4919,29 +4922,33 @@ pub unsafe extern "C" fn msvcrt_snprintf_s(
     format: *const i8,
     mut args: ...
 ) -> i32 {
-    if format.is_null() {
+    if format.is_null() || buf.is_null() || size_of_buffer == 0 {
         return -1;
     }
     // SAFETY: Caller guarantees format is a valid null-terminated C string.
     let fmt_bytes = unsafe { CStr::from_ptr(format) }.to_bytes();
     // SAFETY: format and args are valid per caller contract.
     let out = unsafe { format_printf_va(fmt_bytes, &mut args, false) };
-    let would_write = out.len() as i32;
-    if !buf.is_null() && size_of_buffer > 0 {
-        // Effective limit: min(count, size_of_buffer - 1), treating _TRUNCATE as unbounded.
-        let effective = if count == usize::MAX {
-            size_of_buffer - 1
-        } else {
-            count.min(size_of_buffer - 1)
-        };
-        let copy_len = out.len().min(effective);
-        // SAFETY: Caller guarantees buf is at least `size_of_buffer` bytes.
-        unsafe {
-            std::ptr::copy_nonoverlapping(out.as_ptr().cast::<i8>(), buf, copy_len);
-            *buf.add(copy_len) = 0;
-        }
+
+    // Effective limit: min(count, size_of_buffer - 1), treating _TRUNCATE as unbounded.
+    let effective = if count == usize::MAX {
+        size_of_buffer - 1
+    } else {
+        count.min(size_of_buffer - 1)
+    };
+    let copy_len = out.len().min(effective);
+    // SAFETY: Caller guarantees buf is at least `size_of_buffer` bytes.
+    unsafe {
+        std::ptr::copy_nonoverlapping(out.as_ptr().cast::<i8>(), buf, copy_len);
+        *buf.add(copy_len) = 0;
     }
-    would_write
+
+    // If truncation occurred and this is not a _TRUNCATE call, MSVCRT returns -1.
+    let truncated = out.len() > copy_len;
+    if truncated && count != usize::MAX {
+        return -1;
+    }
+    copy_len as i32
 }
 
 /// `sscanf(buf, format, ...) -> int` — parse formatted string into variables.
@@ -7133,5 +7140,139 @@ mod tests {
     fn test_open_osfhandle_regular() {
         let fd = unsafe { msvcrt__open_osfhandle(7, 0) };
         assert_eq!(fd, 7);
+    }
+
+    // ── _snprintf_s tests ─────────────────────────────────────────────────────
+
+    /// Basic formatting succeeds; returns the number of characters written.
+    #[test]
+    fn test_snprintf_s_basic() {
+        let mut buf = [0i8; 16];
+        let fmt = CString::new("val=%d").unwrap();
+        let n = unsafe {
+            msvcrt_snprintf_s(
+                buf.as_mut_ptr(),
+                buf.len(),
+                usize::MAX, // _TRUNCATE
+                fmt.as_ptr(),
+                42i32,
+                0i32,
+                0i32,
+                0i32,
+            )
+        };
+        assert_eq!(n, 6, "should return number of chars written");
+        let s = unsafe { CStr::from_ptr(buf.as_ptr()) }.to_str().unwrap();
+        assert_eq!(s, "val=42");
+    }
+
+    /// NULL buffer returns -1.
+    #[test]
+    fn test_snprintf_s_null_buf() {
+        let fmt = CString::new("%d").unwrap();
+        let n = unsafe {
+            msvcrt_snprintf_s(
+                std::ptr::null_mut(),
+                16,
+                usize::MAX,
+                fmt.as_ptr(),
+                1i32,
+                0i32,
+                0i32,
+                0i32,
+            )
+        };
+        assert_eq!(n, -1);
+    }
+
+    /// Zero-size buffer returns -1.
+    #[test]
+    fn test_snprintf_s_zero_size() {
+        let mut buf = [0i8; 16];
+        let fmt = CString::new("%d").unwrap();
+        let n = unsafe {
+            msvcrt_snprintf_s(
+                buf.as_mut_ptr(),
+                0,
+                usize::MAX,
+                fmt.as_ptr(),
+                1i32,
+                0i32,
+                0i32,
+                0i32,
+            )
+        };
+        assert_eq!(n, -1);
+    }
+
+    /// With _TRUNCATE, truncation succeeds and returns the number of chars written.
+    #[test]
+    fn test_snprintf_s_truncate_with_truncate_flag() {
+        let mut buf = [0i8; 5]; // can hold 4 chars + NUL
+        let fmt = CString::new("%d").unwrap();
+        let n = unsafe {
+            msvcrt_snprintf_s(
+                buf.as_mut_ptr(),
+                buf.len(),
+                usize::MAX, // _TRUNCATE
+                fmt.as_ptr(),
+                12345i32,
+                0i32,
+                0i32,
+                0i32,
+            )
+        };
+        // Written 4 chars (truncated from "12345"), returns 4
+        assert_eq!(n, 4);
+        let s = unsafe { CStr::from_ptr(buf.as_ptr()) }.to_str().unwrap();
+        assert_eq!(s, "1234");
+    }
+
+    /// Without _TRUNCATE, truncation returns -1 and still NUL-terminates.
+    #[test]
+    fn test_snprintf_s_truncate_without_truncate_flag() {
+        let mut buf = [0i8; 5]; // can hold 4 chars + NUL
+        let fmt = CString::new("%d").unwrap();
+        let n = unsafe {
+            msvcrt_snprintf_s(
+                buf.as_mut_ptr(),
+                buf.len(),
+                10, // count larger than buffer but output is 5 chars
+                fmt.as_ptr(),
+                12345i32,
+                0i32,
+                0i32,
+                0i32,
+            )
+        };
+        // Truncation with non-_TRUNCATE count returns -1 (MSVCRT semantics)
+        assert_eq!(n, -1);
+        // Buffer is still NUL-terminated
+        let s = unsafe { CStr::from_ptr(buf.as_ptr()) }.to_str().unwrap();
+        assert_eq!(s, "1234");
+    }
+
+    /// count limits the output even when the buffer is larger.
+    #[test]
+    fn test_snprintf_s_count_limits_output() {
+        let mut buf = [0i8; 16];
+        let fmt = CString::new("hello").unwrap();
+        // count=3: only 3 chars should be written
+        let n = unsafe {
+            msvcrt_snprintf_s(
+                buf.as_mut_ptr(),
+                buf.len(),
+                3,
+                fmt.as_ptr(),
+                0i32,
+                0i32,
+                0i32,
+                0i32,
+            )
+        };
+        // Truncation with non-_TRUNCATE count returns -1
+        assert_eq!(n, -1);
+        let s = unsafe { CStr::from_ptr(buf.as_ptr()) }.to_str().unwrap();
+        assert_eq!(s, "hel");
     }
 }
