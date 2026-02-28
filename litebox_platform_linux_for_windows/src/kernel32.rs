@@ -399,6 +399,36 @@ fn post_iocp_completion(
     })
 }
 
+// ── Process-handle registry ───────────────────────────────────────────────
+// Maps synthetic HANDLE values (usize) to spawned child-process state.
+// Used by CreateProcessW / WaitForSingleObject / GetExitCodeProcess /
+// TerminateProcess / CloseHandle.
+
+static PROCESS_HANDLE_COUNTER: AtomicUsize = AtomicUsize::new(0x9_0000);
+
+struct ProcessEntry {
+    /// The spawned child; `None` once `wait()` has been called.
+    child: Arc<Mutex<Option<std::process::Child>>>,
+    /// The real OS process ID.
+    pid: u32,
+    /// Cached exit code; `None` while the process is still running.
+    exit_code: Arc<Mutex<Option<u32>>>,
+    /// `true` for the hProcess handle; `false` for the hThread placeholder.
+    is_process: bool,
+}
+
+static PROCESS_HANDLES: Mutex<Option<HashMap<usize, ProcessEntry>>> = Mutex::new(None);
+
+fn with_process_handles<R>(f: impl FnOnce(&mut HashMap<usize, ProcessEntry>) -> R) -> R {
+    let mut guard = PROCESS_HANDLES.lock().unwrap();
+    let map = guard.get_or_insert_with(HashMap::new);
+    f(map)
+}
+
+fn alloc_process_handle() -> usize {
+    PROCESS_HANDLE_COUNTER.fetch_add(4, Ordering::SeqCst)
+}
+
 // ── APC (Asynchronous Procedure Call) queue ────────────────────────────────
 // Each thread has its own APC queue.  ReadFileEx / WriteFileEx enqueue an APC
 // on the calling thread; SleepEx / WaitForSingleObjectEx with alertable=TRUE
@@ -3788,7 +3818,8 @@ pub unsafe extern "C" fn kernel32_WriteFile(
 /// Closes file handles opened by `CreateFileW` and event handles opened by
 /// `CreateEventW`. Directory-search handles opened by `FindFirstFileW` /
 /// `FindNextFileW` must be closed using `FindClose`, not `CloseHandle`.
-/// Thread handles are also accepted; for them we just return TRUE.
+/// Thread handles and process handles returned by `CreateProcessW` are also
+/// accepted.
 ///
 /// # Safety
 /// This function is safe to call with any argument.
@@ -3805,6 +3836,10 @@ pub unsafe extern "C" fn kernel32_CloseHandle(handle: *mut core::ffi::c_void) ->
     });
     // Remove from sync-handle map if present (drops the Arc-backed sync state)
     with_sync_handles(|map| {
+        map.remove(&handle_val);
+    });
+    // Remove from process-handle map if present (allows the child to be cleaned up)
+    with_process_handles(|map| {
         map.remove(&handle_val);
     });
     1 // TRUE - success (or was not a registered handle)
@@ -4485,28 +4520,346 @@ pub unsafe extern "C" fn kernel32_CreatePipe(
     1 // TRUE
 }
 
-/// CreateProcessW - creates a new process and its primary thread
+/// Windows `PROCESS_INFORMATION` layout (x64):
+///   offset 0:  hProcess    (8 bytes)
+///   offset 8:  hThread     (8 bytes)
+///   offset 16: dwProcessId (4 bytes)
+///   offset 20: dwThreadId  (4 bytes)
+#[repr(C)]
+struct ProcessInformation {
+    h_process: usize,
+    h_thread: usize,
+    dw_process_id: u32,
+    dw_thread_id: u32,
+}
+
+/// Parse a wide-char Windows command line into a program path and argument list.
 ///
-/// Process creation is intentionally not supported in this sandboxed
-/// single-process environment.  Returns FALSE and sets `ERROR_NOT_SUPPORTED` (50).
+/// Handles double-quoted tokens and backslash escaping per the Windows
+/// `CommandLineToArgvW` rules.
 ///
 /// # Safety
-/// All pointer arguments are accepted as opaque handles; none are dereferenced.
+/// `cmd_line` must be a valid null-terminated UTF-16 string.
+unsafe fn parse_command_line_wide(cmd_line: *const u16) -> Vec<String> {
+    if cmd_line.is_null() {
+        return Vec::new();
+    }
+    let s = wide_str_to_string(cmd_line);
+    parse_command_line_str(&s)
+}
+
+/// Split a UTF-8 Windows command-line string into tokens.
+fn parse_command_line_str(s: &str) -> Vec<String> {
+    let mut args: Vec<String> = Vec::new();
+    let mut chars = s.chars().peekable();
+    loop {
+        // skip whitespace between tokens
+        while chars.peek() == Some(&' ') || chars.peek() == Some(&'\t') {
+            chars.next();
+        }
+        if chars.peek().is_none() {
+            break;
+        }
+        let mut token = String::new();
+        let mut in_quotes = false;
+        loop {
+            match chars.peek().copied() {
+                None => break,
+                Some('"') => {
+                    chars.next();
+                    in_quotes = !in_quotes;
+                }
+                Some(' ' | '\t') if !in_quotes => break,
+                Some('\\') => {
+                    chars.next();
+                    // Count consecutive backslashes
+                    let mut bs_count = 1;
+                    while chars.peek() == Some(&'\\') {
+                        chars.next();
+                        bs_count += 1;
+                    }
+                    if chars.peek() == Some(&'"') {
+                        // Pairs of backslashes before a quote: each pair → one backslash
+                        token.extend(std::iter::repeat_n('\\', bs_count / 2));
+                        if bs_count % 2 == 1 {
+                            // Odd number: the last backslash escapes the quote
+                            chars.next();
+                            token.push('"');
+                        }
+                    } else {
+                        // No following quote: backslashes are literal
+                        token.extend(std::iter::repeat_n('\\', bs_count));
+                    }
+                }
+                Some(c) => {
+                    chars.next();
+                    token.push(c);
+                }
+            }
+        }
+        if !token.is_empty() {
+            args.push(token);
+        }
+    }
+    args
+}
+
+/// Convert a Windows path string to a Linux path (drive letter strip + separator swap).
+fn win_path_to_linux_str(path: &str) -> String {
+    let without_drive = if path.len() >= 2 && path.as_bytes()[1] == b':' {
+        &path[2..]
+    } else {
+        path
+    };
+    let with_slashes = without_drive.replace('\\', "/");
+    if with_slashes.is_empty() || !with_slashes.starts_with('/') {
+        format!("/{with_slashes}")
+    } else {
+        with_slashes
+    }
+}
+
+/// Read a null-terminated ANSI byte string pointer into a `String`, then encode it
+/// as a null-terminated UTF-16 `Vec<u16>`.
+///
+/// # Safety
+/// `ptr` must be null-terminated and readable.
+unsafe fn ansi_ptr_to_wide_vec(ptr: *const u8) -> Vec<u16> {
+    let mut len = 0;
+    while *ptr.add(len) != 0 {
+        len += 1;
+    }
+    let s = std::str::from_utf8(std::slice::from_raw_parts(ptr, len)).unwrap_or("");
+    let mut w: Vec<u16> = s.encode_utf16().collect();
+    w.push(0);
+    w
+}
+
+/// CreateProcessW - creates a new process and its primary thread.
+///
+/// Spawns a child process.  When `application_name` ends with `.exe` (case-insensitive)
+/// the LiteBox runner (current executable) is invoked with the `.exe` path so the
+/// child Windows program runs under the emulation layer.  Otherwise the executable
+/// is spawned directly as a native Linux binary.
+///
+/// `process_information` must point to a writable `PROCESS_INFORMATION` structure (24 bytes).
+///
+/// # Safety
+/// - `application_name`, if non-null, must be a valid null-terminated UTF-16 string.
+/// - `command_line`, if non-null, must be a valid null-terminated UTF-16 string.
+/// - `current_directory`, if non-null, must be a valid null-terminated UTF-16 string.
+/// - `process_information`, if non-null, must point to a writable 24-byte aligned region.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_CreateProcessW(
-    _application_name: *const u16,
-    _command_line: *mut u16,
+    application_name: *const u16,
+    command_line: *mut u16,
     _process_attributes: *mut core::ffi::c_void,
     _thread_attributes: *mut core::ffi::c_void,
     _inherit_handles: i32,
     _creation_flags: u32,
     _environment: *mut core::ffi::c_void,
-    _current_directory: *const u16,
+    current_directory: *const u16,
     _startup_info: *mut core::ffi::c_void,
-    _process_information: *mut core::ffi::c_void,
+    process_information: *mut core::ffi::c_void,
 ) -> i32 {
-    kernel32_SetLastError(50); // ERROR_NOT_SUPPORTED
-    0 // FALSE
+    // Determine the executable and argument list.
+    // Windows rules:
+    //   - If application_name is given it is the executable (no shell expansion).
+    //   - command_line is the full command line (argv[0] + args); if application_name
+    //     is also given, command_line[0] is treated as argv[0] but application_name
+    //     is the actual binary to load.
+    let (exe_str, args): (String, Vec<String>) = if !application_name.is_null() {
+        let app = wide_str_to_string(application_name);
+        let mut cmd_args = if command_line.is_null() {
+            Vec::new()
+        } else {
+            // SAFETY: command_line is non-null and caller-guaranteed valid UTF-16.
+            let tokens = parse_command_line_wide(command_line.cast_const());
+            // Skip the program name token (argv[0]) from command_line
+            if tokens.len() > 1 {
+                tokens[1..].to_vec()
+            } else {
+                Vec::new()
+            }
+        };
+        // Insert application_name as argv[0]
+        cmd_args.insert(0, app.clone());
+        (app, cmd_args)
+    } else if !command_line.is_null() {
+        // SAFETY: command_line is non-null and caller-guaranteed valid UTF-16.
+        let tokens = parse_command_line_wide(command_line.cast_const());
+        if tokens.is_empty() {
+            kernel32_SetLastError(87); // ERROR_INVALID_PARAMETER
+            return 0;
+        }
+        let exe = tokens[0].clone();
+        (exe, tokens)
+    } else {
+        kernel32_SetLastError(87); // ERROR_INVALID_PARAMETER
+        return 0;
+    };
+
+    // Convert Windows path to Linux path.
+    let linux_exe = win_path_to_linux_str(&exe_str);
+
+    // Determine whether this is a Windows PE (.exe) that needs the LiteBox runner,
+    // or a native Linux binary that can be spawned directly.
+    let is_windows_exe = linux_exe.to_ascii_lowercase().ends_with(".exe");
+
+    // Build the Command.
+    let mut cmd = if is_windows_exe {
+        // Re-invoke the current LiteBox runner binary with the .exe as its first argument.
+        let runner =
+            std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("litebox"));
+        let mut c = std::process::Command::new(runner);
+        c.arg(&linux_exe);
+        // Append remaining args (skip argv[0] which is the exe path)
+        for arg in args.iter().skip(1) {
+            c.arg(arg);
+        }
+        c
+    } else {
+        // Native Linux binary: pass args directly.
+        let mut c = std::process::Command::new(&linux_exe);
+        for arg in args.iter().skip(1) {
+            c.arg(arg);
+        }
+        c
+    };
+
+    // Set working directory if provided.
+    if !current_directory.is_null() {
+        let cwd_wide = wide_str_to_string(current_directory);
+        let cwd_linux = win_path_to_linux_str(&cwd_wide);
+        cmd.current_dir(&cwd_linux);
+    }
+
+    // Spawn the child.
+    let child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            let code = match e.kind() {
+                std::io::ErrorKind::PermissionDenied => 5, // ERROR_ACCESS_DENIED
+                _ => 2,                                    // ERROR_FILE_NOT_FOUND
+            };
+            kernel32_SetLastError(code);
+            return 0; // FALSE
+        }
+    };
+
+    let pid = child.id();
+    let child_arc: Arc<Mutex<Option<std::process::Child>>> = Arc::new(Mutex::new(Some(child)));
+    let exit_code_arc: Arc<Mutex<Option<u32>>> = Arc::new(Mutex::new(None));
+
+    // Allocate a synthetic process handle.
+    let proc_handle = alloc_process_handle();
+
+    // Allocate a fake thread handle (we don't track child threads individually).
+    let thread_handle = alloc_process_handle();
+
+    with_process_handles(|map| {
+        map.insert(
+            proc_handle,
+            ProcessEntry {
+                child: Arc::clone(&child_arc),
+                pid,
+                exit_code: Arc::clone(&exit_code_arc),
+                is_process: true,
+            },
+        );
+        // Insert a dummy entry for the fake thread handle so CloseHandle works.
+        map.insert(
+            thread_handle,
+            ProcessEntry {
+                child: Arc::new(Mutex::new(None)),
+                pid,
+                exit_code: Arc::new(Mutex::new(Some(0))),
+                is_process: false,
+            },
+        );
+    });
+
+    // Fill PROCESS_INFORMATION if the caller supplied a pointer.
+    if !process_information.is_null() {
+        // SAFETY: caller guarantees process_information points to a valid writable
+        // PROCESS_INFORMATION structure (24 bytes).
+        let pi = process_information.cast::<ProcessInformation>();
+        core::ptr::write_unaligned(
+            pi,
+            ProcessInformation {
+                h_process: proc_handle,
+                h_thread: thread_handle,
+                dw_process_id: pid,
+                dw_thread_id: 1,
+            },
+        );
+    }
+
+    1 // TRUE
+}
+
+/// CreateProcessA - ANSI variant of `CreateProcessW`.
+///
+/// Converts `application_name` and `command_line` from ANSI (Latin-1) to UTF-16
+/// then delegates to `kernel32_CreateProcessW`.
+///
+/// # Safety
+/// - `application_name`, if non-null, must be a valid null-terminated ANSI string.
+/// - `command_line`, if non-null, must be a valid null-terminated ANSI string.
+/// - `current_directory`, if non-null, must be a valid null-terminated ANSI string.
+/// - `process_information`, if non-null, must point to a writable 24-byte aligned region.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_CreateProcessA(
+    application_name: *const u8,
+    command_line: *mut u8,
+    process_attributes: *mut core::ffi::c_void,
+    thread_attributes: *mut core::ffi::c_void,
+    inherit_handles: i32,
+    creation_flags: u32,
+    environment: *mut core::ffi::c_void,
+    current_directory: *const u8,
+    startup_info: *mut core::ffi::c_void,
+    process_information: *mut core::ffi::c_void,
+) -> i32 {
+    // Convert ANSI strings to UTF-16 using the shared helper.
+    let app_wide: Option<Vec<u16>> = if application_name.is_null() {
+        None
+    } else {
+        Some(ansi_ptr_to_wide_vec(application_name))
+    };
+    let cmd_wide: Option<Vec<u16>> = if command_line.is_null() {
+        None
+    } else {
+        Some(ansi_ptr_to_wide_vec(command_line))
+    };
+    let dir_wide: Option<Vec<u16>> = if current_directory.is_null() {
+        None
+    } else {
+        Some(ansi_ptr_to_wide_vec(current_directory))
+    };
+
+    let app_ptr = app_wide
+        .as_deref()
+        .map_or(core::ptr::null(), <[u16]>::as_ptr);
+    let cmd_ptr = cmd_wide
+        .as_deref()
+        .map_or(core::ptr::null_mut(), |v| v.as_ptr().cast_mut());
+    let dir_ptr = dir_wide
+        .as_deref()
+        .map_or(core::ptr::null(), <[u16]>::as_ptr);
+
+    kernel32_CreateProcessW(
+        app_ptr,
+        cmd_ptr,
+        process_attributes,
+        thread_attributes,
+        inherit_handles,
+        creation_flags,
+        environment,
+        dir_ptr,
+        startup_info,
+        process_information,
+    )
 }
 
 /// CreateSymbolicLinkW - creates a symbolic link
@@ -4950,33 +5303,65 @@ pub unsafe extern "C" fn kernel32_GetCurrentDirectoryW(
 
 /// GetExitCodeProcess — retrieves the termination status of a process.
 ///
-/// Only the current-process pseudo-handle (`-1 / 0xFFFF…`, returned by
-/// `GetCurrentProcess()`) is supported.  For that handle this function
-/// reports `STILL_ACTIVE` (259), which is the correct value for a running
-/// process.
+/// Supports the current-process pseudo-handle (`-1 / 0xFFFF…`, returned by
+/// `GetCurrentProcess()`) and handles returned by `CreateProcessW`.
+/// For the pseudo-handle this function reports `STILL_ACTIVE` (259).
+/// For spawned child processes the actual exit code is returned once the
+/// process has exited; `STILL_ACTIVE` (259) is returned while it is running.
 ///
-/// Any other handle value (including `NULL`) is not tracked in this emulation
-/// layer; those calls return FALSE and set `ERROR_INVALID_HANDLE`.
+/// Any unrecognised handle value (including `NULL`) returns FALSE and sets
+/// `ERROR_INVALID_HANDLE`.
 ///
 /// # Safety
 /// `exit_code` must be null or point to a writable `u32`.
+///
+/// # Panics
+/// Panics if an internal mutex protecting child-process state is poisoned.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_GetExitCodeProcess(
     process: *mut core::ffi::c_void,
     exit_code: *mut u32,
 ) -> i32 {
     const STILL_ACTIVE: u32 = 259;
+    let handle_val = process as usize;
     // The Windows current-process pseudo-handle is -1 (all bits set).
     let current_process = kernel32_GetCurrentProcess();
-    if process != current_process {
-        kernel32_SetLastError(6); // ERROR_INVALID_HANDLE
-        return 0; // FALSE
+    if process == current_process {
+        if !exit_code.is_null() {
+            // SAFETY: Caller guarantees exit_code is valid and non-null (checked above).
+            *exit_code = STILL_ACTIVE;
+        }
+        return 1; // TRUE
     }
-    if !exit_code.is_null() {
-        // SAFETY: Caller guarantees exit_code is valid and non-null (checked above).
-        *exit_code = STILL_ACTIVE;
+
+    // Check process handle registry.
+    let proc_info = with_process_handles(|map| {
+        map.get(&handle_val)
+            .map(|e| (Arc::clone(&e.child), Arc::clone(&e.exit_code)))
+    });
+    if let Some((child_arc, ec_arc)) = proc_info {
+        // Try to reap the child if it hasn't been waited on yet.
+        {
+            let mut guard = child_arc.lock().unwrap();
+            if ec_arc.lock().unwrap().is_none()
+                && let Some(ref mut child) = *guard
+                && let Ok(Some(status)) = child.try_wait()
+            {
+                let code = status.code().map_or(1, |c| c as u32);
+                *ec_arc.lock().unwrap() = Some(code);
+                *guard = None;
+            }
+        }
+        let code = ec_arc.lock().unwrap().unwrap_or(STILL_ACTIVE);
+        if !exit_code.is_null() {
+            // SAFETY: Caller guarantees exit_code points to valid writable memory.
+            *exit_code = code;
+        }
+        return 1; // TRUE
     }
-    1 // TRUE
+
+    kernel32_SetLastError(6); // ERROR_INVALID_HANDLE
+    0 // FALSE
 }
 
 /// GetFileAttributesW - gets file attributes
@@ -5764,7 +6149,60 @@ pub unsafe extern "C" fn kernel32_WaitForSingleObject(
     });
 
     let Some((join_handle_opt, exit_code)) = thread_entry else {
-        // Not a thread or event handle — treat as already-signaled.
+        // Check if this is a process handle.
+        let process_entry = with_process_handles(|map| {
+            map.get(&handle_val)
+                .map(|e| (Arc::clone(&e.child), Arc::clone(&e.exit_code)))
+        });
+        if let Some((child_arc, ec_arc)) = process_entry {
+            // Poll the child for completion.
+            let poll_child = || -> bool {
+                let mut guard = child_arc.lock().unwrap();
+                if ec_arc.lock().unwrap().is_some() {
+                    return true;
+                }
+                if let Some(ref mut child) = *guard
+                    && let Ok(Some(status)) = child.try_wait()
+                {
+                    let code = status.code().map_or(1, |c| c as u32);
+                    *ec_arc.lock().unwrap() = Some(code);
+                    *guard = None;
+                    return true;
+                }
+                false
+            };
+
+            if milliseconds == u32::MAX {
+                // Infinite wait: block until the child exits.
+                loop {
+                    if poll_child() {
+                        return WAIT_OBJECT_0;
+                    }
+                    thread::sleep(Duration::from_millis(1));
+                }
+            }
+
+            if milliseconds == 0 {
+                return if poll_child() {
+                    WAIT_OBJECT_0
+                } else {
+                    WAIT_TIMEOUT
+                };
+            }
+
+            let start = std::time::Instant::now();
+            let timeout = Duration::from_millis(u64::from(milliseconds));
+            loop {
+                if poll_child() {
+                    return WAIT_OBJECT_0;
+                }
+                if start.elapsed() >= timeout {
+                    return WAIT_TIMEOUT;
+                }
+                thread::sleep(Duration::from_millis(1));
+            }
+        }
+        // Not a thread, event, or process handle — treat as already-signaled.
         return WAIT_OBJECT_0;
     };
 
@@ -7063,12 +7501,16 @@ pub unsafe extern "C" fn kernel32_SwitchToThread() -> i32 {
 
 /// TerminateProcess - terminates the specified process and all of its threads
 ///
-/// When called with the current-process pseudo-handle (-1 / 0xFFFFFFFFFFFFFFFF), this
-/// immediately exits the process.  Terminating other processes is not supported.
+/// When called with the current-process pseudo-handle (-1 / 0xFFFFFFFFFFFFFFFF),
+/// this immediately exits the process.
+/// For handles returned by `CreateProcessW`, the child process is killed with
+/// `SIGKILL` and its handle is removed from the registry.
 ///
 /// # Safety
 /// Calling this with the current-process pseudo-handle is safe: it exits immediately.
-/// Passing other values is a no-op (returns FALSE).
+///
+/// # Panics
+/// Panics if an internal mutex protecting child-process state is poisoned.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kernel32_TerminateProcess(
     process: *mut core::ffi::c_void,
@@ -7078,7 +7520,20 @@ pub unsafe extern "C" fn kernel32_TerminateProcess(
     if process as isize == -1 {
         std::process::exit(exit_code as i32);
     }
-    0 // FALSE - cannot terminate other processes
+
+    let handle_val = process as usize;
+    let proc_info = with_process_handles(|map| map.remove(&handle_val));
+    if let Some(entry) = proc_info {
+        let mut guard = entry.child.lock().unwrap();
+        if let Some(ref mut child) = *guard {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        *entry.exit_code.lock().unwrap() = Some(exit_code);
+        return 1; // TRUE
+    }
+
+    0 // FALSE - unknown handle
 }
 
 /// WaitForMultipleObjects - waits until one or all of the specified objects are in the
@@ -9728,8 +10183,12 @@ pub unsafe extern "C" fn kernel32_GetExitCodeThread(
 // ── Phase 27: Process Management ─────────────────────────────────────────────
 
 /// OpenProcess - opens an existing local process object
-/// Returns a pseudo-handle representing the current process (matching GetCurrentProcess behavior)
-/// if the process ID matches the current PID; otherwise returns NULL.
+///
+/// Returns a pseudo-handle for the current process if `process_id` matches
+/// the current PID.  If `process_id` matches a child process spawned by
+/// `CreateProcessW`, the corresponding synthetic process handle is returned.
+/// Otherwise returns NULL and sets `ERROR_INVALID_PARAMETER`.
+///
 /// # Safety
 /// All arguments are accepted as values; none are dereferenced.
 #[unsafe(no_mangle)]
@@ -9740,12 +10199,20 @@ pub unsafe extern "C" fn kernel32_OpenProcess(
 ) -> *mut core::ffi::c_void {
     if process_id == std::process::id() {
         // Return pseudo-handle for current process (matches GetCurrentProcess)
-        usize::MAX as *mut core::ffi::c_void
-    } else {
-        // SAFETY: no pointers are dereferenced.
-        unsafe { kernel32_SetLastError(87) }; // ERROR_INVALID_PARAMETER
-        core::ptr::null_mut()
+        return usize::MAX as *mut core::ffi::c_void;
     }
+    // Check if this PID belongs to a known child process.
+    let found_handle = with_process_handles(|map| {
+        map.iter()
+            .find(|(_, e)| e.pid == process_id && e.is_process)
+            .map(|(&h, _)| h)
+    });
+    if let Some(h) = found_handle {
+        return h as *mut core::ffi::c_void;
+    }
+    // SAFETY: no pointers are dereferenced.
+    unsafe { kernel32_SetLastError(87) }; // ERROR_INVALID_PARAMETER
+    core::ptr::null_mut()
 }
 
 /// GetProcessTimes - retrieves timing information for the specified process
@@ -16153,5 +16620,259 @@ mod tests {
             handle.is_null(),
             "OpenJobObjectW should return NULL (not supported)"
         );
+    }
+
+    // ── CreateProcessW / CreateProcessA tests ─────────────────────────────
+
+    /// Verify the command-line parser handles basic unquoted tokens.
+    #[test]
+    fn test_parse_command_line_basic() {
+        let args = parse_command_line_str("foo bar baz");
+        assert_eq!(args, vec!["foo", "bar", "baz"]);
+    }
+
+    /// Verify the command-line parser handles quoted tokens with spaces.
+    #[test]
+    fn test_parse_command_line_quoted() {
+        let args = parse_command_line_str("\"hello world\" foo");
+        assert_eq!(args, vec!["hello world", "foo"]);
+    }
+
+    /// Verify backslash-escaping rules before a double quote.
+    #[test]
+    fn test_parse_command_line_backslash_escape() {
+        // Two backslashes NOT followed by a quote are literal.
+        // Input: "\\" (opening quote, two backslashes) → token is \\ (two backslashes).
+        let args = parse_command_line_str(r#""\\"#);
+        assert_eq!(
+            args,
+            vec!["\\\\"],
+            "two literal backslashes inside quotes should produce two backslashes"
+        );
+        // Two backslashes followed by a closing quote → one literal backslash, end of quote.
+        // Input: "\\"" (opening quote, two backslashes, closing quote) → token is \.
+        let args2 = parse_command_line_str("\"\\\\\"");
+        assert_eq!(
+            args2,
+            vec!["\\"],
+            "paired backslashes before closing quote should collapse to one backslash"
+        );
+    }
+
+    /// CreateProcessW with a null application_name and null command_line returns FALSE.
+    #[test]
+    fn test_create_process_w_no_args() {
+        let result = unsafe {
+            kernel32_CreateProcessW(
+                core::ptr::null(),
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+                0,
+                0,
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+            )
+        };
+        assert_eq!(result, 0, "CreateProcessW with no args should return FALSE");
+        let err = unsafe { kernel32_GetLastError() };
+        assert_eq!(err, 87, "should set ERROR_INVALID_PARAMETER (87)");
+    }
+
+    /// CreateProcessW spawning a native Linux binary (`/bin/true`) succeeds and
+    /// WaitForSingleObject / GetExitCodeProcess work correctly.
+    #[test]
+    fn test_create_process_w_native_binary() {
+        use crate::kernel32::{
+            kernel32_CloseHandle, kernel32_CreateProcessW, kernel32_GetExitCodeProcess,
+            kernel32_WaitForSingleObject,
+        };
+        // Encode "/bin/true" as null-terminated UTF-16
+        let exe_wide: Vec<u16> = "/bin/true\0".encode_utf16().collect();
+
+        #[repr(C)]
+        struct ProcInfo {
+            h_process: usize,
+            h_thread: usize,
+            dw_pid: u32,
+            dw_tid: u32,
+        }
+        let mut pi = ProcInfo {
+            h_process: 0,
+            h_thread: 0,
+            dw_pid: 0,
+            dw_tid: 0,
+        };
+
+        let result = unsafe {
+            kernel32_CreateProcessW(
+                exe_wide.as_ptr(),
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+                0,
+                0,
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+                &raw mut pi as *mut core::ffi::c_void,
+            )
+        };
+        assert_eq!(result, 1, "CreateProcessW should return TRUE for /bin/true");
+        assert_ne!(pi.h_process, 0, "hProcess should be non-zero");
+        assert_ne!(pi.dw_pid, 0, "dwProcessId should be non-zero");
+
+        // Wait for the child to exit (infinite wait)
+        let wait_result = unsafe {
+            kernel32_WaitForSingleObject(pi.h_process as *mut core::ffi::c_void, u32::MAX)
+        };
+        assert_eq!(wait_result, 0, "WAIT_OBJECT_0 expected");
+
+        // GetExitCodeProcess should return TRUE and the real exit code (0 for /bin/true)
+        let mut exit_code: u32 = 999;
+        let gecp_result = unsafe {
+            kernel32_GetExitCodeProcess(pi.h_process as *mut core::ffi::c_void, &raw mut exit_code)
+        };
+        assert_eq!(gecp_result, 1, "GetExitCodeProcess should return TRUE");
+        assert_eq!(exit_code, 0, "/bin/true should exit with code 0");
+
+        // CloseHandle on process and thread handles should succeed
+        let r1 = unsafe { kernel32_CloseHandle(pi.h_process as *mut core::ffi::c_void) };
+        let r2 = unsafe { kernel32_CloseHandle(pi.h_thread as *mut core::ffi::c_void) };
+        assert_eq!(r1, 1);
+        assert_eq!(r2, 1);
+    }
+
+    /// CreateProcessW spawning a non-existent executable returns FALSE + ERROR_FILE_NOT_FOUND.
+    #[test]
+    fn test_create_process_w_missing_exe() {
+        let exe_wide: Vec<u16> = "/nonexistent/missing_exe_abc123\0".encode_utf16().collect();
+        let result = unsafe {
+            kernel32_CreateProcessW(
+                exe_wide.as_ptr(),
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+                0,
+                0,
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+            )
+        };
+        assert_eq!(
+            result, 0,
+            "CreateProcessW should return FALSE for missing exe"
+        );
+        let err = unsafe { kernel32_GetLastError() };
+        // Should be ERROR_FILE_NOT_FOUND (2) or ERROR_ACCESS_DENIED (5)
+        assert!(
+            err == 2 || err == 5,
+            "last error should be file-not-found or access-denied, got {err}"
+        );
+    }
+
+    /// TerminateProcess can kill a child spawned via CreateProcessW.
+    #[test]
+    fn test_terminate_process_child() {
+        // Use /bin/sleep to start a long-running child we can kill.
+        let exe_wide: Vec<u16> = "/bin/sleep\0".encode_utf16().collect();
+        let arg_wide: Vec<u16> = "/bin/sleep 60\0".encode_utf16().collect();
+
+        #[repr(C)]
+        struct ProcInfo {
+            h_process: usize,
+            h_thread: usize,
+            dw_pid: u32,
+            dw_tid: u32,
+        }
+        let mut pi = ProcInfo {
+            h_process: 0,
+            h_thread: 0,
+            dw_pid: 0,
+            dw_tid: 0,
+        };
+
+        let result = unsafe {
+            kernel32_CreateProcessW(
+                exe_wide.as_ptr(),
+                arg_wide.as_ptr().cast_mut(),
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+                0,
+                0,
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+                &raw mut pi as *mut core::ffi::c_void,
+            )
+        };
+        assert_eq!(result, 1, "CreateProcessW(/bin/sleep 60) should succeed");
+        assert_ne!(pi.h_process, 0);
+
+        // Terminate the child.
+        let term_result =
+            unsafe { kernel32_TerminateProcess(pi.h_process as *mut core::ffi::c_void, 42) };
+        assert_eq!(term_result, 1, "TerminateProcess should return TRUE");
+
+        // Clean up handles.
+        unsafe {
+            kernel32_CloseHandle(pi.h_process as *mut core::ffi::c_void);
+            kernel32_CloseHandle(pi.h_thread as *mut core::ffi::c_void);
+        }
+    }
+
+    /// OpenProcess by PID of a known child returns the same handle that was
+    /// allocated by CreateProcessW.
+    #[test]
+    fn test_open_process_known_child() {
+        let exe_wide: Vec<u16> = "/bin/true\0".encode_utf16().collect();
+
+        #[repr(C)]
+        struct ProcInfo {
+            h_process: usize,
+            h_thread: usize,
+            dw_pid: u32,
+            dw_tid: u32,
+        }
+        let mut pi = ProcInfo {
+            h_process: 0,
+            h_thread: 0,
+            dw_pid: 0,
+            dw_tid: 0,
+        };
+
+        let result = unsafe {
+            kernel32_CreateProcessW(
+                exe_wide.as_ptr(),
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+                0,
+                0,
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+                &raw mut pi as *mut core::ffi::c_void,
+            )
+        };
+        assert_eq!(result, 1, "CreateProcessW should succeed");
+
+        // OpenProcess by the real PID should return the same synthetic handle.
+        let opened = unsafe { kernel32_OpenProcess(0x0010, 0, pi.dw_pid) } as usize;
+        assert_eq!(
+            opened, pi.h_process,
+            "OpenProcess should return the same handle as CreateProcessW"
+        );
+
+        // Wait and clean up.
+        unsafe {
+            kernel32_WaitForSingleObject(pi.h_process as *mut core::ffi::c_void, u32::MAX);
+            kernel32_CloseHandle(pi.h_process as *mut core::ffi::c_void);
+            kernel32_CloseHandle(pi.h_thread as *mut core::ffi::c_void);
+        }
     }
 }
