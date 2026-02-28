@@ -1,3 +1,41 @@
+# Windows-on-Linux Support — Session Summary (Phase 39)
+
+## ⚡ CURRENT STATUS ⚡
+
+**Branch:** `copilot/continue-implementing-windows-on-linux`
+**Goal:** Phase 39 — Low-level POSIX file I/O (MSVCRT) and `std::vector<char>` stubs (msvcp140).
+
+### Status at checkpoint
+
+| Component | State |
+|-----------|-------|
+| All tests (635 total) | ✅ Passing |
+| Ratchet tests (5) | ✅ Passing |
+| Clippy (`-Dwarnings`) | ✅ Clean |
+
+### Files changed in this session
+- `litebox_platform_linux_for_windows/src/msvcrt.rs`
+  - Added `translate_open_flags()` helper: maps Windows `_O_*` flags → Linux `O_*` flags
+  - Added 15 new low-level file I/O functions: `_open`, `_close`, `_lseek`, `_lseeki64`, `_tell`, `_telli64`, `_eof`, `_creat`, `_commit`, `_dup`, `_dup2`, `_chsize`, `_chsize_s`, `_filelength`, `_filelengthi64`
+  - 6 unit tests
+- `litebox_platform_linux_for_windows/src/msvcp140.rs`
+  - Added `std::vector<char>` with MSVC x64 ABI layout (24-byte, 3-pointer: `_Myfirst`/`_Mylast`/`_Myend`)
+  - Functions: default ctor, dtor, `push_back` (2× growth), `size`, `capacity`, `clear`, `data` (mut + const), `reserve`
+  - Exported with correct MSVC mangled names
+  - 5 unit tests
+- `litebox_platform_linux_for_windows/src/function_table.rs` — 24 new `FunctionImpl` entries
+- `litebox_shim_windows/src/loader/dll.rs` — 15 new MSVCRT stubs (0xE9–0xF7), 9 new msvcp140 stubs (42–50)
+- `litebox_runner_windows_on_linux_userland/tests/integration.rs` — Phase 39 resolution test blocks
+
+### Next phase suggestions
+- **Phase 40**: `std::map<K,V>` basic stubs (ctor, dtor, insert, find, size, clear)
+- **Phase 40**: `std::ostringstream` / `std::stringstream` basic stubs
+- **Phase 40**: `_wopen`, `_wsopen`, `_wstat`, `_wfstat` (wide-char file path variants)
+- **Phase 40**: `_stat64`, `_fstat64`, `_stat` (file metadata)
+- **Phase 40**: More WinSock: `WSAEventSelect`, `WSAEnumNetworkEvents`, `gethostbyname`
+
+---
+
 # Windows-on-Linux Support — Session Summary (Phase 38)
 
 ## ⚡ CURRENT STATUS ⚡
