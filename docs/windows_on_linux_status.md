@@ -454,7 +454,14 @@ litebox_runner_windows_on_linux_userland \
 | 7 | MSVCRT, GS register, ABI trampolines, TLS, memory protection, error handling | ✅ Complete |
 | 8 | Real stack allocation, Windows x64 ABI entry-point calling, exception/heap/critical-section stubs | ✅ Complete |
 | 9 | BSS zero-initialization, `__CTOR_LIST__` patching for MinGW CRT compatibility | ✅ Complete |
-| 10–17 | Path security (sandbox root), handle limits, advapi32 registry APIs, WS2_32 networking, Win32 events, CI integration | ✅ Complete |
+| 10 | Path security: sandbox root enforcement; all file paths validated/translated through a configurable sandbox root | ✅ Complete |
+| 11 | Handle limits: per-process handle table with enforced maximum handle count | ✅ Complete |
+| 12 | ADVAPI32 registry APIs: `RegOpenKeyEx`, `RegQueryValueEx`, `RegCloseKey` (emulated in-memory registry) | ✅ Complete |
+| 13 | WS2_32 networking: full 34-function POSIX socket layer (`WSAStartup`/`WSACleanup`, `socket`/`bind`/`listen`/`accept`/`connect`, `send`/`recv`, `select`, `getaddrinfo`, byte-order helpers) | ✅ Complete |
+| 14 | Win32 events: `CreateEventW`, `SetEvent`, `ResetEvent`, `WaitForSingleObject` backed by `Condvar` | ✅ Complete |
+| 15 | CI integration: GitHub Actions workflow; automated build and test pipeline for Windows-on-Linux crates | ✅ Complete |
+| 16 | CI test harness: `--include-ignored` MinGW-gated integration tests; runner smoke tests | ✅ Complete |
+| 17 | CI stabilisation and cross-crate test coverage consolidation; all crates green on CI | ✅ Complete |
 | 18 | CI test programs (hello_cli, math_test, env_test, args_test, file_io_test, string_test all pass) | ✅ Complete |
 | 19 | Real `GetExitCodeProcess`, `SetFileAttributesW`, `GetModuleFileNameW`; upgraded string_test and file_io_test integration tests | ✅ Complete |
 | 20 | Dynamic loading: `LoadLibraryA/W`, `GetModuleHandleA/W`, `GetProcAddress` backed by global DLL registry; `CreateHardLinkW`, `CreateSymbolicLinkW` | ✅ Complete |
