@@ -583,6 +583,7 @@ impl DllManager {
             ("QueryInformationJobObject", KERNEL32_BASE + 0xF6),
             ("SetInformationJobObject", KERNEL32_BASE + 0xF7),
             ("OpenJobObjectW", KERNEL32_BASE + 0xF8),
+            ("CreateProcessA", KERNEL32_BASE + 0xF9),
         ];
 
         self.register_stub_dll("KERNEL32.dll", exports);

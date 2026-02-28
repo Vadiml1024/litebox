@@ -700,6 +700,12 @@ pub fn get_function_table() -> Vec<FunctionImpl> {
             impl_address: crate::kernel32::kernel32_CreatePipe as *const () as usize,
         },
         FunctionImpl {
+            name: "CreateProcessA",
+            dll_name: "KERNEL32.dll",
+            num_params: 10,
+            impl_address: crate::kernel32::kernel32_CreateProcessA as *const () as usize,
+        },
+        FunctionImpl {
             name: "CreateProcessW",
             dll_name: "KERNEL32.dll",
             num_params: 10,
