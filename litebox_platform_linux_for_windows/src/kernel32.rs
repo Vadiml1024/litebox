@@ -9810,6 +9810,406 @@ pub unsafe extern "C" fn kernel32_GetProcessTimes(
     1 // TRUE
 }
 
+// ── Phase 39: Extended Process Management ────────────────────────────────────
+
+/// Priority class constants (Windows)
+const NORMAL_PRIORITY_CLASS: u32 = 0x0000_0020;
+
+/// GetPriorityClass — retrieves the priority class of the specified process.
+///
+/// In the sandboxed single-process environment, every handle is treated as the
+/// current process and `NORMAL_PRIORITY_CLASS` (0x20) is always returned.
+/// An unknown (null) handle returns 0 and sets `ERROR_INVALID_HANDLE` (6).
+///
+/// # Safety
+/// `process` is accepted as an opaque value; it is never dereferenced.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_GetPriorityClass(process: *mut core::ffi::c_void) -> u32 {
+    if process.is_null() {
+        // SAFETY: no pointer is dereferenced.
+        unsafe { kernel32_SetLastError(6) }; // ERROR_INVALID_HANDLE
+        return 0;
+    }
+    NORMAL_PRIORITY_CLASS
+}
+
+/// SetPriorityClass — sets the priority class of the specified process.
+///
+/// In the sandboxed single-process environment, the request is accepted and
+/// ignored for the current-process pseudo-handle. Returns TRUE on success,
+/// FALSE for a null handle.
+///
+/// # Safety
+/// `process` is accepted as an opaque value; it is never dereferenced.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_SetPriorityClass(
+    process: *mut core::ffi::c_void,
+    _priority_class: u32,
+) -> i32 {
+    if process.is_null() {
+        // SAFETY: no pointer is dereferenced.
+        unsafe { kernel32_SetLastError(6) }; // ERROR_INVALID_HANDLE
+        return 0; // FALSE
+    }
+    1 // TRUE
+}
+
+/// GetProcessAffinityMask — retrieves the process-affinity mask and system-affinity mask.
+///
+/// Sets both output masks to the set of logical CPUs available to the process
+/// (queried via `sched_getaffinity`). If the query fails, a single-CPU mask is
+/// returned. Returns TRUE on success.
+///
+/// # Safety
+/// `process_affinity_mask` and `system_affinity_mask` (when non-null) must each
+/// point to a writable `usize`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_GetProcessAffinityMask(
+    _process: *mut core::ffi::c_void,
+    process_affinity_mask: *mut usize,
+    system_affinity_mask: *mut usize,
+) -> i32 {
+    let mut cpu_set = unsafe { std::mem::zeroed::<libc::cpu_set_t>() };
+    let mask: usize = if unsafe {
+        libc::sched_getaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &raw mut cpu_set)
+    } == 0
+    {
+        // Build a bitmask from the CPU set (up to usize bits).
+        let bits = usize::BITS as usize;
+        (0..bits).fold(0usize, |acc, i| {
+            if unsafe { libc::CPU_ISSET(i, &cpu_set) } {
+                acc | (1usize << i)
+            } else {
+                acc
+            }
+        })
+    } else {
+        1usize // fallback: single CPU
+    };
+    if !process_affinity_mask.is_null() {
+        // SAFETY: caller guarantees the pointer is valid.
+        unsafe { *process_affinity_mask = mask };
+    }
+    if !system_affinity_mask.is_null() {
+        // SAFETY: caller guarantees the pointer is valid.
+        unsafe { *system_affinity_mask = mask };
+    }
+    1 // TRUE
+}
+
+/// SetProcessAffinityMask — sets a processor-affinity mask for the threads of the process.
+///
+/// In the sandboxed environment the request is silently accepted and TRUE is
+/// returned; no actual affinity change is applied.
+///
+/// # Safety
+/// `process` is accepted as an opaque value; it is never dereferenced.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_SetProcessAffinityMask(
+    process: *mut core::ffi::c_void,
+    _affinity_mask: usize,
+) -> i32 {
+    if process.is_null() {
+        // SAFETY: no pointer is dereferenced.
+        unsafe { kernel32_SetLastError(6) }; // ERROR_INVALID_HANDLE
+        return 0; // FALSE
+    }
+    1 // TRUE
+}
+
+/// FlushInstructionCache — flushes the instruction cache for the specified process.
+///
+/// On Linux/x86-64 no explicit instruction-cache flush is needed because
+/// the CPU maintains coherency between data writes and instruction fetches.
+/// The call is therefore a no-op that always returns TRUE.
+///
+/// # Safety
+/// `process` and `base_address` are accepted as opaque values; neither is
+/// dereferenced.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_FlushInstructionCache(
+    _process: *mut core::ffi::c_void,
+    _base_address: *const core::ffi::c_void,
+    _size: usize,
+) -> i32 {
+    1 // TRUE – x86-64 cache coherency makes this a no-op
+}
+
+/// ReadProcessMemory — reads memory in the specified process.
+///
+/// Only the current-process pseudo-handle (returned by `GetCurrentProcess()`)
+/// is supported. For that handle, a plain `memcpy` from `base_address` into
+/// `buffer` is performed.  `ERROR_ACCESS_DENIED` (5) is set and FALSE is
+/// returned for any other handle or for null/zero-size arguments.
+///
+/// # Safety
+/// `base_address` must be valid for `size` bytes of reading and `buffer` must
+/// be valid for `size` bytes of writing when `process` is the current-process
+/// pseudo-handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_ReadProcessMemory(
+    process: *mut core::ffi::c_void,
+    base_address: *const core::ffi::c_void,
+    buffer: *mut core::ffi::c_void,
+    size: usize,
+    bytes_read: *mut usize,
+) -> i32 {
+    let current = unsafe { kernel32_GetCurrentProcess() };
+    if process != current || base_address.is_null() || buffer.is_null() || size == 0 {
+        // SAFETY: no pointer is dereferenced here.
+        unsafe { kernel32_SetLastError(5) }; // ERROR_ACCESS_DENIED
+        return 0; // FALSE
+    }
+    // SAFETY: caller guarantees both pointers are valid for `size` bytes.
+    unsafe { core::ptr::copy_nonoverlapping(base_address.cast::<u8>(), buffer.cast::<u8>(), size) };
+    if !bytes_read.is_null() {
+        // SAFETY: caller guarantees bytes_read is valid.
+        unsafe { *bytes_read = size };
+    }
+    1 // TRUE
+}
+
+/// WriteProcessMemory — writes memory in the specified process.
+///
+/// Only the current-process pseudo-handle is supported; a plain `memcpy` from
+/// `buffer` into `base_address` is performed. `ERROR_ACCESS_DENIED` (5) is set
+/// and FALSE returned for any other handle or for null/zero-size arguments.
+///
+/// # Safety
+/// `buffer` must be valid for `size` bytes of reading and `base_address` must
+/// be valid for `size` bytes of writing when `process` is the current-process
+/// pseudo-handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_WriteProcessMemory(
+    process: *mut core::ffi::c_void,
+    base_address: *mut core::ffi::c_void,
+    buffer: *const core::ffi::c_void,
+    size: usize,
+    bytes_written: *mut usize,
+) -> i32 {
+    let current = unsafe { kernel32_GetCurrentProcess() };
+    if process != current || base_address.is_null() || buffer.is_null() || size == 0 {
+        // SAFETY: no pointer is dereferenced here.
+        unsafe { kernel32_SetLastError(5) }; // ERROR_ACCESS_DENIED
+        return 0; // FALSE
+    }
+    // SAFETY: caller guarantees both pointers are valid for `size` bytes.
+    unsafe { core::ptr::copy_nonoverlapping(buffer.cast::<u8>(), base_address.cast::<u8>(), size) };
+    if !bytes_written.is_null() {
+        // SAFETY: caller guarantees bytes_written is valid.
+        unsafe { *bytes_written = size };
+    }
+    1 // TRUE
+}
+
+/// VirtualAllocEx — reserves, commits, or changes the state of a region of
+/// memory within the virtual address space of a specified process.
+///
+/// Only the current-process pseudo-handle is supported; the call is forwarded
+/// to `VirtualAlloc`. For any other handle, NULL is returned and
+/// `ERROR_ACCESS_DENIED` (5) is set.
+///
+/// # Safety
+/// See `kernel32_VirtualAlloc`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_VirtualAllocEx(
+    process: *mut core::ffi::c_void,
+    lp_address: *mut core::ffi::c_void,
+    dw_size: usize,
+    allocation_type: u32,
+    protect: u32,
+) -> *mut core::ffi::c_void {
+    let current = unsafe { kernel32_GetCurrentProcess() };
+    if process != current {
+        // SAFETY: no pointer is dereferenced here.
+        unsafe { kernel32_SetLastError(5) }; // ERROR_ACCESS_DENIED
+        return core::ptr::null_mut();
+    }
+    // SAFETY: delegates to kernel32_VirtualAlloc with the same safety contract.
+    unsafe { kernel32_VirtualAlloc(lp_address, dw_size, allocation_type, protect) }
+}
+
+/// VirtualFreeEx — releases or decommits a region of memory within the virtual
+/// address space of a specified process.
+///
+/// Only the current-process pseudo-handle is supported; the call is forwarded
+/// to `VirtualFree`. For any other handle, FALSE is returned and
+/// `ERROR_ACCESS_DENIED` (5) is set.
+///
+/// # Safety
+/// See `kernel32_VirtualFree`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_VirtualFreeEx(
+    process: *mut core::ffi::c_void,
+    lp_address: *mut core::ffi::c_void,
+    dw_size: usize,
+    dw_free_type: u32,
+) -> i32 {
+    let current = unsafe { kernel32_GetCurrentProcess() };
+    if process != current {
+        // SAFETY: no pointer is dereferenced here.
+        unsafe { kernel32_SetLastError(5) }; // ERROR_ACCESS_DENIED
+        return 0; // FALSE
+    }
+    // SAFETY: delegates to kernel32_VirtualFree with the same safety contract.
+    unsafe { kernel32_VirtualFree(lp_address, dw_size, dw_free_type) }
+}
+
+/// Fake job-object handle value.
+/// Using a distinct constant makes it easy to recognise in handle checks.
+const JOB_OBJECT_HANDLE: usize = 0x4A_4F42; // "JOB" in ASCII
+
+/// CreateJobObjectW — creates or opens a job object.
+///
+/// In the sandboxed environment, process isolation via job objects is not
+/// supported; a non-null pseudo-handle is returned so callers do not treat
+/// the result as a failure, but no real job is created.
+///
+/// # Safety
+/// `job_attributes` and `name` are accepted as opaque pointers; neither is
+/// dereferenced.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_CreateJobObjectW(
+    _job_attributes: *mut core::ffi::c_void,
+    _name: *const u16,
+) -> *mut core::ffi::c_void {
+    JOB_OBJECT_HANDLE as *mut core::ffi::c_void
+}
+
+/// AssignProcessToJobObject — assigns a process to an existing job object.
+///
+/// In the sandboxed environment, only our pseudo-handle is recognised.
+/// The call is silently accepted and TRUE is returned for it; for anything
+/// else FALSE and `ERROR_INVALID_HANDLE` (6) are returned.
+///
+/// # Safety
+/// `job` and `process` are accepted as opaque pointers; neither is dereferenced.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_AssignProcessToJobObject(
+    job: *mut core::ffi::c_void,
+    process: *mut core::ffi::c_void,
+) -> i32 {
+    if job as usize != JOB_OBJECT_HANDLE || process.is_null() {
+        // SAFETY: no pointer is dereferenced.
+        unsafe { kernel32_SetLastError(6) }; // ERROR_INVALID_HANDLE
+        return 0; // FALSE
+    }
+    1 // TRUE
+}
+
+/// IsProcessInJob — determines whether the process is running in the specified job.
+///
+/// In the sandboxed environment, processes are never placed in a real job
+/// object. The output is set to FALSE and TRUE (function success) is returned.
+/// For null arguments, FALSE is returned and `ERROR_INVALID_PARAMETER` (87) is set.
+///
+/// # Safety
+/// `result` (when non-null) must point to a writable `i32`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_IsProcessInJob(
+    process: *mut core::ffi::c_void,
+    _job: *mut core::ffi::c_void,
+    result: *mut i32,
+) -> i32 {
+    if process.is_null() || result.is_null() {
+        // SAFETY: no pointer is dereferenced.
+        unsafe { kernel32_SetLastError(87) }; // ERROR_INVALID_PARAMETER
+        return 0; // FALSE
+    }
+    // SAFETY: caller guarantees result is a valid writable pointer.
+    unsafe { *result = 0 }; // FALSE – not in a job
+    1 // TRUE (function succeeded)
+}
+
+/// QueryInformationJobObject — retrieves limit and state information from a job object.
+///
+/// Returns a zeroed-out information block for the supported `JobObjectBasicAccountingInformation`
+/// (class 1) and `JobObjectExtendedLimitInformation` (class 9) classes.
+/// For unsupported classes, FALSE is returned and `ERROR_NOT_SUPPORTED` (50) is set.
+///
+/// # Safety
+/// `job_object_information` (when non-null) must point to `job_object_information_length`
+/// bytes of writable memory.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_QueryInformationJobObject(
+    _job: *mut core::ffi::c_void,
+    job_object_information_class: i32,
+    job_object_information: *mut core::ffi::c_void,
+    job_object_information_length: u32,
+    return_length: *mut u32,
+) -> i32 {
+    // Classes we can answer with an all-zeroes struct:
+    // 1 = JobObjectBasicAccountingInformation (48 bytes)
+    // 9 = JobObjectExtendedLimitInformation (112 bytes)
+    let min_size: u32 = match job_object_information_class {
+        1 => 48,
+        9 => 112,
+        _ => {
+            // SAFETY: no pointer is dereferenced.
+            unsafe { kernel32_SetLastError(50) }; // ERROR_NOT_SUPPORTED
+            return 0; // FALSE
+        }
+    };
+    if job_object_information_length < min_size || job_object_information.is_null() {
+        // SAFETY: no pointer is dereferenced.
+        unsafe { kernel32_SetLastError(24) }; // ERROR_BAD_LENGTH
+        return 0; // FALSE
+    }
+    // SAFETY: caller guarantees the buffer is valid for job_object_information_length bytes.
+    unsafe {
+        core::ptr::write_bytes(
+            job_object_information.cast::<u8>(),
+            0,
+            job_object_information_length as usize,
+        );
+    };
+    if !return_length.is_null() {
+        // SAFETY: caller guarantees return_length is valid.
+        unsafe { *return_length = min_size };
+    }
+    1 // TRUE
+}
+
+/// SetInformationJobObject — sets limits for a job object.
+///
+/// In the sandboxed environment, job-object limits cannot actually be applied.
+/// The call is silently accepted for our pseudo-handle and TRUE is returned.
+///
+/// # Safety
+/// `job` and `job_object_information` are accepted as opaque pointers.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_SetInformationJobObject(
+    job: *mut core::ffi::c_void,
+    _job_object_information_class: i32,
+    _job_object_information: *mut core::ffi::c_void,
+    _job_object_information_length: u32,
+) -> i32 {
+    if job as usize != JOB_OBJECT_HANDLE {
+        // SAFETY: no pointer is dereferenced.
+        unsafe { kernel32_SetLastError(6) }; // ERROR_INVALID_HANDLE
+        return 0; // FALSE
+    }
+    1 // TRUE
+}
+
+/// OpenJobObjectW — opens an existing named job object.
+///
+/// Named job objects are not supported in the sandboxed environment.
+/// NULL is returned and `ERROR_NOT_SUPPORTED` (50) is set.
+///
+/// # Safety
+/// `name` is accepted as an opaque pointer; it is never dereferenced.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_OpenJobObjectW(
+    _desired_access: u32,
+    _inherit_handle: i32,
+    _name: *const u16,
+) -> *mut core::ffi::c_void {
+    // SAFETY: no pointer is dereferenced.
+    unsafe { kernel32_SetLastError(50) }; // ERROR_NOT_SUPPORTED
+    core::ptr::null_mut()
+}
+
 // ── Phase 27: File Times ──────────────────────────────────────────────────────
 
 /// GetFileTime - retrieves the date and time a file or directory was created, last accessed, and last written
@@ -15557,5 +15957,194 @@ mod tests {
         unsafe { kernel32_CloseHandle(handle) };
         unsafe { kernel32_CloseHandle(port) };
         let _ = std::fs::remove_file(&path);
+    }
+
+    // ── Phase 39 tests ────────────────────────────────────────────────────
+
+    #[test]
+    fn test_get_priority_class_current_process() {
+        let handle = unsafe { kernel32_GetCurrentProcess() };
+        let cls = unsafe { kernel32_GetPriorityClass(handle) };
+        assert_eq!(cls, NORMAL_PRIORITY_CLASS, "expected NORMAL_PRIORITY_CLASS");
+    }
+
+    #[test]
+    fn test_get_priority_class_null_handle() {
+        let cls = unsafe { kernel32_GetPriorityClass(core::ptr::null_mut()) };
+        assert_eq!(cls, 0, "null handle should return 0");
+    }
+
+    #[test]
+    fn test_set_priority_class_current_process() {
+        let handle = unsafe { kernel32_GetCurrentProcess() };
+        let result = unsafe { kernel32_SetPriorityClass(handle, NORMAL_PRIORITY_CLASS) };
+        assert_eq!(result, 1, "SetPriorityClass should return TRUE");
+    }
+
+    #[test]
+    fn test_set_priority_class_null_handle() {
+        let result =
+            unsafe { kernel32_SetPriorityClass(core::ptr::null_mut(), NORMAL_PRIORITY_CLASS) };
+        assert_eq!(result, 0, "null handle should return FALSE");
+    }
+
+    #[test]
+    fn test_get_process_affinity_mask() {
+        let handle = unsafe { kernel32_GetCurrentProcess() };
+        let mut proc_mask: usize = 0;
+        let mut sys_mask: usize = 0;
+        let result = unsafe {
+            kernel32_GetProcessAffinityMask(handle, &raw mut proc_mask, &raw mut sys_mask)
+        };
+        assert_eq!(result, 1, "GetProcessAffinityMask should return TRUE");
+        assert_ne!(proc_mask, 0, "process affinity mask should be non-zero");
+        assert_eq!(proc_mask, sys_mask, "process and system masks should match");
+    }
+
+    #[test]
+    fn test_set_process_affinity_mask() {
+        let handle = unsafe { kernel32_GetCurrentProcess() };
+        let result = unsafe { kernel32_SetProcessAffinityMask(handle, 0x1) };
+        assert_eq!(result, 1, "SetProcessAffinityMask should return TRUE");
+    }
+
+    #[test]
+    fn test_flush_instruction_cache() {
+        let handle = unsafe { kernel32_GetCurrentProcess() };
+        let result = unsafe { kernel32_FlushInstructionCache(handle, core::ptr::null(), 0) };
+        assert_eq!(result, 1, "FlushInstructionCache should return TRUE");
+    }
+
+    #[test]
+    fn test_read_write_process_memory() {
+        let handle = unsafe { kernel32_GetCurrentProcess() };
+        let src: u64 = 0xDEAD_BEEF_CAFE_1234;
+        let mut dst: u64 = 0;
+        let mut n: usize = 0;
+        let result = unsafe {
+            kernel32_ReadProcessMemory(
+                handle,
+                (&raw const src).cast::<core::ffi::c_void>(),
+                (&raw mut dst).cast::<core::ffi::c_void>(),
+                8,
+                &raw mut n,
+            )
+        };
+        assert_eq!(result, 1, "ReadProcessMemory should return TRUE");
+        assert_eq!(n, 8);
+        assert_eq!(dst, src);
+
+        let val: u64 = 0x1122_3344_5566_7788;
+        let mut out: u64 = 0;
+        let mut written: usize = 0;
+        let result2 = unsafe {
+            kernel32_WriteProcessMemory(
+                handle,
+                (&raw mut out).cast::<core::ffi::c_void>(),
+                (&raw const val).cast::<core::ffi::c_void>(),
+                8,
+                &raw mut written,
+            )
+        };
+        assert_eq!(result2, 1, "WriteProcessMemory should return TRUE");
+        assert_eq!(written, 8);
+        assert_eq!(out, val);
+    }
+
+    #[test]
+    fn test_virtual_alloc_free_ex() {
+        let handle = unsafe { kernel32_GetCurrentProcess() };
+        let ptr = unsafe {
+            kernel32_VirtualAllocEx(
+                handle,
+                core::ptr::null_mut(),
+                4096,
+                0x3000, // MEM_COMMIT | MEM_RESERVE
+                0x04,   // PAGE_READWRITE
+            )
+        };
+        assert!(!ptr.is_null(), "VirtualAllocEx should return non-null");
+        let result = unsafe { kernel32_VirtualFreeEx(handle, ptr, 0, 0x8000) }; // MEM_RELEASE
+        assert_eq!(result, 1, "VirtualFreeEx should return TRUE");
+    }
+
+    #[test]
+    fn test_virtual_alloc_ex_wrong_process() {
+        let ptr = unsafe {
+            kernel32_VirtualAllocEx(
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+                4096,
+                0x3000,
+                0x04,
+            )
+        };
+        assert!(ptr.is_null(), "VirtualAllocEx with null handle should fail");
+    }
+
+    #[test]
+    fn test_create_job_object_w() {
+        let handle = unsafe { kernel32_CreateJobObjectW(core::ptr::null_mut(), core::ptr::null()) };
+        assert!(!handle.is_null(), "CreateJobObjectW should return non-null");
+        assert_eq!(handle as usize, JOB_OBJECT_HANDLE);
+    }
+
+    #[test]
+    fn test_assign_process_to_job_object() {
+        let job = unsafe { kernel32_CreateJobObjectW(core::ptr::null_mut(), core::ptr::null()) };
+        let proc_handle = unsafe { kernel32_GetCurrentProcess() };
+        let result = unsafe { kernel32_AssignProcessToJobObject(job, proc_handle) };
+        assert_eq!(result, 1, "AssignProcessToJobObject should return TRUE");
+    }
+
+    #[test]
+    fn test_is_process_in_job() {
+        let proc_handle = unsafe { kernel32_GetCurrentProcess() };
+        let mut in_job: i32 = 1;
+        let result =
+            unsafe { kernel32_IsProcessInJob(proc_handle, core::ptr::null_mut(), &raw mut in_job) };
+        assert_eq!(result, 1, "IsProcessInJob should return TRUE");
+        assert_eq!(in_job, 0, "process should not be in a job");
+    }
+
+    #[test]
+    fn test_query_information_job_object() {
+        let job = unsafe { kernel32_CreateJobObjectW(core::ptr::null_mut(), core::ptr::null()) };
+        let mut buf = [0u8; 112];
+        let mut ret_len: u32 = 0;
+        let result = unsafe {
+            kernel32_QueryInformationJobObject(
+                job,
+                9, // JobObjectExtendedLimitInformation
+                buf.as_mut_ptr().cast::<core::ffi::c_void>(),
+                buf.len() as u32,
+                &raw mut ret_len,
+            )
+        };
+        assert_eq!(result, 1, "QueryInformationJobObject should return TRUE");
+        assert_eq!(ret_len, 112);
+    }
+
+    #[test]
+    fn test_set_information_job_object() {
+        let job = unsafe { kernel32_CreateJobObjectW(core::ptr::null_mut(), core::ptr::null()) };
+        let result = unsafe {
+            kernel32_SetInformationJobObject(
+                job,
+                9, // JobObjectExtendedLimitInformation
+                core::ptr::null_mut(),
+                0,
+            )
+        };
+        assert_eq!(result, 1, "SetInformationJobObject should return TRUE");
+    }
+
+    #[test]
+    fn test_open_job_object_w_unsupported() {
+        let handle = unsafe { kernel32_OpenJobObjectW(0x1F003F, 0, core::ptr::null()) };
+        assert!(
+            handle.is_null(),
+            "OpenJobObjectW should return NULL (not supported)"
+        );
     }
 }

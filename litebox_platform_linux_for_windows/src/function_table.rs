@@ -4147,6 +4147,97 @@ pub fn get_function_table() -> Vec<FunctionImpl> {
             num_params: 9,
             impl_address: crate::msvcrt::msvcrt__wprintf_l as *const () as usize,
         },
+        // Phase 39: Extended Process Management
+        FunctionImpl {
+            name: "GetPriorityClass",
+            dll_name: "KERNEL32.dll",
+            num_params: 1,
+            impl_address: crate::kernel32::kernel32_GetPriorityClass as *const () as usize,
+        },
+        FunctionImpl {
+            name: "SetPriorityClass",
+            dll_name: "KERNEL32.dll",
+            num_params: 2,
+            impl_address: crate::kernel32::kernel32_SetPriorityClass as *const () as usize,
+        },
+        FunctionImpl {
+            name: "GetProcessAffinityMask",
+            dll_name: "KERNEL32.dll",
+            num_params: 3,
+            impl_address: crate::kernel32::kernel32_GetProcessAffinityMask as *const () as usize,
+        },
+        FunctionImpl {
+            name: "SetProcessAffinityMask",
+            dll_name: "KERNEL32.dll",
+            num_params: 2,
+            impl_address: crate::kernel32::kernel32_SetProcessAffinityMask as *const () as usize,
+        },
+        FunctionImpl {
+            name: "FlushInstructionCache",
+            dll_name: "KERNEL32.dll",
+            num_params: 3,
+            impl_address: crate::kernel32::kernel32_FlushInstructionCache as *const () as usize,
+        },
+        FunctionImpl {
+            name: "ReadProcessMemory",
+            dll_name: "KERNEL32.dll",
+            num_params: 5,
+            impl_address: crate::kernel32::kernel32_ReadProcessMemory as *const () as usize,
+        },
+        FunctionImpl {
+            name: "WriteProcessMemory",
+            dll_name: "KERNEL32.dll",
+            num_params: 5,
+            impl_address: crate::kernel32::kernel32_WriteProcessMemory as *const () as usize,
+        },
+        FunctionImpl {
+            name: "VirtualAllocEx",
+            dll_name: "KERNEL32.dll",
+            num_params: 5,
+            impl_address: crate::kernel32::kernel32_VirtualAllocEx as *const () as usize,
+        },
+        FunctionImpl {
+            name: "VirtualFreeEx",
+            dll_name: "KERNEL32.dll",
+            num_params: 4,
+            impl_address: crate::kernel32::kernel32_VirtualFreeEx as *const () as usize,
+        },
+        FunctionImpl {
+            name: "CreateJobObjectW",
+            dll_name: "KERNEL32.dll",
+            num_params: 2,
+            impl_address: crate::kernel32::kernel32_CreateJobObjectW as *const () as usize,
+        },
+        FunctionImpl {
+            name: "AssignProcessToJobObject",
+            dll_name: "KERNEL32.dll",
+            num_params: 2,
+            impl_address: crate::kernel32::kernel32_AssignProcessToJobObject as *const () as usize,
+        },
+        FunctionImpl {
+            name: "IsProcessInJob",
+            dll_name: "KERNEL32.dll",
+            num_params: 3,
+            impl_address: crate::kernel32::kernel32_IsProcessInJob as *const () as usize,
+        },
+        FunctionImpl {
+            name: "QueryInformationJobObject",
+            dll_name: "KERNEL32.dll",
+            num_params: 5,
+            impl_address: crate::kernel32::kernel32_QueryInformationJobObject as *const () as usize,
+        },
+        FunctionImpl {
+            name: "SetInformationJobObject",
+            dll_name: "KERNEL32.dll",
+            num_params: 4,
+            impl_address: crate::kernel32::kernel32_SetInformationJobObject as *const () as usize,
+        },
+        FunctionImpl {
+            name: "OpenJobObjectW",
+            dll_name: "KERNEL32.dll",
+            num_params: 3,
+            impl_address: crate::kernel32::kernel32_OpenJobObjectW as *const () as usize,
+        },
     ]
 }
 

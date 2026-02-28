@@ -509,6 +509,29 @@ fn test_dll_manager_has_all_required_exports() {
         let result = dll_manager.get_proc_address(msvcp140, func_name);
         assert!(result.is_ok(), "msvcp140.dll should export {func_name}");
     }
+
+    // Check that Phase 39 KERNEL32 process management additions are resolvable
+    let kernel32_phase39_functions = vec![
+        "GetPriorityClass",
+        "SetPriorityClass",
+        "GetProcessAffinityMask",
+        "SetProcessAffinityMask",
+        "FlushInstructionCache",
+        "ReadProcessMemory",
+        "WriteProcessMemory",
+        "VirtualAllocEx",
+        "VirtualFreeEx",
+        "CreateJobObjectW",
+        "AssignProcessToJobObject",
+        "IsProcessInJob",
+        "QueryInformationJobObject",
+        "SetInformationJobObject",
+        "OpenJobObjectW",
+    ];
+    for func_name in kernel32_phase39_functions {
+        let result = dll_manager.get_proc_address(kernel32, func_name);
+        assert!(result.is_ok(), "KERNEL32.dll should export {func_name}");
+    }
 }
 
 #[cfg(test)]
