@@ -1225,6 +1225,350 @@ pub unsafe extern "C" fn msvcp140__basic_wstring_append_cstr(
     this
 }
 
+// ============================================================================
+// Phase 39: std::vector<char> (MSVC x64 ABI)
+// ============================================================================
+//
+// MSVC x64 layout for `std::vector<char>` is three consecutive raw pointers
+// (each 8 bytes on x64), stored at offsets 0, 8, and 16 in the object:
+//
+//   offset  0: _Myfirst (*mut i8) — pointer to first element, or null
+//   offset  8: _Mylast  (*mut i8) — pointer past the last element
+//   offset 16: _Myend   (*mut i8) — pointer past the allocated storage
+
+#[inline]
+unsafe fn vec_read_first(this: *const u8) -> *mut i8 {
+    // SAFETY: caller guarantees this points to a valid vector<char> object.
+    unsafe { core::ptr::read_unaligned(this.cast::<*mut i8>()) }
+}
+#[inline]
+unsafe fn vec_read_last(this: *const u8) -> *mut i8 {
+    // SAFETY: caller guarantees this points to a valid vector<char> object.
+    unsafe { core::ptr::read_unaligned(this.cast::<*mut i8>().add(1)) }
+}
+#[inline]
+unsafe fn vec_read_end(this: *const u8) -> *mut i8 {
+    // SAFETY: caller guarantees this points to a valid vector<char> object.
+    unsafe { core::ptr::read_unaligned(this.cast::<*mut i8>().add(2)) }
+}
+#[inline]
+unsafe fn vec_write_first(this: *mut u8, v: *mut i8) {
+    // SAFETY: caller guarantees this points to a valid vector<char> object.
+    unsafe { core::ptr::write_unaligned(this.cast::<*mut i8>(), v) };
+}
+#[inline]
+unsafe fn vec_write_last(this: *mut u8, v: *mut i8) {
+    // SAFETY: caller guarantees this points to a valid vector<char> object.
+    unsafe { core::ptr::write_unaligned(this.cast::<*mut i8>().add(1), v) };
+}
+#[inline]
+unsafe fn vec_write_end(this: *mut u8, v: *mut i8) {
+    // SAFETY: caller guarantees this points to a valid vector<char> object.
+    unsafe { core::ptr::write_unaligned(this.cast::<*mut i8>().add(2), v) };
+}
+
+/// `std::vector<char>::vector()` — default constructor.
+///
+/// Zero-initialises all three internal pointers so the vector is empty with
+/// no allocated storage.  Exported as the MSVC mangled name
+/// `??0?$vector@DU?$allocator@D@std@@@std@@QEAA@XZ`.
+///
+/// # Safety
+/// `this` must point to at least 24 bytes of writable memory aligned to 8 bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__vector_char_ctor(this: *mut u8) {
+    // SAFETY: caller guarantees this points to a 24-byte aligned object.
+    unsafe {
+        vec_write_first(this, core::ptr::null_mut());
+        vec_write_last(this, core::ptr::null_mut());
+        vec_write_end(this, core::ptr::null_mut());
+    }
+}
+
+/// `std::vector<char>::~vector()` — destructor.
+///
+/// Frees the heap buffer if one was allocated.  Exported as
+/// `??1?$vector@DU?$allocator@D@std@@@std@@QEAA@XZ`.
+///
+/// # Safety
+/// `this` must point to a valid, previously constructed `vector<char>` object.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__vector_char_dtor(this: *mut u8) {
+    // SAFETY: caller guarantees this is a valid vector object.
+    let first = unsafe { vec_read_first(this) };
+    if !first.is_null() {
+        // SAFETY: first was allocated by libc::malloc.
+        unsafe { libc::free(first.cast()) };
+    }
+    unsafe {
+        vec_write_first(this, core::ptr::null_mut());
+        vec_write_last(this, core::ptr::null_mut());
+        vec_write_end(this, core::ptr::null_mut());
+    }
+}
+
+/// `std::vector<char>::push_back(const char& val)` — append one byte.
+///
+/// Grows the buffer by 2× when capacity is exhausted.  Exported as
+/// `?push_back@?$vector@DU?$allocator@D@std@@@std@@QEAAXAEBD@Z`.
+///
+/// # Safety
+/// `this` must point to a valid `vector<char>` object; `val` must point to a
+/// readable `i8`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__vector_char_push_back(this: *mut u8, val: *const i8) {
+    // SAFETY: caller guarantees this and val are valid.
+    let first = unsafe { vec_read_first(this) };
+    let last = unsafe { vec_read_last(this) };
+    let end = unsafe { vec_read_end(this) };
+
+    if last == end {
+        // Need to grow: double the current capacity (min 8).
+        let old_cap = if first.is_null() {
+            0usize
+        } else {
+            // SAFETY: end and first are both within the same allocation.
+            unsafe { end.offset_from(first).cast_unsigned() }
+        };
+        let new_cap = if old_cap == 0 { 8 } else { old_cap * 2 };
+        // SAFETY: new_cap > 0.
+        let new_buf = unsafe { libc::malloc(new_cap).cast::<i8>() };
+        if new_buf.is_null() {
+            return;
+        }
+        let len = if first.is_null() {
+            0usize
+        } else {
+            // SAFETY: last and first are both within the same allocation.
+            unsafe { last.offset_from(first).cast_unsigned() }
+        };
+        if !first.is_null() && len > 0 {
+            // SAFETY: first..last is a valid range; new_buf has at least new_cap bytes.
+            unsafe { libc::memcpy(new_buf.cast(), first.cast(), len) };
+        }
+        if !first.is_null() {
+            // SAFETY: first was allocated by libc::malloc.
+            unsafe { libc::free(first.cast()) };
+        }
+        // SAFETY: new_buf is valid for new_cap bytes; len <= old_cap < new_cap.
+        let new_last = unsafe { new_buf.add(len) };
+        let new_end = unsafe { new_buf.add(new_cap) };
+        unsafe {
+            vec_write_first(this, new_buf);
+            vec_write_last(this, new_last);
+            vec_write_end(this, new_end);
+        }
+    }
+
+    // Append the byte.
+    // SAFETY: vec_read_last reflects the updated last pointer after potential realloc.
+    let cur_last = unsafe { vec_read_last(this) };
+    // SAFETY: cur_last < end so there is space for at least one more element.
+    unsafe { core::ptr::write(cur_last, *val) };
+    unsafe { vec_write_last(this, cur_last.add(1)) };
+}
+
+/// `std::vector<char>::size()` — return the number of elements.
+///
+/// Exported as `?size@?$vector@DU?$allocator@D@std@@@std@@QEBA_KXZ`.
+///
+/// # Safety
+/// `this` must point to a valid `vector<char>` object.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__vector_char_size(this: *const u8) -> usize {
+    // SAFETY: caller guarantees this is a valid vector object.
+    let first = unsafe { vec_read_first(this) };
+    let last = unsafe { vec_read_last(this) };
+    if first.is_null() {
+        return 0;
+    }
+    // SAFETY: last and first are within the same allocation.
+    unsafe { last.offset_from(first).cast_unsigned() }
+}
+
+/// `std::vector<char>::capacity()` — return the allocated capacity.
+///
+/// Exported as `?capacity@?$vector@DU?$allocator@D@std@@@std@@QEBA_KXZ`.
+///
+/// # Safety
+/// `this` must point to a valid `vector<char>` object.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__vector_char_capacity(this: *const u8) -> usize {
+    // SAFETY: caller guarantees this is a valid vector object.
+    let first = unsafe { vec_read_first(this) };
+    let end = unsafe { vec_read_end(this) };
+    if first.is_null() {
+        return 0;
+    }
+    // SAFETY: end and first are within the same allocation.
+    unsafe { end.offset_from(first).cast_unsigned() }
+}
+
+/// `std::vector<char>::clear()` — remove all elements without freeing storage.
+///
+/// Sets `_Mylast = _Myfirst`.  Exported as
+/// `?clear@?$vector@DU?$allocator@D@std@@@std@@QEAAXXZ`.
+///
+/// # Safety
+/// `this` must point to a valid `vector<char>` object.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__vector_char_clear(this: *mut u8) {
+    // SAFETY: caller guarantees this is a valid vector object.
+    let first = unsafe { vec_read_first(this) };
+    unsafe { vec_write_last(this, first) };
+}
+
+/// `std::vector<char>::data()` — return a mutable pointer to the first element.
+///
+/// Exported as `?data@?$vector@DU?$allocator@D@std@@@std@@QEAAPEADXZ`.
+///
+/// # Safety
+/// `this` must point to a valid `vector<char>` object.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__vector_char_data_mut(this: *mut u8) -> *mut i8 {
+    // SAFETY: caller guarantees this is a valid vector object.
+    unsafe { vec_read_first(this) }
+}
+
+/// `std::vector<char>::data() const` — return a const pointer to the first element.
+///
+/// Exported as `?data@?$vector@DU?$allocator@D@std@@@std@@QEBAPEBDXZ`.
+///
+/// # Safety
+/// `this` must point to a valid `vector<char>` object.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__vector_char_data_const(this: *const u8) -> *const i8 {
+    // SAFETY: caller guarantees this is a valid vector object.
+    unsafe { vec_read_first(this) }
+}
+
+/// `std::vector<char>::reserve(size_t new_cap)` — ensure capacity >= `new_cap`.
+///
+/// If the current capacity is already >= `new_cap`, does nothing.  Otherwise
+/// allocates a new buffer, copies existing data, and frees the old one.
+/// Exported as `?reserve@?$vector@DU?$allocator@D@std@@@std@@QEAAX_K@Z`.
+///
+/// # Safety
+/// `this` must point to a valid `vector<char>` object.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__vector_char_reserve(this: *mut u8, new_cap: usize) {
+    // SAFETY: caller guarantees this is a valid vector object.
+    let first = unsafe { vec_read_first(this) };
+    let last = unsafe { vec_read_last(this) };
+    let end = unsafe { vec_read_end(this) };
+
+    let old_cap = if first.is_null() {
+        0
+    } else {
+        // SAFETY: end and first are within the same allocation.
+        unsafe { end.offset_from(first).cast_unsigned() }
+    };
+    if new_cap <= old_cap {
+        return;
+    }
+
+    let len = if first.is_null() {
+        0
+    } else {
+        // SAFETY: last and first are within the same allocation.
+        unsafe { last.offset_from(first).cast_unsigned() }
+    };
+
+    // SAFETY: new_cap > 0 since new_cap > old_cap >= 0.
+    let new_buf = unsafe { libc::malloc(new_cap).cast::<i8>() };
+    if new_buf.is_null() {
+        return;
+    }
+    if !first.is_null() && len > 0 {
+        // SAFETY: first..last is valid; new_buf has new_cap >= len bytes.
+        unsafe { libc::memcpy(new_buf.cast(), first.cast(), len) };
+    }
+    if !first.is_null() {
+        // SAFETY: first was allocated by libc::malloc.
+        unsafe { libc::free(first.cast()) };
+    }
+    // SAFETY: new_buf is valid for new_cap bytes.
+    let new_last = unsafe { new_buf.add(len) };
+    let new_end = unsafe { new_buf.add(new_cap) };
+    unsafe {
+        vec_write_first(this, new_buf);
+        vec_write_last(this, new_last);
+        vec_write_end(this, new_end);
+    }
+}
+
+#[cfg(test)]
+mod tests_vector_char {
+    use super::*;
+
+    #[test]
+    fn test_vector_char_ctor_is_empty() {
+        let mut obj = [0u8; 24];
+        unsafe {
+            msvcp140__vector_char_ctor(obj.as_mut_ptr());
+            assert_eq!(msvcp140__vector_char_size(obj.as_ptr()), 0);
+            assert_eq!(msvcp140__vector_char_capacity(obj.as_ptr()), 0);
+            assert!(msvcp140__vector_char_data_const(obj.as_ptr()).is_null());
+            msvcp140__vector_char_dtor(obj.as_mut_ptr());
+        }
+    }
+
+    #[test]
+    fn test_vector_char_push_back_and_size() {
+        let mut obj = [0u8; 24];
+        unsafe {
+            msvcp140__vector_char_ctor(obj.as_mut_ptr());
+            let a = b'A' as i8;
+            let b = b'B' as i8;
+            msvcp140__vector_char_push_back(obj.as_mut_ptr(), &a);
+            msvcp140__vector_char_push_back(obj.as_mut_ptr(), &b);
+            assert_eq!(msvcp140__vector_char_size(obj.as_ptr()), 2);
+            let data = msvcp140__vector_char_data_const(obj.as_ptr());
+            assert_eq!(unsafe { *data }, b'A' as i8);
+            assert_eq!(unsafe { *data.add(1) }, b'B' as i8);
+            msvcp140__vector_char_dtor(obj.as_mut_ptr());
+        }
+    }
+
+    #[test]
+    fn test_vector_char_clear_does_not_free() {
+        let mut obj = [0u8; 24];
+        unsafe {
+            msvcp140__vector_char_ctor(obj.as_mut_ptr());
+            let x = 42i8;
+            msvcp140__vector_char_push_back(obj.as_mut_ptr(), &x);
+            let cap_before = msvcp140__vector_char_capacity(obj.as_ptr());
+            msvcp140__vector_char_clear(obj.as_mut_ptr());
+            assert_eq!(msvcp140__vector_char_size(obj.as_ptr()), 0);
+            // Capacity should be unchanged after clear.
+            assert_eq!(msvcp140__vector_char_capacity(obj.as_ptr()), cap_before);
+            msvcp140__vector_char_dtor(obj.as_mut_ptr());
+        }
+    }
+
+    #[test]
+    fn test_vector_char_reserve_increases_capacity() {
+        let mut obj = [0u8; 24];
+        unsafe {
+            msvcp140__vector_char_ctor(obj.as_mut_ptr());
+            msvcp140__vector_char_reserve(obj.as_mut_ptr(), 64);
+            assert!(msvcp140__vector_char_capacity(obj.as_ptr()) >= 64);
+            assert_eq!(msvcp140__vector_char_size(obj.as_ptr()), 0);
+            msvcp140__vector_char_dtor(obj.as_mut_ptr());
+        }
+    }
+
+    #[test]
+    fn test_vector_char_dtor_null_first_is_safe() {
+        // Calling dtor on a default-constructed (null) vector should not crash.
+        let mut obj = [0u8; 24];
+        unsafe {
+            msvcp140__vector_char_ctor(obj.as_mut_ptr());
+            msvcp140__vector_char_dtor(obj.as_mut_ptr());
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests_wstring {
     use super::*;

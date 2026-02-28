@@ -4244,6 +4244,152 @@ pub fn get_function_table() -> Vec<FunctionImpl> {
             num_params: 3,
             impl_address: crate::kernel32::kernel32_OpenJobObjectW as *const () as usize,
         },
+        // Phase 39: Low-level POSIX-style file I/O (MSVCRT.dll)
+        FunctionImpl {
+            name: "_open",
+            dll_name: "MSVCRT.dll",
+            num_params: 3,
+            impl_address: crate::msvcrt::msvcrt__open as *const () as usize,
+        },
+        FunctionImpl {
+            name: "_close",
+            dll_name: "MSVCRT.dll",
+            num_params: 1,
+            impl_address: crate::msvcrt::msvcrt__close as *const () as usize,
+        },
+        FunctionImpl {
+            name: "_lseek",
+            dll_name: "MSVCRT.dll",
+            num_params: 3,
+            impl_address: crate::msvcrt::msvcrt__lseek as *const () as usize,
+        },
+        FunctionImpl {
+            name: "_lseeki64",
+            dll_name: "MSVCRT.dll",
+            num_params: 3,
+            impl_address: crate::msvcrt::msvcrt__lseeki64 as *const () as usize,
+        },
+        FunctionImpl {
+            name: "_tell",
+            dll_name: "MSVCRT.dll",
+            num_params: 1,
+            impl_address: crate::msvcrt::msvcrt__tell as *const () as usize,
+        },
+        FunctionImpl {
+            name: "_telli64",
+            dll_name: "MSVCRT.dll",
+            num_params: 1,
+            impl_address: crate::msvcrt::msvcrt__telli64 as *const () as usize,
+        },
+        FunctionImpl {
+            name: "_eof",
+            dll_name: "MSVCRT.dll",
+            num_params: 1,
+            impl_address: crate::msvcrt::msvcrt__eof as *const () as usize,
+        },
+        FunctionImpl {
+            name: "_creat",
+            dll_name: "MSVCRT.dll",
+            num_params: 2,
+            impl_address: crate::msvcrt::msvcrt__creat as *const () as usize,
+        },
+        FunctionImpl {
+            name: "_commit",
+            dll_name: "MSVCRT.dll",
+            num_params: 1,
+            impl_address: crate::msvcrt::msvcrt__commit as *const () as usize,
+        },
+        FunctionImpl {
+            name: "_dup",
+            dll_name: "MSVCRT.dll",
+            num_params: 1,
+            impl_address: crate::msvcrt::msvcrt__dup as *const () as usize,
+        },
+        FunctionImpl {
+            name: "_dup2",
+            dll_name: "MSVCRT.dll",
+            num_params: 2,
+            impl_address: crate::msvcrt::msvcrt__dup2 as *const () as usize,
+        },
+        FunctionImpl {
+            name: "_chsize",
+            dll_name: "MSVCRT.dll",
+            num_params: 2,
+            impl_address: crate::msvcrt::msvcrt__chsize as *const () as usize,
+        },
+        FunctionImpl {
+            name: "_chsize_s",
+            dll_name: "MSVCRT.dll",
+            num_params: 2,
+            impl_address: crate::msvcrt::msvcrt__chsize_s as *const () as usize,
+        },
+        FunctionImpl {
+            name: "_filelength",
+            dll_name: "MSVCRT.dll",
+            num_params: 1,
+            impl_address: crate::msvcrt::msvcrt__filelength as *const () as usize,
+        },
+        FunctionImpl {
+            name: "_filelengthi64",
+            dll_name: "MSVCRT.dll",
+            num_params: 1,
+            impl_address: crate::msvcrt::msvcrt__filelengthi64 as *const () as usize,
+        },
+        // Phase 39: std::vector<char> member functions (msvcp140.dll)
+        FunctionImpl {
+            name: "??0?$vector@DU?$allocator@D@std@@@std@@QEAA@XZ",
+            dll_name: "msvcp140.dll",
+            num_params: 1,
+            impl_address: crate::msvcp140::msvcp140__vector_char_ctor as *const () as usize,
+        },
+        FunctionImpl {
+            name: "??1?$vector@DU?$allocator@D@std@@@std@@QEAA@XZ",
+            dll_name: "msvcp140.dll",
+            num_params: 1,
+            impl_address: crate::msvcp140::msvcp140__vector_char_dtor as *const () as usize,
+        },
+        FunctionImpl {
+            name: "?push_back@?$vector@DU?$allocator@D@std@@@std@@QEAAXAEBD@Z",
+            dll_name: "msvcp140.dll",
+            num_params: 2,
+            impl_address: crate::msvcp140::msvcp140__vector_char_push_back as *const () as usize,
+        },
+        FunctionImpl {
+            name: "?size@?$vector@DU?$allocator@D@std@@@std@@QEBA_KXZ",
+            dll_name: "msvcp140.dll",
+            num_params: 1,
+            impl_address: crate::msvcp140::msvcp140__vector_char_size as *const () as usize,
+        },
+        FunctionImpl {
+            name: "?capacity@?$vector@DU?$allocator@D@std@@@std@@QEBA_KXZ",
+            dll_name: "msvcp140.dll",
+            num_params: 1,
+            impl_address: crate::msvcp140::msvcp140__vector_char_capacity as *const () as usize,
+        },
+        FunctionImpl {
+            name: "?clear@?$vector@DU?$allocator@D@std@@@std@@QEAAXXZ",
+            dll_name: "msvcp140.dll",
+            num_params: 1,
+            impl_address: crate::msvcp140::msvcp140__vector_char_clear as *const () as usize,
+        },
+        FunctionImpl {
+            name: "?data@?$vector@DU?$allocator@D@std@@@std@@QEAAPEADXZ",
+            dll_name: "msvcp140.dll",
+            num_params: 1,
+            impl_address: crate::msvcp140::msvcp140__vector_char_data_mut as *const () as usize,
+        },
+        FunctionImpl {
+            name: "?data@?$vector@DU?$allocator@D@std@@@std@@QEBAPEBDXZ",
+            dll_name: "msvcp140.dll",
+            num_params: 1,
+            impl_address: crate::msvcp140::msvcp140__vector_char_data_const as *const () as usize,
+        },
+        FunctionImpl {
+            name: "?reserve@?$vector@DU?$allocator@D@std@@@std@@QEAAX_K@Z",
+            dll_name: "msvcp140.dll",
+            num_params: 2,
+            impl_address: crate::msvcp140::msvcp140__vector_char_reserve as *const () as usize,
+        },
     ]
 }
 
