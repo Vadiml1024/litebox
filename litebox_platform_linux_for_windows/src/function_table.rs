@@ -4034,6 +4034,119 @@ pub fn get_function_table() -> Vec<FunctionImpl> {
             num_params: 3,
             impl_address: crate::msvcrt::msvcrt__ui64tow as *const () as usize,
         },
+        // Phase 38: std::basic_string<wchar_t> (MSVC x64 ABI)
+        FunctionImpl {
+            name: "??0?$basic_string@_WU?$char_traits@_W@std@@V?$allocator@_W@2@@std@@QEAA@XZ",
+            dll_name: "msvcp140.dll",
+            num_params: 1,
+            impl_address: crate::msvcp140::msvcp140__basic_wstring_ctor as *const () as usize,
+        },
+        FunctionImpl {
+            name: "??0?$basic_string@_WU?$char_traits@_W@std@@V?$allocator@_W@2@@std@@QEAA@PEB_W@Z",
+            dll_name: "msvcp140.dll",
+            num_params: 2,
+            impl_address: crate::msvcp140::msvcp140__basic_wstring_ctor_cstr as *const () as usize,
+        },
+        FunctionImpl {
+            name: "??0?$basic_string@_WU?$char_traits@_W@std@@V?$allocator@_W@2@@std@@QEAA@AEBV01@@Z",
+            dll_name: "msvcp140.dll",
+            num_params: 2,
+            impl_address: crate::msvcp140::msvcp140__basic_wstring_copy_ctor as *const () as usize,
+        },
+        FunctionImpl {
+            name: "??1?$basic_string@_WU?$char_traits@_W@std@@V?$allocator@_W@2@@std@@QEAA@XZ",
+            dll_name: "msvcp140.dll",
+            num_params: 1,
+            impl_address: crate::msvcp140::msvcp140__basic_wstring_dtor as *const () as usize,
+        },
+        FunctionImpl {
+            name: "?c_str@?$basic_string@_WU?$char_traits@_W@std@@V?$allocator@_W@2@@std@@QEBAPEB_WXZ",
+            dll_name: "msvcp140.dll",
+            num_params: 1,
+            impl_address: crate::msvcp140::msvcp140__basic_wstring_c_str as *const () as usize,
+        },
+        FunctionImpl {
+            name: "?size@?$basic_string@_WU?$char_traits@_W@std@@V?$allocator@_W@2@@std@@QEBA_KXZ",
+            dll_name: "msvcp140.dll",
+            num_params: 1,
+            impl_address: crate::msvcp140::msvcp140__basic_wstring_size as *const () as usize,
+        },
+        FunctionImpl {
+            name: "?empty@?$basic_string@_WU?$char_traits@_W@std@@V?$allocator@_W@2@@std@@QEBA_NXZ",
+            dll_name: "msvcp140.dll",
+            num_params: 1,
+            impl_address: crate::msvcp140::msvcp140__basic_wstring_empty as *const () as usize,
+        },
+        FunctionImpl {
+            name: "??4?$basic_string@_WU?$char_traits@_W@std@@V?$allocator@_W@2@@std@@QEAAAEAV01@AEBV01@@Z",
+            dll_name: "msvcp140.dll",
+            num_params: 2,
+            impl_address: crate::msvcp140::msvcp140__basic_wstring_assign_op as *const () as usize,
+        },
+        FunctionImpl {
+            name: "??4?$basic_string@_WU?$char_traits@_W@std@@V?$allocator@_W@2@@std@@QEAAAEAV01@PEB_W@Z",
+            dll_name: "msvcp140.dll",
+            num_params: 2,
+            impl_address: crate::msvcp140::msvcp140__basic_wstring_assign_cstr as *const ()
+                as usize,
+        },
+        FunctionImpl {
+            name: "?append@?$basic_string@_WU?$char_traits@_W@std@@V?$allocator@_W@2@@std@@QEAAAEAV12@PEB_W@Z",
+            dll_name: "msvcp140.dll",
+            num_params: 2,
+            impl_address: crate::msvcp140::msvcp140__basic_wstring_append_cstr as *const ()
+                as usize,
+        },
+        // Phase 38: _wfindfirst / _wfindnext / _findclose
+        FunctionImpl {
+            name: "_wfindfirst64i32",
+            dll_name: "MSVCRT.dll",
+            num_params: 2,
+            impl_address: crate::msvcrt::msvcrt__wfindfirst64i32 as *const () as usize,
+        },
+        FunctionImpl {
+            name: "_wfindnext64i32",
+            dll_name: "MSVCRT.dll",
+            num_params: 2,
+            impl_address: crate::msvcrt::msvcrt__wfindnext64i32 as *const () as usize,
+        },
+        FunctionImpl {
+            name: "_findclose",
+            dll_name: "MSVCRT.dll",
+            num_params: 1,
+            impl_address: crate::msvcrt::msvcrt__findclose as *const () as usize,
+        },
+        // Phase 38: locale-aware printf variants
+        FunctionImpl {
+            name: "_printf_l",
+            dll_name: "MSVCRT.dll",
+            num_params: 7,
+            impl_address: crate::msvcrt::msvcrt__printf_l as *const () as usize,
+        },
+        FunctionImpl {
+            name: "_fprintf_l",
+            dll_name: "MSVCRT.dll",
+            num_params: 7,
+            impl_address: crate::msvcrt::msvcrt__fprintf_l as *const () as usize,
+        },
+        FunctionImpl {
+            name: "_sprintf_l",
+            dll_name: "MSVCRT.dll",
+            num_params: 7,
+            impl_address: crate::msvcrt::msvcrt__sprintf_l as *const () as usize,
+        },
+        FunctionImpl {
+            name: "_snprintf_l",
+            dll_name: "MSVCRT.dll",
+            num_params: 7,
+            impl_address: crate::msvcrt::msvcrt__snprintf_l as *const () as usize,
+        },
+        FunctionImpl {
+            name: "_wprintf_l",
+            dll_name: "MSVCRT.dll",
+            num_params: 7,
+            impl_address: crate::msvcrt::msvcrt__wprintf_l as *const () as usize,
+        },
     ]
 }
 

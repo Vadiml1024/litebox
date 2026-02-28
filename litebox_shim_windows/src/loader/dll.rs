@@ -857,6 +857,15 @@ impl DllManager {
             ("_ultow", MSVCRT_BASE + 0xDE),
             ("_i64tow", MSVCRT_BASE + 0xDF),
             ("_ui64tow", MSVCRT_BASE + 0xE0),
+            // Phase 38: wide file enumeration and locale printf
+            ("_wfindfirst64i32", MSVCRT_BASE + 0xE1),
+            ("_wfindnext64i32", MSVCRT_BASE + 0xE2),
+            ("_findclose", MSVCRT_BASE + 0xE3),
+            ("_printf_l", MSVCRT_BASE + 0xE4),
+            ("_fprintf_l", MSVCRT_BASE + 0xE5),
+            ("_sprintf_l", MSVCRT_BASE + 0xE6),
+            ("_snprintf_l", MSVCRT_BASE + 0xE7),
+            ("_wprintf_l", MSVCRT_BASE + 0xE8),
         ];
 
         self.register_stub_dll("MSVCRT.dll", exports);
@@ -1270,6 +1279,47 @@ impl DllManager {
             (
                 "?append@?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@QEAAAEAV12@PEBD@Z",
                 MSVCP140_BASE + 31,
+            ),
+            // Phase 38: std::basic_string<wchar_t> member functions
+            (
+                "??0?$basic_string@_WU?$char_traits@_W@std@@V?$allocator@_W@2@@std@@QEAA@XZ",
+                MSVCP140_BASE + 32,
+            ),
+            (
+                "??0?$basic_string@_WU?$char_traits@_W@std@@V?$allocator@_W@2@@std@@QEAA@PEB_W@Z",
+                MSVCP140_BASE + 33,
+            ),
+            (
+                "??0?$basic_string@_WU?$char_traits@_W@std@@V?$allocator@_W@2@@std@@QEAA@AEBV01@@Z",
+                MSVCP140_BASE + 34,
+            ),
+            (
+                "??1?$basic_string@_WU?$char_traits@_W@std@@V?$allocator@_W@2@@std@@QEAA@XZ",
+                MSVCP140_BASE + 35,
+            ),
+            (
+                "?c_str@?$basic_string@_WU?$char_traits@_W@std@@V?$allocator@_W@2@@std@@QEBAPEB_WXZ",
+                MSVCP140_BASE + 36,
+            ),
+            (
+                "?size@?$basic_string@_WU?$char_traits@_W@std@@V?$allocator@_W@2@@std@@QEBA_KXZ",
+                MSVCP140_BASE + 37,
+            ),
+            (
+                "?empty@?$basic_string@_WU?$char_traits@_W@std@@V?$allocator@_W@2@@std@@QEBA_NXZ",
+                MSVCP140_BASE + 38,
+            ),
+            (
+                "??4?$basic_string@_WU?$char_traits@_W@std@@V?$allocator@_W@2@@std@@QEAAAEAV01@AEBV01@@Z",
+                MSVCP140_BASE + 39,
+            ),
+            (
+                "??4?$basic_string@_WU?$char_traits@_W@std@@V?$allocator@_W@2@@std@@QEAAAEAV01@PEB_W@Z",
+                MSVCP140_BASE + 40,
+            ),
+            (
+                "?append@?$basic_string@_WU?$char_traits@_W@std@@V?$allocator@_W@2@@std@@QEAAAEAV12@PEB_W@Z",
+                MSVCP140_BASE + 41,
             ),
         ];
 

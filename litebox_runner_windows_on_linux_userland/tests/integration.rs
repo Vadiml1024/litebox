@@ -475,6 +475,40 @@ fn test_dll_manager_has_all_required_exports() {
         let result = dll_manager.get_proc_address(msvcp140, func_name);
         assert!(result.is_ok(), "msvcp140.dll should export {func_name}");
     }
+
+    // Check that Phase 38 MSVCRT additions are resolvable via the DLL manager
+    let msvcrt_phase38_functions = vec![
+        "_wfindfirst64i32",
+        "_wfindnext64i32",
+        "_findclose",
+        "_printf_l",
+        "_fprintf_l",
+        "_sprintf_l",
+        "_snprintf_l",
+        "_wprintf_l",
+    ];
+    for func_name in msvcrt_phase38_functions {
+        let result = dll_manager.get_proc_address(msvcrt, func_name);
+        assert!(result.is_ok(), "MSVCRT.dll should export {func_name}");
+    }
+
+    // Check that Phase 38 msvcp140.dll basic_wstring additions are resolvable
+    let msvcp140_phase38_functions = vec![
+        "??0?$basic_string@_WU?$char_traits@_W@std@@V?$allocator@_W@2@@std@@QEAA@XZ",
+        "??0?$basic_string@_WU?$char_traits@_W@std@@V?$allocator@_W@2@@std@@QEAA@PEB_W@Z",
+        "??0?$basic_string@_WU?$char_traits@_W@std@@V?$allocator@_W@2@@std@@QEAA@AEBV01@@Z",
+        "??1?$basic_string@_WU?$char_traits@_W@std@@V?$allocator@_W@2@@std@@QEAA@XZ",
+        "?c_str@?$basic_string@_WU?$char_traits@_W@std@@V?$allocator@_W@2@@std@@QEBAPEB_WXZ",
+        "?size@?$basic_string@_WU?$char_traits@_W@std@@V?$allocator@_W@2@@std@@QEBA_KXZ",
+        "?empty@?$basic_string@_WU?$char_traits@_W@std@@V?$allocator@_W@2@@std@@QEBA_NXZ",
+        "??4?$basic_string@_WU?$char_traits@_W@std@@V?$allocator@_W@2@@std@@QEAAAEAV01@AEBV01@@Z",
+        "??4?$basic_string@_WU?$char_traits@_W@std@@V?$allocator@_W@2@@std@@QEAAAEAV01@PEB_W@Z",
+        "?append@?$basic_string@_WU?$char_traits@_W@std@@V?$allocator@_W@2@@std@@QEAAAEAV12@PEB_W@Z",
+    ];
+    for func_name in msvcp140_phase38_functions {
+        let result = dll_manager.get_proc_address(msvcp140, func_name);
+        assert!(result.is_ok(), "msvcp140.dll should export {func_name}");
+    }
 }
 
 #[cfg(test)]

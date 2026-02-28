@@ -11,9 +11,11 @@
 #![allow(unsafe_op_in_unsafe_fn)]
 
 use std::alloc::{Layout, alloc, dealloc};
+use std::collections::BTreeMap;
 use std::ffi::{CStr, CString};
 use std::io::{self, Write};
 use std::ptr;
+use std::sync::atomic::AtomicI64;
 use std::sync::{Mutex, OnceLock};
 
 // ============================================================================
@@ -5239,8 +5241,8 @@ unsafe fn resolve_read_stream(stream: *mut u8) -> *mut libc::FILE {
     let iob_base = unsafe { msvcrt___iob_func() } as usize;
     let stream_addr = stream as usize;
     match stream_addr.wrapping_sub(iob_base) {
-        0 => get_linux_stdin(),          // stdin  (offset 0)
-        8 | 16 => core::ptr::null_mut(), // stdout / stderr: not readable
+        0 => get_linux_stdin(),           // stdin  (offset 0)
+        8 | 16 => core::ptr::null_mut(),  // stdout / stderr: not readable
         _ => stream.cast::<libc::FILE>(), // real libc FILE* from fopen/fdopen
     }
 }
@@ -5294,24 +5296,8 @@ pub unsafe extern "C" fn msvcrt_fscanf(stream: *mut u8, format: *const i8, mut a
     // arguments than we supply here.
     unsafe {
         libc::fscanf(
-            file_ptr,
-            format,
-            ptrs[0],
-            ptrs[1],
-            ptrs[2],
-            ptrs[3],
-            ptrs[4],
-            ptrs[5],
-            ptrs[6],
-            ptrs[7],
-            ptrs[8],
-            ptrs[9],
-            ptrs[10],
-            ptrs[11],
-            ptrs[12],
-            ptrs[13],
-            ptrs[14],
-            ptrs[15],
+            file_ptr, format, ptrs[0], ptrs[1], ptrs[2], ptrs[3], ptrs[4], ptrs[5], ptrs[6],
+            ptrs[7], ptrs[8], ptrs[9], ptrs[10], ptrs[11], ptrs[12], ptrs[13], ptrs[14], ptrs[15],
         )
     }
 }
@@ -6553,6 +6539,405 @@ pub unsafe extern "C" fn msvcrt__open_osfhandle(osfhandle: isize, _flags: i32) -
         h if h < 0 => -1,
         #[allow(clippy::cast_possible_truncation)]
         h => h as i32,
+    }
+}
+
+// ============================================================================
+// Phase 38: _wfindfirst / _wfindnext / _findclose — wide file enumeration
+// ============================================================================
+
+/// Newtype wrapper for `*mut libc::DIR` to allow placing it in a `Mutex`-protected map.
+///
+/// # Safety
+/// Callers must ensure that a `DirHandle` is only accessed from one thread at a time.
+/// The global map is protected by `FIND_HANDLES`'s `Mutex`, which guarantees this.
+struct DirHandle(*mut libc::DIR);
+
+// SAFETY: We only access `DirHandle` while holding the `FIND_HANDLES` mutex.
+unsafe impl Send for DirHandle {}
+
+/// Entry for an active `_wfindfirst` handle.
+struct FindEntry {
+    dir: DirHandle,
+    /// The wildcard pattern (filename part of the spec), as UTF-8.
+    pattern: String,
+    /// The directory path to enumerate.
+    directory: String,
+}
+
+/// Global map from handle ID → `FindEntry`.
+static FIND_HANDLES: OnceLock<Mutex<BTreeMap<i64, FindEntry>>> = OnceLock::new();
+
+/// Monotonically increasing handle counter (starts at 1).
+static FIND_NEXT_ID: AtomicI64 = AtomicI64::new(1);
+
+fn find_handles() -> &'static Mutex<BTreeMap<i64, FindEntry>> {
+    FIND_HANDLES.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+
+/// Simple wildcard matching: `*` matches any sequence, `?` matches any single char.
+fn wildcard_match(pattern: &str, name: &str) -> bool {
+    let p: Vec<char> = pattern.chars().collect();
+    let n: Vec<char> = name.chars().collect();
+    let mut dp = vec![vec![false; n.len() + 1]; p.len() + 1];
+    dp[0][0] = true;
+    for i in 1..=p.len() {
+        if p[i - 1] == '*' {
+            dp[i][0] = dp[i - 1][0];
+        }
+    }
+    for i in 1..=p.len() {
+        for j in 1..=n.len() {
+            if p[i - 1] == '*' {
+                dp[i][j] = dp[i - 1][j] || dp[i][j - 1];
+            } else if p[i - 1] == '?' || p[i - 1] == n[j - 1] {
+                dp[i][j] = dp[i - 1][j - 1];
+            }
+        }
+    }
+    dp[p.len()][n.len()]
+}
+
+/// Fill a `_wfinddata64i32_t` struct (at `fileinfo`) for the given `dir_path/name`.
+///
+/// Layout (Windows `_wfinddata64i32_t`):
+/// - offset  0: `attrib`      (u32, 4 bytes)
+/// - offset  4: padding        (4 bytes)
+/// - offset  8: `time_create` (i64, 8 bytes)
+/// - offset 16: `time_access` (i64, 8 bytes)
+/// - offset 24: `time_write`  (i64, 8 bytes)
+/// - offset 32: `size`        (u32, 4 bytes)
+/// - offset 36: `name[260]`   (u16 × 260, 520 bytes)
+/// - Total:     556 bytes
+///
+/// # Safety
+/// `fileinfo` must point to at least 556 writable bytes.
+unsafe fn fill_wfinddata(fileinfo: *mut u8, dir_path: &str, name: &str) {
+    // Windows FILETIME = 100ns intervals since 1601-01-01.
+    // Unix time → Windows FILETIME: (unix_sec + 11644473600) * 10_000_000
+    const EPOCH_DIFF: i64 = 11_644_473_600i64;
+
+    let full_path = if dir_path.is_empty() || dir_path == "." {
+        name.to_string()
+    } else {
+        format!("{dir_path}/{name}")
+    };
+
+    let Ok(c_path) = CString::new(full_path.as_bytes()) else {
+        return;
+    };
+
+    let mut st: libc::stat64 = unsafe { std::mem::zeroed() };
+    // SAFETY: c_path is a valid NUL-terminated C string; &raw mut avoids alignment lint.
+    let stat_ok = unsafe { libc::stat64(c_path.as_ptr(), &raw mut st) } == 0;
+
+    // attrib (offset 0): FILE_ATTRIBUTE_NORMAL = 0x80, DIRECTORY = 0x10
+    let attrib: u32 = if stat_ok {
+        if (st.st_mode & libc::S_IFMT) == libc::S_IFDIR {
+            0x10 // FILE_ATTRIBUTE_DIRECTORY
+        } else {
+            0x20 // FILE_ATTRIBUTE_ARCHIVE (normal file)
+        }
+    } else {
+        0x80 // FILE_ATTRIBUTE_NORMAL
+    };
+    unsafe { ptr::write_unaligned(fileinfo.cast::<u32>(), attrib) };
+
+    // time_create / time_access / time_write (offsets 8, 16, 24): Windows FILETIME epoch
+    let (ctime, atime, mtime) = if stat_ok {
+        let to_ft = |t: i64| -> i64 { (t + EPOCH_DIFF) * 10_000_000 };
+        (to_ft(st.st_ctime), to_ft(st.st_atime), to_ft(st.st_mtime))
+    } else {
+        (0i64, 0i64, 0i64)
+    };
+    unsafe { ptr::write_unaligned(fileinfo.add(8).cast::<i64>(), ctime) };
+    unsafe { ptr::write_unaligned(fileinfo.add(16).cast::<i64>(), atime) };
+    unsafe { ptr::write_unaligned(fileinfo.add(24).cast::<i64>(), mtime) };
+
+    // size (offset 32): file size (u32, truncated)
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let size: u32 = if stat_ok { st.st_size as u32 } else { 0 };
+    unsafe { ptr::write_unaligned(fileinfo.add(32).cast::<u32>(), size) };
+
+    // name[260] (offset 36): UTF-16LE filename, zero-padded to 260 wchars
+    let name_wide: Vec<u16> = name.encode_utf16().take(259).collect();
+    let copy_len = name_wide.len().min(259);
+    // SAFETY: fileinfo has at least 556 bytes; offset 36 + 260*2 = 556.
+    #[allow(clippy::cast_ptr_alignment)]
+    let name_ptr = fileinfo.add(36).cast::<u16>();
+    for (i, &ch) in name_wide.iter().take(copy_len).enumerate() {
+        unsafe { ptr::write_unaligned(name_ptr.add(i), ch) };
+    }
+    // NUL-terminate
+    unsafe { ptr::write_unaligned(name_ptr.add(copy_len), 0u16) };
+}
+
+/// `_wfindfirst64i32(spec, fileinfo) -> intptr_t` — open a wide-character file search.
+///
+/// `spec` is a null-terminated wide string like `L"C:\\path\\*.txt"`.
+/// Returns a search handle >= 0 on success, or -1 on error.
+///
+/// # Panics
+/// Panics if the internal handle map mutex is poisoned.
+///
+/// # Safety
+/// `spec` must be a valid null-terminated `u16` string or null.
+/// `fileinfo` must point to at least 556 writable bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt__wfindfirst64i32(spec: *const u16, fileinfo: *mut u8) -> i64 {
+    use std::sync::atomic::Ordering as AtomicOrdering;
+
+    if spec.is_null() || fileinfo.is_null() {
+        return -1;
+    }
+
+    // Convert wide spec to UTF-8.
+    let wide_spec = unsafe { read_wide_string(spec) };
+    let spec_str = String::from_utf16_lossy(&wide_spec);
+
+    // Split into directory and pattern.
+    let (dir, pattern) = if let Some(pos) = spec_str.rfind(['/', '\\']) {
+        (&spec_str[..pos], &spec_str[pos + 1..])
+    } else {
+        (".", &spec_str[..])
+    };
+    let dir = if dir.is_empty() { "." } else { dir };
+
+    // Open the directory.
+    let Ok(c_dir) = CString::new(dir) else {
+        return -1;
+    };
+    let dirp = unsafe { libc::opendir(c_dir.as_ptr()) };
+    if dirp.is_null() {
+        return -1;
+    }
+
+    // Scan for the first matching entry.
+    let mut found = false;
+    loop {
+        let entry = unsafe { libc::readdir(dirp) };
+        if entry.is_null() {
+            break;
+        }
+        let name_bytes = unsafe { std::ffi::CStr::from_ptr((*entry).d_name.as_ptr()) };
+        let name = name_bytes.to_string_lossy();
+        // Skip "." and ".."
+        if name == "." || name == ".." {
+            continue;
+        }
+        if wildcard_match(pattern, &name) {
+            unsafe { fill_wfinddata(fileinfo, dir, &name) };
+            found = true;
+            break;
+        }
+    }
+
+    if !found {
+        unsafe { libc::closedir(dirp) };
+        return -1;
+    }
+
+    let id = FIND_NEXT_ID.fetch_add(1, AtomicOrdering::Relaxed);
+    find_handles().lock().unwrap().insert(
+        id,
+        FindEntry {
+            dir: DirHandle(dirp),
+            pattern: pattern.to_string(),
+            directory: dir.to_string(),
+        },
+    );
+    id
+}
+
+/// `_wfindnext64i32(handle, fileinfo) -> int` — advance a wide-character file search.
+///
+/// Returns 0 on success, or -1 when there are no more matching files.
+///
+/// # Panics
+/// Panics if the internal handle map mutex is poisoned.
+///
+/// # Safety
+/// `fileinfo` must point to at least 556 writable bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt__wfindnext64i32(handle: i64, fileinfo: *mut u8) -> i32 {
+    if fileinfo.is_null() {
+        return -1;
+    }
+    let mut map = find_handles().lock().unwrap();
+    let Some(entry) = map.get_mut(&handle) else {
+        return -1;
+    };
+
+    loop {
+        let de = unsafe { libc::readdir(entry.dir.0) };
+        if de.is_null() {
+            return -1;
+        }
+        let name_bytes = unsafe { std::ffi::CStr::from_ptr((*de).d_name.as_ptr()) };
+        let name = name_bytes.to_string_lossy();
+        if name == "." || name == ".." {
+            continue;
+        }
+        if wildcard_match(&entry.pattern, &name) {
+            let dir = entry.directory.clone();
+            unsafe { fill_wfinddata(fileinfo, &dir, &name) };
+            return 0;
+        }
+    }
+}
+
+/// `_findclose(handle) -> int` — close a file search handle.
+///
+/// Returns 0 on success, or -1 if the handle is not found.
+///
+/// # Panics
+/// Panics if the internal handle map mutex is poisoned.
+///
+/// # Safety
+/// `handle` must have been returned by `_wfindfirst64i32`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt__findclose(handle: i64) -> i32 {
+    let mut map = find_handles().lock().unwrap();
+    if let Some(entry) = map.remove(&handle) {
+        unsafe { libc::closedir(entry.dir.0) };
+        0
+    } else {
+        -1
+    }
+}
+
+// ============================================================================
+// Phase 38: Locale-aware printf variants (locale parameter is ignored)
+// ============================================================================
+
+/// `_printf_l(fmt, locale, ...) -> int` — locale-aware printf (locale ignored).
+///
+/// # Safety
+/// `fmt` must be a valid null-terminated C string.
+/// Variadic arguments must match the format specifiers.
+#[unsafe(no_mangle)]
+#[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+pub unsafe extern "C" fn msvcrt__printf_l(fmt: *const u8, _locale: *mut u8, mut args: ...) -> i32 {
+    if fmt.is_null() {
+        return -1;
+    }
+    let fmt_bytes = unsafe { CStr::from_ptr(fmt.cast::<i8>()) }.to_bytes();
+    let out = unsafe { format_printf_va(fmt_bytes, &mut args, false) };
+    match io::stdout().write_all(&out) {
+        Ok(()) => {
+            let _ = io::stdout().flush();
+            out.len() as i32
+        }
+        Err(_) => -1,
+    }
+}
+
+/// `_fprintf_l(file, fmt, locale, ...) -> int` — locale-aware fprintf (locale ignored).
+///
+/// # Safety
+/// `fmt` must be a valid null-terminated C string.
+/// Variadic arguments must match the format specifiers.
+#[unsafe(no_mangle)]
+#[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+pub unsafe extern "C" fn msvcrt__fprintf_l(
+    _file: *mut u8,
+    fmt: *const u8,
+    _locale: *mut u8,
+    mut args: ...
+) -> i32 {
+    if fmt.is_null() {
+        return -1;
+    }
+    let fmt_bytes = unsafe { CStr::from_ptr(fmt.cast::<i8>()) }.to_bytes();
+    let out = unsafe { format_printf_va(fmt_bytes, &mut args, false) };
+    let written = unsafe { libc::write(1, out.as_ptr().cast(), out.len()) };
+    if written < 0 { -1 } else { written as i32 }
+}
+
+/// `_sprintf_l(buf, fmt, locale, ...) -> int` — locale-aware sprintf (locale ignored).
+///
+/// # Safety
+/// `buf` must point to a writable buffer large enough to hold the output.
+/// `fmt` must be a valid null-terminated C string.
+/// Variadic arguments must match the format specifiers.
+#[unsafe(no_mangle)]
+#[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+pub unsafe extern "C" fn msvcrt__sprintf_l(
+    buf: *mut u8,
+    fmt: *const u8,
+    _locale: *mut u8,
+    mut args: ...
+) -> i32 {
+    if buf.is_null() || fmt.is_null() {
+        return -1;
+    }
+    let fmt_bytes = unsafe { CStr::from_ptr(fmt.cast::<i8>()) }.to_bytes();
+    let out = unsafe { format_printf_va(fmt_bytes, &mut args, false) };
+    unsafe {
+        ptr::copy_nonoverlapping(out.as_ptr(), buf, out.len());
+        *buf.add(out.len()) = 0;
+    }
+    out.len() as i32
+}
+
+/// `_snprintf_l(buf, count, fmt, locale, ...) -> int` — locale-aware snprintf (locale ignored).
+///
+/// # Safety
+/// `buf` must point to a writable buffer of at least `count` bytes.
+/// `fmt` must be a valid null-terminated C string.
+/// Variadic arguments must match the format specifiers.
+#[unsafe(no_mangle)]
+#[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+pub unsafe extern "C" fn msvcrt__snprintf_l(
+    buf: *mut u8,
+    count: usize,
+    fmt: *const u8,
+    _locale: *mut u8,
+    mut args: ...
+) -> i32 {
+    if fmt.is_null() {
+        return -1;
+    }
+    let fmt_bytes = unsafe { CStr::from_ptr(fmt.cast::<i8>()) }.to_bytes();
+    let out = unsafe { format_printf_va(fmt_bytes, &mut args, false) };
+    let would_write = out.len() as i32;
+    if !buf.is_null() && count > 0 {
+        let copy_len = out.len().min(count - 1);
+        unsafe {
+            ptr::copy_nonoverlapping(out.as_ptr(), buf, copy_len);
+            *buf.add(copy_len) = 0;
+        }
+    }
+    would_write
+}
+
+/// `_wprintf_l(fmt, locale, ...) -> int` — locale-aware wprintf (locale ignored).
+///
+/// # Safety
+/// `fmt` must be a valid null-terminated wide string.
+/// Variadic arguments must match the format specifiers.
+#[unsafe(no_mangle)]
+#[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+pub unsafe extern "C" fn msvcrt__wprintf_l(
+    fmt: *const u16,
+    _locale: *mut u8,
+    mut args: ...
+) -> i32 {
+    if fmt.is_null() {
+        return -1;
+    }
+    let wide_fmt = unsafe { read_wide_string(fmt) };
+    let fmt_utf8 = String::from_utf16_lossy(&wide_fmt);
+    let Ok(cstr) = CString::new(fmt_utf8.as_bytes()) else {
+        return -1;
+    };
+    let out = unsafe { format_printf_va(cstr.to_bytes(), &mut args, true) };
+    match io::stdout().write_all(&out) {
+        Ok(()) => {
+            let _ = io::stdout().flush();
+            out.len() as i32
+        }
+        Err(_) => -1,
     }
 }
 
@@ -8017,5 +8402,70 @@ mod tests {
             )
         };
         assert_eq!(n, -1);
+    }
+
+    // ── Phase 38: _wfindfirst / locale printf tests ──────────────────────────
+
+    #[test]
+    fn test_wildcard_match_star() {
+        assert!(super::wildcard_match("*.txt", "hello.txt"));
+        assert!(!super::wildcard_match("*.txt", "hello.rs"));
+        assert!(super::wildcard_match("*", "anything"));
+        assert!(super::wildcard_match("*", ""));
+    }
+
+    #[test]
+    fn test_wildcard_match_question() {
+        assert!(super::wildcard_match("h?llo", "hello"));
+        assert!(!super::wildcard_match("h?llo", "hllo"));
+        assert!(super::wildcard_match("?.txt", "a.txt"));
+    }
+
+    #[test]
+    fn test_wildcard_match_literal() {
+        assert!(super::wildcard_match("hello", "hello"));
+        assert!(!super::wildcard_match("hello", "world"));
+    }
+
+    #[test]
+    fn test_findclose_invalid_handle_returns_minus1() {
+        // Closing a handle that was never opened should return -1.
+        let result = unsafe { msvcrt__findclose(999_999) };
+        assert_eq!(result, -1);
+    }
+
+    #[test]
+    fn test_wfindfirst_null_spec_returns_error() {
+        let mut buf = [0u8; 556];
+        let result = unsafe { msvcrt__wfindfirst64i32(std::ptr::null(), buf.as_mut_ptr()) };
+        assert_eq!(result, -1);
+    }
+
+    #[test]
+    fn test_printf_l_null_fmt() {
+        let result = unsafe { msvcrt__printf_l(std::ptr::null(), std::ptr::null_mut()) };
+        assert_eq!(result, -1);
+    }
+
+    #[test]
+    fn test_sprintf_l_basic() {
+        let mut buf = [0u8; 64];
+        let fmt = b"hello\0";
+        let result =
+            unsafe { msvcrt__sprintf_l(buf.as_mut_ptr(), fmt.as_ptr(), std::ptr::null_mut()) };
+        assert_eq!(result, 5);
+        assert_eq!(&buf[..5], b"hello");
+        assert_eq!(buf[5], 0);
+    }
+
+    #[test]
+    fn test_snprintf_l_truncation() {
+        let mut buf = [0u8; 4];
+        let fmt = b"hello\0";
+        let result =
+            unsafe { msvcrt__snprintf_l(buf.as_mut_ptr(), 4, fmt.as_ptr(), std::ptr::null_mut()) };
+        // Would-write count is 5 but only 3 chars + NUL written.
+        assert_eq!(result, 5);
+        assert_eq!(buf[3], 0); // NUL terminator
     }
 }
