@@ -567,6 +567,22 @@ impl DllManager {
             ("CreateFileA", KERNEL32_BASE + 0xE7),
             ("GetTempPathA", KERNEL32_BASE + 0xE8),
             ("DeleteFileA", KERNEL32_BASE + 0xE9),
+            // Phase 39: Extended Process Management
+            ("GetPriorityClass", KERNEL32_BASE + 0xEA),
+            ("SetPriorityClass", KERNEL32_BASE + 0xEB),
+            ("GetProcessAffinityMask", KERNEL32_BASE + 0xEC),
+            ("SetProcessAffinityMask", KERNEL32_BASE + 0xED),
+            ("FlushInstructionCache", KERNEL32_BASE + 0xEE),
+            ("ReadProcessMemory", KERNEL32_BASE + 0xEF),
+            ("WriteProcessMemory", KERNEL32_BASE + 0xF0),
+            ("VirtualAllocEx", KERNEL32_BASE + 0xF1),
+            ("VirtualFreeEx", KERNEL32_BASE + 0xF2),
+            ("CreateJobObjectW", KERNEL32_BASE + 0xF3),
+            ("AssignProcessToJobObject", KERNEL32_BASE + 0xF4),
+            ("IsProcessInJob", KERNEL32_BASE + 0xF5),
+            ("QueryInformationJobObject", KERNEL32_BASE + 0xF6),
+            ("SetInformationJobObject", KERNEL32_BASE + 0xF7),
+            ("OpenJobObjectW", KERNEL32_BASE + 0xF8),
         ];
 
         self.register_stub_dll("KERNEL32.dll", exports);
