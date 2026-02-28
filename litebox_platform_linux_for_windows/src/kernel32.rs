@@ -9961,7 +9961,9 @@ pub unsafe extern "C" fn kernel32_ReadProcessMemory(
         return 0; // FALSE
     }
     // SAFETY: caller guarantees both pointers are valid for `size` bytes.
-    unsafe { core::ptr::copy_nonoverlapping(base_address.cast::<u8>(), buffer.cast::<u8>(), size) };
+    // Use copy (memmove semantics) rather than copy_nonoverlapping to handle
+    // the case where source and destination overlap within the same process.
+    unsafe { core::ptr::copy(base_address.cast::<u8>(), buffer.cast::<u8>(), size) };
     if !bytes_read.is_null() {
         // SAFETY: caller guarantees bytes_read is valid.
         unsafe { *bytes_read = size };
@@ -9994,7 +9996,9 @@ pub unsafe extern "C" fn kernel32_WriteProcessMemory(
         return 0; // FALSE
     }
     // SAFETY: caller guarantees both pointers are valid for `size` bytes.
-    unsafe { core::ptr::copy_nonoverlapping(buffer.cast::<u8>(), base_address.cast::<u8>(), size) };
+    // Use copy (memmove semantics) rather than copy_nonoverlapping to handle
+    // the case where source and destination overlap within the same process.
+    unsafe { core::ptr::copy(buffer.cast::<u8>(), base_address.cast::<u8>(), size) };
     if !bytes_written.is_null() {
         // SAFETY: caller guarantees bytes_written is valid.
         unsafe { *bytes_written = size };
@@ -10056,8 +10060,9 @@ pub unsafe extern "C" fn kernel32_VirtualFreeEx(
 }
 
 /// Fake job-object handle value.
-/// Using a distinct constant makes it easy to recognise in handle checks.
-const JOB_OBJECT_HANDLE: usize = 0x4A_4F42; // "JOB" in ASCII
+/// Using a sentinel in a high, reserved range avoids collisions with real
+/// handles, which are allocated from monotonically increasing counters.
+const JOB_OBJECT_HANDLE: usize = usize::MAX - 0x10;
 
 /// CreateJobObjectW — creates or opens a job object.
 ///
@@ -10140,10 +10145,12 @@ pub unsafe extern "C" fn kernel32_QueryInformationJobObject(
 ) -> i32 {
     // Classes we can answer with an all-zeroes struct:
     // 1 = JobObjectBasicAccountingInformation (48 bytes)
-    // 9 = JobObjectExtendedLimitInformation (112 bytes)
+    // 9 = JobObjectExtendedLimitInformation (144 bytes on x86-64:
+    //     64-byte JOBOBJECT_BASIC_LIMIT_INFORMATION +
+    //     48-byte IO_COUNTERS + 4 × SIZE_T memory fields)
     let min_size: u32 = match job_object_information_class {
         1 => 48,
-        9 => 112,
+        9 => 144,
         _ => {
             // SAFETY: no pointer is dereferenced.
             unsafe { kernel32_SetLastError(50) }; // ERROR_NOT_SUPPORTED
@@ -16110,7 +16117,7 @@ mod tests {
     #[test]
     fn test_query_information_job_object() {
         let job = unsafe { kernel32_CreateJobObjectW(core::ptr::null_mut(), core::ptr::null()) };
-        let mut buf = [0u8; 112];
+        let mut buf = [0u8; 144];
         let mut ret_len: u32 = 0;
         let result = unsafe {
             kernel32_QueryInformationJobObject(
@@ -16122,7 +16129,7 @@ mod tests {
             )
         };
         assert_eq!(result, 1, "QueryInformationJobObject should return TRUE");
-        assert_eq!(ret_len, 112);
+        assert_eq!(ret_len, 144);
     }
 
     #[test]
