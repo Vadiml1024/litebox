@@ -532,6 +532,46 @@ fn test_dll_manager_has_all_required_exports() {
         let result = dll_manager.get_proc_address(kernel32, func_name);
         assert!(result.is_ok(), "KERNEL32.dll should export {func_name}");
     }
+
+    // Check that Phase 39 MSVCRT file I/O additions are resolvable
+    let msvcrt_phase39_functions = vec![
+        "_open",
+        "_close",
+        "_lseek",
+        "_lseeki64",
+        "_tell",
+        "_telli64",
+        "_eof",
+        "_creat",
+        "_commit",
+        "_dup",
+        "_dup2",
+        "_chsize",
+        "_chsize_s",
+        "_filelength",
+        "_filelengthi64",
+    ];
+    for func_name in msvcrt_phase39_functions {
+        let result = dll_manager.get_proc_address(msvcrt, func_name);
+        assert!(result.is_ok(), "MSVCRT.dll should export {func_name}");
+    }
+
+    // Check that Phase 39 msvcp140.dll vector<char> additions are resolvable
+    let msvcp140_phase39_functions = vec![
+        "??0?$vector@DU?$allocator@D@std@@@std@@QEAA@XZ",
+        "??1?$vector@DU?$allocator@D@std@@@std@@QEAA@XZ",
+        "?push_back@?$vector@DU?$allocator@D@std@@@std@@QEAAXAEBD@Z",
+        "?size@?$vector@DU?$allocator@D@std@@@std@@QEBA_KXZ",
+        "?capacity@?$vector@DU?$allocator@D@std@@@std@@QEBA_KXZ",
+        "?clear@?$vector@DU?$allocator@D@std@@@std@@QEAAXXZ",
+        "?data@?$vector@DU?$allocator@D@std@@@std@@QEAAPEADXZ",
+        "?data@?$vector@DU?$allocator@D@std@@@std@@QEBAPEBDXZ",
+        "?reserve@?$vector@DU?$allocator@D@std@@@std@@QEAAX_K@Z",
+    ];
+    for func_name in msvcp140_phase39_functions {
+        let result = dll_manager.get_proc_address(msvcp140, func_name);
+        assert!(result.is_ok(), "msvcp140.dll should export {func_name}");
+    }
 }
 
 #[cfg(test)]

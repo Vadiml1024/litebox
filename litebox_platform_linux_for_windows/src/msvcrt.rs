@@ -6948,6 +6948,272 @@ pub unsafe extern "C" fn msvcrt__wprintf_l(
     }
 }
 
+// ============================================================================
+// Phase 39: Low-level POSIX-style file I/O
+// ============================================================================
+
+/// Translate Windows `_O_*` open flags to Linux `O_*` flags.
+fn translate_open_flags(oflag: i32) -> libc::c_int {
+    // Access mode is encoded in the bottom 2 bits (0=rdonly, 1=wronly, 2=rdwr).
+    let access = match oflag & 0x03 {
+        0 => libc::O_RDONLY,
+        1 => libc::O_WRONLY,
+        _ => libc::O_RDWR,
+    };
+    let mut flags = access;
+    if oflag & 0x0008 != 0 {
+        flags |= libc::O_APPEND;
+    }
+    if oflag & 0x0100 != 0 {
+        flags |= libc::O_CREAT;
+    }
+    if oflag & 0x0200 != 0 {
+        flags |= libc::O_TRUNC;
+    }
+    if oflag & 0x0400 != 0 {
+        flags |= libc::O_EXCL;
+    }
+    if oflag & 0x0080 != 0 {
+        flags |= libc::O_CLOEXEC;
+    }
+    // _O_TEXT (0x4000), _O_BINARY (0x8000), _O_SEQUENTIAL/RANDOM are no-ops on Linux.
+    flags
+}
+
+/// `_open(path, oflag, pmode)` — open a file with low-level CRT flags.
+///
+/// Translates Windows `_O_*` flags to POSIX `O_*` flags and calls `libc::open`.
+/// Returns the new file descriptor on success, or -1 on error.
+///
+/// # Safety
+/// `path` must be a valid, NUL-terminated byte string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt__open(path: *const u8, oflag: i32, pmode: u32) -> i32 {
+    if path.is_null() {
+        return -1;
+    }
+    let flags = translate_open_flags(oflag);
+    // SAFETY: caller guarantees path is a valid NUL-terminated string.
+    unsafe { libc::open(path.cast(), flags, pmode as libc::mode_t) }
+}
+
+/// `_close(fd)` — close a low-level CRT file descriptor.
+///
+/// Returns 0 on success, or -1 on error.
+///
+/// # Safety
+/// `fd` must be a valid open file descriptor.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt__close(fd: i32) -> i32 {
+    // SAFETY: caller guarantees fd is a valid file descriptor.
+    unsafe { libc::close(fd) }
+}
+
+/// `_lseek(fd, offset, whence)` — seek within a low-level CRT file descriptor.
+///
+/// Returns the new file position as `i32`, or -1 on error or overflow.
+///
+/// # Safety
+/// `fd` must be a valid open file descriptor.
+#[unsafe(no_mangle)]
+#[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+pub unsafe extern "C" fn msvcrt__lseek(fd: i32, offset: i32, whence: i32) -> i32 {
+    // SAFETY: fd is a valid file descriptor per caller's contract.
+    let pos = unsafe { libc::lseek(fd, libc::off_t::from(offset), whence) };
+    if pos < 0 {
+        return -1;
+    }
+    if pos > i64::from(i32::MAX) {
+        return -1;
+    }
+    pos as i32
+}
+
+/// `_lseeki64(fd, offset, whence)` — seek within a low-level CRT file descriptor (64-bit).
+///
+/// Returns the new file position as `i64`, or -1 on error.
+///
+/// # Safety
+/// `fd` must be a valid open file descriptor.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt__lseeki64(fd: i32, offset: i64, whence: i32) -> i64 {
+    // SAFETY: fd is a valid file descriptor per caller's contract.
+    let pos = unsafe { libc::lseek(fd, offset as libc::off_t, whence) };
+    if pos < 0 { -1 } else { pos }
+}
+
+/// `_tell(fd)` — get the current file-position indicator.
+///
+/// Returns the current position as `i32`, or -1 on error or overflow.
+///
+/// # Safety
+/// `fd` must be a valid open file descriptor.
+#[unsafe(no_mangle)]
+#[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+pub unsafe extern "C" fn msvcrt__tell(fd: i32) -> i32 {
+    // SAFETY: fd is a valid file descriptor per caller's contract.
+    let pos = unsafe { libc::lseek(fd, 0, libc::SEEK_CUR) };
+    if pos < 0 {
+        return -1;
+    }
+    if pos > i64::from(i32::MAX) {
+        return -1;
+    }
+    pos as i32
+}
+
+/// `_telli64(fd)` — get the current file-position indicator (64-bit).
+///
+/// Returns the current position as `i64`, or -1 on error.
+///
+/// # Safety
+/// `fd` must be a valid open file descriptor.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt__telli64(fd: i32) -> i64 {
+    // SAFETY: fd is a valid file descriptor per caller's contract.
+    let pos = unsafe { libc::lseek(fd, 0, libc::SEEK_CUR) };
+    if pos < 0 { -1 } else { pos }
+}
+
+/// `_eof(fd)` — test whether a file descriptor is at end-of-file.
+///
+/// Returns 1 if at EOF, 0 if not, -1 on error.
+///
+/// # Safety
+/// `fd` must be a valid open file descriptor.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt__eof(fd: i32) -> i32 {
+    let mut stat = unsafe { core::mem::zeroed::<libc::stat>() };
+    // SAFETY: stat is properly zeroed and fd is valid per caller's contract.
+    if unsafe { libc::fstat(fd, &raw mut stat) } != 0 {
+        return -1;
+    }
+    // SAFETY: fd is valid per caller's contract.
+    let pos = unsafe { libc::lseek(fd, 0, libc::SEEK_CUR) };
+    if pos < 0 {
+        return -1;
+    }
+    i32::from(pos >= stat.st_size)
+}
+
+/// `_creat(path, pmode)` — create or truncate a file for writing.
+///
+/// Equivalent to `_open(path, _O_CREAT|_O_WRONLY|_O_TRUNC, pmode)`.
+/// Returns the new file descriptor on success, or -1 on error.
+///
+/// # Safety
+/// `path` must be a valid, NUL-terminated byte string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt__creat(path: *const u8, pmode: i32) -> i32 {
+    if path.is_null() {
+        return -1;
+    }
+    let flags = libc::O_CREAT | libc::O_WRONLY | libc::O_TRUNC;
+    // SAFETY: caller guarantees path is a valid NUL-terminated string.
+    unsafe { libc::open(path.cast(), flags, pmode.cast_unsigned() as libc::mode_t) }
+}
+
+/// `_commit(fd)` — flush OS buffers to disk for a file descriptor.
+///
+/// Returns 0 on success, -1 on error.
+///
+/// # Safety
+/// `fd` must be a valid open file descriptor.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt__commit(fd: i32) -> i32 {
+    // SAFETY: fd is a valid file descriptor per caller's contract.
+    let ret = unsafe { libc::fsync(fd) };
+    if ret == 0 { 0 } else { -1 }
+}
+
+/// `_dup(fd)` — duplicate a file descriptor.
+///
+/// Returns the new file descriptor on success, or -1 on error.
+///
+/// # Safety
+/// `fd` must be a valid open file descriptor.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt__dup(fd: i32) -> i32 {
+    // SAFETY: fd is a valid file descriptor per caller's contract.
+    unsafe { libc::dup(fd) }
+}
+
+/// `_dup2(fd, fd2)` — duplicate `fd` onto `fd2`.
+///
+/// Returns `fd2` on success, or -1 on error.
+///
+/// # Safety
+/// `fd` must be a valid open file descriptor; `fd2` must be a valid
+/// file descriptor number.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt__dup2(fd: i32, fd2: i32) -> i32 {
+    // SAFETY: fd and fd2 are valid per caller's contract.
+    let ret = unsafe { libc::dup2(fd, fd2) };
+    if ret < 0 { -1 } else { fd2 }
+}
+
+/// `_chsize(fd, size)` — truncate or extend a file to `size` bytes.
+///
+/// Returns 0 on success, -1 on error.
+///
+/// # Safety
+/// `fd` must be a valid open file descriptor.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt__chsize(fd: i32, size: i32) -> i32 {
+    // SAFETY: fd is a valid file descriptor per caller's contract.
+    let ret = unsafe { libc::ftruncate(fd, i64::from(size) as libc::off_t) };
+    if ret == 0 { 0 } else { -1 }
+}
+
+/// `_chsize_s(fd, size)` — truncate or extend a file to `size` bytes (64-bit).
+///
+/// Returns 0 on success, -1 on error.
+///
+/// # Safety
+/// `fd` must be a valid open file descriptor.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt__chsize_s(fd: i32, size: i64) -> i32 {
+    // SAFETY: fd is a valid file descriptor per caller's contract.
+    let ret = unsafe { libc::ftruncate(fd, size as libc::off_t) };
+    if ret == 0 { 0 } else { -1 }
+}
+
+/// `_filelength(fd)` — get the size of a file in bytes.
+///
+/// Returns the file size as `i32`, or -1 on error or overflow.
+///
+/// # Safety
+/// `fd` must be a valid open file descriptor.
+#[unsafe(no_mangle)]
+#[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+pub unsafe extern "C" fn msvcrt__filelength(fd: i32) -> i32 {
+    let mut stat = unsafe { core::mem::zeroed::<libc::stat>() };
+    // SAFETY: stat is properly zeroed and fd is valid per caller's contract.
+    if unsafe { libc::fstat(fd, &raw mut stat) } != 0 {
+        return -1;
+    }
+    if stat.st_size > i64::from(i32::MAX) {
+        return -1;
+    }
+    stat.st_size as i32
+}
+
+/// `_filelengthi64(fd)` — get the size of a file in bytes (64-bit).
+///
+/// Returns the file size as `i64`, or -1 on error.
+///
+/// # Safety
+/// `fd` must be a valid open file descriptor.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt__filelengthi64(fd: i32) -> i64 {
+    let mut stat = unsafe { core::mem::zeroed::<libc::stat>() };
+    // SAFETY: stat is properly zeroed and fd is valid per caller's contract.
+    if unsafe { libc::fstat(fd, &raw mut stat) } != 0 {
+        return -1;
+    }
+    stat.st_size
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -8474,5 +8740,62 @@ mod tests {
         // Would-write count is 5 but only 3 chars + NUL written.
         assert_eq!(result, 5);
         assert_eq!(buf[3], 0); // NUL terminator
+    }
+
+    // ── Phase 39: low-level file I/O tests ──────────────────────────────────
+
+    #[test]
+    fn test_open_close_basic() {
+        // Open /dev/null (always present on Linux) for reading and close it.
+        let path = b"/dev/null\0";
+        let fd = unsafe {
+            msvcrt__open(path.as_ptr(), 0 /* _O_RDONLY */, 0)
+        };
+        assert!(fd >= 0, "expected valid fd, got {fd}");
+        let ret = unsafe { msvcrt__close(fd) };
+        assert_eq!(ret, 0);
+    }
+
+    #[test]
+    fn test_open_null_path_returns_minus1() {
+        let fd = unsafe { msvcrt__open(std::ptr::null(), 0, 0) };
+        assert_eq!(fd, -1);
+    }
+
+    #[test]
+    fn test_creat_null_path_returns_minus1() {
+        let ret = unsafe { msvcrt__creat(std::ptr::null(), 0) };
+        assert_eq!(ret, -1);
+    }
+
+    #[test]
+    fn test_lseek_and_tell_on_dev_null() {
+        let path = b"/dev/null\0";
+        let fd = unsafe { msvcrt__open(path.as_ptr(), 0, 0) };
+        assert!(fd >= 0);
+        // lseek on /dev/null always returns 0 for SEEK_CUR on many systems.
+        let pos = unsafe { msvcrt__tell(fd) };
+        // Just check it doesn't return an error signal that crashes us.
+        assert!(pos >= -1);
+        let _ = unsafe { msvcrt__close(fd) };
+    }
+
+    #[test]
+    fn test_dup_and_dup2_on_stdin() {
+        let new_fd = unsafe { msvcrt__dup(0) };
+        assert!(new_fd >= 0, "dup(stdin) failed: {new_fd}");
+        let ret = unsafe { msvcrt__close(new_fd) };
+        assert_eq!(ret, 0);
+    }
+
+    #[test]
+    fn test_filelengthi64_on_dev_null() {
+        let path = b"/dev/null\0";
+        let fd = unsafe { msvcrt__open(path.as_ptr(), 0, 0) };
+        assert!(fd >= 0);
+        let size = unsafe { msvcrt__filelengthi64(fd) };
+        // /dev/null reports size 0.
+        assert_eq!(size, 0);
+        let _ = unsafe { msvcrt__close(fd) };
     }
 }

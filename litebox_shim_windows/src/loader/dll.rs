@@ -883,6 +883,22 @@ impl DllManager {
             ("_sprintf_l", MSVCRT_BASE + 0xE6),
             ("_snprintf_l", MSVCRT_BASE + 0xE7),
             ("_wprintf_l", MSVCRT_BASE + 0xE8),
+            // Phase 39: Low-level file I/O
+            ("_open", MSVCRT_BASE + 0xE9),
+            ("_close", MSVCRT_BASE + 0xEA),
+            ("_lseek", MSVCRT_BASE + 0xEB),
+            ("_lseeki64", MSVCRT_BASE + 0xEC),
+            ("_tell", MSVCRT_BASE + 0xED),
+            ("_telli64", MSVCRT_BASE + 0xEE),
+            ("_eof", MSVCRT_BASE + 0xEF),
+            ("_creat", MSVCRT_BASE + 0xF0),
+            ("_commit", MSVCRT_BASE + 0xF1),
+            ("_dup", MSVCRT_BASE + 0xF2),
+            ("_dup2", MSVCRT_BASE + 0xF3),
+            ("_chsize", MSVCRT_BASE + 0xF4),
+            ("_chsize_s", MSVCRT_BASE + 0xF5),
+            ("_filelength", MSVCRT_BASE + 0xF6),
+            ("_filelengthi64", MSVCRT_BASE + 0xF7),
         ];
 
         self.register_stub_dll("MSVCRT.dll", exports);
@@ -1337,6 +1353,43 @@ impl DllManager {
             (
                 "?append@?$basic_string@_WU?$char_traits@_W@std@@V?$allocator@_W@2@@std@@QEAAAEAV12@PEB_W@Z",
                 MSVCP140_BASE + 41,
+            ),
+            // Phase 39: std::vector<char> member functions
+            (
+                "??0?$vector@DU?$allocator@D@std@@@std@@QEAA@XZ",
+                MSVCP140_BASE + 42,
+            ),
+            (
+                "??1?$vector@DU?$allocator@D@std@@@std@@QEAA@XZ",
+                MSVCP140_BASE + 43,
+            ),
+            (
+                "?push_back@?$vector@DU?$allocator@D@std@@@std@@QEAAXAEBD@Z",
+                MSVCP140_BASE + 44,
+            ),
+            (
+                "?size@?$vector@DU?$allocator@D@std@@@std@@QEBA_KXZ",
+                MSVCP140_BASE + 45,
+            ),
+            (
+                "?capacity@?$vector@DU?$allocator@D@std@@@std@@QEBA_KXZ",
+                MSVCP140_BASE + 46,
+            ),
+            (
+                "?clear@?$vector@DU?$allocator@D@std@@@std@@QEAAXXZ",
+                MSVCP140_BASE + 47,
+            ),
+            (
+                "?data@?$vector@DU?$allocator@D@std@@@std@@QEAAPEADXZ",
+                MSVCP140_BASE + 48,
+            ),
+            (
+                "?data@?$vector@DU?$allocator@D@std@@@std@@QEBAPEBDXZ",
+                MSVCP140_BASE + 49,
+            ),
+            (
+                "?reserve@?$vector@DU?$allocator@D@std@@@std@@QEAAX_K@Z",
+                MSVCP140_BASE + 50,
             ),
         ];
 
