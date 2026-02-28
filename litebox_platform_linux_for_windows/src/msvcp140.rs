@@ -13,7 +13,11 @@
 // Allow unsafe operations inside unsafe functions since the entire file
 // uses C ABI functions that are inherently unsafe.
 #![allow(unsafe_op_in_unsafe_fn)]
+// Pointer casts from *mut u8 to *mut u16 are intentional: unaligned reads/writes
+// use ptr::read_unaligned / ptr::write_unaligned / ptr::copy_nonoverlapping.
+#![allow(clippy::cast_ptr_alignment)]
 
+use std::alloc::{Layout, alloc, dealloc};
 use std::ptr;
 
 // ============================================================================
@@ -859,6 +863,462 @@ mod tests {
                 "this_is_twenty_chars"
             );
             msvcp140__basic_string_dtor(heap.as_mut_ptr());
+        }
+    }
+}
+
+// ============================================================================
+// Phase 38: std::basic_string<wchar_t> — MSVC x64 ABI implementation
+// ============================================================================
+//
+// MSVC x64 `std::wstring` (`basic_string<wchar_t>`) internal layout (32 bytes):
+//
+//   [0..16)  union { wchar_t _Buf[8]; wchar_t* _Ptr; }  — SSO buffer or heap pointer
+//   [16..24) size_t _Mysize                              — current length (excl. NUL)
+//   [24..32) size_t _Myres                               — capacity (excl. NUL)
+//
+// SSO threshold: strings up to 7 wchar_t use the inline buffer (`_Myres == 7`);
+// longer strings use a heap allocation.
+
+/// SSO capacity for MSVC `std::wstring` (inline buffer holds 8 wchar_t; SSO cap is 7).
+const MSVCRT_WSTR_SSO_CAP: usize = 7;
+
+/// Read `_Mysize` field from a `basic_string<wchar_t>` object at `this`.
+///
+/// # Safety
+/// `this` must point to a valid, initialized `basic_string<wchar_t>` (32 bytes).
+#[inline]
+unsafe fn wstr_mysize(this: *const u8) -> usize {
+    unsafe { ptr::read_unaligned(this.add(16).cast::<usize>()) }
+}
+
+/// Read `_Myres` (capacity) from a `basic_string<wchar_t>` object at `this`.
+///
+/// # Safety
+/// `this` must point to a valid, initialized `basic_string<wchar_t>` (32 bytes).
+#[inline]
+unsafe fn wstr_myres(this: *const u8) -> usize {
+    unsafe { ptr::read_unaligned(this.add(24).cast::<usize>()) }
+}
+
+/// Return a pointer to the wide character data of a `basic_string<wchar_t>` object.
+///
+/// # Safety
+/// `this` must point to a valid, initialized `basic_string<wchar_t>` (32 bytes).
+#[inline]
+unsafe fn wstr_data(this: *const u8) -> *const u16 {
+    let cap = unsafe { wstr_myres(this) };
+    if cap == MSVCRT_WSTR_SSO_CAP {
+        // SSO: data is inline at offset 0.
+        this.cast::<u16>()
+    } else {
+        // Heap: first 8 bytes hold the pointer.
+        unsafe { ptr::read_unaligned(this.cast::<*const u16>()) }
+    }
+}
+
+/// `std::basic_string<wchar_t>::basic_string()` — default constructor.
+///
+/// Exported as `??0?$basic_string@_WU?$char_traits@_W@std@@V?$allocator@_W@2@@std@@QEAA@XZ`.
+///
+/// # Safety
+/// `this` must point to at least 32 bytes of writable memory.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__basic_wstring_ctor(this: *mut u8) {
+    if this.is_null() {
+        return;
+    }
+    // Zero the SSO buffer and set _Mysize = 0, _Myres = SSO_CAP.
+    unsafe {
+        ptr::write_bytes(this, 0, 16);
+        ptr::write_unaligned(this.add(16).cast::<usize>(), 0);
+        ptr::write_unaligned(this.add(24).cast::<usize>(), MSVCRT_WSTR_SSO_CAP);
+    }
+}
+
+/// `std::basic_string<wchar_t>::basic_string(wchar_t const*)` — construct from wide C string.
+///
+/// Exported as
+/// `??0?$basic_string@_WU?$char_traits@_W@std@@V?$allocator@_W@2@@std@@QEAA@PEB_W@Z`.
+///
+/// # Safety
+/// `this` must point to at least 32 bytes of writable memory.
+/// `s` must be a valid null-terminated wide string or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__basic_wstring_ctor_cstr(this: *mut u8, s: *const u16) {
+    unsafe { msvcp140__basic_wstring_ctor(this) };
+    if s.is_null() {
+        return;
+    }
+    // Compute wide string length.
+    let mut len = 0usize;
+    // SAFETY: s is a valid null-terminated wide string per caller contract.
+    unsafe {
+        while *s.add(len) != 0 {
+            len += 1;
+        }
+    }
+    unsafe { msvcp140_basic_wstring_assign_impl(this, s, len) };
+}
+
+/// `std::basic_string<wchar_t>::basic_string(basic_string const&)` — copy constructor.
+///
+/// Exported as
+/// `??0?$basic_string@_WU?$char_traits@_W@std@@V?$allocator@_W@2@@std@@QEAA@AEBV01@@Z`.
+///
+/// # Safety
+/// `this` must point to at least 32 bytes of writable memory.
+/// `other` must point to a valid initialized `basic_string<wchar_t>`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__basic_wstring_copy_ctor(this: *mut u8, other: *const u8) {
+    unsafe { msvcp140__basic_wstring_ctor(this) };
+    if other.is_null() {
+        return;
+    }
+    let len = unsafe { wstr_mysize(other) };
+    let src = unsafe { wstr_data(other) };
+    unsafe { msvcp140_basic_wstring_assign_impl(this, src, len) };
+}
+
+/// `std::basic_string<wchar_t>::~basic_string()` — destructor.
+///
+/// Exported as `??1?$basic_string@_WU?$char_traits@_W@std@@V?$allocator@_W@2@@std@@QEAA@XZ`.
+///
+/// # Safety
+/// `this` must point to a valid initialized `basic_string<wchar_t>`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__basic_wstring_dtor(this: *mut u8) {
+    if this.is_null() {
+        return;
+    }
+    let cap = unsafe { wstr_myres(this) };
+    if cap != MSVCRT_WSTR_SSO_CAP {
+        // Heap allocation: free the pointer stored at offset 0.
+        let ptr_val = unsafe { ptr::read_unaligned(this.cast::<*mut u8>()) };
+        if !ptr_val.is_null() {
+            let layout = unsafe {
+                // SAFETY: cap+1 is the allocation size used in assign_impl.
+                Layout::array::<u16>(cap + 1).unwrap_unchecked()
+            };
+            // SAFETY: ptr_val was allocated with this layout in msvcp140_basic_wstring_assign_impl.
+            unsafe { dealloc(ptr_val, layout) };
+        }
+    }
+    // Zero the object to prevent use-after-free.
+    unsafe { ptr::write_bytes(this, 0, 32) };
+}
+
+/// Internal helper: assign `len` wide chars from `s` into `this`.
+///
+/// # Safety
+/// `this` must point to a valid (possibly empty) `basic_string<wchar_t>`.
+/// `s` must point to at least `len` readable `u16` values.
+/// `s` must NOT alias the existing character buffer of `this`.
+unsafe fn msvcp140_basic_wstring_assign_impl(this: *mut u8, s: *const u16, len: usize) {
+    if this.is_null() {
+        return;
+    }
+    let Some(alloc_size) = len.checked_add(1) else {
+        return;
+    };
+
+    // Free existing heap allocation if any.
+    let old_cap = unsafe { wstr_myres(this) };
+    if old_cap != MSVCRT_WSTR_SSO_CAP {
+        let old_ptr = unsafe { ptr::read_unaligned(this.cast::<*mut u8>()) };
+        if !old_ptr.is_null() {
+            let layout = unsafe { Layout::array::<u16>(old_cap + 1).unwrap_unchecked() };
+            // SAFETY: old_ptr was allocated with this layout.
+            unsafe { dealloc(old_ptr, layout) };
+        }
+    }
+
+    if len <= MSVCRT_WSTR_SSO_CAP {
+        // Use SSO buffer.
+        if !s.is_null() && len > 0 {
+            // SAFETY: s points to at least `len` u16 values; SSO buffer is 16 bytes (8 u16).
+            unsafe { ptr::copy_nonoverlapping(s, this.cast::<u16>(), len) };
+        }
+        // NUL terminate.
+        // SAFETY: SSO buffer has capacity for 8 u16; len <= 7 so offset len is in bounds.
+        unsafe { ptr::write_unaligned(this.cast::<u16>().add(len), 0u16) };
+        unsafe { ptr::write_unaligned(this.add(16).cast::<usize>(), len) };
+        unsafe { ptr::write_unaligned(this.add(24).cast::<usize>(), MSVCRT_WSTR_SSO_CAP) };
+    } else {
+        // Heap allocation.
+        let Ok(layout) = Layout::array::<u16>(alloc_size) else {
+            // Layout error: leave empty SSO state.
+            unsafe { ptr::write_bytes(this, 0, 16) };
+            unsafe { ptr::write_unaligned(this.add(16).cast::<usize>(), 0) };
+            unsafe { ptr::write_unaligned(this.add(24).cast::<usize>(), MSVCRT_WSTR_SSO_CAP) };
+            return;
+        };
+        // SAFETY: layout is valid and non-zero.
+        let buf = unsafe { alloc(layout).cast::<u16>() };
+        if buf.is_null() {
+            // Allocation failed: leave empty SSO state.
+            unsafe { ptr::write_bytes(this, 0, 16) };
+            unsafe { ptr::write_unaligned(this.add(16).cast::<usize>(), 0) };
+            unsafe { ptr::write_unaligned(this.add(24).cast::<usize>(), MSVCRT_WSTR_SSO_CAP) };
+            return;
+        }
+        if !s.is_null() {
+            // SAFETY: s points to at least `len` u16 values.
+            unsafe { ptr::copy_nonoverlapping(s, buf, len) };
+        }
+        // NUL terminate.
+        unsafe { *buf.add(len) = 0 };
+        // Store heap pointer at offset 0.
+        unsafe { ptr::write_unaligned(this.cast::<*mut u16>(), buf) };
+        unsafe { ptr::write_unaligned(this.add(16).cast::<usize>(), len) };
+        unsafe { ptr::write_unaligned(this.add(24).cast::<usize>(), len) };
+    }
+}
+
+/// `std::basic_string<wchar_t>::c_str() const` — return null-terminated wide char pointer.
+///
+/// Exported as
+/// `?c_str@?$basic_string@_WU?$char_traits@_W@std@@V?$allocator@_W@2@@std@@QEBAPEB_WXZ`.
+///
+/// # Safety
+/// `this` must point to a valid initialized `basic_string<wchar_t>`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__basic_wstring_c_str(this: *const u8) -> *const u16 {
+    if this.is_null() {
+        // Return a pointer to a static wide NUL character.
+        static EMPTY_WIDE: u16 = 0;
+        return &raw const EMPTY_WIDE;
+    }
+    unsafe { wstr_data(this) }
+}
+
+/// `std::basic_string<wchar_t>::size() const` — return string length.
+///
+/// Exported as
+/// `?size@?$basic_string@_WU?$char_traits@_W@std@@V?$allocator@_W@2@@std@@QEBA_KXZ`.
+///
+/// # Safety
+/// `this` must point to a valid initialized `basic_string<wchar_t>`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__basic_wstring_size(this: *const u8) -> usize {
+    if this.is_null() {
+        return 0;
+    }
+    unsafe { wstr_mysize(this) }
+}
+
+/// `std::basic_string<wchar_t>::empty() const` — return true if string is empty.
+///
+/// Exported as
+/// `?empty@?$basic_string@_WU?$char_traits@_W@std@@V?$allocator@_W@2@@std@@QEBA_NXZ`.
+///
+/// # Safety
+/// `this` must point to a valid initialized `basic_string<wchar_t>`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__basic_wstring_empty(this: *const u8) -> bool {
+    unsafe { msvcp140__basic_wstring_size(this) == 0 }
+}
+
+/// `std::basic_string<wchar_t>::operator=(basic_string const&)` — copy assignment.
+///
+/// Exported as
+/// `??4?$basic_string@_WU?$char_traits@_W@std@@V?$allocator@_W@2@@std@@QEAAAEAV01@AEBV01@@Z`.
+/// Returns `this`.
+///
+/// # Safety
+/// `this` and `other` must each point to valid initialized `basic_string<wchar_t>` objects.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__basic_wstring_assign_op(
+    this: *mut u8,
+    other: *const u8,
+) -> *mut u8 {
+    if !other.is_null() {
+        if std::ptr::eq(this, other) {
+            return this;
+        }
+        let len = unsafe { wstr_mysize(other) };
+        let src = unsafe { wstr_data(other) };
+        unsafe { msvcp140_basic_wstring_assign_impl(this, src, len) };
+    }
+    this
+}
+
+/// `std::basic_string<wchar_t>::operator=(wchar_t const*)` — assign from wide C string.
+///
+/// Exported as
+/// `??4?$basic_string@_WU?$char_traits@_W@std@@V?$allocator@_W@2@@std@@QEAAAEAV01@PEB_W@Z`.
+/// Returns `this`.
+///
+/// # Safety
+/// `this` must point to a valid initialized `basic_string<wchar_t>`.
+/// `s` must be a valid null-terminated wide string or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__basic_wstring_assign_cstr(
+    this: *mut u8,
+    s: *const u16,
+) -> *mut u8 {
+    if !s.is_null() {
+        let mut len = 0usize;
+        // SAFETY: s is a valid null-terminated wide string per caller contract.
+        unsafe {
+            while *s.add(len) != 0 {
+                len += 1;
+            }
+        }
+        unsafe { msvcp140_basic_wstring_assign_impl(this, s, len) };
+    }
+    this
+}
+
+/// `std::basic_string<wchar_t>::append(wchar_t const*)` — append a wide C string.
+///
+/// Exported as
+/// `?append@?$basic_string@_WU?$char_traits@_W@std@@V?$allocator@_W@2@@std@@QEAAAEAV12@PEB_W@Z`.
+/// Returns `this`.
+///
+/// # Safety
+/// `this` must point to a valid initialized `basic_string<wchar_t>`.
+/// `s` must be a valid null-terminated wide string or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__basic_wstring_append_cstr(
+    this: *mut u8,
+    s: *const u16,
+) -> *mut u8 {
+    if this.is_null() || s.is_null() {
+        return this;
+    }
+    let cur_len = unsafe { wstr_mysize(this) };
+    let mut add_len = 0usize;
+    unsafe {
+        while *s.add(add_len) != 0 {
+            add_len += 1;
+        }
+    }
+
+    let Some(new_len) = cur_len.checked_add(add_len) else {
+        return this;
+    };
+    let Some(alloc_size) = new_len.checked_add(1) else {
+        return this;
+    };
+
+    let cur_data = unsafe { wstr_data(this) };
+    let Ok(layout) = Layout::array::<u16>(alloc_size) else {
+        return this;
+    };
+    // SAFETY: layout is valid and non-zero.
+    let tmp = unsafe { alloc(layout).cast::<u16>() };
+    if tmp.is_null() {
+        return this;
+    }
+    if cur_len > 0 {
+        // SAFETY: cur_data points to at least cur_len u16 values.
+        unsafe { ptr::copy_nonoverlapping(cur_data, tmp, cur_len) };
+    }
+    // SAFETY: s points to add_len u16 values.
+    unsafe { ptr::copy_nonoverlapping(s, tmp.add(cur_len), add_len) };
+    unsafe { *tmp.add(new_len) = 0 };
+
+    unsafe { msvcp140_basic_wstring_assign_impl(this, tmp, new_len) };
+    // SAFETY: tmp was allocated with this layout above.
+    unsafe { dealloc(tmp.cast(), layout) };
+    this
+}
+
+#[cfg(test)]
+mod tests_wstring {
+    use super::*;
+
+    #[test]
+    fn test_basic_wstring_default_ctor_is_empty() {
+        let mut obj = [0u8; 32];
+        unsafe {
+            msvcp140__basic_wstring_ctor(obj.as_mut_ptr());
+            assert_eq!(msvcp140__basic_wstring_size(obj.as_ptr()), 0);
+            assert!(msvcp140__basic_wstring_empty(obj.as_ptr()));
+            let p = msvcp140__basic_wstring_c_str(obj.as_ptr());
+            assert!(!p.is_null());
+            assert_eq!(unsafe { *p }, 0u16);
+            msvcp140__basic_wstring_dtor(obj.as_mut_ptr());
+        }
+    }
+
+    #[test]
+    fn test_basic_wstring_ctor_from_cstr_sso() {
+        // "hi" (2 chars) fits in SSO (threshold = 7).
+        let wide: [u16; 3] = [b'h' as u16, b'i' as u16, 0];
+        let mut obj = [0u8; 32];
+        unsafe {
+            msvcp140__basic_wstring_ctor_cstr(obj.as_mut_ptr(), wide.as_ptr());
+            assert_eq!(msvcp140__basic_wstring_size(obj.as_ptr()), 2);
+            assert!(!msvcp140__basic_wstring_empty(obj.as_ptr()));
+            let p = msvcp140__basic_wstring_c_str(obj.as_ptr());
+            assert_eq!(unsafe { *p }, b'h' as u16);
+            assert_eq!(unsafe { *p.add(1) }, b'i' as u16);
+            assert_eq!(unsafe { *p.add(2) }, 0u16);
+            msvcp140__basic_wstring_dtor(obj.as_mut_ptr());
+        }
+    }
+
+    #[test]
+    fn test_basic_wstring_ctor_from_cstr_heap() {
+        // 10 chars > SSO threshold (7), forces heap allocation.
+        let wide: Vec<u16> = "helloworld\0".encode_utf16().collect();
+        let mut obj = [0u8; 32];
+        unsafe {
+            msvcp140__basic_wstring_ctor_cstr(obj.as_mut_ptr(), wide.as_ptr());
+            assert_eq!(msvcp140__basic_wstring_size(obj.as_ptr()), 10);
+            let p = msvcp140__basic_wstring_c_str(obj.as_ptr());
+            let result: Vec<u16> = (0..10).map(|i| unsafe { *p.add(i) }).collect();
+            let s = String::from_utf16_lossy(&result);
+            assert_eq!(s, "helloworld");
+            msvcp140__basic_wstring_dtor(obj.as_mut_ptr());
+        }
+    }
+
+    #[test]
+    fn test_basic_wstring_copy_ctor() {
+        let wide: Vec<u16> = "copy\0".encode_utf16().collect();
+        let mut src = [0u8; 32];
+        let mut dst = [0u8; 32];
+        unsafe {
+            msvcp140__basic_wstring_ctor_cstr(src.as_mut_ptr(), wide.as_ptr());
+            msvcp140__basic_wstring_copy_ctor(dst.as_mut_ptr(), src.as_ptr());
+            assert_eq!(msvcp140__basic_wstring_size(dst.as_ptr()), 4);
+            let p = msvcp140__basic_wstring_c_str(dst.as_ptr());
+            let result: Vec<u16> = (0..4).map(|i| unsafe { *p.add(i) }).collect();
+            assert_eq!(String::from_utf16_lossy(&result), "copy");
+            msvcp140__basic_wstring_dtor(src.as_mut_ptr());
+            msvcp140__basic_wstring_dtor(dst.as_mut_ptr());
+        }
+    }
+
+    #[test]
+    fn test_basic_wstring_append_cstr() {
+        let hello: Vec<u16> = "hel\0".encode_utf16().collect();
+        let lo: Vec<u16> = "lo\0".encode_utf16().collect();
+        let mut obj = [0u8; 32];
+        unsafe {
+            msvcp140__basic_wstring_ctor_cstr(obj.as_mut_ptr(), hello.as_ptr());
+            msvcp140__basic_wstring_append_cstr(obj.as_mut_ptr(), lo.as_ptr());
+            assert_eq!(msvcp140__basic_wstring_size(obj.as_ptr()), 5);
+            let p = msvcp140__basic_wstring_c_str(obj.as_ptr());
+            let result: Vec<u16> = (0..5).map(|i| unsafe { *p.add(i) }).collect();
+            assert_eq!(String::from_utf16_lossy(&result), "hello");
+            msvcp140__basic_wstring_dtor(obj.as_mut_ptr());
+        }
+    }
+
+    #[test]
+    fn test_basic_wstring_self_assign_no_corruption() {
+        let wide: Vec<u16> = "test\0".encode_utf16().collect();
+        let mut obj = [0u8; 32];
+        unsafe {
+            msvcp140__basic_wstring_ctor_cstr(obj.as_mut_ptr(), wide.as_ptr());
+            let ret = msvcp140__basic_wstring_assign_op(obj.as_mut_ptr(), obj.as_ptr());
+            assert_eq!(ret, obj.as_mut_ptr());
+            assert_eq!(msvcp140__basic_wstring_size(obj.as_ptr()), 4);
+            msvcp140__basic_wstring_dtor(obj.as_mut_ptr());
         }
     }
 }

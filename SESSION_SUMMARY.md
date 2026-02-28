@@ -1,3 +1,41 @@
+# Windows-on-Linux Support — Session Summary (Phase 38)
+
+## ⚡ CURRENT STATUS ⚡
+
+**Branch:** `copilot/continue-windows-on-linux-support-another-one`
+**Goal:** Phase 38 — `basic_wstring<wchar_t>`, `_wfindfirst`/`_wfindnext`/`_findclose`, locale-aware printf variants.
+
+### Status at checkpoint
+
+| Component | State |
+|-----------|-------|
+| All tests (600 total) | ✅ Passing |
+| Ratchet tests (5) | ✅ Passing |
+| Clippy (`-Dwarnings`) | ✅ Clean |
+
+### Files changed in this session
+- `litebox_platform_linux_for_windows/src/msvcp140.rs`
+  - Added `std::basic_string<wchar_t>` full MSVC x64 ABI implementation (SSO threshold=7, 32-byte layout)
+  - Functions: default ctor, construct-from-wide-cstr, copy ctor, dtor, `c_str()`, `size()`, `empty()`, copy assignment, assign-from-cstr, `append()`
+  - 6 unit tests in `tests_wstring` module
+- `litebox_platform_linux_for_windows/src/msvcrt.rs`
+  - Added `_wfindfirst64i32` / `_wfindnext64i32` / `_findclose` — wide-character file enumeration using `libc::opendir`/`readdir`/`closedir` with a mutex-protected handle table and DP wildcard matching
+  - Added `_printf_l`, `_fprintf_l`, `_sprintf_l`, `_snprintf_l`, `_wprintf_l` — locale-aware printf variants (locale ignored)
+  - 8 new unit tests
+- `litebox_platform_linux_for_windows/src/function_table.rs` — 18 new FunctionImpl entries
+- `litebox_shim_windows/src/loader/dll.rs` — 10 new msvcp140.dll stubs, 8 new MSVCRT.dll stubs
+- `litebox_runner_windows_on_linux_userland/tests/integration.rs` — Phase 38 resolution test block
+- `dev_tests/src/ratchet.rs` — updated globals count 55→58
+
+### Next phase suggestions
+- **Phase 39**: C++ STL containers (e.g., `std::vector<T>`, `std::map<K,V>`)
+- **Phase 39**: More file I/O: `_open`/`_close`/`_lseek`/`_read`/`_write` with Windows semantics
+- **Phase 39**: Exception handling: `_CxxThrowException`, `__CxxFrameHandler3`
+- **Phase 39**: Wide string utilities: `wcslen`, `wcscpy`, `wcscmp`, `wcscat`, `wcsstr`
+- **Phase 39**: Registry stubs: `RegOpenKeyExW`, `RegQueryValueExW`, `RegCloseKey`
+
+---
+
 # Windows-on-Linux Support — Session Summary (Phase 37)
 
 ## ⚡ CURRENT STATUS ⚡
