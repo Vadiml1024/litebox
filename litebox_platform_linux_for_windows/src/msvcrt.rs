@@ -6696,12 +6696,19 @@ pub unsafe extern "C" fn msvcrt__wfindfirst64i32(spec: *const u16, fileinfo: *mu
     let spec_str = String::from_utf16_lossy(&wide_spec);
 
     // Split into directory and pattern.
-    let (dir, pattern) = if let Some(pos) = spec_str.rfind(['/', '\\']) {
+    let (raw_dir, pattern) = if let Some(pos) = spec_str.rfind(['/', '\\']) {
         (&spec_str[..pos], &spec_str[pos + 1..])
     } else {
         (".", &spec_str[..])
     };
-    let dir = if dir.is_empty() { "." } else { dir };
+    // Normalize Windows-style paths (drive letter, backslashes) to Linux paths.
+    let dir_normalized;
+    let dir: &str = if raw_dir.is_empty() {
+        "."
+    } else {
+        dir_normalized = crate::translate_windows_path_to_linux(raw_dir);
+        &dir_normalized
+    };
 
     // Open the directory.
     let Ok(c_dir) = CString::new(dir) else {

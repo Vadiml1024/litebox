@@ -4120,31 +4120,31 @@ pub fn get_function_table() -> Vec<FunctionImpl> {
         FunctionImpl {
             name: "_printf_l",
             dll_name: "MSVCRT.dll",
-            num_params: 7,
+            num_params: 9,
             impl_address: crate::msvcrt::msvcrt__printf_l as *const () as usize,
         },
         FunctionImpl {
             name: "_fprintf_l",
             dll_name: "MSVCRT.dll",
-            num_params: 7,
+            num_params: 9,
             impl_address: crate::msvcrt::msvcrt__fprintf_l as *const () as usize,
         },
         FunctionImpl {
             name: "_sprintf_l",
             dll_name: "MSVCRT.dll",
-            num_params: 7,
+            num_params: 9,
             impl_address: crate::msvcrt::msvcrt__sprintf_l as *const () as usize,
         },
         FunctionImpl {
             name: "_snprintf_l",
             dll_name: "MSVCRT.dll",
-            num_params: 7,
+            num_params: 9,
             impl_address: crate::msvcrt::msvcrt__snprintf_l as *const () as usize,
         },
         FunctionImpl {
             name: "_wprintf_l",
             dll_name: "MSVCRT.dll",
-            num_params: 7,
+            num_params: 9,
             impl_address: crate::msvcrt::msvcrt__wprintf_l as *const () as usize,
         },
     ]

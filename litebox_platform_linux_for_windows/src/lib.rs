@@ -947,7 +947,7 @@ impl Default for LinuxPlatformForWindows {
 /// Translate Windows path to Linux path
 ///
 /// Converts Windows-style paths (C:\path\to\file.txt) to Linux paths (/path/to/file.txt)
-fn translate_windows_path_to_linux(windows_path: &str) -> String {
+pub(crate) fn translate_windows_path_to_linux(windows_path: &str) -> String {
     let mut path = windows_path.to_string();
 
     // Remove drive letter if present (C:, D:, etc.)
