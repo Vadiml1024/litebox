@@ -1,8 +1,8 @@
 # Windows on Linux: Implementation Status
 
-**Last Updated:** 2026-02-25  
-**Total Tests:** 500 passing (433 platform + 50 shim + 17 runner + 5 dev_tests — Phase 32 adds ole32.dll COM stubs, 39 new MSVCRT functions, and TLS callbacks)  
-**Overall Status:** Core infrastructure complete. Seven Rust-based test programs (hello_cli, math_test, env_test, args_test, file_io_test, string_test, getprocaddress_test) run successfully end-to-end through the runner on Linux. **All API stub functions have been fully replaced — stub count is now 0.** Full C++ exception handling implemented and validated: `seh_c_test` (21/21), `seh_cpp_test` MinGW (26/26), `seh_cpp_test_clang` clang/MinGW (26/26), and `seh_cpp_test_msvc` MSVC ABI (21/21) all pass. Phase 32 adds ole32.dll with COM init/memory/GUID functions, 39 new MSVCRT helpers (stdio, char classification, sorting, wide numeric), and TLS callbacks execution.
+**Last Updated:** 2026-02-28  
+**Total Tests:** 600 passing in Windows-on-Linux crates (533 platform + 51 shim + 16 runner) + 5 dev_tests ratchet checks — Phase 38 adds `std::basic_string<wchar_t>`, `_wfindfirst64i32`/`_wfindnext64i32`/`_findclose`, and locale-aware printf variants  
+**Overall Status:** Core infrastructure complete. Seven Rust-based test programs (hello_cli, math_test, env_test, args_test, file_io_test, string_test, getprocaddress_test) run successfully end-to-end through the runner on Linux. **All API stub functions have been fully replaced — stub count is now 0.** Full C++ exception handling implemented and validated: `seh_c_test` (21/21), `seh_cpp_test` MinGW (26/26), `seh_cpp_test_clang` clang/MinGW (26/26), and `seh_cpp_test_msvc` MSVC ABI (21/21) all pass. Phases 33–38 add msvcp140.dll C++ runtime stubs, extended MSVCRT printf/scanf/va variants, `std::basic_string<char/wchar_t>`, file enumeration (`_wfindfirst64i32`/`_wfindnext64i32`/`_findclose`), and locale-aware printf wrappers.
 
 ---
 
@@ -283,14 +283,36 @@ All GDI32 functions operate in headless mode: drawing is silently discarded.
 | `CoTaskMemAlloc` / `CoTaskMemFree` / `CoTaskMemRealloc` | Delegate to `malloc`/`free`/`realloc` |
 | `CoSetProxyBlanket` | Returns E_NOTIMPL (security blanket not supported) |
 
-### MSVCRT New Functions (Phase 32, 39 functions)
+### MSVCRT New Functions (Phases 32–38)
 | Category | Functions |
 |---|---|
-| Formatted I/O | `sprintf`, `snprintf`, `sscanf`, `swprintf`, `wprintf` |
+| Formatted I/O (Phase 32) | `sprintf`, `snprintf`, `sscanf`, `swprintf`, `wprintf` |
 | Character classification | `isalpha`, `isdigit`, `isspace`, `isupper`, `islower`, `isprint`, `isxdigit`, `isalnum`, `iscntrl`, `ispunct`, `toupper`, `tolower` |
 | Sorting | `qsort`, `bsearch` |
 | Wide numeric | `wcstol`, `wcstoul`, `wcstod` |
-| File I/O | `fopen`, `fclose`, `fread`, `fseek`, `ftell`, `fflush`, `fgets`, `rewind`, `feof`, `ferror`, `clearerr`, `fgetc`, `ungetc`, `fileno` (`_fileno`), `fdopen` (`_fdopen`), `tmpfile`, `remove`, `rename` |
+| File I/O (Phase 32) | `fopen`, `fclose`, `fread`, `fseek`, `ftell`, `fflush`, `fgets`, `rewind`, `feof`, `ferror`, `clearerr`, `fgetc`, `ungetc`, `fileno` (`_fileno`), `fdopen` (`_fdopen`), `tmpfile`, `remove`, `rename` |
+| va_list formatted I/O (Phase 34) | `vprintf`, `vsprintf`, `vsnprintf`, `vswprintf`, `fwprintf`, `vfwprintf` |
+| Low-level I/O (Phase 34) | `_write`, `getchar`, `putchar` |
+| Wide printf (Phase 35) | `_vsnwprintf` |
+| Printf-count helpers (Phase 35) | `_scprintf`, `_vscprintf`, `_scwprintf`, `_vscwprintf` |
+| Handle interop (Phase 35) | `_get_osfhandle`, `_open_osfhandle` |
+| scanf real impl (Phase 36) | complete `sscanf` implementation (replaces Phase 32 stub), `_wcsdup`, `__stdio_common_vsscanf` |
+| UCRT printf/scanf (Phase 37) | `__stdio_common_vsprintf`, `__stdio_common_vsnprintf_s`, `__stdio_common_vsprintf_s`, `__stdio_common_vswprintf`, `scanf`, `fscanf`, `__stdio_common_vfscanf` |
+| Integer/wide string conversions (Phase 37) | `_ultoa`, `_i64toa`, `_ui64toa`, `_strtoi64`, `_strtoui64`, `_itow`, `_ltow`, `_ultow`, `_i64tow`, `_ui64tow` |
+| Locale-aware printf (Phase 38) | `_printf_l`, `_fprintf_l`, `_sprintf_l`, `_snprintf_l`, `_wprintf_l` |
+| File enumeration (Phase 38) | `_wfindfirst64i32`, `_wfindnext64i32`, `_findclose` |
+
+### msvcp140.dll — C++ Runtime (Phases 33–38)
+| Category | Functions |
+|---|---|
+| Memory (Phase 33) | `operator new` (`??2@YAPEAX_K@Z`), `operator delete` (`??3@YAXPEAX@Z`), array variants (`??_U@YAPEAX_K@Z`, `??_V@YAXPEAX@Z`) |
+| Exception helpers (Phase 33) | `_Xbad_alloc`, `_Xlength_error`, `_Xout_of_range`, `_Xinvalid_argument`, `_Xruntime_error`, `_Xoverflow_error` |
+| Locale (Phase 33) | `_Locinfo::_Getctype`, `_Locinfo::_Getdays`, `_Locinfo::_Getmonths` |
+| `std::exception` (Phase 35) | `what()`, default ctor, message ctor, dtor |
+| Locale/lock (Phase 35) | `_Getgloballocale`, `_Lockit` ctor/dtor |
+| `ios_base::Init` (Phase 35) | ctor/dtor (no-op; deferred stream init) |
+| `std::basic_string<char>` (Phase 37) | default ctor, construct-from-cstr, copy ctor, dtor, `c_str()`, `size()`, `empty()`, copy assignment, assign-from-cstr, `append()` |
+| `std::basic_string<wchar_t>` (Phase 38) | default ctor, construct-from-wide-cstr, copy ctor, dtor, `c_str()`, `size()`, `empty()`, copy assignment, assign-from-cstr, `append()` |
 
 ### TLS Callbacks (Phase 32)
 - `TlsInfo` now includes `address_of_callbacks` field parsed from the PE TLS directory
@@ -321,24 +343,23 @@ All GDI32 functions operate in headless mode: drawing is silently discarded.
 
 ## Test Coverage
 
-**500 tests total (all passing):**
+**600 Windows-on-Linux crate tests + 5 dev_tests ratchet checks (all passing):**
 
 | Package | Tests | Notes |
 |---|---|---|
-| `litebox_platform_linux_for_windows` | 433 | KERNEL32, MSVCRT, WS2_32, advapi32, user32, gdi32, shell32, version, ole32, platform APIs |
-| `litebox_shim_windows` | 50 | ABI translation, PE loader, tracing, DLL manager |
-| `litebox_runner_windows_on_linux_userland` | 17 | 9 tracing + 8 integration tests (including ole32 exports) |
-| `dev_tests` | 5 | Ratchet constraints (globals, transmutes, MaybeUninit, stubs, copyright) |
+| `litebox_platform_linux_for_windows` | 533 | KERNEL32, MSVCRT, WS2_32, advapi32, user32, gdi32, shell32, version, ole32, msvcp140, platform APIs |
+| `litebox_shim_windows` | 51 | ABI translation, PE loader, tracing, DLL manager |
+| `litebox_runner_windows_on_linux_userland` | 16 | 9 tracing + 7 integration tests (including ole32, msvcp140 exports) |
+| `dev_tests` | 5 | Ratchet constraints (globals, transmutes, MaybeUninit, stubs, copyright) — run separately with `cargo test -p dev_tests` |
 
-**Integration tests (8, plus 12 MinGW-gated):**
+**Integration tests (7, plus 12 MinGW-gated):**
 1. PE loader with minimal binary
 2. DLL loading infrastructure
 3. Command-line APIs (`GetCommandLineW`, `CommandLineToArgvW`)
 4. File search APIs (`FindFirstFileW`, `FindNextFileW`, `FindClose`)
 5. Memory protection APIs (`NtProtectVirtualMemory`)
 6. Error handling APIs (`GetLastError` / `SetLastError`)
-7. DLL exports validation (all critical KERNEL32, WS2_32, USER32, GDI32, and ole32 exports)
-8. ole32.dll COM function exports
+7. DLL exports validation (all critical KERNEL32, WS2_32, USER32, GDI32, ole32, and msvcp140 exports — including Phases 33–38 additions)
 
 **MinGW-gated integration tests (12, require `--include-ignored`):**
 - `test_hello_cli_program_exists` — checks hello_cli.exe is present
@@ -411,11 +432,11 @@ litebox_runner_windows_on_linux_userland \
 
 ## Code Quality
 
-- **All 500 tests passing**
+- **All 600 Windows-on-Linux crate tests passing + 5 dev_tests ratchet checks passing**
 - `RUSTFLAGS=-Dwarnings cargo clippy --all-targets --all-features` — clean
 - `cargo fmt --check` — clean
 - All `unsafe` blocks have detailed safety comments
-- Ratchet limits: globals ≤ 42, transmutes ≤ 3, MaybeUninit ≤ current
+- Ratchet limits: globals ≤ 58, transmutes ≤ 3, MaybeUninit ≤ current
 - **Stub count = 0** (ratchet entry removed; all stub doc-phrases eliminated)
 
 ---
@@ -448,3 +469,9 @@ litebox_runner_windows_on_linux_userland \
 | 28 | MSVCRT numeric conversions (`atoi`, `atol`, `atof`, `strtol`, `strtoul`, `strtod`, `_itoa`, `_ltoa`); string extras (`strncpy`, `strncat`, `_stricmp`, `_strnicmp`, `_strdup`, `strnlen`); random/time (`rand`, `srand`, `time`, `clock`); math (`abs`, `labs`, `_abs64`, `fabs`, `sqrt`, `pow`, `log`, `log10`, `exp`, `sin`, `cos`, `tan`, `atan`, `atan2`, `ceil`, `floor`, `fmod`); wide-char extras (`wcscpy`, `wcscat`, `wcsncpy`, `wcschr`, `wcsncmp`, `_wcsicmp`, `_wcsnicmp`, `wcstombs`, `mbstowcs`); KERNEL32 (`GetFileSize`, `SetFilePointer`, `SetEndOfFile`, `FlushViewOfFile`, `GetSystemDefaultLangID/LCID`, `GetUserDefaultLangID/LCID`); new SHLWAPI.dll (`PathFileExistsW`, `PathCombineW`, `PathGetFileNameW`, `PathRemoveFileSpecW`, `PathIsRelativeW`, `PathFindExtensionW`, `PathStripPathW`, `PathAddBackslashW`, `StrToIntW`, `StrCmpIW`); USER32 window stubs (`FindWindowW`, `FindWindowExW`, `GetForegroundWindow`, `SetForegroundWindow`, `BringWindowToTop`, `GetWindowRect`, `SetWindowPos`, `MoveWindow`, `GetCursorPos`, `SetCursorPos`, `ScreenToClient`, `ClientToScreen`, `ShowCursor`, `GetFocus`, `SetFocus`); +27 new tests | ✅ Complete |
 | 29–31 | SEH/C++ exception handling (`__C_specific_handler`, `RtlCaptureContext`, `RtlLookupFunctionEntry`, `RtlVirtualUnwind`, `RtlUnwindEx`, `_GCC_specific_handler`, `__CxxFrameHandler3/4`, `msvcrt__CxxThrowException`); seh_c_test 21/21, seh_cpp_test 26/26, seh_cpp_test_clang 26/26, seh_cpp_test_msvc 21/21 all pass | ✅ Complete |
 | 32 | New `ole32.dll` (12 COM functions: `CoInitialize/Ex`, `CoUninitialize`, `CoCreateInstance`, `CoGetClassObject`, `CoCreateGuid`, `StringFromGUID2`, `CLSIDFromString`, `CoTaskMemAlloc/Free/Realloc`, `CoSetProxyBlanket`); 39 new MSVCRT functions (formatted I/O: `sprintf/snprintf/sscanf/swprintf/wprintf`; char classification: `isalpha/isdigit/isspace/isupper/islower/isprint/isxdigit/isalnum/iscntrl/ispunct/toupper/tolower`; sorting: `qsort/bsearch`; wide numeric: `wcstol/wcstoul/wcstod`; file I/O: `fopen/fclose/fread/fseek/ftell/fflush/fgets/rewind/feof/ferror/clearerr/fgetc/ungetc/fileno/fdopen/tmpfile/remove/rename`); TLS callbacks execution before entry point; +47 new tests (500 total) | ✅ Complete |
+| 33 | New `msvcp140.dll` with 13 initial exports: `operator new/delete` (scalar + array), exception helpers (`_Xbad_alloc`, `_Xlength_error`, `_Xout_of_range`, `_Xinvalid_argument`, `_Xruntime_error`, `_Xoverflow_error`), locale helpers (`_Locinfo::_Getctype/Getdays/Getmonths`) | ✅ Complete |
+| 34 | MSVCRT va_list formatted I/O: `vprintf`, `vsprintf`, `vsnprintf`, `vswprintf`; wide printf: `fwprintf`, `vfwprintf`; low-level I/O: `_write`, `getchar`, `putchar` | ✅ Complete |
+| 35 | MSVCRT printf-count helpers: `_scprintf`, `_vscprintf`, `_scwprintf`, `_vscwprintf`; wide vsnprintf: `_vsnwprintf`; fd/handle interop: `_get_osfhandle`, `_open_osfhandle`; msvcp140 `std::exception` stubs, `_Getgloballocale`, `_Lockit` ctor/dtor, `ios_base::Init` ctor/dtor; (551 total) | ✅ Complete |
+| 36 | Real `sscanf` implementation (up to 16 specifiers via libc, replaces Phase 32 stub); `_wcsdup` (wide string heap-duplicate); UCRT `__stdio_common_vsscanf` entry point; `sscanf` `num_params` fix (2→18); +12 new tests (563 total) | ✅ Complete |
+| 37 | UCRT `__stdio_common_vsprintf`, `__stdio_common_vsnprintf_s`, `__stdio_common_vsprintf_s`, `__stdio_common_vswprintf`; real `scanf`/`fscanf`/`__stdio_common_vfscanf`; integer-to-wide conversions (`_itow`, `_ltow`, `_ultow`, `_i64tow`, `_ui64tow`); numeric conversions (`_ultoa`, `_i64toa`, `_ui64toa`, `_strtoi64`, `_strtoui64`); msvcp140 `std::basic_string<char>` with MSVC x64 SSO ABI (ctor, copy, dtor, `c_str`, `size`, `empty`, assign, append); +22 new tests (585 total) | ✅ Complete |
+| 38 | msvcp140 `std::basic_string<wchar_t>` with MSVC x64 SSO ABI (SSO threshold=7, 32-byte layout; ctor, copy, dtor, `c_str`, `size`, `empty`, assign, append); MSVCRT directory enumeration: `_wfindfirst64i32`/`_wfindnext64i32`/`_findclose` (mutex-protected handle table, DOS-style wildcard matching via `libc::opendir/readdir`); locale-aware printf wrappers: `_printf_l`, `_fprintf_l`, `_sprintf_l`, `_snprintf_l`, `_wprintf_l` (locale ignored); +15 new tests (600 total) | ✅ Complete |
