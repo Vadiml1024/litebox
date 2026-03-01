@@ -47,6 +47,8 @@
 ---
 
 
+| Component | State |
+|-----------|-------|
 | All tests (635 total) | ✅ Passing |
 | Ratchet tests (5) | ✅ Passing |
 | Clippy (`-Dwarnings`) | ✅ Clean |

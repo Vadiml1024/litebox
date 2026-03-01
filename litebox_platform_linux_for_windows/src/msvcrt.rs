@@ -7266,6 +7266,21 @@ pub struct WinStat64 {
     pub st_ctime: i64,
 }
 
+/// Clamp a 64-bit `time_t` to `i32`, setting MSVCRT errno to `EOVERFLOW` if
+/// the value is out of range (e.g., post-2038 timestamps on 64-bit Linux).
+///
+/// # Safety
+/// Calls `msvcrt___errno_location` which is always safe in this crate.
+#[allow(clippy::cast_possible_truncation)]
+unsafe fn clamp_time_to_i32(t: i64) -> i32 {
+    if t > i64::from(i32::MAX) || t < i64::from(i32::MIN) {
+        unsafe { *msvcrt___errno_location() = libc::EOVERFLOW };
+        i32::MAX
+    } else {
+        t as i32
+    }
+}
+
 /// Map a Linux `libc::stat` to a Windows `WinStat32`.
 ///
 /// # Safety
@@ -7299,17 +7314,18 @@ unsafe fn fill_win_stat32(linux_st: &libc::stat, out: &mut WinStat32) {
     out.st_gid = linux_st.st_gid as i16;
     out.st_rdev = linux_st.st_rdev as u32;
     // Clamp file size to i32::MAX — files larger than 2 GiB are not representable
-    // in the 32-bit `_stat32` structure.  Set errno to EOVERFLOW when clamping.
+    // in the 32-bit `_stat32` structure.  Set MSVCRT errno to EOVERFLOW when clamping.
     let sz = linux_st.st_size;
     out.st_size = if sz > i64::from(i32::MAX) {
-        unsafe { *libc::__errno_location() = libc::EOVERFLOW };
+        unsafe { *msvcrt___errno_location() = libc::EOVERFLOW };
         i32::MAX
     } else {
         sz as i32
     };
-    out.st_atime = linux_st.st_atime as i32;
-    out.st_mtime = linux_st.st_mtime as i32;
-    out.st_ctime = linux_st.st_ctime as i32;
+    // Clamp timestamps: post-2038 time_t values exceed i32 range.
+    out.st_atime = unsafe { clamp_time_to_i32(linux_st.st_atime) };
+    out.st_mtime = unsafe { clamp_time_to_i32(linux_st.st_mtime) };
+    out.st_ctime = unsafe { clamp_time_to_i32(linux_st.st_ctime) };
 }
 
 /// Map a Linux `libc::stat` to a Windows `WinStat64`.

@@ -1518,14 +1518,14 @@ mod tests_vector_char {
         let mut obj = [0u8; 24];
         unsafe {
             msvcp140__vector_char_ctor(obj.as_mut_ptr());
-            let a = b'A' as i8;
-            let b = b'B' as i8;
-            msvcp140__vector_char_push_back(obj.as_mut_ptr(), &a);
-            msvcp140__vector_char_push_back(obj.as_mut_ptr(), &b);
+            let a = b'A'.cast_signed();
+            let b = b'B'.cast_signed();
+            msvcp140__vector_char_push_back(obj.as_mut_ptr(), &raw const a);
+            msvcp140__vector_char_push_back(obj.as_mut_ptr(), &raw const b);
             assert_eq!(msvcp140__vector_char_size(obj.as_ptr()), 2);
             let data = msvcp140__vector_char_data_const(obj.as_ptr());
-            assert_eq!(unsafe { *data }, b'A' as i8);
-            assert_eq!(unsafe { *data.add(1) }, b'B' as i8);
+            assert_eq!(*data, b'A'.cast_signed());
+            assert_eq!(*data.add(1), b'B'.cast_signed());
             msvcp140__vector_char_dtor(obj.as_mut_ptr());
         }
     }
@@ -1536,7 +1536,7 @@ mod tests_vector_char {
         unsafe {
             msvcp140__vector_char_ctor(obj.as_mut_ptr());
             let x = 42i8;
-            msvcp140__vector_char_push_back(obj.as_mut_ptr(), &x);
+            msvcp140__vector_char_push_back(obj.as_mut_ptr(), &raw const x);
             let cap_before = msvcp140__vector_char_capacity(obj.as_ptr());
             msvcp140__vector_char_clear(obj.as_mut_ptr());
             assert_eq!(msvcp140__vector_char_size(obj.as_ptr()), 0);
@@ -1582,7 +1582,7 @@ mod tests_wstring {
             assert!(msvcp140__basic_wstring_empty(obj.as_ptr()));
             let p = msvcp140__basic_wstring_c_str(obj.as_ptr());
             assert!(!p.is_null());
-            assert_eq!(unsafe { *p }, 0u16);
+            assert_eq!(*p, 0u16);
             msvcp140__basic_wstring_dtor(obj.as_mut_ptr());
         }
     }
@@ -1590,16 +1590,16 @@ mod tests_wstring {
     #[test]
     fn test_basic_wstring_ctor_from_cstr_sso() {
         // "hi" (2 chars) fits in SSO (threshold = 7).
-        let wide: [u16; 3] = [b'h' as u16, b'i' as u16, 0];
+        let wide: [u16; 3] = [u16::from(b'h'), u16::from(b'i'), 0];
         let mut obj = [0u8; 32];
         unsafe {
             msvcp140__basic_wstring_ctor_cstr(obj.as_mut_ptr(), wide.as_ptr());
             assert_eq!(msvcp140__basic_wstring_size(obj.as_ptr()), 2);
             assert!(!msvcp140__basic_wstring_empty(obj.as_ptr()));
             let p = msvcp140__basic_wstring_c_str(obj.as_ptr());
-            assert_eq!(unsafe { *p }, b'h' as u16);
-            assert_eq!(unsafe { *p.add(1) }, b'i' as u16);
-            assert_eq!(unsafe { *p.add(2) }, 0u16);
+            assert_eq!(*p, u16::from(b'h'));
+            assert_eq!(*p.add(1), u16::from(b'i'));
+            assert_eq!(*p.add(2), 0u16);
             msvcp140__basic_wstring_dtor(obj.as_mut_ptr());
         }
     }
@@ -1613,7 +1613,7 @@ mod tests_wstring {
             msvcp140__basic_wstring_ctor_cstr(obj.as_mut_ptr(), wide.as_ptr());
             assert_eq!(msvcp140__basic_wstring_size(obj.as_ptr()), 10);
             let p = msvcp140__basic_wstring_c_str(obj.as_ptr());
-            let result: Vec<u16> = (0..10).map(|i| unsafe { *p.add(i) }).collect();
+            let result: Vec<u16> = (0..10).map(|i| *p.add(i)).collect();
             let s = String::from_utf16_lossy(&result);
             assert_eq!(s, "helloworld");
             msvcp140__basic_wstring_dtor(obj.as_mut_ptr());
@@ -1630,7 +1630,7 @@ mod tests_wstring {
             msvcp140__basic_wstring_copy_ctor(dst.as_mut_ptr(), src.as_ptr());
             assert_eq!(msvcp140__basic_wstring_size(dst.as_ptr()), 4);
             let p = msvcp140__basic_wstring_c_str(dst.as_ptr());
-            let result: Vec<u16> = (0..4).map(|i| unsafe { *p.add(i) }).collect();
+            let result: Vec<u16> = (0..4).map(|i| *p.add(i)).collect();
             assert_eq!(String::from_utf16_lossy(&result), "copy");
             msvcp140__basic_wstring_dtor(src.as_mut_ptr());
             msvcp140__basic_wstring_dtor(dst.as_mut_ptr());
@@ -1647,7 +1647,7 @@ mod tests_wstring {
             msvcp140__basic_wstring_append_cstr(obj.as_mut_ptr(), lo.as_ptr());
             assert_eq!(msvcp140__basic_wstring_size(obj.as_ptr()), 5);
             let p = msvcp140__basic_wstring_c_str(obj.as_ptr());
-            let result: Vec<u16> = (0..5).map(|i| unsafe { *p.add(i) }).collect();
+            let result: Vec<u16> = (0..5).map(|i| *p.add(i)).collect();
             assert_eq!(String::from_utf16_lossy(&result), "hello");
             msvcp140__basic_wstring_dtor(obj.as_mut_ptr());
         }
