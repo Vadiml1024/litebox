@@ -908,6 +908,8 @@ impl DllManager {
             ("_wsopen", MSVCRT_BASE + 0xFD),
             ("_wstat", MSVCRT_BASE + 0xFE),
             ("_wstat64", MSVCRT_BASE + 0xFF),
+            ("_sopen_s", MSVCRT_BASE + 0x100),
+            ("_wsopen_s", MSVCRT_BASE + 0x101),
         ];
 
         self.register_stub_dll("MSVCRT.dll", exports);
@@ -993,6 +995,7 @@ impl DllManager {
             ("WSAEnumNetworkEvents", WS2_32_BASE + 0x26),
             ("WSAWaitForMultipleEvents", WS2_32_BASE + 0x27),
             ("gethostbyname", WS2_32_BASE + 0x28),
+            ("WSAAsyncSelect", WS2_32_BASE + 0x29),
         ];
 
         self.register_stub_dll("WS2_32.dll", exports);
@@ -1409,6 +1412,18 @@ impl DllManager {
                 "?reserve@?$vector@DU?$allocator@D@std@@@std@@QEAAX_K@Z",
                 MSVCP140_BASE + 50,
             ),
+            ("msvcp140__map_ctor", MSVCP140_BASE + 51),
+            ("msvcp140__map_dtor", MSVCP140_BASE + 52),
+            ("msvcp140__map_insert", MSVCP140_BASE + 53),
+            ("msvcp140__map_find", MSVCP140_BASE + 54),
+            ("msvcp140__map_size", MSVCP140_BASE + 55),
+            ("msvcp140__map_clear", MSVCP140_BASE + 56),
+            ("msvcp140__ostringstream_ctor", MSVCP140_BASE + 57),
+            ("msvcp140__ostringstream_dtor", MSVCP140_BASE + 58),
+            ("msvcp140__ostringstream_str", MSVCP140_BASE + 59),
+            ("msvcp140__ostringstream_write", MSVCP140_BASE + 60),
+            ("msvcp140__ostringstream_tellp", MSVCP140_BASE + 61),
+            ("msvcp140__ostringstream_seekp", MSVCP140_BASE + 62),
         ];
 
         self.register_stub_dll("msvcp140.dll", exports);
