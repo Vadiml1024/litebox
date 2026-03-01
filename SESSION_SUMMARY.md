@@ -1,14 +1,52 @@
-# Windows-on-Linux Support — Session Summary (Phase 39)
+# Windows-on-Linux Support — Session Summary (Phase 40)
 
 ## ⚡ CURRENT STATUS ⚡
 
-**Branch:** `copilot/continue-implementing-windows-on-linux`
-**Goal:** Phase 39 — Low-level POSIX file I/O (MSVCRT) and `std::vector<char>` stubs (msvcp140).
+**Branch:** `copilot/continue-windows-linux-support`
+**Goal:** Phase 40 — MSVCRT stat functions, wide-path file opens, and WinSock2 event APIs.
 
 ### Status at checkpoint
 
 | Component | State |
 |-----------|-------|
+| All tests (646 total) | ✅ Passing |
+| Ratchet tests (5) | ✅ Passing |
+| Clippy (`-Dwarnings`) | ✅ Clean |
+
+### Files changed in this session
+- `litebox_platform_linux_for_windows/src/msvcrt.rs`
+  - Added `WinStat32` and `WinStat64` structs (MSVC x64 ABI-compatible layout with explicit padding)
+  - Added `WIN_S_IFREG`, `WIN_S_IFDIR`, `WIN_S_IFCHR`, `WIN_S_IREAD`, `WIN_S_IWRITE`, `WIN_S_IEXEC` named constants
+  - Added `fill_win_stat32` / `fill_win_stat64` helpers mapping Linux `libc::stat` → Windows structs
+  - Added `_stat`, `_stat64`, `_fstat`, `_fstat64` — file metadata for path and open fd
+  - Added `_wopen`, `_wsopen` — wide-char (UTF-16) path file open
+  - Added `_wstat`, `_wstat64` — wide-char file metadata
+  - 7 unit tests
+- `litebox_platform_linux_for_windows/src/ws2_32.rs`
+  - Extended `SocketEntry` with `network_events_mask` field
+  - Added `WSA_EVENT_COUNTER` and `WSA_EVENT_HANDLES` globals for event registry
+  - Added `WsaNetworkEvents` struct (matches Windows `WSANETWORKEVENTS`)
+  - Added `WSACreateEvent`, `WSACloseEvent`, `WSAResetEvent`, `WSASetEvent`
+  - Added `WSAEventSelect` — stores FD_* mask on socket entry
+  - Added `WSAEnumNetworkEvents` — uses `poll(2)` with 0 timeout to query readiness
+  - Added `WSAWaitForMultipleEvents` — spin-sleep loop with 10 ms granularity
+  - Added `gethostbyname` — delegates to `libc::gethostbyname`
+  - 6 unit tests
+- `litebox_platform_linux_for_windows/src/function_table.rs` — 16 new `FunctionImpl` entries
+- `litebox_shim_windows/src/loader/dll.rs` — 8 new WS2_32.dll stubs (0x21–0x28), 8 new MSVCRT.dll stubs (0xF8–0xFF)
+- `dev_tests/src/ratchet.rs` — updated globals count 60→62
+- `litebox_runner_windows_on_linux_userland/tests/integration.rs` — Phase 40 resolution test blocks
+
+### Next phase suggestions
+- **Phase 41**: `std::map<K,V>` basic stubs (ctor, dtor, insert, find, size, clear)
+- **Phase 41**: `std::ostringstream` / `std::stringstream` basic stubs
+- **Phase 41**: More WinSock: `WSAAsyncSelect`, `select` with overlapped I/O
+- **Phase 41**: `_sopen_s`, `_wsopen_s` — safe versions of `_sopen`/`_wsopen`
+- **Phase 41**: Registry stubs: `RegOpenKeyExW`, `RegQueryValueExW`, `RegCloseKey`
+
+---
+
+
 | All tests (635 total) | ✅ Passing |
 | Ratchet tests (5) | ✅ Passing |
 | Clippy (`-Dwarnings`) | ✅ Clean |

@@ -7216,6 +7216,14 @@ pub unsafe extern "C" fn msvcrt__filelengthi64(fd: i32) -> i64 {
 
 // ── Windows _stat/_stat64 structures ──────────────────────────────────────────
 
+// Windows file-type and permission bits for st_mode.
+const WIN_S_IFREG: u16 = 0x8000; // regular file
+const WIN_S_IFDIR: u16 = 0x4000; // directory
+const WIN_S_IFCHR: u16 = 0x2000; // character device
+const WIN_S_IREAD: u16 = 0x0100; // owner read
+const WIN_S_IWRITE: u16 = 0x0080; // owner write
+const WIN_S_IEXEC: u16 = 0x0040; // owner execute
+
 /// Windows `_stat32` structure (32-bit times, 32-bit file size).
 ///
 /// Matches the MSVC x64 ABI layout for `struct _stat32`.
@@ -7270,28 +7278,31 @@ unsafe fn fill_win_stat32(linux_st: &libc::stat, out: &mut WinStat32) {
     let mode = linux_st.st_mode;
     let mut wmode: u16 = 0;
     if mode & libc::S_IFMT == libc::S_IFREG {
-        wmode |= 0x8000; // _S_IFREG
+        wmode |= WIN_S_IFREG;
     } else if mode & libc::S_IFMT == libc::S_IFDIR {
-        wmode |= 0x4000; // _S_IFDIR
+        wmode |= WIN_S_IFDIR;
     } else if mode & libc::S_IFMT == libc::S_IFCHR {
-        wmode |= 0x2000; // _S_IFCHR
+        wmode |= WIN_S_IFCHR;
     }
     if mode & libc::S_IRUSR != 0 {
-        wmode |= 0x0100;
+        wmode |= WIN_S_IREAD;
     }
     if mode & libc::S_IWUSR != 0 {
-        wmode |= 0x0080;
+        wmode |= WIN_S_IWRITE;
     }
     if mode & libc::S_IXUSR != 0 {
-        wmode |= 0x0040;
+        wmode |= WIN_S_IEXEC;
     }
     out.st_mode = wmode;
     out.st_nlink = linux_st.st_nlink as i16;
     out.st_uid = linux_st.st_uid as i16;
     out.st_gid = linux_st.st_gid as i16;
     out.st_rdev = linux_st.st_rdev as u32;
+    // Clamp file size to i32::MAX — files larger than 2 GiB are not representable
+    // in the 32-bit `_stat32` structure.  Set errno to EOVERFLOW when clamping.
     let sz = linux_st.st_size;
     out.st_size = if sz > i64::from(i32::MAX) {
+        unsafe { *libc::__errno_location() = libc::EOVERFLOW };
         i32::MAX
     } else {
         sz as i32
@@ -7312,20 +7323,20 @@ unsafe fn fill_win_stat64(linux_st: &libc::stat, out: &mut WinStat64) {
     let mode = linux_st.st_mode;
     let mut wmode: u16 = 0;
     if mode & libc::S_IFMT == libc::S_IFREG {
-        wmode |= 0x8000;
+        wmode |= WIN_S_IFREG;
     } else if mode & libc::S_IFMT == libc::S_IFDIR {
-        wmode |= 0x4000;
+        wmode |= WIN_S_IFDIR;
     } else if mode & libc::S_IFMT == libc::S_IFCHR {
-        wmode |= 0x2000;
+        wmode |= WIN_S_IFCHR;
     }
     if mode & libc::S_IRUSR != 0 {
-        wmode |= 0x0100;
+        wmode |= WIN_S_IREAD;
     }
     if mode & libc::S_IWUSR != 0 {
-        wmode |= 0x0080;
+        wmode |= WIN_S_IWRITE;
     }
     if mode & libc::S_IXUSR != 0 {
-        wmode |= 0x0040;
+        wmode |= WIN_S_IEXEC;
     }
     out.st_mode = wmode;
     out.st_nlink = linux_st.st_nlink as i16;
@@ -9119,7 +9130,7 @@ mod tests {
         let ret = unsafe { msvcrt__stat64(path.as_ptr(), &mut buf) };
         assert_eq!(ret, 0);
         assert!(buf.st_size > 0);
-        assert_eq!(buf.st_mode & 0x8000, 0x8000); // regular file
+        assert_eq!(buf.st_mode & WIN_S_IFREG, WIN_S_IFREG); // regular file
     }
 
     #[test]
@@ -9128,7 +9139,7 @@ mod tests {
         let mut buf = unsafe { core::mem::zeroed::<WinStat32>() };
         let ret = unsafe { msvcrt__stat(path.as_ptr(), &mut buf) };
         assert_eq!(ret, 0);
-        assert_eq!(buf.st_mode & 0x4000, 0x4000); // directory
+        assert_eq!(buf.st_mode & WIN_S_IFDIR, WIN_S_IFDIR); // directory
     }
 
     #[test]
@@ -9166,6 +9177,6 @@ mod tests {
         let mut buf = unsafe { core::mem::zeroed::<WinStat64>() };
         let ret = unsafe { msvcrt__wstat64(wide_path.as_ptr(), &mut buf) };
         assert_eq!(ret, 0);
-        assert_eq!(buf.st_mode & 0x4000, 0x4000); // directory
+        assert_eq!(buf.st_mode & WIN_S_IFDIR, WIN_S_IFDIR); // directory
     }
 }

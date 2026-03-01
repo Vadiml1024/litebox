@@ -151,6 +151,7 @@ struct SocketEntry {
     /// Underlying Linux socket file descriptor.
     fd: i32,
     /// Network event mask from WSAEventSelect (FD_READ | FD_WRITE | etc.).
+    /// Set to 0 for regular sockets; populated by `WSAEventSelect` with `FD_*` flags.
     network_events_mask: i32,
 }
 
@@ -1612,13 +1613,13 @@ pub unsafe extern "C" fn ws2_WSAWaitForMultipleEvents(
         if timeout_ms == 0 {
             return WSA_WAIT_TIMEOUT;
         }
-        let elapsed_ms = start.elapsed().as_millis().min(i32::MAX as u128) as i32;
+        let elapsed_ms = start.elapsed().as_millis().min(u128::from(i32::MAX as u32)) as i32;
         if timeout_ms > 0 && elapsed_ms >= timeout_ms {
             return WSA_WAIT_TIMEOUT;
         }
 
-        // Sleep 1 ms before retrying.
-        std::thread::sleep(std::time::Duration::from_millis(1));
+        // Sleep 10 ms before retrying to avoid burning CPU.
+        std::thread::sleep(std::time::Duration::from_millis(10));
     }
 }
 
