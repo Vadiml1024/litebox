@@ -16689,9 +16689,6 @@ mod tests {
             kernel32_CloseHandle, kernel32_CreateProcessW, kernel32_GetExitCodeProcess,
             kernel32_WaitForSingleObject,
         };
-        // Encode "/bin/true" as null-terminated UTF-16
-        let exe_wide: Vec<u16> = "/bin/true\0".encode_utf16().collect();
-
         #[repr(C)]
         struct ProcInfo {
             h_process: usize,
@@ -16699,6 +16696,9 @@ mod tests {
             dw_pid: u32,
             dw_tid: u32,
         }
+        // Encode "/bin/true" as null-terminated UTF-16
+        let exe_wide: Vec<u16> = "/bin/true\0".encode_utf16().collect();
+
         let mut pi = ProcInfo {
             h_process: 0,
             h_thread: 0,
@@ -16717,7 +16717,7 @@ mod tests {
                 core::ptr::null_mut(),
                 core::ptr::null_mut(),
                 core::ptr::null_mut(),
-                &raw mut pi as *mut core::ffi::c_void,
+                (&raw mut pi).cast::<core::ffi::c_void>(),
             )
         };
         assert_eq!(result, 1, "CreateProcessW should return TRUE for /bin/true");
@@ -16779,9 +16779,6 @@ mod tests {
     #[test]
     fn test_terminate_process_child() {
         // Use /bin/sleep to start a long-running child we can kill.
-        let exe_wide: Vec<u16> = "/bin/sleep\0".encode_utf16().collect();
-        let arg_wide: Vec<u16> = "/bin/sleep 60\0".encode_utf16().collect();
-
         #[repr(C)]
         struct ProcInfo {
             h_process: usize,
@@ -16789,6 +16786,9 @@ mod tests {
             dw_pid: u32,
             dw_tid: u32,
         }
+        let exe_wide: Vec<u16> = "/bin/sleep\0".encode_utf16().collect();
+        let arg_wide: Vec<u16> = "/bin/sleep 60\0".encode_utf16().collect();
+
         let mut pi = ProcInfo {
             h_process: 0,
             h_thread: 0,
@@ -16807,7 +16807,7 @@ mod tests {
                 core::ptr::null_mut(),
                 core::ptr::null_mut(),
                 core::ptr::null_mut(),
-                &raw mut pi as *mut core::ffi::c_void,
+                (&raw mut pi).cast::<core::ffi::c_void>(),
             )
         };
         assert_eq!(result, 1, "CreateProcessW(/bin/sleep 60) should succeed");
@@ -16829,8 +16829,6 @@ mod tests {
     /// allocated by CreateProcessW.
     #[test]
     fn test_open_process_known_child() {
-        let exe_wide: Vec<u16> = "/bin/true\0".encode_utf16().collect();
-
         #[repr(C)]
         struct ProcInfo {
             h_process: usize,
@@ -16838,6 +16836,8 @@ mod tests {
             dw_pid: u32,
             dw_tid: u32,
         }
+        let exe_wide: Vec<u16> = "/bin/true\0".encode_utf16().collect();
+
         let mut pi = ProcInfo {
             h_process: 0,
             h_thread: 0,
@@ -16856,7 +16856,7 @@ mod tests {
                 core::ptr::null_mut(),
                 core::ptr::null_mut(),
                 core::ptr::null_mut(),
-                &raw mut pi as *mut core::ffi::c_void,
+                (&raw mut pi).cast::<core::ffi::c_void>(),
             )
         };
         assert_eq!(result, 1, "CreateProcessW should succeed");

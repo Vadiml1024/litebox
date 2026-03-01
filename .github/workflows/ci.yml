@@ -174,9 +174,12 @@ jobs:
         uses: ./.github/actions/setup-rust
         with:
           targets: x86_64-pc-windows-gnu
+          components: rustfmt,clippy
       - uses: Swatinem/rust-cache@v2
       - name: Install MinGW cross-compiler
         uses: ./.github/actions/install-mingw
+      - name: Clippy (Windows-on-Linux packages)
+        run: cargo clippy -p litebox_shim_windows -p litebox_platform_linux_for_windows -p litebox_runner_windows_on_linux_userland --all-targets --all-features
       - name: Build Windows test programs
         working-directory: windows_test_programs
         run: cargo build --release --target x86_64-pc-windows-gnu

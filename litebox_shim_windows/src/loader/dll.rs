@@ -899,6 +899,15 @@ impl DllManager {
             ("_chsize_s", MSVCRT_BASE + 0xF5),
             ("_filelength", MSVCRT_BASE + 0xF6),
             ("_filelengthi64", MSVCRT_BASE + 0xF7),
+            // Phase 40: stat functions and wide-path file opens
+            ("_stat", MSVCRT_BASE + 0xF8),
+            ("_stat64", MSVCRT_BASE + 0xF9),
+            ("_fstat", MSVCRT_BASE + 0xFA),
+            ("_fstat64", MSVCRT_BASE + 0xFB),
+            ("_wopen", MSVCRT_BASE + 0xFC),
+            ("_wsopen", MSVCRT_BASE + 0xFD),
+            ("_wstat", MSVCRT_BASE + 0xFE),
+            ("_wstat64", MSVCRT_BASE + 0xFF),
         ];
 
         self.register_stub_dll("MSVCRT.dll", exports);
@@ -975,6 +984,15 @@ impl DllManager {
             ("ntohl", WS2_32_BASE + 0x1F),
             // FD_ISSET helper (called by the FD_ISSET macro on Windows)
             ("__WSAFDIsSet", WS2_32_BASE + 0x20),
+            // Phase 40: WSA events and gethostbyname
+            ("WSACreateEvent", WS2_32_BASE + 0x21),
+            ("WSACloseEvent", WS2_32_BASE + 0x22),
+            ("WSAResetEvent", WS2_32_BASE + 0x23),
+            ("WSASetEvent", WS2_32_BASE + 0x24),
+            ("WSAEventSelect", WS2_32_BASE + 0x25),
+            ("WSAEnumNetworkEvents", WS2_32_BASE + 0x26),
+            ("WSAWaitForMultipleEvents", WS2_32_BASE + 0x27),
+            ("gethostbyname", WS2_32_BASE + 0x28),
         ];
 
         self.register_stub_dll("WS2_32.dll", exports);

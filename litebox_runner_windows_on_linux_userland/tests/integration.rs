@@ -572,6 +572,37 @@ fn test_dll_manager_has_all_required_exports() {
         let result = dll_manager.get_proc_address(msvcp140, func_name);
         assert!(result.is_ok(), "msvcp140.dll should export {func_name}");
     }
+
+    // Check that Phase 40 WS2_32.dll additions are resolvable
+    let ws2_phase40_functions = vec![
+        "WSACreateEvent",
+        "WSACloseEvent",
+        "WSAResetEvent",
+        "WSASetEvent",
+        "WSAEventSelect",
+        "WSAEnumNetworkEvents",
+        "WSAWaitForMultipleEvents",
+        "gethostbyname",
+    ];
+    for func_name in ws2_phase40_functions {
+        let addr = dll_manager.get_proc_address(ws2_32, func_name);
+        assert!(
+            addr.is_ok(),
+            "WS2_32.dll::{func_name} should be resolvable after Phase 40"
+        );
+    }
+
+    // Check that Phase 40 MSVCRT additions are resolvable
+    let msvcrt_phase40_functions = vec![
+        "_stat", "_stat64", "_fstat", "_fstat64", "_wopen", "_wsopen", "_wstat", "_wstat64",
+    ];
+    for func_name in msvcrt_phase40_functions {
+        let addr = dll_manager.get_proc_address(msvcrt, func_name);
+        assert!(
+            addr.is_ok(),
+            "MSVCRT.dll::{func_name} should be resolvable after Phase 40"
+        );
+    }
 }
 
 #[cfg(test)]

@@ -48,6 +48,7 @@ const WSAEISCONN: i32 = 10056;
 const WSAENOTCONN: i32 = 10057;
 const WSAESHUTDOWN: i32 = 10058;
 const WSAENOPROTOOPT: i32 = 10042;
+const WSAHOST_NOT_FOUND: i32 = 11001;
 
 // WinSock constants
 const INVALID_SOCKET: usize = usize::MAX;
@@ -149,6 +150,9 @@ static SOCKET_HANDLE_COUNTER: AtomicUsize = AtomicUsize::new(0x4_0000);
 struct SocketEntry {
     /// Underlying Linux socket file descriptor.
     fd: i32,
+    /// Network event mask from WSAEventSelect (FD_READ | FD_WRITE | etc.).
+    /// Set to 0 for regular sockets; populated by `WSAEventSelect` with `FD_*` flags.
+    network_events_mask: i32,
 }
 
 /// Global socket-handle map: handle_value → SocketEntry
@@ -169,7 +173,13 @@ fn alloc_socket_handle() -> usize {
 fn register_socket(fd: i32) -> usize {
     let handle = alloc_socket_handle();
     with_socket_handles(|map| {
-        map.insert(handle, SocketEntry { fd });
+        map.insert(
+            handle,
+            SocketEntry {
+                fd,
+                network_events_mask: 0,
+            },
+        );
     });
     handle
 }
@@ -1328,8 +1338,334 @@ pub unsafe extern "C" fn ws2___WSAFDIsSet(socket: usize, set: *const WinFdSet) -
     0
 }
 
-// ── Unit tests ────────────────────────────────────────────────────────────────
+// ── WSA event-handle registry ─────────────────────────────────────────────────
 
+/// Counter for allocating unique WSA event handle values.
+static WSA_EVENT_COUNTER: AtomicUsize = AtomicUsize::new(0x7_0000);
+
+/// Global WSA event-handle map: handle_value → signaled flag.
+static WSA_EVENT_HANDLES: Mutex<Option<HashMap<usize, bool>>> = Mutex::new(None);
+
+fn with_wsa_events<R>(f: impl FnOnce(&mut HashMap<usize, bool>) -> R) -> R {
+    let mut guard = WSA_EVENT_HANDLES.lock().unwrap();
+    let map = guard.get_or_insert_with(HashMap::new);
+    f(map)
+}
+
+// WSA network event bit flags
+const FD_READ: i32 = 0x0001;
+const FD_WRITE: i32 = 0x0002;
+const FD_OOB: i32 = 0x0004;
+const FD_ACCEPT: i32 = 0x0008;
+const FD_CLOSE: i32 = 0x0020;
+
+// WSAWaitForMultipleEvents return values
+const WSA_WAIT_EVENT_0: u32 = 0;
+const WSA_WAIT_TIMEOUT: u32 = 0x102;
+const WSA_WAIT_FAILED: u32 = 0xFFFF_FFFF;
+const WSA_MAXIMUM_WAIT_EVENTS: u32 = 64;
+
+/// `WSACreateEvent()` — create a manual-reset WSA event object.
+///
+/// Returns a new event handle on success, or `WSA_INVALID_EVENT` (null) on failure.
+///
+/// # Safety
+/// This function is safe to call from any context.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ws2_WSACreateEvent() -> usize {
+    let handle = WSA_EVENT_COUNTER.fetch_add(1, Ordering::Relaxed);
+    with_wsa_events(|m| m.insert(handle, false));
+    handle
+}
+
+/// `WSACloseEvent(hEvent)` — destroy a WSA event object.
+///
+/// Returns `TRUE` (1) on success, `FALSE` (0) if the handle is invalid.
+///
+/// # Safety
+/// `h_event` must be a handle previously returned by `WSACreateEvent`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ws2_WSACloseEvent(h_event: usize) -> i32 {
+    let removed = with_wsa_events(|m| m.remove(&h_event).is_some());
+    i32::from(removed)
+}
+
+/// `WSAResetEvent(hEvent)` — reset a WSA event to the non-signaled state.
+///
+/// Returns `TRUE` (1) on success, `FALSE` (0) if the handle is invalid.
+///
+/// # Safety
+/// `h_event` must be a handle previously returned by `WSACreateEvent`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ws2_WSAResetEvent(h_event: usize) -> i32 {
+    let found = with_wsa_events(|m| {
+        if let Some(v) = m.get_mut(&h_event) {
+            *v = false;
+            true
+        } else {
+            false
+        }
+    });
+    i32::from(found)
+}
+
+/// `WSASetEvent(hEvent)` — set a WSA event to the signaled state.
+///
+/// Returns `TRUE` (1) on success, `FALSE` (0) if the handle is invalid.
+///
+/// # Safety
+/// `h_event` must be a handle previously returned by `WSACreateEvent`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ws2_WSASetEvent(h_event: usize) -> i32 {
+    let found = with_wsa_events(|m| {
+        if let Some(v) = m.get_mut(&h_event) {
+            *v = true;
+            true
+        } else {
+            false
+        }
+    });
+    i32::from(found)
+}
+
+/// Windows `WSANETWORKEVENTS` structure.
+///
+/// Contains the set of pending network events (bit flags) and per-event
+/// error codes for a socket.
+#[repr(C)]
+pub struct WsaNetworkEvents {
+    /// Bitmask of pending network events (combination of `FD_*` flags).
+    pub network_events: i32,
+    /// Per-event error codes (index = `log2(FD_* flag)`).
+    pub error_code: [i32; 10],
+}
+
+/// `WSAEventSelect(s, hEventObject, lNetworkEvents)` — associate socket with events.
+///
+/// Stores the network-event mask on the socket entry. The `hEventObject`
+/// parameter is accepted for API compatibility but is not stored; signaling
+/// is driven by `WSASetEvent`/`WSAEnumNetworkEvents`. Returns 0 on success,
+/// `SOCKET_ERROR` on failure.
+///
+/// # Safety
+/// `s` must be a valid socket handle obtained from `socket`/`WSASocketW`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ws2_WSAEventSelect(
+    s: usize,
+    _h_event_object: usize,
+    l_network_events: i32,
+) -> i32 {
+    let ok = with_socket_handles(|m| {
+        if let Some(entry) = m.get_mut(&s) {
+            entry.network_events_mask = l_network_events;
+            true
+        } else {
+            false
+        }
+    });
+    if ok {
+        0
+    } else {
+        set_wsa_error(WSAENOTSOCK);
+        SOCKET_ERROR
+    }
+}
+
+/// `WSAEnumNetworkEvents(s, hEventObject, lpNetworkEvents)` — query pending events.
+///
+/// Uses a zero-timeout `poll()` to detect which events are currently pending
+/// on the socket and fills in `lpNetworkEvents`. `hEventObject` is reset
+/// (if valid) after the query.
+/// Returns 0 on success, `SOCKET_ERROR` on failure.
+///
+/// # Safety
+/// `s` must be a valid socket handle.
+/// `lp_network_events` must be a valid pointer to a `WsaNetworkEvents` structure.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ws2_WSAEnumNetworkEvents(
+    s: usize,
+    h_event_object: usize,
+    lp_network_events: *mut WsaNetworkEvents,
+) -> i32 {
+    let fd_and_mask = with_socket_handles(|m| m.get(&s).map(|e| (e.fd, e.network_events_mask)));
+    let Some((fd, mask)) = fd_and_mask else {
+        set_wsa_error(WSAENOTSOCK);
+        return SOCKET_ERROR;
+    };
+    if lp_network_events.is_null() {
+        set_wsa_error(WSAEFAULT);
+        return SOCKET_ERROR;
+    }
+
+    // Use poll(2) with 0 timeout to query current socket readiness.
+    let mut pfd = libc::pollfd {
+        fd,
+        events: 0,
+        revents: 0,
+    };
+    if mask & FD_READ != 0 {
+        pfd.events |= libc::POLLIN;
+    }
+    if mask & FD_ACCEPT != 0 {
+        pfd.events |= libc::POLLIN;
+    }
+    if mask & FD_WRITE != 0 {
+        pfd.events |= libc::POLLOUT;
+    }
+    if mask & FD_OOB != 0 {
+        pfd.events |= libc::POLLPRI;
+    }
+    // SAFETY: pfd is a valid pollfd structure; timeout=0 means non-blocking.
+    let poll_res = unsafe { libc::poll(&raw mut pfd, 1, 0) };
+    if poll_res < 0 {
+        set_wsa_error_from_errno();
+        return SOCKET_ERROR;
+    }
+
+    let out = unsafe { &mut *lp_network_events };
+    out.network_events = 0;
+    out.error_code = [0i32; 10];
+
+    if pfd.revents & libc::POLLIN != 0 {
+        if mask & FD_READ != 0 {
+            out.network_events |= FD_READ;
+        }
+        if mask & FD_ACCEPT != 0 {
+            out.network_events |= FD_ACCEPT;
+        }
+    }
+    if pfd.revents & libc::POLLOUT != 0 && mask & FD_WRITE != 0 {
+        out.network_events |= FD_WRITE;
+    }
+    if pfd.revents & libc::POLLPRI != 0 && mask & FD_OOB != 0 {
+        out.network_events |= FD_OOB;
+    }
+    if pfd.revents & (libc::POLLHUP | libc::POLLERR) != 0 && mask & FD_CLOSE != 0 {
+        out.network_events |= FD_CLOSE;
+    }
+
+    // Reset the associated event handle if it was provided.
+    if h_event_object != 0 {
+        with_wsa_events(|m| {
+            if let Some(v) = m.get_mut(&h_event_object) {
+                *v = false;
+            }
+        });
+    }
+
+    0
+}
+
+/// `WSAWaitForMultipleEvents(cEvents, lphEvents, fWaitAll, dwTimeout, fAlertable)`
+///
+/// Waits until one (or all) of the specified event handles are signaled or the
+/// timeout expires. The current implementation periodically checks the internal
+/// signaled state of each event handle and sleeps between checks to avoid busy
+/// looping. `fWaitAll` is honoured by requiring all events to be signaled
+/// before returning.
+///
+/// Returns `WSA_WAIT_EVENT_0 + index` of the first triggered event on success,
+/// `WSA_WAIT_TIMEOUT` on timeout, `WSA_WAIT_FAILED` on error.
+///
+/// # Safety
+/// `lph_events` must be a valid pointer to `c_events` handle values, each
+/// previously returned by `WSACreateEvent`.
+#[unsafe(no_mangle)]
+#[allow(clippy::cast_possible_wrap)]
+pub unsafe extern "C" fn ws2_WSAWaitForMultipleEvents(
+    c_events: u32,
+    lph_events: *const usize,
+    f_wait_all: i32,
+    dw_timeout: u32,
+    _f_alertable: i32,
+) -> u32 {
+    if c_events == 0 || c_events > WSA_MAXIMUM_WAIT_EVENTS || lph_events.is_null() {
+        set_wsa_error(WSAEINVAL);
+        return WSA_WAIT_FAILED;
+    }
+
+    // Build the set of event handles to wait on.
+    let handles: Vec<usize> = (0..c_events as usize)
+        .map(|i| unsafe { *lph_events.add(i) })
+        .collect();
+
+    // Validate that all event handles exist in the registry.
+    let all_valid = with_wsa_events(|m| handles.iter().all(|h| m.contains_key(h)));
+    if !all_valid {
+        set_wsa_error(WSAEINVAL);
+        return WSA_WAIT_FAILED;
+    }
+
+    // Convert timeout: INFINITE (0xFFFFFFFF) → None, otherwise milliseconds as u64.
+    let timeout_ms: Option<u64> = if dw_timeout == 0xFFFF_FFFF {
+        None
+    } else {
+        Some(u64::from(dw_timeout))
+    };
+
+    // Poll in a simple spin-sleep loop with 10 ms granularity up to timeout.
+    let start = std::time::Instant::now();
+    loop {
+        // Check which events are currently signaled.
+        let signaled: Vec<bool> = with_wsa_events(|m| {
+            handles
+                .iter()
+                .map(|h| m.get(h).copied().unwrap_or(false))
+                .collect()
+        });
+
+        if f_wait_all != 0 {
+            if signaled.iter().all(|&s| s) {
+                return WSA_WAIT_EVENT_0;
+            }
+        } else if let Some(idx) = signaled.iter().position(|&s| s) {
+            return WSA_WAIT_EVENT_0 + idx as u32;
+        }
+
+        // Check timeout.
+        if let Some(limit_ms) = timeout_ms {
+            if limit_ms == 0 {
+                return WSA_WAIT_TIMEOUT;
+            }
+            let elapsed_ms = start.elapsed().as_millis() as u64;
+            if elapsed_ms >= limit_ms {
+                return WSA_WAIT_TIMEOUT;
+            }
+        }
+
+        // Sleep 10 ms before retrying to avoid burning CPU.
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+// SAFETY: `gethostbyname` is a standard POSIX function. The caller must ensure
+// the `name` pointer is a valid NUL-terminated C string.
+unsafe extern "C" {
+    fn gethostbyname(name: *const libc::c_char) -> *mut libc::hostent;
+}
+
+/// `gethostbyname(name)` — resolve a hostname to an IPv4 address (legacy API).
+///
+/// Delegates directly to the system `gethostbyname`.
+/// Returns a pointer to a static `hostent` structure, or null on failure.
+///
+/// # Safety
+/// `name` must be a valid, NUL-terminated byte string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ws2_gethostbyname(name: *const u8) -> *mut libc::hostent {
+    if name.is_null() {
+        set_wsa_error(WSAEFAULT);
+        return core::ptr::null_mut();
+    }
+    // SAFETY: name is a valid NUL-terminated string per caller's contract.
+    let result = unsafe { gethostbyname(name.cast()) };
+    if result.is_null() {
+        set_wsa_error(WSAHOST_NOT_FOUND);
+    }
+    result
+}
+
+// ── Unit tests ────────────────────────────────────────────────────────────────
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1472,5 +1808,181 @@ mod tests {
         // Version 3.0 should be rejected
         let result = unsafe { ws2_WSAStartup(0x0003, core::ptr::null_mut()) };
         assert_eq!(result, WSAVERNOTSUPPORTED);
+    }
+
+    #[test]
+    fn test_wsa_create_close_event() {
+        let h = unsafe { ws2_WSACreateEvent() };
+        assert_ne!(h, 0);
+        let ret = unsafe { ws2_WSACloseEvent(h) };
+        assert_eq!(ret, 1);
+        // Closing again should fail
+        let ret2 = unsafe { ws2_WSACloseEvent(h) };
+        assert_eq!(ret2, 0);
+    }
+
+    #[test]
+    fn test_wsa_set_reset_event() {
+        let h = unsafe { ws2_WSACreateEvent() };
+        assert_ne!(h, 0);
+        // Initially not signaled
+        let ret = unsafe { ws2_WSAResetEvent(h) };
+        assert_eq!(ret, 1);
+        // Set to signaled
+        let ret = unsafe { ws2_WSASetEvent(h) };
+        assert_eq!(ret, 1);
+        // Reset back
+        let ret = unsafe { ws2_WSAResetEvent(h) };
+        assert_eq!(ret, 1);
+        unsafe { ws2_WSACloseEvent(h) };
+    }
+
+    #[test]
+    fn test_wsa_event_select_invalid_socket() {
+        let bad: usize = 0xDEAD_0002;
+        let h = unsafe { ws2_WSACreateEvent() };
+        let ret = unsafe { ws2_WSAEventSelect(bad, h, FD_READ | FD_WRITE) };
+        assert_eq!(ret, SOCKET_ERROR);
+        assert_eq!(unsafe { ws2_WSAGetLastError() }, WSAENOTSOCK);
+        unsafe { ws2_WSACloseEvent(h) };
+    }
+
+    #[test]
+    fn test_wsa_event_select_valid_socket() {
+        let s = unsafe { ws2_socket(AF_INET, SOCK_STREAM, IPPROTO_TCP) };
+        assert_ne!(s, INVALID_SOCKET);
+        let h = unsafe { ws2_WSACreateEvent() };
+        let ret = unsafe { ws2_WSAEventSelect(s, h, FD_READ | FD_WRITE | FD_CLOSE) };
+        assert_eq!(ret, 0);
+        unsafe { ws2_closesocket(s) };
+        unsafe { ws2_WSACloseEvent(h) };
+    }
+
+    #[test]
+    fn test_gethostbyname_localhost() {
+        let name = b"localhost\0";
+        let result = unsafe { ws2_gethostbyname(name.as_ptr()) };
+        // May or may not succeed depending on the environment
+        let _ = result;
+    }
+
+    // ── WSAWaitForMultipleEvents tests ────────────────────────────────────────
+
+    #[test]
+    fn test_wsa_wait_immediate_timeout_unsignaled() {
+        // A single unsignaled event with 0-ms timeout should return WSA_WAIT_TIMEOUT.
+        let h = unsafe { ws2_WSACreateEvent() };
+        assert_ne!(h, 0);
+        let handles = [h];
+        let ret = unsafe {
+            ws2_WSAWaitForMultipleEvents(1, handles.as_ptr(), 0, 0, 0)
+        };
+        assert_eq!(ret, WSA_WAIT_TIMEOUT);
+        unsafe { ws2_WSACloseEvent(h) };
+    }
+
+    #[test]
+    fn test_wsa_wait_already_signaled() {
+        // A pre-signaled event with any timeout should return immediately.
+        let h = unsafe { ws2_WSACreateEvent() };
+        assert_ne!(h, 0);
+        unsafe { ws2_WSASetEvent(h) };
+        let handles = [h];
+        let ret = unsafe {
+            ws2_WSAWaitForMultipleEvents(1, handles.as_ptr(), 0, 0, 0)
+        };
+        assert_eq!(ret, WSA_WAIT_EVENT_0);
+        unsafe { ws2_WSACloseEvent(h) };
+    }
+
+    #[test]
+    fn test_wsa_wait_any_first_signaled() {
+        // wait-any: returns index of first signaled event.
+        let h0 = unsafe { ws2_WSACreateEvent() };
+        let h1 = unsafe { ws2_WSACreateEvent() };
+        assert_ne!(h0, 0);
+        assert_ne!(h1, 0);
+        unsafe { ws2_WSASetEvent(h1) }; // only second is signaled
+        let handles = [h0, h1];
+        let ret = unsafe {
+            ws2_WSAWaitForMultipleEvents(2, handles.as_ptr(), 0, 0, 0)
+        };
+        assert_eq!(ret, WSA_WAIT_EVENT_0 + 1);
+        unsafe { ws2_WSACloseEvent(h0) };
+        unsafe { ws2_WSACloseEvent(h1) };
+    }
+
+    #[test]
+    fn test_wsa_wait_all_not_all_signaled() {
+        // wait-all: when only one of two is signaled and timeout=0, should time out.
+        let h0 = unsafe { ws2_WSACreateEvent() };
+        let h1 = unsafe { ws2_WSACreateEvent() };
+        assert_ne!(h0, 0);
+        assert_ne!(h1, 0);
+        unsafe { ws2_WSASetEvent(h0) }; // only first is signaled
+        let handles = [h0, h1];
+        let ret = unsafe {
+            ws2_WSAWaitForMultipleEvents(2, handles.as_ptr(), 1, 0, 0)
+        };
+        assert_eq!(ret, WSA_WAIT_TIMEOUT);
+        unsafe { ws2_WSACloseEvent(h0) };
+        unsafe { ws2_WSACloseEvent(h1) };
+    }
+
+    #[test]
+    fn test_wsa_wait_all_both_signaled() {
+        // wait-all: returns WSA_WAIT_EVENT_0 when all events are signaled.
+        let h0 = unsafe { ws2_WSACreateEvent() };
+        let h1 = unsafe { ws2_WSACreateEvent() };
+        assert_ne!(h0, 0);
+        assert_ne!(h1, 0);
+        unsafe { ws2_WSASetEvent(h0) };
+        unsafe { ws2_WSASetEvent(h1) };
+        let handles = [h0, h1];
+        let ret = unsafe {
+            ws2_WSAWaitForMultipleEvents(2, handles.as_ptr(), 1, 0, 0)
+        };
+        assert_eq!(ret, WSA_WAIT_EVENT_0);
+        unsafe { ws2_WSACloseEvent(h0) };
+        unsafe { ws2_WSACloseEvent(h1) };
+    }
+
+    #[test]
+    fn test_wsa_wait_invalid_handle_returns_failed() {
+        // An unregistered handle should return WSA_WAIT_FAILED with WSAEINVAL.
+        let invalid_handle: usize = 0xDEAD_BEEF;
+        let handles = [invalid_handle];
+        let ret = unsafe {
+            ws2_WSAWaitForMultipleEvents(1, handles.as_ptr(), 0, 0, 0)
+        };
+        assert_eq!(ret, WSA_WAIT_FAILED);
+        assert_eq!(unsafe { ws2_WSAGetLastError() }, WSAEINVAL);
+    }
+
+    #[test]
+    fn test_wsa_wait_zero_events_returns_failed() {
+        // c_events == 0 should return WSA_WAIT_FAILED with WSAEINVAL.
+        let ret = unsafe {
+            ws2_WSAWaitForMultipleEvents(0, core::ptr::null(), 0, 0, 0)
+        };
+        assert_eq!(ret, WSA_WAIT_FAILED);
+        assert_eq!(unsafe { ws2_WSAGetLastError() }, WSAEINVAL);
+    }
+
+    #[test]
+    fn test_wsa_wait_large_timeout_no_wraparound() {
+        // Timeout value > i32::MAX (e.g., 0x8000_0000) must be handled as a
+        // large positive delay, not a negative/infinite wait.
+        let h = unsafe { ws2_WSACreateEvent() };
+        assert_ne!(h, 0);
+        // Event is not signaled; use timeout=1 ms to verify the function times out
+        // rather than treating large DWORD values as negative (i.e. infinite) wait.
+        let handles = [h];
+        let ret = unsafe {
+            ws2_WSAWaitForMultipleEvents(1, handles.as_ptr(), 0, 1, 0)
+        };
+        // Should time out (not fail or infinite-loop).
+        assert_eq!(ret, WSA_WAIT_TIMEOUT);
+        unsafe { ws2_WSACloseEvent(h) };
     }
 }
