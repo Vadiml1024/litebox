@@ -8939,7 +8939,7 @@ mod tests {
         let s: String = buf
             .iter()
             .take_while(|&&c| c != 0)
-            .map(|&c| char::from(c as u8))
+            .map(|&c| char::from(u8::try_from(c).unwrap_or(b'?')))
             .collect();
         assert_eq!(s, "255");
     }
@@ -8952,7 +8952,7 @@ mod tests {
         let s: String = buf
             .iter()
             .take_while(|&&c| c != 0)
-            .map(|&c| char::from(c as u8))
+            .map(|&c| char::from(u8::try_from(c).unwrap_or(b'?')))
             .collect();
         assert_eq!(s, "-7");
     }
@@ -9127,7 +9127,7 @@ mod tests {
         // /etc/hostname always exists on Linux
         let path = b"/etc/hostname\0";
         let mut buf = unsafe { core::mem::zeroed::<WinStat64>() };
-        let ret = unsafe { msvcrt__stat64(path.as_ptr(), &mut buf) };
+        let ret = unsafe { msvcrt__stat64(path.as_ptr(), &raw mut buf) };
         assert_eq!(ret, 0);
         assert!(buf.st_size > 0);
         assert_eq!(buf.st_mode & WIN_S_IFREG, WIN_S_IFREG); // regular file
@@ -9137,7 +9137,7 @@ mod tests {
     fn test_stat_on_dir() {
         let path = b"/tmp\0";
         let mut buf = unsafe { core::mem::zeroed::<WinStat32>() };
-        let ret = unsafe { msvcrt__stat(path.as_ptr(), &mut buf) };
+        let ret = unsafe { msvcrt__stat(path.as_ptr(), &raw mut buf) };
         assert_eq!(ret, 0);
         assert_eq!(buf.st_mode & WIN_S_IFDIR, WIN_S_IFDIR); // directory
     }
@@ -9145,7 +9145,7 @@ mod tests {
     #[test]
     fn test_fstat64_on_stdin() {
         let mut buf = unsafe { core::mem::zeroed::<WinStat64>() };
-        let ret = unsafe { msvcrt__fstat64(0, &mut buf) };
+        let ret = unsafe { msvcrt__fstat64(0, &raw mut buf) };
         // stdin may or may not be a regular file in tests; just check it doesn't crash
         let _ = ret;
     }
@@ -9153,7 +9153,7 @@ mod tests {
     #[test]
     fn test_stat64_null_path_returns_error() {
         let mut buf = unsafe { core::mem::zeroed::<WinStat64>() };
-        let ret = unsafe { msvcrt__stat64(core::ptr::null(), &mut buf) };
+        let ret = unsafe { msvcrt__stat64(core::ptr::null(), &raw mut buf) };
         assert_eq!(ret, -1);
     }
 
@@ -9175,7 +9175,7 @@ mod tests {
     fn test_wstat64_on_tmp() {
         let wide_path: Vec<u16> = "/tmp\0".encode_utf16().collect();
         let mut buf = unsafe { core::mem::zeroed::<WinStat64>() };
-        let ret = unsafe { msvcrt__wstat64(wide_path.as_ptr(), &mut buf) };
+        let ret = unsafe { msvcrt__wstat64(wide_path.as_ptr(), &raw mut buf) };
         assert_eq!(ret, 0);
         assert_eq!(buf.st_mode & WIN_S_IFDIR, WIN_S_IFDIR); // directory
     }
