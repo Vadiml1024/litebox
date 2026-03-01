@@ -7495,6 +7495,94 @@ pub unsafe extern "C" fn msvcrt__wsopen(
     unsafe { msvcrt__wopen(wpath, oflag, pmode) }
 }
 
+/// `_sopen_s(pfh, path, oflag, shflag, pmode)` — safe version of `_sopen`.
+///
+/// Opens a file and stores the resulting file descriptor in `*pfh`.
+/// Returns 0 on success, or an `errno` value on error.
+/// Returns `EINVAL` if `pfh` is null.
+/// The `shflag` sharing parameter is silently ignored on Linux.
+///
+/// # Safety
+/// `pfh` must be either null or a valid pointer to an `i32`.
+/// `path` must be a valid, NUL-terminated byte string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt__sopen_s(
+    pfh: *mut i32,
+    path: *const u8,
+    oflag: i32,
+    _shflag: i32,
+    pmode: i32,
+) -> i32 {
+    if pfh.is_null() {
+        return libc::EINVAL;
+    }
+    if path.is_null() {
+        // SAFETY: pfh is non-null per the check above.
+        unsafe { *pfh = -1 };
+        return libc::EINVAL;
+    }
+    let flags = translate_open_flags(oflag);
+    // SAFETY: path is a valid NUL-terminated string per caller's contract.
+    let fd = unsafe { libc::open(path.cast(), flags, pmode.cast_unsigned() as libc::mode_t) };
+    if fd < 0 {
+        // SAFETY: pfh is non-null per the check above.
+        unsafe { *pfh = -1 };
+        // SAFETY: errno is set by libc::open on failure.
+        return unsafe { *libc::__errno_location() };
+    }
+    // SAFETY: pfh is non-null per the check above.
+    unsafe { *pfh = fd };
+    0
+}
+
+/// `_wsopen_s(pfh, wpath, oflag, shflag, pmode)` — wide-char safe version of `_sopen`.
+///
+/// Opens a file identified by a UTF-16 path and stores the resulting file
+/// descriptor in `*pfh`.  Returns 0 on success, or an `errno` value on error.
+/// Returns `EINVAL` if `pfh` is null.
+/// The `shflag` sharing parameter is silently ignored on Linux.
+///
+/// # Safety
+/// `pfh` must be either null or a valid pointer to an `i32`.
+/// `wpath` must be a valid, NUL-terminated wide string (UTF-16).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt__wsopen_s(
+    pfh: *mut i32,
+    wpath: *const u16,
+    oflag: i32,
+    _shflag: i32,
+    pmode: i32,
+) -> i32 {
+    if pfh.is_null() {
+        return libc::EINVAL;
+    }
+    if wpath.is_null() {
+        // SAFETY: pfh is non-null per the check above.
+        unsafe { *pfh = -1 };
+        return libc::EINVAL;
+    }
+    // SAFETY: wpath is a valid NUL-terminated wide string per caller's contract.
+    let wide = unsafe { read_wide_string(wpath) };
+    let utf8 = String::from_utf16_lossy(&wide);
+    let Ok(c_path) = std::ffi::CString::new(utf8) else {
+        // SAFETY: pfh is non-null per the check above.
+        unsafe { *pfh = -1 };
+        return libc::EINVAL;
+    };
+    let flags = translate_open_flags(oflag);
+    // SAFETY: c_path is a valid NUL-terminated string.
+    let fd = unsafe { libc::open(c_path.as_ptr(), flags, pmode.cast_unsigned() as libc::mode_t) };
+    if fd < 0 {
+        // SAFETY: pfh is non-null per the check above.
+        unsafe { *pfh = -1 };
+        // SAFETY: errno is set by libc::open on failure.
+        return unsafe { *libc::__errno_location() };
+    }
+    // SAFETY: pfh is non-null per the check above.
+    unsafe { *pfh = fd };
+    0
+}
+
 /// `_wstat(wpath, buf)` — wide-char `_stat` (32-bit times and size).
 ///
 /// Converts `wpath` from UTF-16 to UTF-8 and calls `libc::stat`.
@@ -9194,5 +9282,32 @@ mod tests {
         let ret = unsafe { msvcrt__wstat64(wide_path.as_ptr(), &raw mut buf) };
         assert_eq!(ret, 0);
         assert_eq!(buf.st_mode & WIN_S_IFDIR, WIN_S_IFDIR); // directory
+    }
+
+    #[test]
+    fn test_sopen_s_null_pfh_returns_einval() {
+        let path = b"/tmp/litebox_sopen_s_test\0";
+        let ret = unsafe { msvcrt__sopen_s(core::ptr::null_mut(), path.as_ptr(), 0, 0, 0) };
+        assert_eq!(ret, libc::EINVAL);
+    }
+
+    #[test]
+    fn test_sopen_s_success_and_stores_fd() {
+        let path = b"/etc/hostname\0";
+        let mut fd: i32 = -1;
+        let ret = unsafe { msvcrt__sopen_s(&raw mut fd, path.as_ptr(), 0, 0, 0) };
+        assert_eq!(ret, 0);
+        assert!(fd >= 0);
+        unsafe { libc::close(fd) };
+    }
+
+    #[test]
+    fn test_wsopen_s_success_and_stores_fd() {
+        let wide_path: Vec<u16> = "/etc/hostname\0".encode_utf16().collect();
+        let mut fd: i32 = -1;
+        let ret = unsafe { msvcrt__wsopen_s(&raw mut fd, wide_path.as_ptr(), 0, 0, 0) };
+        assert_eq!(ret, 0);
+        assert!(fd >= 0);
+        unsafe { libc::close(fd) };
     }
 }

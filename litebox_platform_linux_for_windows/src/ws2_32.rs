@@ -1665,6 +1665,38 @@ pub unsafe extern "C" fn ws2_gethostbyname(name: *const u8) -> *mut libc::hosten
     result
 }
 
+/// `WSAAsyncSelect(s, hwnd, wmsg, levent)` — register async network-event interest.
+///
+/// Stores the network-event mask on the socket entry (like `WSAEventSelect` but
+/// without an associated event handle). The `hwnd` and `wmsg` parameters are
+/// accepted for API compatibility but are not used on Linux.
+/// Returns 0 on success, `SOCKET_ERROR` on failure.
+///
+/// # Safety
+/// `s` must be a valid socket handle obtained from `socket`/`WSASocketW`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ws2_WSAAsyncSelect(
+    s: usize,
+    _hwnd: usize,
+    _wmsg: u32,
+    levent: u32,
+) -> i32 {
+    let ok = with_socket_handles(|m| {
+        if let Some(entry) = m.get_mut(&s) {
+            entry.network_events_mask = levent as i32;
+            true
+        } else {
+            false
+        }
+    });
+    if ok {
+        0
+    } else {
+        set_wsa_error(WSAENOTSOCK);
+        SOCKET_ERROR
+    }
+}
+
 // ── Unit tests ────────────────────────────────────────────────────────────────
 #[cfg(test)]
 mod tests {
@@ -1874,9 +1906,7 @@ mod tests {
         let h = unsafe { ws2_WSACreateEvent() };
         assert_ne!(h, 0);
         let handles = [h];
-        let ret = unsafe {
-            ws2_WSAWaitForMultipleEvents(1, handles.as_ptr(), 0, 0, 0)
-        };
+        let ret = unsafe { ws2_WSAWaitForMultipleEvents(1, handles.as_ptr(), 0, 0, 0) };
         assert_eq!(ret, WSA_WAIT_TIMEOUT);
         unsafe { ws2_WSACloseEvent(h) };
     }
@@ -1888,9 +1918,7 @@ mod tests {
         assert_ne!(h, 0);
         unsafe { ws2_WSASetEvent(h) };
         let handles = [h];
-        let ret = unsafe {
-            ws2_WSAWaitForMultipleEvents(1, handles.as_ptr(), 0, 0, 0)
-        };
+        let ret = unsafe { ws2_WSAWaitForMultipleEvents(1, handles.as_ptr(), 0, 0, 0) };
         assert_eq!(ret, WSA_WAIT_EVENT_0);
         unsafe { ws2_WSACloseEvent(h) };
     }
@@ -1904,9 +1932,7 @@ mod tests {
         assert_ne!(h1, 0);
         unsafe { ws2_WSASetEvent(h1) }; // only second is signaled
         let handles = [h0, h1];
-        let ret = unsafe {
-            ws2_WSAWaitForMultipleEvents(2, handles.as_ptr(), 0, 0, 0)
-        };
+        let ret = unsafe { ws2_WSAWaitForMultipleEvents(2, handles.as_ptr(), 0, 0, 0) };
         assert_eq!(ret, WSA_WAIT_EVENT_0 + 1);
         unsafe { ws2_WSACloseEvent(h0) };
         unsafe { ws2_WSACloseEvent(h1) };
@@ -1921,9 +1947,7 @@ mod tests {
         assert_ne!(h1, 0);
         unsafe { ws2_WSASetEvent(h0) }; // only first is signaled
         let handles = [h0, h1];
-        let ret = unsafe {
-            ws2_WSAWaitForMultipleEvents(2, handles.as_ptr(), 1, 0, 0)
-        };
+        let ret = unsafe { ws2_WSAWaitForMultipleEvents(2, handles.as_ptr(), 1, 0, 0) };
         assert_eq!(ret, WSA_WAIT_TIMEOUT);
         unsafe { ws2_WSACloseEvent(h0) };
         unsafe { ws2_WSACloseEvent(h1) };
@@ -1939,9 +1963,7 @@ mod tests {
         unsafe { ws2_WSASetEvent(h0) };
         unsafe { ws2_WSASetEvent(h1) };
         let handles = [h0, h1];
-        let ret = unsafe {
-            ws2_WSAWaitForMultipleEvents(2, handles.as_ptr(), 1, 0, 0)
-        };
+        let ret = unsafe { ws2_WSAWaitForMultipleEvents(2, handles.as_ptr(), 1, 0, 0) };
         assert_eq!(ret, WSA_WAIT_EVENT_0);
         unsafe { ws2_WSACloseEvent(h0) };
         unsafe { ws2_WSACloseEvent(h1) };
@@ -1952,9 +1974,7 @@ mod tests {
         // An unregistered handle should return WSA_WAIT_FAILED with WSAEINVAL.
         let invalid_handle: usize = 0xDEAD_BEEF;
         let handles = [invalid_handle];
-        let ret = unsafe {
-            ws2_WSAWaitForMultipleEvents(1, handles.as_ptr(), 0, 0, 0)
-        };
+        let ret = unsafe { ws2_WSAWaitForMultipleEvents(1, handles.as_ptr(), 0, 0, 0) };
         assert_eq!(ret, WSA_WAIT_FAILED);
         assert_eq!(unsafe { ws2_WSAGetLastError() }, WSAEINVAL);
     }
@@ -1962,9 +1982,7 @@ mod tests {
     #[test]
     fn test_wsa_wait_zero_events_returns_failed() {
         // c_events == 0 should return WSA_WAIT_FAILED with WSAEINVAL.
-        let ret = unsafe {
-            ws2_WSAWaitForMultipleEvents(0, core::ptr::null(), 0, 0, 0)
-        };
+        let ret = unsafe { ws2_WSAWaitForMultipleEvents(0, core::ptr::null(), 0, 0, 0) };
         assert_eq!(ret, WSA_WAIT_FAILED);
         assert_eq!(unsafe { ws2_WSAGetLastError() }, WSAEINVAL);
     }
@@ -1978,11 +1996,20 @@ mod tests {
         // Event is not signaled; use timeout=1 ms to verify the function times out
         // rather than treating large DWORD values as negative (i.e. infinite) wait.
         let handles = [h];
-        let ret = unsafe {
-            ws2_WSAWaitForMultipleEvents(1, handles.as_ptr(), 0, 1, 0)
-        };
+        let ret = unsafe { ws2_WSAWaitForMultipleEvents(1, handles.as_ptr(), 0, 1, 0) };
         // Should time out (not fail or infinite-loop).
         assert_eq!(ret, WSA_WAIT_TIMEOUT);
         unsafe { ws2_WSACloseEvent(h) };
+    }
+
+    #[test]
+    fn test_wsa_async_select_stores_mask_and_returns_zero() {
+        // Create a real TCP socket and register async interest.
+        let s = unsafe { ws2_socket(libc::AF_INET as i32, libc::SOCK_STREAM, libc::IPPROTO_TCP) };
+        assert_ne!(s, usize::MAX, "socket creation should succeed");
+        // FD_READ = 1, FD_WRITE = 2
+        let ret = unsafe { ws2_WSAAsyncSelect(s, 0, 0, 1 | 2) };
+        assert_eq!(ret, 0);
+        unsafe { ws2_closesocket(s) };
     }
 }

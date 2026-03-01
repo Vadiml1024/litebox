@@ -605,6 +605,55 @@ fn test_dll_manager_has_all_required_exports() {
     }
 }
 
+#[test]
+fn test_phase41_dll_exports_present() {
+    use litebox_shim_windows::loader::DllManager;
+
+    let mut dll_manager = DllManager::new();
+    let ws2_32 = dll_manager.load_library("WS2_32.dll").unwrap();
+    let msvcrt = dll_manager.load_library("MSVCRT.dll").unwrap();
+    let msvcp140 = dll_manager.load_library("msvcp140.dll").unwrap();
+
+    // Check WS2_32.dll Phase 41 additions
+    let addr = dll_manager.get_proc_address(ws2_32, "WSAAsyncSelect");
+    assert!(
+        addr.is_ok(),
+        "WS2_32.dll::WSAAsyncSelect should be resolvable after Phase 41"
+    );
+
+    // Check MSVCRT.dll Phase 41 additions
+    for func_name in ["_sopen_s", "_wsopen_s"] {
+        let addr = dll_manager.get_proc_address(msvcrt, func_name);
+        assert!(
+            addr.is_ok(),
+            "MSVCRT.dll::{func_name} should be resolvable after Phase 41"
+        );
+    }
+
+    // Check msvcp140.dll Phase 41 additions
+    let msvcp140_phase41_functions = vec![
+        "msvcp140__map_ctor",
+        "msvcp140__map_dtor",
+        "msvcp140__map_insert",
+        "msvcp140__map_find",
+        "msvcp140__map_size",
+        "msvcp140__map_clear",
+        "msvcp140__ostringstream_ctor",
+        "msvcp140__ostringstream_dtor",
+        "msvcp140__ostringstream_str",
+        "msvcp140__ostringstream_write",
+        "msvcp140__ostringstream_tellp",
+        "msvcp140__ostringstream_seekp",
+    ];
+    for func_name in msvcp140_phase41_functions {
+        let addr = dll_manager.get_proc_address(msvcp140, func_name);
+        assert!(
+            addr.is_ok(),
+            "msvcp140.dll::{func_name} should be resolvable after Phase 41"
+        );
+    }
+}
+
 #[cfg(test)]
 mod test_program_helpers {
     use std::env;

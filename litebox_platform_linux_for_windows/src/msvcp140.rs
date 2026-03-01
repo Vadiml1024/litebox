@@ -18,7 +18,9 @@
 #![allow(clippy::cast_ptr_alignment)]
 
 use std::alloc::{Layout, alloc, dealloc};
+use std::collections::{BTreeMap, HashMap};
 use std::ptr;
+use std::sync::Mutex;
 
 // ============================================================================
 // Global operator new / delete
@@ -1569,6 +1571,227 @@ mod tests_vector_char {
     }
 }
 
+// ============================================================================
+// std::map<void*, void*> stub
+// ============================================================================
+
+/// Global registry: map_this_ptr → BTreeMap<key_usize, value_usize>
+static MAP_REGISTRY: Mutex<Option<HashMap<usize, BTreeMap<usize, usize>>>> = Mutex::new(None);
+
+fn with_map_registry<R>(f: impl FnOnce(&mut HashMap<usize, BTreeMap<usize, usize>>) -> R) -> R {
+    let mut guard = MAP_REGISTRY.lock().unwrap();
+    let m = guard.get_or_insert_with(HashMap::new);
+    f(m)
+}
+
+/// `std::map<void*,void*>` default constructor — registers an empty map for `this`.
+///
+/// # Safety
+/// `this` must be a valid, non-null pointer to at least 48 bytes of storage.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__map_ctor(this: *mut u8) {
+    with_map_registry(|m| {
+        m.insert(this as usize, BTreeMap::new());
+    });
+}
+
+/// `std::map<void*,void*>` destructor — removes the map entry for `this`.
+///
+/// # Safety
+/// `this` must be a pointer previously passed to `msvcp140__map_ctor`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__map_dtor(this: *mut u8) {
+    with_map_registry(|m| {
+        m.remove(&(this as usize));
+    });
+}
+
+/// `std::map<void*,void*>::insert` — inserts `(key, value)` into the map.
+///
+/// Returns `this` as a non-null sentinel pointer on success, or null if `this`
+/// is not registered.
+///
+/// # Safety
+/// `this` must be a pointer previously passed to `msvcp140__map_ctor`.
+/// `key` and `value` are stored as raw pointer-sized integers.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__map_insert(
+    this: *mut u8,
+    key: *const u8,
+    value: *const u8,
+) -> *mut u8 {
+    let inserted = with_map_registry(|m| {
+        if let Some(map) = m.get_mut(&(this as usize)) {
+            map.insert(key as usize, value as usize);
+            true
+        } else {
+            false
+        }
+    });
+    if inserted {
+        this
+    } else {
+        core::ptr::null_mut()
+    }
+}
+
+/// `std::map<void*,void*>::find` — looks up `key` in the map.
+///
+/// Returns a pointer to the stored value (as `*mut u8`) if found, or null.
+///
+/// # Safety
+/// `this` must be a pointer previously passed to `msvcp140__map_ctor`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__map_find(this: *mut u8, key: *const u8) -> *mut u8 {
+    with_map_registry(|m| {
+        m.get(&(this as usize))
+            .and_then(|map| map.get(&(key as usize)).copied())
+            .map_or(core::ptr::null_mut(), |v| v as *mut u8)
+    })
+}
+
+/// `std::map<void*,void*>::size` — returns the number of elements in the map.
+///
+/// # Safety
+/// `this` must be a pointer previously passed to `msvcp140__map_ctor`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__map_size(this: *const u8) -> usize {
+    with_map_registry(|m| {
+        m.get(&(this as usize))
+            .map_or(0, BTreeMap::len)
+    })
+}
+
+/// `std::map<void*,void*>::clear` — removes all elements from the map.
+///
+/// # Safety
+/// `this` must be a pointer previously passed to `msvcp140__map_ctor`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__map_clear(this: *mut u8) {
+    with_map_registry(|m| {
+        if let Some(map) = m.get_mut(&(this as usize)) {
+            map.clear();
+        }
+    });
+}
+
+// ============================================================================
+// std::ostringstream stub
+// ============================================================================
+
+/// Global registry: ostringstream_this_ptr → Vec<u8> (byte buffer)
+static OSS_REGISTRY: Mutex<Option<HashMap<usize, Vec<u8>>>> = Mutex::new(None);
+
+fn with_oss_registry<R>(f: impl FnOnce(&mut HashMap<usize, Vec<u8>>) -> R) -> R {
+    let mut guard = OSS_REGISTRY.lock().unwrap();
+    let m = guard.get_or_insert_with(HashMap::new);
+    f(m)
+}
+
+/// `std::ostringstream` default constructor — registers an empty buffer for `this`.
+///
+/// # Safety
+/// `this` must be a valid, non-null pointer to at least 256 bytes of storage.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__ostringstream_ctor(this: *mut u8) {
+    with_oss_registry(|m| {
+        m.insert(this as usize, Vec::new());
+    });
+}
+
+/// `std::ostringstream` destructor — removes the buffer entry for `this`.
+///
+/// # Safety
+/// `this` must be a pointer previously passed to `msvcp140__ostringstream_ctor`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__ostringstream_dtor(this: *mut u8) {
+    with_oss_registry(|m| {
+        m.remove(&(this as usize));
+    });
+}
+
+/// `std::ostringstream::str()` — returns a malloc'd copy of the buffer as a C string.
+///
+/// The caller is responsible for freeing the returned pointer with `free()`.
+/// Returns null if `this` is not registered or allocation fails.
+///
+/// # Safety
+/// `this` must be a pointer previously passed to `msvcp140__ostringstream_ctor`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__ostringstream_str(this: *const u8) -> *mut u8 {
+    let buf = with_oss_registry(|m| m.get(&(this as usize)).cloned().unwrap_or_default());
+    // Allocate buf.len() + 1 bytes for the NUL terminator.
+    let len = buf.len();
+    // SAFETY: layout has non-zero size (len + 1 >= 1).
+    let ptr = unsafe { libc::malloc(len + 1) }.cast::<u8>();
+    if ptr.is_null() {
+        return core::ptr::null_mut();
+    }
+    if len > 0 {
+        // SAFETY: ptr is valid for len bytes; buf.as_ptr() is valid for len bytes.
+        unsafe { core::ptr::copy_nonoverlapping(buf.as_ptr(), ptr, len) };
+    }
+    // SAFETY: ptr + len is within the allocation.
+    unsafe { *ptr.add(len) = 0 };
+    ptr
+}
+
+/// `std::ostringstream::write(buf, count)` — appends `count` raw bytes to the buffer.
+///
+/// # Safety
+/// `this` must be a pointer previously passed to `msvcp140__ostringstream_ctor`.
+/// `buf` must be valid for `count` bytes of reads.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__ostringstream_write(
+    this: *mut u8,
+    buf: *const u8,
+    count: usize,
+) {
+    if buf.is_null() || count == 0 {
+        return;
+    }
+    // SAFETY: buf is valid for count bytes per caller's contract.
+    let slice = unsafe { core::slice::from_raw_parts(buf, count) };
+    with_oss_registry(|m| {
+        if let Some(v) = m.get_mut(&(this as usize)) {
+            v.extend_from_slice(slice);
+        }
+    });
+}
+
+/// `std::ostringstream::tellp()` — returns the current write position (= buffer length).
+///
+/// # Safety
+/// `this` must be a pointer previously passed to `msvcp140__ostringstream_ctor`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__ostringstream_tellp(this: *const u8) -> i64 {
+    with_oss_registry(|m| {
+        m.get(&(this as usize))
+            .map_or(-1, |v| i64::try_from(v.len()).unwrap_or(i64::MAX))
+    })
+}
+
+/// `std::ostringstream::seekp(pos)` — seeks the write position, truncating if needed.
+///
+/// If `pos` is beyond the current length, the buffer is extended with NUL bytes.
+///
+/// # Safety
+/// `this` must be a pointer previously passed to `msvcp140__ostringstream_ctor`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__ostringstream_seekp(this: *mut u8, pos: i64) {
+    if pos < 0 {
+        return;
+    }
+    let Ok(new_len) = usize::try_from(pos) else {
+        return;
+    };
+    with_oss_registry(|m| {
+        if let Some(v) = m.get_mut(&(this as usize)) {
+            v.resize(new_len, 0);
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests_wstring {
     use super::*;
@@ -1663,6 +1886,101 @@ mod tests_wstring {
             assert_eq!(ret, obj.as_mut_ptr());
             assert_eq!(msvcp140__basic_wstring_size(obj.as_ptr()), 4);
             msvcp140__basic_wstring_dtor(obj.as_mut_ptr());
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests_map {
+    use super::*;
+
+    #[test]
+    fn test_map_ctor_dtor() {
+        let mut obj = [0u8; 48];
+        unsafe {
+            msvcp140__map_ctor(obj.as_mut_ptr());
+            assert_eq!(msvcp140__map_size(obj.as_ptr()), 0);
+            msvcp140__map_dtor(obj.as_mut_ptr());
+        }
+    }
+
+    #[test]
+    fn test_map_insert_find_clear() {
+        let mut obj = [0u8; 48];
+        let key = 0x1234usize as *const u8;
+        let val = 0x5678usize as *const u8;
+        unsafe {
+            msvcp140__map_ctor(obj.as_mut_ptr());
+            let ret = msvcp140__map_insert(obj.as_mut_ptr(), key, val);
+            assert!(!ret.is_null());
+            assert_eq!(msvcp140__map_size(obj.as_ptr()), 1);
+            let found = msvcp140__map_find(obj.as_mut_ptr(), key);
+            assert_eq!(found, val as *mut u8);
+            msvcp140__map_clear(obj.as_mut_ptr());
+            assert_eq!(msvcp140__map_size(obj.as_ptr()), 0);
+            msvcp140__map_dtor(obj.as_mut_ptr());
+        }
+    }
+
+    #[test]
+    fn test_map_find_missing_key_returns_null() {
+        let mut obj = [0u8; 48];
+        let missing = 0xDEADusize as *const u8;
+        unsafe {
+            msvcp140__map_ctor(obj.as_mut_ptr());
+            let found = msvcp140__map_find(obj.as_mut_ptr(), missing);
+            assert!(found.is_null());
+            msvcp140__map_dtor(obj.as_mut_ptr());
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests_ostringstream {
+    use super::*;
+
+    #[test]
+    fn test_ostringstream_ctor_dtor() {
+        let mut obj = [0u8; 256];
+        unsafe {
+            msvcp140__ostringstream_ctor(obj.as_mut_ptr());
+            assert_eq!(msvcp140__ostringstream_tellp(obj.as_ptr()), 0);
+            msvcp140__ostringstream_dtor(obj.as_mut_ptr());
+        }
+    }
+
+    #[test]
+    fn test_ostringstream_write_and_str() {
+        let mut obj = [0u8; 256];
+        unsafe {
+            msvcp140__ostringstream_ctor(obj.as_mut_ptr());
+            let data = b"hello";
+            msvcp140__ostringstream_write(obj.as_mut_ptr(), data.as_ptr(), data.len());
+            assert_eq!(msvcp140__ostringstream_tellp(obj.as_ptr()), 5);
+            let s = msvcp140__ostringstream_str(obj.as_ptr());
+            assert!(!s.is_null());
+            let got = core::ffi::CStr::from_ptr(s.cast());
+            assert_eq!(got.to_bytes(), b"hello");
+            libc::free(s.cast());
+            msvcp140__ostringstream_dtor(obj.as_mut_ptr());
+        }
+    }
+
+    #[test]
+    fn test_ostringstream_seekp_truncates() {
+        let mut obj = [0u8; 256];
+        unsafe {
+            msvcp140__ostringstream_ctor(obj.as_mut_ptr());
+            let data = b"abcdef";
+            msvcp140__ostringstream_write(obj.as_mut_ptr(), data.as_ptr(), data.len());
+            msvcp140__ostringstream_seekp(obj.as_mut_ptr(), 3);
+            assert_eq!(msvcp140__ostringstream_tellp(obj.as_ptr()), 3);
+            let s = msvcp140__ostringstream_str(obj.as_ptr());
+            assert!(!s.is_null());
+            let got = core::ffi::CStr::from_ptr(s.cast());
+            assert_eq!(got.to_bytes(), b"abc");
+            libc::free(s.cast());
+            msvcp140__ostringstream_dtor(obj.as_mut_ptr());
         }
     }
 }

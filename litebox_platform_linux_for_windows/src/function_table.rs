@@ -1810,6 +1810,13 @@ pub fn get_function_table() -> Vec<FunctionImpl> {
             num_params: 1,
             impl_address: crate::ws2_32::ws2_gethostbyname as *const () as usize,
         },
+        // Phase 41: WSAAsyncSelect
+        FunctionImpl {
+            name: "WSAAsyncSelect",
+            dll_name: "WS2_32.dll",
+            num_params: 4,
+            impl_address: crate::ws2_32::ws2_WSAAsyncSelect as *const () as usize,
+        },
         // USER32.dll — Windows GUI (headless stubs)
         FunctionImpl {
             name: "MessageBoxW",
@@ -4433,6 +4440,19 @@ pub fn get_function_table() -> Vec<FunctionImpl> {
             num_params: 2,
             impl_address: crate::msvcrt::msvcrt__wstat64 as *const () as usize,
         },
+        // Phase 41: safe sopen variants
+        FunctionImpl {
+            name: "_sopen_s",
+            dll_name: "MSVCRT.dll",
+            num_params: 5,
+            impl_address: crate::msvcrt::msvcrt__sopen_s as *const () as usize,
+        },
+        FunctionImpl {
+            name: "_wsopen_s",
+            dll_name: "MSVCRT.dll",
+            num_params: 5,
+            impl_address: crate::msvcrt::msvcrt__wsopen_s as *const () as usize,
+        },
         // Phase 39: std::vector<char> member functions (msvcp140.dll)
         FunctionImpl {
             name: "??0?$vector@DU?$allocator@D@std@@@std@@QEAA@XZ",
@@ -4487,6 +4507,80 @@ pub fn get_function_table() -> Vec<FunctionImpl> {
             dll_name: "msvcp140.dll",
             num_params: 2,
             impl_address: crate::msvcp140::msvcp140__vector_char_reserve as *const () as usize,
+        },
+        // Phase 41: std::map<void*,void*> stubs
+        FunctionImpl {
+            name: "msvcp140__map_ctor",
+            dll_name: "msvcp140.dll",
+            num_params: 1,
+            impl_address: crate::msvcp140::msvcp140__map_ctor as *const () as usize,
+        },
+        FunctionImpl {
+            name: "msvcp140__map_dtor",
+            dll_name: "msvcp140.dll",
+            num_params: 1,
+            impl_address: crate::msvcp140::msvcp140__map_dtor as *const () as usize,
+        },
+        FunctionImpl {
+            name: "msvcp140__map_insert",
+            dll_name: "msvcp140.dll",
+            num_params: 3,
+            impl_address: crate::msvcp140::msvcp140__map_insert as *const () as usize,
+        },
+        FunctionImpl {
+            name: "msvcp140__map_find",
+            dll_name: "msvcp140.dll",
+            num_params: 2,
+            impl_address: crate::msvcp140::msvcp140__map_find as *const () as usize,
+        },
+        FunctionImpl {
+            name: "msvcp140__map_size",
+            dll_name: "msvcp140.dll",
+            num_params: 1,
+            impl_address: crate::msvcp140::msvcp140__map_size as *const () as usize,
+        },
+        FunctionImpl {
+            name: "msvcp140__map_clear",
+            dll_name: "msvcp140.dll",
+            num_params: 1,
+            impl_address: crate::msvcp140::msvcp140__map_clear as *const () as usize,
+        },
+        // Phase 41: std::ostringstream stubs
+        FunctionImpl {
+            name: "msvcp140__ostringstream_ctor",
+            dll_name: "msvcp140.dll",
+            num_params: 1,
+            impl_address: crate::msvcp140::msvcp140__ostringstream_ctor as *const () as usize,
+        },
+        FunctionImpl {
+            name: "msvcp140__ostringstream_dtor",
+            dll_name: "msvcp140.dll",
+            num_params: 1,
+            impl_address: crate::msvcp140::msvcp140__ostringstream_dtor as *const () as usize,
+        },
+        FunctionImpl {
+            name: "msvcp140__ostringstream_str",
+            dll_name: "msvcp140.dll",
+            num_params: 1,
+            impl_address: crate::msvcp140::msvcp140__ostringstream_str as *const () as usize,
+        },
+        FunctionImpl {
+            name: "msvcp140__ostringstream_write",
+            dll_name: "msvcp140.dll",
+            num_params: 3,
+            impl_address: crate::msvcp140::msvcp140__ostringstream_write as *const () as usize,
+        },
+        FunctionImpl {
+            name: "msvcp140__ostringstream_tellp",
+            dll_name: "msvcp140.dll",
+            num_params: 1,
+            impl_address: crate::msvcp140::msvcp140__ostringstream_tellp as *const () as usize,
+        },
+        FunctionImpl {
+            name: "msvcp140__ostringstream_seekp",
+            dll_name: "msvcp140.dll",
+            num_params: 2,
+            impl_address: crate::msvcp140::msvcp140__ostringstream_seekp as *const () as usize,
         },
     ]
 }
