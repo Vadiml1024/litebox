@@ -1761,6 +1761,55 @@ pub fn get_function_table() -> Vec<FunctionImpl> {
             num_params: 2,
             impl_address: crate::ws2_32::ws2___WSAFDIsSet as *const () as usize,
         },
+        // Phase 40: WSA events and gethostbyname
+        FunctionImpl {
+            name: "WSACreateEvent",
+            dll_name: "WS2_32.dll",
+            num_params: 0,
+            impl_address: crate::ws2_32::ws2_WSACreateEvent as *const () as usize,
+        },
+        FunctionImpl {
+            name: "WSACloseEvent",
+            dll_name: "WS2_32.dll",
+            num_params: 1,
+            impl_address: crate::ws2_32::ws2_WSACloseEvent as *const () as usize,
+        },
+        FunctionImpl {
+            name: "WSAResetEvent",
+            dll_name: "WS2_32.dll",
+            num_params: 1,
+            impl_address: crate::ws2_32::ws2_WSAResetEvent as *const () as usize,
+        },
+        FunctionImpl {
+            name: "WSASetEvent",
+            dll_name: "WS2_32.dll",
+            num_params: 1,
+            impl_address: crate::ws2_32::ws2_WSASetEvent as *const () as usize,
+        },
+        FunctionImpl {
+            name: "WSAEventSelect",
+            dll_name: "WS2_32.dll",
+            num_params: 3,
+            impl_address: crate::ws2_32::ws2_WSAEventSelect as *const () as usize,
+        },
+        FunctionImpl {
+            name: "WSAEnumNetworkEvents",
+            dll_name: "WS2_32.dll",
+            num_params: 3,
+            impl_address: crate::ws2_32::ws2_WSAEnumNetworkEvents as *const () as usize,
+        },
+        FunctionImpl {
+            name: "WSAWaitForMultipleEvents",
+            dll_name: "WS2_32.dll",
+            num_params: 5,
+            impl_address: crate::ws2_32::ws2_WSAWaitForMultipleEvents as *const () as usize,
+        },
+        FunctionImpl {
+            name: "gethostbyname",
+            dll_name: "WS2_32.dll",
+            num_params: 1,
+            impl_address: crate::ws2_32::ws2_gethostbyname as *const () as usize,
+        },
         // USER32.dll — Windows GUI (headless stubs)
         FunctionImpl {
             name: "MessageBoxW",
@@ -4334,6 +4383,55 @@ pub fn get_function_table() -> Vec<FunctionImpl> {
             dll_name: "MSVCRT.dll",
             num_params: 1,
             impl_address: crate::msvcrt::msvcrt__filelengthi64 as *const () as usize,
+        },
+        // Phase 40: stat functions and wide-path file opens
+        FunctionImpl {
+            name: "_stat",
+            dll_name: "MSVCRT.dll",
+            num_params: 2,
+            impl_address: crate::msvcrt::msvcrt__stat as *const () as usize,
+        },
+        FunctionImpl {
+            name: "_stat64",
+            dll_name: "MSVCRT.dll",
+            num_params: 2,
+            impl_address: crate::msvcrt::msvcrt__stat64 as *const () as usize,
+        },
+        FunctionImpl {
+            name: "_fstat",
+            dll_name: "MSVCRT.dll",
+            num_params: 2,
+            impl_address: crate::msvcrt::msvcrt__fstat as *const () as usize,
+        },
+        FunctionImpl {
+            name: "_fstat64",
+            dll_name: "MSVCRT.dll",
+            num_params: 2,
+            impl_address: crate::msvcrt::msvcrt__fstat64 as *const () as usize,
+        },
+        FunctionImpl {
+            name: "_wopen",
+            dll_name: "MSVCRT.dll",
+            num_params: 3,
+            impl_address: crate::msvcrt::msvcrt__wopen as *const () as usize,
+        },
+        FunctionImpl {
+            name: "_wsopen",
+            dll_name: "MSVCRT.dll",
+            num_params: 4,
+            impl_address: crate::msvcrt::msvcrt__wsopen as *const () as usize,
+        },
+        FunctionImpl {
+            name: "_wstat",
+            dll_name: "MSVCRT.dll",
+            num_params: 2,
+            impl_address: crate::msvcrt::msvcrt__wstat as *const () as usize,
+        },
+        FunctionImpl {
+            name: "_wstat64",
+            dll_name: "MSVCRT.dll",
+            num_params: 2,
+            impl_address: crate::msvcrt::msvcrt__wstat64 as *const () as usize,
         },
         // Phase 39: std::vector<char> member functions (msvcp140.dll)
         FunctionImpl {

@@ -7214,6 +7214,318 @@ pub unsafe extern "C" fn msvcrt__filelengthi64(fd: i32) -> i64 {
     stat.st_size
 }
 
+// ── Windows _stat/_stat64 structures ──────────────────────────────────────────
+
+/// Windows `_stat32` structure (32-bit times, 32-bit file size).
+///
+/// Matches the MSVC x64 ABI layout for `struct _stat32`.
+#[repr(C)]
+pub struct WinStat32 {
+    pub st_dev: u32,
+    pub st_ino: u16,
+    pub st_mode: u16,
+    pub st_nlink: i16,
+    pub st_uid: i16,
+    pub st_gid: i16,
+    /// ABI alignment padding between `st_gid` and `st_rdev`.
+    _pad1: u16,
+    pub st_rdev: u32,
+    pub st_size: i32,
+    pub st_atime: i32,
+    pub st_mtime: i32,
+    pub st_ctime: i32,
+}
+
+/// Windows `_stat64` structure (64-bit times, 64-bit file size).
+///
+/// Matches the MSVC x64 ABI layout for `struct _stat64`.
+#[repr(C)]
+pub struct WinStat64 {
+    pub st_dev: u32,
+    pub st_ino: u16,
+    pub st_mode: u16,
+    pub st_nlink: i16,
+    pub st_uid: i16,
+    pub st_gid: i16,
+    /// ABI alignment padding between `st_gid` and `st_rdev`.
+    _pad1: u16,
+    pub st_rdev: u32,
+    /// ABI alignment padding to align `st_size` to an 8-byte boundary.
+    _pad2: u32,
+    pub st_size: i64,
+    pub st_atime: i64,
+    pub st_mtime: i64,
+    pub st_ctime: i64,
+}
+
+/// Map a Linux `libc::stat` to a Windows `WinStat32`.
+///
+/// # Safety
+/// `linux_st` must be a valid, initialized `libc::stat` structure.
+#[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+unsafe fn fill_win_stat32(linux_st: &libc::stat, out: &mut WinStat32) {
+    out.st_dev = linux_st.st_dev as u32;
+    out.st_ino = linux_st.st_ino as u16;
+    // Map file type bits
+    let mode = linux_st.st_mode;
+    let mut wmode: u16 = 0;
+    if mode & libc::S_IFMT == libc::S_IFREG {
+        wmode |= 0x8000; // _S_IFREG
+    } else if mode & libc::S_IFMT == libc::S_IFDIR {
+        wmode |= 0x4000; // _S_IFDIR
+    } else if mode & libc::S_IFMT == libc::S_IFCHR {
+        wmode |= 0x2000; // _S_IFCHR
+    }
+    if mode & libc::S_IRUSR != 0 {
+        wmode |= 0x0100;
+    }
+    if mode & libc::S_IWUSR != 0 {
+        wmode |= 0x0080;
+    }
+    if mode & libc::S_IXUSR != 0 {
+        wmode |= 0x0040;
+    }
+    out.st_mode = wmode;
+    out.st_nlink = linux_st.st_nlink as i16;
+    out.st_uid = linux_st.st_uid as i16;
+    out.st_gid = linux_st.st_gid as i16;
+    out.st_rdev = linux_st.st_rdev as u32;
+    let sz = linux_st.st_size;
+    out.st_size = if sz > i64::from(i32::MAX) {
+        i32::MAX
+    } else {
+        sz as i32
+    };
+    out.st_atime = linux_st.st_atime as i32;
+    out.st_mtime = linux_st.st_mtime as i32;
+    out.st_ctime = linux_st.st_ctime as i32;
+}
+
+/// Map a Linux `libc::stat` to a Windows `WinStat64`.
+///
+/// # Safety
+/// `linux_st` must be a valid, initialized `libc::stat` structure.
+#[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+unsafe fn fill_win_stat64(linux_st: &libc::stat, out: &mut WinStat64) {
+    out.st_dev = linux_st.st_dev as u32;
+    out.st_ino = linux_st.st_ino as u16;
+    let mode = linux_st.st_mode;
+    let mut wmode: u16 = 0;
+    if mode & libc::S_IFMT == libc::S_IFREG {
+        wmode |= 0x8000;
+    } else if mode & libc::S_IFMT == libc::S_IFDIR {
+        wmode |= 0x4000;
+    } else if mode & libc::S_IFMT == libc::S_IFCHR {
+        wmode |= 0x2000;
+    }
+    if mode & libc::S_IRUSR != 0 {
+        wmode |= 0x0100;
+    }
+    if mode & libc::S_IWUSR != 0 {
+        wmode |= 0x0080;
+    }
+    if mode & libc::S_IXUSR != 0 {
+        wmode |= 0x0040;
+    }
+    out.st_mode = wmode;
+    out.st_nlink = linux_st.st_nlink as i16;
+    out.st_uid = linux_st.st_uid as i16;
+    out.st_gid = linux_st.st_gid as i16;
+    out.st_rdev = linux_st.st_rdev as u32;
+    out.st_size = linux_st.st_size;
+    out.st_atime = linux_st.st_atime;
+    out.st_mtime = linux_st.st_mtime;
+    out.st_ctime = linux_st.st_ctime;
+}
+
+/// `_stat(path, buf)` — get file status (32-bit times and size).
+///
+/// Returns 0 on success, -1 on error.
+///
+/// # Safety
+/// `path` must be a valid, NUL-terminated byte string.
+/// `buf` must be a valid pointer to a `WinStat32` structure.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt__stat(path: *const u8, buf: *mut WinStat32) -> i32 {
+    if path.is_null() || buf.is_null() {
+        return -1;
+    }
+    let mut linux_st = unsafe { core::mem::zeroed::<libc::stat>() };
+    // SAFETY: path is a valid NUL-terminated string per caller's contract.
+    if unsafe { libc::stat(path.cast(), &raw mut linux_st) } != 0 {
+        return -1;
+    }
+    // SAFETY: buf is a valid pointer per caller's contract; linux_st is initialized.
+    unsafe { fill_win_stat32(&linux_st, &mut *buf) };
+    0
+}
+
+/// `_stat64(path, buf)` — get file status (64-bit times and size).
+///
+/// Returns 0 on success, -1 on error.
+///
+/// # Safety
+/// `path` must be a valid, NUL-terminated byte string.
+/// `buf` must be a valid pointer to a `WinStat64` structure.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt__stat64(path: *const u8, buf: *mut WinStat64) -> i32 {
+    if path.is_null() || buf.is_null() {
+        return -1;
+    }
+    let mut linux_st = unsafe { core::mem::zeroed::<libc::stat>() };
+    // SAFETY: path is a valid NUL-terminated string per caller's contract.
+    if unsafe { libc::stat(path.cast(), &raw mut linux_st) } != 0 {
+        return -1;
+    }
+    // SAFETY: buf is a valid pointer per caller's contract; linux_st is initialized.
+    unsafe { fill_win_stat64(&linux_st, &mut *buf) };
+    0
+}
+
+/// `_fstat(fd, buf)` — get file status for an open file descriptor (32-bit).
+///
+/// Returns 0 on success, -1 on error.
+///
+/// # Safety
+/// `fd` must be a valid open file descriptor.
+/// `buf` must be a valid pointer to a `WinStat32` structure.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt__fstat(fd: i32, buf: *mut WinStat32) -> i32 {
+    if buf.is_null() {
+        return -1;
+    }
+    let mut linux_st = unsafe { core::mem::zeroed::<libc::stat>() };
+    // SAFETY: fd is a valid file descriptor per caller's contract.
+    if unsafe { libc::fstat(fd, &raw mut linux_st) } != 0 {
+        return -1;
+    }
+    // SAFETY: buf is a valid pointer; linux_st is initialized.
+    unsafe { fill_win_stat32(&linux_st, &mut *buf) };
+    0
+}
+
+/// `_fstat64(fd, buf)` — get file status for an open file descriptor (64-bit).
+///
+/// Returns 0 on success, -1 on error.
+///
+/// # Safety
+/// `fd` must be a valid open file descriptor.
+/// `buf` must be a valid pointer to a `WinStat64` structure.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt__fstat64(fd: i32, buf: *mut WinStat64) -> i32 {
+    if buf.is_null() {
+        return -1;
+    }
+    let mut linux_st = unsafe { core::mem::zeroed::<libc::stat>() };
+    // SAFETY: fd is a valid file descriptor per caller's contract.
+    if unsafe { libc::fstat(fd, &raw mut linux_st) } != 0 {
+        return -1;
+    }
+    // SAFETY: buf is a valid pointer; linux_st is initialized.
+    unsafe { fill_win_stat64(&linux_st, &mut *buf) };
+    0
+}
+
+/// `_wopen(wpath, oflag, pmode)` — open a file with a wide-character path.
+///
+/// Converts `wpath` from UTF-16 to UTF-8 and delegates to `libc::open`.
+/// Returns the new file descriptor on success, or -1 on error.
+///
+/// # Safety
+/// `wpath` must be a valid, NUL-terminated wide string (UTF-16).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt__wopen(wpath: *const u16, oflag: i32, pmode: u32) -> i32 {
+    if wpath.is_null() {
+        return -1;
+    }
+    // SAFETY: wpath is a valid NUL-terminated wide string per caller's contract.
+    let wide = unsafe { read_wide_string(wpath) };
+    let utf8 = String::from_utf16_lossy(&wide);
+    let Ok(c_path) = std::ffi::CString::new(utf8) else {
+        return -1;
+    };
+    let flags = translate_open_flags(oflag);
+    // SAFETY: c_path is a valid NUL-terminated string.
+    unsafe { libc::open(c_path.as_ptr(), flags, pmode as libc::mode_t) }
+}
+
+/// `_wsopen(wpath, oflag, shflag, pmode)` — wide-char `_sopen` (sharing flags ignored).
+///
+/// Converts `wpath` from UTF-16 to UTF-8 and opens the file. The `shflag`
+/// sharing parameter is silently ignored on Linux.
+/// Returns the new file descriptor on success, or -1 on error.
+///
+/// # Safety
+/// `wpath` must be a valid, NUL-terminated wide string (UTF-16).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt__wsopen(
+    wpath: *const u16,
+    oflag: i32,
+    _shflag: i32,
+    pmode: u32,
+) -> i32 {
+    // SAFETY: wpath is a valid NUL-terminated wide string per caller's contract.
+    unsafe { msvcrt__wopen(wpath, oflag, pmode) }
+}
+
+/// `_wstat(wpath, buf)` — wide-char `_stat` (32-bit times and size).
+///
+/// Converts `wpath` from UTF-16 to UTF-8 and calls `libc::stat`.
+/// Returns 0 on success, -1 on error.
+///
+/// # Safety
+/// `wpath` must be a valid, NUL-terminated wide string (UTF-16).
+/// `buf` must be a valid pointer to a `WinStat32` structure.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt__wstat(wpath: *const u16, buf: *mut WinStat32) -> i32 {
+    if wpath.is_null() || buf.is_null() {
+        return -1;
+    }
+    // SAFETY: wpath is a valid NUL-terminated wide string per caller's contract.
+    let wide = unsafe { read_wide_string(wpath) };
+    let utf8 = String::from_utf16_lossy(&wide);
+    let Ok(c_path) = std::ffi::CString::new(utf8) else {
+        return -1;
+    };
+    let mut linux_st = unsafe { core::mem::zeroed::<libc::stat>() };
+    // SAFETY: c_path is a valid NUL-terminated string.
+    if unsafe { libc::stat(c_path.as_ptr().cast(), &raw mut linux_st) } != 0 {
+        return -1;
+    }
+    // SAFETY: buf is a valid pointer; linux_st is initialized.
+    unsafe { fill_win_stat32(&linux_st, &mut *buf) };
+    0
+}
+
+/// `_wstat64(wpath, buf)` — wide-char `_stat64` (64-bit times and size).
+///
+/// Converts `wpath` from UTF-16 to UTF-8 and calls `libc::stat`.
+/// Returns 0 on success, -1 on error.
+///
+/// # Safety
+/// `wpath` must be a valid, NUL-terminated wide string (UTF-16).
+/// `buf` must be a valid pointer to a `WinStat64` structure.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt__wstat64(wpath: *const u16, buf: *mut WinStat64) -> i32 {
+    if wpath.is_null() || buf.is_null() {
+        return -1;
+    }
+    // SAFETY: wpath is a valid NUL-terminated wide string per caller's contract.
+    let wide = unsafe { read_wide_string(wpath) };
+    let utf8 = String::from_utf16_lossy(&wide);
+    let Ok(c_path) = std::ffi::CString::new(utf8) else {
+        return -1;
+    };
+    let mut linux_st = unsafe { core::mem::zeroed::<libc::stat>() };
+    // SAFETY: c_path is a valid NUL-terminated string.
+    if unsafe { libc::stat(c_path.as_ptr().cast(), &raw mut linux_st) } != 0 {
+        return -1;
+    }
+    // SAFETY: buf is a valid pointer; linux_st is initialized.
+    unsafe { fill_win_stat64(&linux_st, &mut *buf) };
+    0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -8797,5 +9109,63 @@ mod tests {
         // /dev/null reports size 0.
         assert_eq!(size, 0);
         let _ = unsafe { msvcrt__close(fd) };
+    }
+
+    #[test]
+    fn test_stat64_on_existing_file() {
+        // /etc/hostname always exists on Linux
+        let path = b"/etc/hostname\0";
+        let mut buf = unsafe { core::mem::zeroed::<WinStat64>() };
+        let ret = unsafe { msvcrt__stat64(path.as_ptr(), &mut buf) };
+        assert_eq!(ret, 0);
+        assert!(buf.st_size > 0);
+        assert_eq!(buf.st_mode & 0x8000, 0x8000); // regular file
+    }
+
+    #[test]
+    fn test_stat_on_dir() {
+        let path = b"/tmp\0";
+        let mut buf = unsafe { core::mem::zeroed::<WinStat32>() };
+        let ret = unsafe { msvcrt__stat(path.as_ptr(), &mut buf) };
+        assert_eq!(ret, 0);
+        assert_eq!(buf.st_mode & 0x4000, 0x4000); // directory
+    }
+
+    #[test]
+    fn test_fstat64_on_stdin() {
+        let mut buf = unsafe { core::mem::zeroed::<WinStat64>() };
+        let ret = unsafe { msvcrt__fstat64(0, &mut buf) };
+        // stdin may or may not be a regular file in tests; just check it doesn't crash
+        let _ = ret;
+    }
+
+    #[test]
+    fn test_stat64_null_path_returns_error() {
+        let mut buf = unsafe { core::mem::zeroed::<WinStat64>() };
+        let ret = unsafe { msvcrt__stat64(core::ptr::null(), &mut buf) };
+        assert_eq!(ret, -1);
+    }
+
+    #[test]
+    fn test_wopen_write_close() {
+        let path = b"/tmp/litebox_wopen_test\0";
+        // Clean up first
+        unsafe { libc::unlink(path.as_ptr().cast()) };
+        let wide_path: Vec<u16> = "/tmp/litebox_wopen_test\0".encode_utf16().collect();
+        let fd = unsafe { msvcrt__wopen(wide_path.as_ptr(), 0x0101, 0o644) }; // O_WRONLY|O_CREAT
+        if fd >= 0 {
+            unsafe { libc::close(fd) };
+            unsafe { libc::unlink(path.as_ptr().cast()) };
+        }
+        // Any non-crash result is acceptable
+    }
+
+    #[test]
+    fn test_wstat64_on_tmp() {
+        let wide_path: Vec<u16> = "/tmp\0".encode_utf16().collect();
+        let mut buf = unsafe { core::mem::zeroed::<WinStat64>() };
+        let ret = unsafe { msvcrt__wstat64(wide_path.as_ptr(), &mut buf) };
+        assert_eq!(ret, 0);
+        assert_eq!(buf.st_mode & 0x4000, 0x4000); // directory
     }
 }
