@@ -630,20 +630,20 @@ fn test_phase41_dll_exports_present() {
         );
     }
 
-    // Check msvcp140.dll Phase 41 additions
+    // Check msvcp140.dll Phase 41 additions (mangled MSVC x64 names)
     let msvcp140_phase41_functions = vec![
-        "msvcp140__map_ctor",
-        "msvcp140__map_dtor",
-        "msvcp140__map_insert",
-        "msvcp140__map_find",
-        "msvcp140__map_size",
-        "msvcp140__map_clear",
-        "msvcp140__ostringstream_ctor",
-        "msvcp140__ostringstream_dtor",
-        "msvcp140__ostringstream_str",
-        "msvcp140__ostringstream_write",
-        "msvcp140__ostringstream_tellp",
-        "msvcp140__ostringstream_seekp",
+        // std::map<void*,void*> mangled names
+        "??0?$map@PEAXPEAXU?$less@PEAX@std@@V?$allocator@U?$pair@$$CBPEAXPEAX@std@@@2@@std@@QEAA@XZ",
+        "??1?$map@PEAXPEAXU?$less@PEAX@std@@V?$allocator@U?$pair@$$CBPEAXPEAX@std@@@2@@std@@QEAA@XZ",
+        "?size@?$map@PEAXPEAXU?$less@PEAX@std@@V?$allocator@U?$pair@$$CBPEAXPEAX@std@@@2@@std@@QEBA_KXZ",
+        "?clear@?$map@PEAXPEAXU?$less@PEAX@std@@V?$allocator@U?$pair@$$CBPEAXPEAX@std@@@2@@std@@QEAAXXZ",
+        // std::ostringstream (basic_ostringstream<char>) mangled names
+        "??0?$basic_ostringstream@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@QEAA@H@Z",
+        "??1?$basic_ostringstream@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@UEAA@XZ",
+        "?str@?$basic_ostringstream@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@QEBA?AV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@2@XZ",
+        "?write@?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAAEAV12@PEBD_J@Z",
+        "?tellp@?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAA?AV?$fpos@U_Mbstatet@@@2@XZ",
+        "?seekp@?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAAEAV12@V?$fpos@U_Mbstatet@@@2@@Z",
     ];
     for func_name in msvcp140_phase41_functions {
         let addr = dll_manager.get_proc_address(msvcp140, func_name);

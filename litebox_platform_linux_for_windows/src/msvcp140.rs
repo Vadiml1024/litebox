@@ -1656,10 +1656,7 @@ pub unsafe extern "C" fn msvcp140__map_find(this: *mut u8, key: *const u8) -> *m
 /// `this` must be a pointer previously passed to `msvcp140__map_ctor`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn msvcp140__map_size(this: *const u8) -> usize {
-    with_map_registry(|m| {
-        m.get(&(this as usize))
-            .map_or(0, BTreeMap::len)
-    })
+    with_map_registry(|m| m.get(&(this as usize)).map_or(0, BTreeMap::len))
 }
 
 /// `std::map<void*,void*>::clear` — removes all elements from the map.
@@ -1719,7 +1716,10 @@ pub unsafe extern "C" fn msvcp140__ostringstream_dtor(this: *mut u8) {
 /// `this` must be a pointer previously passed to `msvcp140__ostringstream_ctor`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn msvcp140__ostringstream_str(this: *const u8) -> *mut u8 {
-    let buf = with_oss_registry(|m| m.get(&(this as usize)).cloned().unwrap_or_default());
+    let buf_opt = with_oss_registry(|m| m.get(&(this as usize)).cloned());
+    let Some(buf) = buf_opt else {
+        return core::ptr::null_mut();
+    };
     // Allocate buf.len() + 1 bytes for the NUL terminator.
     let len = buf.len();
     // SAFETY: layout has non-zero size (len + 1 >= 1).

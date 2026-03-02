@@ -7571,7 +7571,13 @@ pub unsafe extern "C" fn msvcrt__wsopen_s(
     };
     let flags = translate_open_flags(oflag);
     // SAFETY: c_path is a valid NUL-terminated string.
-    let fd = unsafe { libc::open(c_path.as_ptr(), flags, pmode.cast_unsigned() as libc::mode_t) };
+    let fd = unsafe {
+        libc::open(
+            c_path.as_ptr(),
+            flags,
+            pmode.cast_unsigned() as libc::mode_t,
+        )
+    };
     if fd < 0 {
         // SAFETY: pfh is non-null per the check above.
         unsafe { *pfh = -1 };

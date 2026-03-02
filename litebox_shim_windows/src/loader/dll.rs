@@ -1412,18 +1412,56 @@ impl DllManager {
                 "?reserve@?$vector@DU?$allocator@D@std@@@std@@QEAAX_K@Z",
                 MSVCP140_BASE + 50,
             ),
-            ("msvcp140__map_ctor", MSVCP140_BASE + 51),
-            ("msvcp140__map_dtor", MSVCP140_BASE + 52),
-            ("msvcp140__map_insert", MSVCP140_BASE + 53),
-            ("msvcp140__map_find", MSVCP140_BASE + 54),
-            ("msvcp140__map_size", MSVCP140_BASE + 55),
-            ("msvcp140__map_clear", MSVCP140_BASE + 56),
-            ("msvcp140__ostringstream_ctor", MSVCP140_BASE + 57),
-            ("msvcp140__ostringstream_dtor", MSVCP140_BASE + 58),
-            ("msvcp140__ostringstream_str", MSVCP140_BASE + 59),
-            ("msvcp140__ostringstream_write", MSVCP140_BASE + 60),
-            ("msvcp140__ostringstream_tellp", MSVCP140_BASE + 61),
-            ("msvcp140__ostringstream_seekp", MSVCP140_BASE + 62),
+            // std::map<void*,void*> mangled names (MSVC x64)
+            (
+                "??0?$map@PEAXPEAXU?$less@PEAX@std@@V?$allocator@U?$pair@$$CBPEAXPEAX@std@@@2@@std@@QEAA@XZ",
+                MSVCP140_BASE + 51,
+            ),
+            (
+                "??1?$map@PEAXPEAXU?$less@PEAX@std@@V?$allocator@U?$pair@$$CBPEAXPEAX@std@@@2@@std@@QEAA@XZ",
+                MSVCP140_BASE + 52,
+            ),
+            (
+                "?insert@?$map@PEAXPEAXU?$less@PEAX@std@@V?$allocator@U?$pair@$$CBPEAXPEAX@std@@@2@@std@@QEAAAEAU?$pair@V?$_Tree_iterator@V?$_Tree_val@U?$_Tree_simple_types@U?$pair@$$CBPEAXPEAX@std@@@std@@@std@@@std@@_N@std@@AEBU?$pair@$$CBPEAXPEAX@2@@2@@Z",
+                MSVCP140_BASE + 53,
+            ),
+            (
+                "?find@?$map@PEAXPEAXU?$less@PEAX@std@@V?$allocator@U?$pair@$$CBPEAXPEAX@std@@@2@@std@@QEAAV?$_Tree_iterator@V?$_Tree_val@U?$_Tree_simple_types@U?$pair@$$CBPEAXPEAX@std@@@std@@@std@@@2@AEBQEAX@Z",
+                MSVCP140_BASE + 54,
+            ),
+            (
+                "?size@?$map@PEAXPEAXU?$less@PEAX@std@@V?$allocator@U?$pair@$$CBPEAXPEAX@std@@@2@@std@@QEBA_KXZ",
+                MSVCP140_BASE + 55,
+            ),
+            (
+                "?clear@?$map@PEAXPEAXU?$less@PEAX@std@@V?$allocator@U?$pair@$$CBPEAXPEAX@std@@@2@@std@@QEAAXXZ",
+                MSVCP140_BASE + 56,
+            ),
+            // std::ostringstream (basic_ostringstream<char>) mangled names (MSVC x64)
+            (
+                "??0?$basic_ostringstream@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@QEAA@H@Z",
+                MSVCP140_BASE + 57,
+            ),
+            (
+                "??1?$basic_ostringstream@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@UEAA@XZ",
+                MSVCP140_BASE + 58,
+            ),
+            (
+                "?str@?$basic_ostringstream@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@QEBA?AV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@2@XZ",
+                MSVCP140_BASE + 59,
+            ),
+            (
+                "?write@?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAAEAV12@PEBD_J@Z",
+                MSVCP140_BASE + 60,
+            ),
+            (
+                "?tellp@?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAA?AV?$fpos@U_Mbstatet@@@2@XZ",
+                MSVCP140_BASE + 61,
+            ),
+            (
+                "?seekp@?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAAEAV12@V?$fpos@U_Mbstatet@@@2@@Z",
+                MSVCP140_BASE + 62,
+            ),
         ];
 
         self.register_stub_dll("msvcp140.dll", exports);
