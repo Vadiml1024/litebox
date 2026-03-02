@@ -910,6 +910,11 @@ impl DllManager {
             ("_wstat64", MSVCRT_BASE + 0xFF),
             ("_sopen_s", MSVCRT_BASE + 0x100),
             ("_wsopen_s", MSVCRT_BASE + 0x101),
+            ("_fullpath", MSVCRT_BASE + 0x102),
+            ("_splitpath", MSVCRT_BASE + 0x103),
+            ("_splitpath_s", MSVCRT_BASE + 0x104),
+            ("_makepath", MSVCRT_BASE + 0x105),
+            ("_makepath_s", MSVCRT_BASE + 0x106),
         ];
 
         self.register_stub_dll("MSVCRT.dll", exports);
@@ -996,6 +1001,11 @@ impl DllManager {
             ("WSAWaitForMultipleEvents", WS2_32_BASE + 0x27),
             ("gethostbyname", WS2_32_BASE + 0x28),
             ("WSAAsyncSelect", WS2_32_BASE + 0x29),
+            ("WSAIoctl", WS2_32_BASE + 0x2A),
+            ("inet_addr", WS2_32_BASE + 0x2B),
+            ("inet_pton", WS2_32_BASE + 0x2C),
+            ("inet_ntop", WS2_32_BASE + 0x2D),
+            ("WSAPoll", WS2_32_BASE + 0x2E),
         ];
 
         self.register_stub_dll("WS2_32.dll", exports);
@@ -1461,6 +1471,39 @@ impl DllManager {
             (
                 "?seekp@?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAAEAV12@V?$fpos@U_Mbstatet@@@2@@Z",
                 MSVCP140_BASE + 62,
+            ),
+            // std::istringstream (basic_istringstream<char>) mangled names (MSVC x64)
+            (
+                "??0?$basic_istringstream@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@QEAA@H@Z",
+                MSVCP140_BASE + 63,
+            ),
+            (
+                "??0?$basic_istringstream@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@QEAA@AEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@2@H@Z",
+                MSVCP140_BASE + 64,
+            ),
+            (
+                "??1?$basic_istringstream@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@UEAA@XZ",
+                MSVCP140_BASE + 65,
+            ),
+            (
+                "?str@?$basic_istringstream@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@QEBA?AV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@2@XZ",
+                MSVCP140_BASE + 66,
+            ),
+            (
+                "?str@?$basic_istringstream@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@QEAAXAEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@2@@Z",
+                MSVCP140_BASE + 67,
+            ),
+            (
+                "?read@?$basic_istream@DU?$char_traits@D@std@@@std@@QEAAAEAV12@PEAD_J@Z",
+                MSVCP140_BASE + 68,
+            ),
+            (
+                "?seekg@?$basic_istream@DU?$char_traits@D@std@@@std@@QEAAAEAV12@V?$fpos@U_Mbstatet@@@2@@Z",
+                MSVCP140_BASE + 69,
+            ),
+            (
+                "?tellg@?$basic_istream@DU?$char_traits@D@std@@@std@@QEAA?AV?$fpos@U_Mbstatet@@@2@XZ",
+                MSVCP140_BASE + 70,
             ),
         ];
 

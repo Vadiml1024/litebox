@@ -1792,6 +1792,183 @@ pub unsafe extern "C" fn msvcp140__ostringstream_seekp(this: *mut u8, pos: i64) 
     });
 }
 
+// ── Phase 42: std::istringstream ──────────────────────────────────────────────
+
+/// Registry for `istringstream` instances: maps `this` pointer → `(buffer, read_pos)`.
+type IssEntry = (Vec<u8>, usize);
+static ISS_REGISTRY: Mutex<Option<HashMap<usize, IssEntry>>> = Mutex::new(None);
+
+fn with_iss_registry<R>(f: impl FnOnce(&mut HashMap<usize, IssEntry>) -> R) -> R {
+    let mut guard = ISS_REGISTRY.lock().unwrap();
+    let m = guard.get_or_insert_with(HashMap::new);
+    f(m)
+}
+
+/// `std::istringstream` default constructor — registers an empty buffer for `this`.
+///
+/// # Safety
+/// `this` must be a valid, non-null pointer to at least 256 bytes of storage.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__istringstream_ctor(this: *mut u8, _mode: i32) {
+    with_iss_registry(|m| {
+        debug_assert!(
+            !m.contains_key(&(this as usize)),
+            "istringstream_ctor called twice for same this pointer"
+        );
+        m.insert(this as usize, (Vec::new(), 0));
+    });
+}
+
+/// `std::istringstream` constructor from a C string.
+///
+/// # Safety
+/// `this` must be a valid, non-null pointer to at least 256 bytes of storage.
+/// `s` must be a valid NUL-terminated string or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__istringstream_ctor_str(this: *mut u8, s: *const u8, _mode: i32) {
+    let buf = if s.is_null() {
+        Vec::new()
+    } else {
+        // SAFETY: s is a valid NUL-terminated string per caller contract.
+        let len = unsafe { libc::strlen(s.cast()) };
+        // SAFETY: s is valid for len bytes.
+        unsafe { core::slice::from_raw_parts(s, len) }.to_vec()
+    };
+    with_iss_registry(|m| {
+        debug_assert!(
+            !m.contains_key(&(this as usize)),
+            "istringstream_ctor_str called twice for same this pointer"
+        );
+        m.insert(this as usize, (buf, 0));
+    });
+}
+
+/// `std::istringstream` destructor — removes the buffer entry for `this`.
+///
+/// # Safety
+/// `this` must be a pointer previously passed to one of the `istringstream` constructors.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__istringstream_dtor(this: *mut u8) {
+    with_iss_registry(|m| {
+        m.remove(&(this as usize));
+    });
+}
+
+/// `std::istringstream::str()` — returns a malloc'd copy of the buffer as a C string.
+///
+/// The caller is responsible for freeing the returned pointer with `free()`.
+/// Returns null if `this` is not registered or allocation fails.
+///
+/// # Safety
+/// `this` must be a pointer previously passed to one of the `istringstream` constructors.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__istringstream_str(this: *const u8) -> *mut u8 {
+    let buf_opt = with_iss_registry(|m| m.get(&(this as usize)).map(|(b, _)| b.clone()));
+    let Some(buf) = buf_opt else {
+        return core::ptr::null_mut();
+    };
+    let len = buf.len();
+    // SAFETY: len + 1 >= 1.
+    let ptr = unsafe { libc::malloc(len + 1) }.cast::<u8>();
+    if ptr.is_null() {
+        return core::ptr::null_mut();
+    }
+    if len > 0 {
+        // SAFETY: ptr is valid for len bytes; buf.as_ptr() is valid for len bytes.
+        unsafe { core::ptr::copy_nonoverlapping(buf.as_ptr(), ptr, len) };
+    }
+    // SAFETY: ptr + len is within the allocation.
+    unsafe { *ptr.add(len) = 0 };
+    ptr
+}
+
+/// `std::istringstream::str(s)` — sets the buffer from a C string and resets read pos to 0.
+///
+/// # Safety
+/// `this` must be a pointer previously passed to one of the `istringstream` constructors.
+/// `s` must be a valid NUL-terminated string or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__istringstream_str_set(this: *mut u8, s: *const u8) {
+    let buf = if s.is_null() {
+        Vec::new()
+    } else {
+        // SAFETY: s is a valid NUL-terminated string per caller contract.
+        let len = unsafe { libc::strlen(s.cast()) };
+        // SAFETY: s is valid for len bytes.
+        unsafe { core::slice::from_raw_parts(s, len) }.to_vec()
+    };
+    with_iss_registry(|m| {
+        if let Some(entry) = m.get_mut(&(this as usize)) {
+            *entry = (buf, 0);
+        }
+    });
+}
+
+/// `std::istringstream::read(buf, count)` — reads up to `count` bytes from the current position.
+///
+/// Advances the read position by the number of bytes actually read.
+/// Returns `this` (the stream object pointer).
+///
+/// # Safety
+/// `this` must be a pointer previously passed to one of the `istringstream` constructors.
+/// `buf` must be valid for `count` bytes of writes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__istringstream_read(
+    this: *mut u8,
+    buf: *mut u8,
+    count: i64,
+) -> *mut u8 {
+    if buf.is_null() || count <= 0 {
+        return this;
+    }
+    let Ok(count_usize) = usize::try_from(count) else {
+        return this;
+    };
+    with_iss_registry(|m| {
+        if let Some((data, pos)) = m.get_mut(&(this as usize)) {
+            let available = data.len().saturating_sub(*pos);
+            let to_read = count_usize.min(available);
+            if to_read > 0 {
+                // SAFETY: buf is valid for count bytes; data slice is valid for to_read bytes.
+                unsafe { core::ptr::copy_nonoverlapping(data.as_ptr().add(*pos), buf, to_read) };
+                *pos += to_read;
+            }
+        }
+    });
+    this
+}
+
+/// `std::istringstream::seekg(pos)` — seek the read position to `pos`.
+///
+/// # Safety
+/// `this` must be a pointer previously passed to one of the `istringstream` constructors.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__istringstream_seekg(this: *mut u8, pos: i64) {
+    if pos < 0 {
+        return;
+    }
+    let Ok(new_pos) = usize::try_from(pos) else {
+        return;
+    };
+    with_iss_registry(|m| {
+        if let Some((data, read_pos)) = m.get_mut(&(this as usize)) {
+            *read_pos = new_pos.min(data.len());
+        }
+    });
+}
+
+/// `std::istringstream::tellg()` — returns the current read position, or -1 if not registered.
+///
+/// # Safety
+/// `this` must be a pointer previously passed to one of the `istringstream` constructors.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__istringstream_tellg(this: *const u8) -> i64 {
+    with_iss_registry(|m| {
+        m.get(&(this as usize))
+            .map_or(-1, |(_, pos)| i64::try_from(*pos).unwrap_or(i64::MAX))
+    })
+}
+
 #[cfg(test)]
 mod tests_wstring {
     use super::*;
@@ -1982,5 +2159,90 @@ mod tests_ostringstream {
             libc::free(s.cast());
             msvcp140__ostringstream_dtor(obj.as_mut_ptr());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests_istringstream {
+    use super::*;
+
+    #[test]
+    fn test_istringstream_ctor_dtor() {
+        let mut obj = [0u8; 256];
+        unsafe {
+            msvcp140__istringstream_ctor(obj.as_mut_ptr(), 0);
+            assert_eq!(msvcp140__istringstream_tellg(obj.as_ptr()), 0);
+            msvcp140__istringstream_dtor(obj.as_mut_ptr());
+        }
+    }
+
+    #[test]
+    fn test_istringstream_ctor_str_and_read() {
+        let mut obj = [0u8; 256];
+        let src = b"hello\0";
+        unsafe {
+            msvcp140__istringstream_ctor_str(obj.as_mut_ptr(), src.as_ptr(), 0);
+            assert_eq!(msvcp140__istringstream_tellg(obj.as_ptr()), 0);
+            let mut buf = [0u8; 8];
+            msvcp140__istringstream_read(obj.as_mut_ptr(), buf.as_mut_ptr(), 5);
+            assert_eq!(&buf[..5], b"hello");
+            assert_eq!(msvcp140__istringstream_tellg(obj.as_ptr()), 5);
+            msvcp140__istringstream_dtor(obj.as_mut_ptr());
+        }
+    }
+
+    #[test]
+    fn test_istringstream_str_getter() {
+        let mut obj = [0u8; 256];
+        let src = b"world\0";
+        unsafe {
+            msvcp140__istringstream_ctor_str(obj.as_mut_ptr(), src.as_ptr(), 0);
+            let s = msvcp140__istringstream_str(obj.as_ptr());
+            assert!(!s.is_null());
+            let got = core::ffi::CStr::from_ptr(s.cast());
+            assert_eq!(got.to_bytes(), b"world");
+            libc::free(s.cast());
+            msvcp140__istringstream_dtor(obj.as_mut_ptr());
+        }
+    }
+
+    #[test]
+    fn test_istringstream_str_set_resets_pos() {
+        let mut obj = [0u8; 256];
+        let src = b"abc\0";
+        unsafe {
+            msvcp140__istringstream_ctor(obj.as_mut_ptr(), 0);
+            msvcp140__istringstream_str_set(obj.as_mut_ptr(), src.as_ptr());
+            assert_eq!(msvcp140__istringstream_tellg(obj.as_ptr()), 0);
+            let mut buf = [0u8; 4];
+            msvcp140__istringstream_read(obj.as_mut_ptr(), buf.as_mut_ptr(), 3);
+            assert_eq!(msvcp140__istringstream_tellg(obj.as_ptr()), 3);
+            // str_set should reset position to 0
+            msvcp140__istringstream_str_set(obj.as_mut_ptr(), src.as_ptr());
+            assert_eq!(msvcp140__istringstream_tellg(obj.as_ptr()), 0);
+            msvcp140__istringstream_dtor(obj.as_mut_ptr());
+        }
+    }
+
+    #[test]
+    fn test_istringstream_seekg() {
+        let mut obj = [0u8; 256];
+        let src = b"abcdef\0";
+        unsafe {
+            msvcp140__istringstream_ctor_str(obj.as_mut_ptr(), src.as_ptr(), 0);
+            msvcp140__istringstream_seekg(obj.as_mut_ptr(), 3);
+            assert_eq!(msvcp140__istringstream_tellg(obj.as_ptr()), 3);
+            let mut buf = [0u8; 4];
+            msvcp140__istringstream_read(obj.as_mut_ptr(), buf.as_mut_ptr(), 3);
+            assert_eq!(&buf[..3], b"def");
+            msvcp140__istringstream_dtor(obj.as_mut_ptr());
+        }
+    }
+
+    #[test]
+    fn test_istringstream_tellg_unregistered() {
+        let obj = [0u8; 256];
+        let result = unsafe { msvcp140__istringstream_tellg(obj.as_ptr()) };
+        assert_eq!(result, -1);
     }
 }

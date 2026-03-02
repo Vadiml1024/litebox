@@ -7647,6 +7647,302 @@ pub unsafe extern "C" fn msvcrt__wstat64(wpath: *const u16, buf: *mut WinStat64)
     0
 }
 
+// ── Phase 42: path manipulation ───────────────────────────────────────────────
+
+/// `_fullpath(buffer, path, maxlen)` — resolve an absolute path.
+///
+/// If `buffer` is null, allocates a buffer of `maxlen` bytes via `malloc`.
+/// Returns null if `path` is null (sets `errno = EINVAL`).
+///
+/// # Safety
+/// `path` must be a valid NUL-terminated string or null.
+/// `buffer`, if non-null, must be valid for `maxlen` bytes of writes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt__fullpath(
+    buffer: *mut u8,
+    path: *const u8,
+    maxlen: usize,
+) -> *mut u8 {
+    if path.is_null() {
+        // SAFETY: errno is a valid thread-local.
+        unsafe { *libc::__errno_location() = libc::EINVAL };
+        return core::ptr::null_mut();
+    }
+    let buf_ptr = if buffer.is_null() {
+        // SAFETY: maxlen >= 1 is the caller's responsibility; we pass it through.
+        unsafe { libc::malloc(maxlen) }.cast::<u8>()
+    } else {
+        buffer
+    };
+    if buf_ptr.is_null() {
+        return core::ptr::null_mut();
+    }
+    // SAFETY: path is a valid NUL-terminated string; buf_ptr is valid for maxlen bytes.
+    let ret = unsafe { libc::realpath(path.cast(), buf_ptr.cast()) };
+    if ret.is_null() && buffer.is_null() {
+        // SAFETY: buf_ptr was allocated by malloc above.
+        unsafe { libc::free(buf_ptr.cast()) };
+        return core::ptr::null_mut();
+    }
+    if ret.is_null() {
+        return core::ptr::null_mut();
+    }
+    buf_ptr
+}
+
+/// `_splitpath(path, drive, dir, fname, ext)` — split a path into components.
+///
+/// Drive is always set to empty string on Linux (no drive letters).
+/// All output pointers may be null (component is skipped).
+///
+/// # Safety
+/// `path` must be a valid NUL-terminated string.
+/// Output pointers, if non-null, must point to sufficient writable buffers.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt__splitpath(
+    path: *const u8,
+    drive: *mut u8,
+    dir: *mut u8,
+    fname: *mut u8,
+    ext: *mut u8,
+) {
+    if path.is_null() {
+        return;
+    }
+    // SAFETY: path is a valid NUL-terminated string per caller contract.
+    let len = unsafe { libc::strlen(path.cast()) };
+    // SAFETY: path is valid for len bytes.
+    let bytes = unsafe { core::slice::from_raw_parts(path, len) };
+
+    // Drive: check for "X:" pattern — on Linux we always produce "".
+    let (drive_part, rest) = if bytes.len() >= 2 && bytes[1] == b':' {
+        (&bytes[..2], &bytes[2..])
+    } else {
+        (&bytes[..0], bytes)
+    };
+
+    // Dir: everything up to and including the last separator.
+    let last_sep = rest.iter().rposition(|&b| b == b'/' || b == b'\\');
+    let (dir_part, file_part) = if let Some(idx) = last_sep {
+        (&rest[..=idx], &rest[idx + 1..])
+    } else {
+        (&rest[..0], rest)
+    };
+
+    // Ext: last '.' in file_part.
+    let last_dot = file_part.iter().rposition(|&b| b == b'.');
+    let (fname_part, ext_part) = if let Some(idx) = last_dot {
+        (&file_part[..idx], &file_part[idx..])
+    } else {
+        (file_part, &file_part[..0])
+    };
+
+    // Write components if output pointers are non-null.
+    let write_component = |dst: *mut u8, src: &[u8]| {
+        if dst.is_null() {
+            return;
+        }
+        // SAFETY: dst is valid for src.len() + 1 bytes per caller contract.
+        unsafe {
+            core::ptr::copy_nonoverlapping(src.as_ptr(), dst, src.len());
+            *dst.add(src.len()) = 0;
+        }
+    };
+    write_component(drive, drive_part);
+    write_component(dir, dir_part);
+    write_component(fname, fname_part);
+    write_component(ext, ext_part);
+}
+
+/// `_splitpath_s(path, drive, drivelen, dir, dirlen, fname, fnamelen, ext, extlen)` — safe version.
+///
+/// Returns 0 on success, `ERANGE` if a buffer is too small, `EINVAL` if `path` is null.
+///
+/// # Safety
+/// `path` must be a valid NUL-terminated string or null.
+/// All non-null output pointers must be valid for their corresponding length.
+#[unsafe(no_mangle)]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn msvcrt__splitpath_s(
+    path: *const u8,
+    drive: *mut u8,
+    drivelen: usize,
+    dir: *mut u8,
+    dirlen: usize,
+    fname: *mut u8,
+    fnamelen: usize,
+    ext: *mut u8,
+    extlen: usize,
+) -> i32 {
+    if path.is_null() {
+        return libc::EINVAL;
+    }
+    // SAFETY: path is a valid NUL-terminated string per caller contract.
+    let len = unsafe { libc::strlen(path.cast()) };
+    // SAFETY: path is valid for len bytes.
+    let bytes = unsafe { core::slice::from_raw_parts(path, len) };
+
+    let (drive_part, rest) = if bytes.len() >= 2 && bytes[1] == b':' {
+        (&bytes[..2], &bytes[2..])
+    } else {
+        (&bytes[..0], bytes)
+    };
+
+    let last_sep = rest.iter().rposition(|&b| b == b'/' || b == b'\\');
+    let (dir_part, file_part) = if let Some(idx) = last_sep {
+        (&rest[..=idx], &rest[idx + 1..])
+    } else {
+        (&rest[..0], rest)
+    };
+
+    let last_dot = file_part.iter().rposition(|&b| b == b'.');
+    let (fname_part, ext_part) = if let Some(idx) = last_dot {
+        (&file_part[..idx], &file_part[idx..])
+    } else {
+        (file_part, &file_part[..0])
+    };
+
+    let check_and_write = |dst: *mut u8, maxlen: usize, src: &[u8]| -> i32 {
+        if dst.is_null() {
+            return 0;
+        }
+        if src.len() + 1 > maxlen {
+            return libc::ERANGE;
+        }
+        // SAFETY: dst is valid for maxlen bytes, src.len() + 1 <= maxlen.
+        unsafe {
+            core::ptr::copy_nonoverlapping(src.as_ptr(), dst, src.len());
+            *dst.add(src.len()) = 0;
+        }
+        0
+    };
+
+    let r = check_and_write(drive, drivelen, drive_part);
+    if r != 0 {
+        return r;
+    }
+    let r = check_and_write(dir, dirlen, dir_part);
+    if r != 0 {
+        return r;
+    }
+    let r = check_and_write(fname, fnamelen, fname_part);
+    if r != 0 {
+        return r;
+    }
+    check_and_write(ext, extlen, ext_part)
+}
+
+/// Build a path from components into a `Vec<u8>` (including NUL terminator).
+///
+/// Adds ':' after drive if missing, '\' after dir if missing, '.' before ext if missing.
+/// All pointers may be null (treated as empty component).
+///
+/// # Safety
+/// All non-null pointers must be valid NUL-terminated strings.
+unsafe fn build_makepath(
+    drive: *const u8,
+    dir: *const u8,
+    fname: *const u8,
+    ext: *const u8,
+) -> Vec<u8> {
+    let read_cstr = |p: *const u8| -> &[u8] {
+        if p.is_null() {
+            return b"";
+        }
+        // SAFETY: p is a valid NUL-terminated string per caller contract.
+        let len = unsafe { libc::strlen(p.cast()) };
+        if len == 0 {
+            return b"";
+        }
+        // SAFETY: p is valid for len bytes.
+        unsafe { core::slice::from_raw_parts(p, len) }
+    };
+
+    let drive_s = read_cstr(drive);
+    let dir_s = read_cstr(dir);
+    let fname_s = read_cstr(fname);
+    let ext_s = read_cstr(ext);
+    let mut out: Vec<u8> = Vec::new();
+
+    if !drive_s.is_empty() {
+        out.extend_from_slice(drive_s);
+        if out.last() != Some(&b':') {
+            out.push(b':');
+        }
+    }
+    if !dir_s.is_empty() {
+        out.extend_from_slice(dir_s);
+        let last = out.last().copied();
+        if last != Some(b'\\') && last != Some(b'/') {
+            out.push(b'\\');
+        }
+    }
+    if !fname_s.is_empty() {
+        out.extend_from_slice(fname_s);
+    }
+    if !ext_s.is_empty() {
+        if ext_s[0] != b'.' {
+            out.push(b'.');
+        }
+        out.extend_from_slice(ext_s);
+    }
+    out.push(0);
+    out
+}
+
+/// `_makepath(buf, drive, dir, fname, ext)` — assemble a path from components.
+///
+/// Adds ':' after drive if missing, '\' after dir if missing, '.' before ext if missing.
+///
+/// # Safety
+/// `buf` must be a valid, writable buffer large enough for the result.
+/// All non-null string arguments must be valid NUL-terminated strings.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt__makepath(
+    buf: *mut u8,
+    drive: *const u8,
+    dir: *const u8,
+    fname: *const u8,
+    ext: *const u8,
+) {
+    if buf.is_null() {
+        return;
+    }
+    // SAFETY: all non-null pointers are valid NUL-terminated strings per caller contract.
+    let out = unsafe { build_makepath(drive, dir, fname, ext) };
+    // SAFETY: buf is valid for out.len() bytes per caller contract.
+    unsafe { core::ptr::copy_nonoverlapping(out.as_ptr(), buf, out.len()) };
+}
+
+/// `_makepath_s(buf, size, drive, dir, fname, ext)` — safe version of `_makepath`.
+///
+/// Returns 0 on success, `ERANGE` if the result would overflow `size`.
+///
+/// # Safety
+/// `buf` must be a valid, writable buffer of at least `size` bytes.
+/// All non-null string arguments must be valid NUL-terminated strings.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt__makepath_s(
+    buf: *mut u8,
+    size: usize,
+    drive: *const u8,
+    dir: *const u8,
+    fname: *const u8,
+    ext: *const u8,
+) -> i32 {
+    if buf.is_null() || size == 0 {
+        return libc::EINVAL;
+    }
+    // SAFETY: all non-null pointers are valid NUL-terminated strings per caller contract.
+    let out = unsafe { build_makepath(drive, dir, fname, ext) };
+    if out.len() > size {
+        return libc::ERANGE;
+    }
+    // SAFETY: buf is valid for size bytes, out.len() <= size.
+    unsafe { core::ptr::copy_nonoverlapping(out.as_ptr(), buf, out.len()) };
+    0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

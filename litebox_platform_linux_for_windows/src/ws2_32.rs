@@ -1697,6 +1697,107 @@ pub unsafe extern "C" fn ws2_WSAAsyncSelect(
     }
 }
 
+// ── Phase 42: additional socket / inet helpers ────────────────────────────────
+
+/// `WSAIoctl` — not supported; returns `SOCKET_ERROR` with `WSAEOPNOTSUPP`.
+///
+/// # Safety
+/// No pointer dereferences are performed.
+#[unsafe(no_mangle)]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn ws2_WSAIoctl(
+    _s: usize,
+    _dw_io_control_code: u32,
+    _lpv_in_buffer: *const u8,
+    _cb_in_buffer: u32,
+    _lpv_out_buffer: *mut u8,
+    _cb_out_buffer: u32,
+    _lpcb_bytes_returned: *mut u32,
+    _lp_overlapped: *mut u8,
+    _lp_completion_routine: *mut u8,
+) -> i32 {
+    set_wsa_error(WSAEOPNOTSUPP);
+    SOCKET_ERROR
+}
+
+/// `inet_addr(cp)` — convert a dotted-decimal IPv4 address string to a `u32`.
+///
+/// # Safety
+/// `cp` must be a valid NUL-terminated string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ws2_inet_addr(cp: *const u8) -> u32 {
+    unsafe extern "C" {
+        fn inet_addr(cp: *const libc::c_char) -> u32;
+    }
+    // SAFETY: cp is a valid NUL-terminated string per caller contract.
+    unsafe { inet_addr(cp.cast()) }
+}
+
+/// `inet_pton(family, src, dst)` — convert a text address to binary form.
+///
+/// # Safety
+/// `src` must be a valid NUL-terminated string; `dst` must be writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ws2_inet_pton(family: i32, src: *const u8, dst: *mut u8) -> i32 {
+    unsafe extern "C" {
+        fn inet_pton(
+            af: libc::c_int,
+            src: *const libc::c_char,
+            dst: *mut libc::c_void,
+        ) -> libc::c_int;
+    }
+    // SAFETY: src is a valid NUL-terminated string; dst is a writable buffer per caller.
+    unsafe { inet_pton(family, src.cast(), dst.cast()) }
+}
+
+/// `inet_ntop(family, src, dst, size)` — convert a binary address to text form.
+///
+/// Returns pointer to `dst` on success, null on failure.
+///
+/// # Safety
+/// `src` must point to a valid address structure; `dst` must be writable for `size` bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ws2_inet_ntop(
+    family: i32,
+    src: *const u8,
+    dst: *mut u8,
+    size: usize,
+) -> *const u8 {
+    unsafe extern "C" {
+        fn inet_ntop(
+            af: libc::c_int,
+            src: *const libc::c_void,
+            dst: *mut libc::c_char,
+            size: libc::socklen_t,
+        ) -> *const libc::c_char;
+    }
+    // SAFETY: src/dst are valid per caller contract.
+    unsafe { inet_ntop(family, src.cast(), dst.cast(), size as libc::socklen_t) }.cast::<u8>()
+}
+
+/// `WSAPoll(fd_array, n_fds, timeout)` — poll a set of sockets.
+///
+/// # Safety
+/// `fd_array` must point to `n_fds` valid `pollfd` structures, properly aligned to
+/// `align_of::<libc::pollfd>()`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ws2_WSAPoll(fd_array: *mut u8, n_fds: u32, timeout: i32) -> i32 {
+    debug_assert_eq!(
+        fd_array as usize % core::mem::align_of::<libc::pollfd>(),
+        0,
+        "fd_array must be aligned to libc::pollfd"
+    );
+    // SAFETY: fd_array is valid for n_fds pollfd entries, properly aligned, per caller contract.
+    #[allow(clippy::cast_ptr_alignment)]
+    unsafe {
+        libc::poll(
+            fd_array.cast::<libc::pollfd>(),
+            libc::nfds_t::from(n_fds),
+            timeout,
+        )
+    }
+}
+
 // ── Unit tests ────────────────────────────────────────────────────────────────
 #[cfg(test)]
 mod tests {

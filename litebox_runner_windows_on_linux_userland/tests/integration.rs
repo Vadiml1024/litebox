@@ -654,6 +654,59 @@ fn test_phase41_dll_exports_present() {
     }
 }
 
+#[test]
+fn test_phase42_dll_exports_present() {
+    use litebox_shim_windows::loader::DllManager;
+
+    let mut dll_manager = DllManager::new();
+    let ws2_32 = dll_manager.load_library("WS2_32.dll").unwrap();
+    let msvcrt = dll_manager.load_library("MSVCRT.dll").unwrap();
+    let msvcp140 = dll_manager.load_library("msvcp140.dll").unwrap();
+
+    // Check WS2_32.dll Phase 42 additions
+    for func_name in ["WSAIoctl", "inet_addr", "inet_pton", "inet_ntop", "WSAPoll"] {
+        let addr = dll_manager.get_proc_address(ws2_32, func_name);
+        assert!(
+            addr.is_ok(),
+            "WS2_32.dll::{func_name} should be resolvable after Phase 42"
+        );
+    }
+
+    // Check MSVCRT.dll Phase 42 additions
+    for func_name in [
+        "_fullpath",
+        "_splitpath",
+        "_splitpath_s",
+        "_makepath",
+        "_makepath_s",
+    ] {
+        let addr = dll_manager.get_proc_address(msvcrt, func_name);
+        assert!(
+            addr.is_ok(),
+            "MSVCRT.dll::{func_name} should be resolvable after Phase 42"
+        );
+    }
+
+    // Check msvcp140.dll Phase 42 additions (mangled MSVC x64 names)
+    let msvcp140_phase42_functions = vec![
+        "??0?$basic_istringstream@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@QEAA@H@Z",
+        "??0?$basic_istringstream@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@QEAA@AEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@2@H@Z",
+        "??1?$basic_istringstream@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@UEAA@XZ",
+        "?str@?$basic_istringstream@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@QEBA?AV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@2@XZ",
+        "?str@?$basic_istringstream@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@QEAAXAEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@2@@Z",
+        "?read@?$basic_istream@DU?$char_traits@D@std@@@std@@QEAAAEAV12@PEAD_J@Z",
+        "?seekg@?$basic_istream@DU?$char_traits@D@std@@@std@@QEAAAEAV12@V?$fpos@U_Mbstatet@@@2@@Z",
+        "?tellg@?$basic_istream@DU?$char_traits@D@std@@@std@@QEAA?AV?$fpos@U_Mbstatet@@@2@XZ",
+    ];
+    for func_name in msvcp140_phase42_functions {
+        let addr = dll_manager.get_proc_address(msvcp140, func_name);
+        assert!(
+            addr.is_ok(),
+            "msvcp140.dll::{func_name} should be resolvable after Phase 42"
+        );
+    }
+}
+
 #[cfg(test)]
 mod test_program_helpers {
     use std::env;
