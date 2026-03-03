@@ -1,8 +1,8 @@
 # Windows on Linux: Implementation Status
 
-**Last Updated:** 2026-02-28  
-**Total Tests:** 600 passing in Windows-on-Linux crates (533 platform + 51 shim + 16 runner) + 5 dev_tests ratchet checks — Phase 38 adds `std::basic_string<wchar_t>`, `_wfindfirst64i32`/`_wfindnext64i32`/`_findclose`, and locale-aware printf variants  
-**Overall Status:** Core infrastructure complete. Seven Rust-based test programs (hello_cli, math_test, env_test, args_test, file_io_test, string_test, getprocaddress_test) run successfully end-to-end through the runner on Linux. **All API stub functions have been fully replaced — stub count is now 0.** Full C++ exception handling implemented and validated: `seh_c_test` (21/21), `seh_cpp_test` MinGW (26/26), `seh_cpp_test_clang` clang/MinGW (26/26), and `seh_cpp_test_msvc` MSVC ABI (21/21) all pass. Phases 33–38 add msvcp140.dll C++ runtime stubs, extended MSVCRT printf/scanf/va variants, `std::basic_string<char/wchar_t>`, file enumeration (`_wfindfirst64i32`/`_wfindnext64i32`/`_findclose`), and locale-aware printf wrappers.
+**Last Updated:** 2026-03-03  
+**Total Tests:** 705 passing in Windows-on-Linux crates (635 platform + 51 shim + 19 runner) + 5 dev_tests ratchet checks — Phase 43 adds `std::stringstream`, `std::unordered_map`, MSVCRT directory functions (`_getcwd`/`_chdir`/`_mkdir`/`_rmdir`), and KERNEL32 volume enumeration (`FindFirstVolumeW`/`FindNextVolumeW`/`FindVolumeClose`)  
+**Overall Status:** Core infrastructure complete. Seven Rust-based test programs (hello_cli, math_test, env_test, args_test, file_io_test, string_test, getprocaddress_test) run successfully end-to-end through the runner on Linux. **All API stub functions have been fully replaced — stub count is now 0.** Full C++ exception handling implemented and validated: `seh_c_test` (21/21), `seh_cpp_test` MinGW (26/26), `seh_cpp_test_clang` clang/MinGW (26/26), and `seh_cpp_test_msvc` MSVC ABI (21/21) all pass. Phases 33–43 add msvcp140.dll C++ runtime stubs, extended MSVCRT printf/scanf/va variants, `std::basic_string<char/wchar_t>`, file enumeration, locale-aware printf wrappers, low-level POSIX file I/O, stat functions, wide-path file opens, WinSock2 event APIs, path manipulation utilities, `std::vector<char>`, `std::map`, `std::ostringstream`, `std::istringstream`, `std::stringstream`, `std::unordered_map`, extended KERNEL32 process/job management, and volume enumeration APIs.
 
 ---
 
@@ -152,6 +152,23 @@
 | `CompareFileTime` | Compares two FILETIME values; returns -1, 0, or 1 |
 | `FileTimeToLocalFileTime` | Adjusts UTC FILETIME by local timezone offset via `localtime_r` |
 | `GetTempFileNameW` | Generates a temp file name from path + prefix + unique hex suffix |
+| `GetPriorityClass` | Returns `NORMAL_PRIORITY_CLASS` (0x20) for all non-null handles |
+| `SetPriorityClass` | Accepts priority class (no-op); returns TRUE for non-null handles |
+| `GetProcessAffinityMask` | Queries `sched_getaffinity`; sets both mask outputs to the CPU set |
+| `SetProcessAffinityMask` | Accepts mask (no-op); returns TRUE for non-null handles |
+| `FlushInstructionCache` | Returns TRUE (no-op; x86-64 has coherent I/D cache) |
+| `ReadProcessMemory` | Returns FALSE + `ERROR_ACCESS_DENIED` (5) |
+| `WriteProcessMemory` | Returns FALSE + `ERROR_ACCESS_DENIED` (5) |
+| `VirtualAllocEx` | Returns NULL + `ERROR_ACCESS_DENIED` (5) for external processes; delegates to `VirtualAlloc` for self |
+| `VirtualFreeEx` | Returns FALSE + `ERROR_ACCESS_DENIED` (5) for external processes; delegates to `VirtualFree` for self |
+| `CreateJobObjectW` | Returns a synthetic job handle; name stored in registry |
+| `AssignProcessToJobObject` | Returns TRUE (no-op) |
+| `IsProcessInJob` | Returns TRUE; sets `*result = 1` |
+| `QueryInformationJobObject` | Returns FALSE + `ERROR_NOT_SUPPORTED` (50) |
+| `SetInformationJobObject` | Returns TRUE (no-op) |
+| `FindFirstVolumeW` | Returns sentinel handle + synthetic GUID path `\\?\Volume{00000000-...}\` |
+| `FindNextVolumeW` | Always returns 0 + `ERROR_NO_MORE_FILES` (18) |
+| `FindVolumeClose` | Always returns 1 (success) |
 
 ### Permanently-correct no-op APIs (return appropriate Windows codes)
 | Function | Return / Error |
@@ -190,7 +207,7 @@
 ### Heap Management
 `GetProcessHeap`, `HeapAlloc`, `HeapFree`, `HeapReAlloc`
 
-### Networking (WS2_32) — 34 functions backed by Linux POSIX sockets
+### Networking (WS2_32) — 47 functions backed by Linux POSIX sockets
 | Category | Implemented Functions |
 |---|---|
 | Lifecycle | `WSAStartup`, `WSACleanup`, `WSAGetLastError`, `WSASetLastError` |
@@ -198,10 +215,12 @@
 | Connection | `bind`, `listen`, `accept`, `connect`, `shutdown` |
 | Data transfer | `send`, `recv`, `sendto`, `recvfrom`, `WSASend`, `WSARecv` |
 | Socket info | `getsockname`, `getpeername`, `getsockopt`, `setsockopt`, `ioctlsocket` |
-| Multiplexing | `select`, `__WSAFDIsSet` |
-| Name resolution | `getaddrinfo`, `freeaddrinfo`, `GetHostNameW` |
+| Multiplexing | `select`, `__WSAFDIsSet`, `WSAPoll` |
+| Name resolution | `getaddrinfo`, `freeaddrinfo`, `GetHostNameW`, `gethostbyname` |
 | Byte order | `htons`, `htonl`, `ntohs`, `ntohl` |
-| Misc | `WSADuplicateSocketW` |
+| Address conversion | `inet_addr`, `inet_pton`, `inet_ntop` |
+| Event-based I/O (Phase 40) | `WSACreateEvent`, `WSACloseEvent`, `WSAResetEvent`, `WSASetEvent`, `WSAEventSelect`, `WSAEnumNetworkEvents`, `WSAWaitForMultipleEvents` |
+| Misc | `WSADuplicateSocketW`, `WSAIoctl` |
 
 ### USER32 — Extended GUI Support (Phases 24 + 27, 42 functions)
 | Category | Implemented Functions |
@@ -283,7 +302,7 @@ All GDI32 functions operate in headless mode: drawing is silently discarded.
 | `CoTaskMemAlloc` / `CoTaskMemFree` / `CoTaskMemRealloc` | Delegate to `malloc`/`free`/`realloc` |
 | `CoSetProxyBlanket` | Returns E_NOTIMPL (security blanket not supported) |
 
-### MSVCRT New Functions (Phases 32–38)
+### MSVCRT New Functions (Phases 32–43)
 | Category | Functions |
 |---|---|
 | Formatted I/O (Phase 32) | `sprintf`, `snprintf`, `sscanf`, `swprintf`, `wprintf` |
@@ -301,8 +320,12 @@ All GDI32 functions operate in headless mode: drawing is silently discarded.
 | Integer/wide string conversions (Phase 37) | `_ultoa`, `_i64toa`, `_ui64toa`, `_strtoi64`, `_strtoui64`, `_itow`, `_ltow`, `_ultow`, `_i64tow`, `_ui64tow` |
 | Locale-aware printf (Phase 38) | `_printf_l`, `_fprintf_l`, `_sprintf_l`, `_snprintf_l`, `_wprintf_l` |
 | File enumeration (Phase 38) | `_wfindfirst64i32`, `_wfindnext64i32`, `_findclose` |
+| Low-level POSIX file I/O (Phase 39) | `_open`, `_close`, `_lseek`, `_lseeki64`, `_tell`, `_telli64`, `_eof`, `_creat`, `_commit`, `_dup`, `_dup2`, `_chsize`, `_chsize_s`, `_filelength`, `_filelengthi64` |
+| File metadata / wide-path opens (Phase 40) | `_stat`, `_stat64`, `_fstat`, `_fstat64`, `_wopen`, `_wsopen`, `_wstat`, `_wstat64` |
+| Path manipulation (Phase 42) | `_fullpath`, `_splitpath`, `_splitpath_s`, `_makepath`, `_makepath_s` |
+| Directory navigation (Phase 43) | `_getcwd`, `_chdir`, `_mkdir`, `_rmdir` |
 
-### msvcp140.dll — C++ Runtime (Phases 33–38)
+### msvcp140.dll — C++ Runtime (Phases 33–43)
 | Category | Functions |
 |---|---|
 | Memory (Phase 33) | `operator new` (`??2@YAPEAX_K@Z`), `operator delete` (`??3@YAXPEAX@Z`), array variants (`??_U@YAPEAX_K@Z`, `??_V@YAXPEAX@Z`) |
@@ -313,6 +336,12 @@ All GDI32 functions operate in headless mode: drawing is silently discarded.
 | `ios_base::Init` (Phase 35) | ctor/dtor (no-op; deferred stream init) |
 | `std::basic_string<char>` (Phase 37) | default ctor, construct-from-cstr, copy ctor, dtor, `c_str()`, `size()`, `empty()`, copy assignment, assign-from-cstr, `append()` |
 | `std::basic_string<wchar_t>` (Phase 38) | default ctor, construct-from-wide-cstr, copy ctor, dtor, `c_str()`, `size()`, `empty()`, copy assignment, assign-from-cstr, `append()` |
+| `std::vector<char>` (Phase 39) | default ctor, dtor, `push_back` (2× growth), `size`, `capacity`, `clear`, `data` (mut + const), `reserve` |
+| `std::map<void*,void*>` (Phase 41) | default ctor, dtor, `insert`, `find`, `size`, `clear` |
+| `std::ostringstream` (Phase 41) | default ctor, dtor, `str()`, `write()`, `tellp()`, `seekp()` |
+| `std::istringstream` (Phase 42) | default ctor, construct-from-cstr, dtor, `str()`, `str_set()`, `read()`, `seekg()`, `tellg()` |
+| `std::stringstream` (Phase 43) | default ctor, construct-from-cstr, dtor, `str()`, `str_set()`, `read()`, `write()`, `seekg()`, `tellg()`, `seekp()`, `tellp()` |
+| `std::unordered_map<void*,void*>` (Phase 43) | default ctor, dtor, `insert`, `find`, `size`, `clear` |
 
 ### TLS Callbacks (Phase 32)
 - `TlsInfo` now includes `address_of_callbacks` field parsed from the PE TLS directory
@@ -330,7 +359,7 @@ All GDI32 functions operate in headless mode: drawing is silently discarded.
 | Toolhelp32 enumeration | `CreateToolhelp32Snapshot`, `Module32FirstW/NextW` return `ERROR_NOT_SUPPORTED` |
 | Waitable timers | `CreateWaitableTimerExW` returns `ERROR_NOT_SUPPORTED`; `SetWaitableTimer` is a no-op |
 | `WaitOnAddress` blocking | Returns TRUE immediately; no blocking wait |
-| Advanced networking | `WSAEventSelect`, `WSAAsyncSelect`, completion ports not implemented |
+| Advanced networking | Completion ports not implemented; `WSAAsyncSelect` not implemented |
 
 ### What IS Implemented ✅ (Exception Handling)
 
@@ -343,25 +372,28 @@ All GDI32 functions operate in headless mode: drawing is silently discarded.
 
 ## Test Coverage
 
-**600 Windows-on-Linux crate tests + 5 dev_tests ratchet checks (all passing):**
+**705 Windows-on-Linux crate tests + 5 dev_tests ratchet checks (all passing):**
 
 | Package | Tests | Notes |
 |---|---|---|
-| `litebox_platform_linux_for_windows` | 533 | KERNEL32, MSVCRT, WS2_32, advapi32, user32, gdi32, shell32, version, ole32, msvcp140, platform APIs |
+| `litebox_platform_linux_for_windows` | 635 | KERNEL32, MSVCRT, WS2_32, advapi32, user32, gdi32, shell32, version, ole32, msvcp140, platform APIs |
 | `litebox_shim_windows` | 51 | ABI translation, PE loader, tracing, DLL manager |
-| `litebox_runner_windows_on_linux_userland` | 16 | 9 tracing + 7 integration tests (including ole32, msvcp140 exports) |
+| `litebox_runner_windows_on_linux_userland` | 19 | 9 tracing + 10 integration tests (including ole32, msvcp140 exports, phases 39–43 resolution) |
 | `dev_tests` | 5 | Ratchet constraints (globals, transmutes, MaybeUninit, stubs, copyright) — run separately with `cargo test -p dev_tests` |
 
-**Integration tests (7, plus 12 MinGW-gated):**
+**Integration tests (10, plus 13 MinGW-gated):**
 1. PE loader with minimal binary
 2. DLL loading infrastructure
 3. Command-line APIs (`GetCommandLineW`, `CommandLineToArgvW`)
 4. File search APIs (`FindFirstFileW`, `FindNextFileW`, `FindClose`)
 5. Memory protection APIs (`NtProtectVirtualMemory`)
 6. Error handling APIs (`GetLastError` / `SetLastError`)
-7. DLL exports validation (all critical KERNEL32, WS2_32, USER32, GDI32, ole32, and msvcp140 exports — including Phases 33–38 additions)
+7. DLL exports validation (all critical KERNEL32, WS2_32, USER32, GDI32, ole32, and msvcp140 exports — including Phases 33–43 additions)
+8. Phase 41 DLL exports (msvcp140 `std::map`, `std::ostringstream`)
+9. Phase 42 DLL exports (MSVCRT path, WS2_32 inet, msvcp140 `std::istringstream`)
+10. Phase 43 DLL exports (MSVCRT dir nav, msvcp140 `std::stringstream`/`std::unordered_map`, KERNEL32 volume enumeration)
 
-**MinGW-gated integration tests (12, require `--include-ignored`):**
+**MinGW-gated integration tests (13, run with `cargo test -p litebox_runner_windows_on_linux_userland -- --ignored`):**
 - `test_hello_cli_program_exists` — checks hello_cli.exe is present
 - `test_math_test_program_exists` — checks math_test.exe is present
 - `test_env_test_program_exists` — checks env_test.exe is present
@@ -374,6 +406,7 @@ All GDI32 functions operate in headless mode: drawing is silently discarded.
 - `test_seh_cpp_program` — **runs** seh_cpp_test.exe; verifies 26 passed, 0 failed (MinGW C++ exceptions)
 - `test_seh_cpp_clang_program` — **runs** seh_cpp_test_clang.exe; verifies 26 passed, 0 failed (clang/MinGW C++ exceptions)
 - `test_seh_cpp_msvc_program` — **runs** seh_cpp_test_msvc.exe; verifies 21 passed, 0 failed (MSVC ABI C++ exceptions, all 10 tests)
+- `test_phase27_program` — **runs** phase27_test.exe (Phase 27 extended APIs smoke test)
 
 **CI-validated test programs (7 + 4 SEH):**
 
@@ -432,11 +465,11 @@ litebox_runner_windows_on_linux_userland \
 
 ## Code Quality
 
-- **All 600 Windows-on-Linux crate tests passing + 5 dev_tests ratchet checks passing**
+- **All 705 Windows-on-Linux crate tests passing + 5 dev_tests ratchet checks passing**
 - `RUSTFLAGS=-Dwarnings cargo clippy --all-targets --all-features` — clean
 - `cargo fmt --check` — clean
 - All `unsafe` blocks have detailed safety comments
-- Ratchet limits: globals ≤ 58, transmutes ≤ 3, MaybeUninit ≤ current
+- Ratchet limits: globals ≤ 67, transmutes ≤ 3, MaybeUninit ≤ current
 - **Stub count = 0** (ratchet entry removed; all stub doc-phrases eliminated)
 
 ---
@@ -481,3 +514,8 @@ litebox_runner_windows_on_linux_userland \
 | 36 | Real `sscanf` implementation (up to 16 specifiers via libc, replaces Phase 32 stub); `_wcsdup` (wide string heap-duplicate); UCRT `__stdio_common_vsscanf` entry point; `sscanf` `num_params` fix (2→18); +12 new tests (563 total) | ✅ Complete |
 | 37 | UCRT `__stdio_common_vsprintf`, `__stdio_common_vsnprintf_s`, `__stdio_common_vsprintf_s`, `__stdio_common_vswprintf`; real `scanf`/`fscanf`/`__stdio_common_vfscanf`; integer-to-wide conversions (`_itow`, `_ltow`, `_ultow`, `_i64tow`, `_ui64tow`); numeric conversions (`_ultoa`, `_i64toa`, `_ui64toa`, `_strtoi64`, `_strtoui64`); msvcp140 `std::basic_string<char>` with MSVC x64 SSO ABI (ctor, copy, dtor, `c_str`, `size`, `empty`, assign, append); +22 new tests (585 total) | ✅ Complete |
 | 38 | msvcp140 `std::basic_string<wchar_t>` with MSVC x64 SSO ABI (SSO threshold=7, 32-byte layout; ctor, copy, dtor, `c_str`, `size`, `empty`, assign, append); MSVCRT directory enumeration: `_wfindfirst64i32`/`_wfindnext64i32`/`_findclose` (mutex-protected handle table, DOS-style wildcard matching via `libc::opendir/readdir`); locale-aware printf wrappers: `_printf_l`, `_fprintf_l`, `_sprintf_l`, `_snprintf_l`, `_wprintf_l` (locale ignored); +15 new tests (600 total) | ✅ Complete |
+| 39 | MSVCRT low-level POSIX-style file I/O: `_open`, `_close`, `_lseek`, `_lseeki64`, `_tell`, `_telli64`, `_eof`, `_creat`, `_commit`, `_dup`, `_dup2`, `_chsize`, `_chsize_s`, `_filelength`, `_filelengthi64`; msvcp140 `std::vector<char>` with MSVC x64 ABI (24-byte 3-pointer layout; ctor, dtor, `push_back`, `size`, `capacity`, `clear`, `data`, `reserve`); KERNEL32 extended process/job management: `GetPriorityClass`, `SetPriorityClass`, `GetProcessAffinityMask`, `SetProcessAffinityMask`, `FlushInstructionCache`, `ReadProcessMemory`, `WriteProcessMemory`, `VirtualAllocEx`, `VirtualFreeEx`, `CreateJobObjectW`, `AssignProcessToJobObject`, `IsProcessInJob`, `QueryInformationJobObject`, `SetInformationJobObject`; +35 new tests (635 total) | ✅ Complete |
+| 40 | MSVCRT stat functions: `_stat`/`_stat64`/`_fstat`/`_fstat64` (MSVC x64 ABI-compatible layout); wide-path file opens: `_wopen`, `_wsopen`, `_wstat`, `_wstat64`; WS2_32 event APIs: `WSACreateEvent`, `WSACloseEvent`, `WSAResetEvent`, `WSASetEvent`, `WSAEventSelect` (FD_* mask per socket), `WSAEnumNetworkEvents` (poll-based), `WSAWaitForMultipleEvents` (spin-sleep); `gethostbyname` (delegates to `libc::gethostbyname`); +11 new tests (646 total) | ✅ Complete |
+| 41 | msvcp140 `std::map<void*,void*>` (ctor, dtor, insert, find, size, clear); msvcp140 `std::ostringstream` (ctor, dtor, str, write, tellp, seekp); +7 new tests (653 total) | ✅ Complete |
+| 42 | MSVCRT path manipulation: `_fullpath` (via `realpath`), `_splitpath`/`_splitpath_s` (drive/dir/fname/ext), `_makepath`/`_makepath_s`; WS2_32 inet helpers: `inet_addr`, `inet_pton`, `inet_ntop`; `WSAPoll` (wraps `libc::poll`); `WSAIoctl` (stub, WSAEOPNOTSUPP); msvcp140 `std::istringstream` (ctor, ctor-from-cstr, dtor, str, str_set, read, seekg, tellg); +19 new tests (672 total) | ✅ Complete |
+| 43 | msvcp140 `std::stringstream` (bidirectional: ctor, ctor-from-cstr, dtor, str, str_set, read, write, seekg, tellg, seekp, tellp); msvcp140 `std::unordered_map<void*,void*>` (ctor, dtor, insert, find, size, clear); MSVCRT directory navigation: `_getcwd`, `_chdir`, `_mkdir`, `_rmdir`; KERNEL32 volume enumeration: `FindFirstVolumeW`, `FindNextVolumeW`, `FindVolumeClose`; +33 new tests (705 total) | ✅ Complete |
