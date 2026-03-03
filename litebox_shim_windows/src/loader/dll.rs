@@ -584,6 +584,10 @@ impl DllManager {
             ("SetInformationJobObject", KERNEL32_BASE + 0xF7),
             ("OpenJobObjectW", KERNEL32_BASE + 0xF8),
             ("CreateProcessA", KERNEL32_BASE + 0xF9),
+            // Phase 43: Volume enumeration
+            ("FindFirstVolumeW", KERNEL32_BASE + 0xFA),
+            ("FindNextVolumeW", KERNEL32_BASE + 0xFB),
+            ("FindVolumeClose", KERNEL32_BASE + 0xFC),
         ];
 
         self.register_stub_dll("KERNEL32.dll", exports);
@@ -915,6 +919,11 @@ impl DllManager {
             ("_splitpath_s", MSVCRT_BASE + 0x104),
             ("_makepath", MSVCRT_BASE + 0x105),
             ("_makepath_s", MSVCRT_BASE + 0x106),
+            // Phase 43: Directory navigation
+            ("_getcwd", MSVCRT_BASE + 0x107),
+            ("_chdir", MSVCRT_BASE + 0x108),
+            ("_mkdir", MSVCRT_BASE + 0x109),
+            ("_rmdir", MSVCRT_BASE + 0x10A),
         ];
 
         self.register_stub_dll("MSVCRT.dll", exports);
@@ -1504,6 +1513,76 @@ impl DllManager {
             (
                 "?tellg@?$basic_istream@DU?$char_traits@D@std@@@std@@QEAA?AV?$fpos@U_Mbstatet@@@2@XZ",
                 MSVCP140_BASE + 70,
+            ),
+            // Phase 43: std::stringstream (basic_stringstream<char>) mangled names
+            (
+                "??0?$basic_stringstream@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@QEAA@H@Z",
+                MSVCP140_BASE + 71,
+            ),
+            (
+                "??0?$basic_stringstream@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@QEAA@AEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@2@H@Z",
+                MSVCP140_BASE + 72,
+            ),
+            (
+                "??1?$basic_stringstream@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@UEAA@XZ",
+                MSVCP140_BASE + 73,
+            ),
+            (
+                "?str@?$basic_stringstream@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@QEBA?AV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@2@XZ",
+                MSVCP140_BASE + 74,
+            ),
+            (
+                "?str@?$basic_stringstream@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@QEAAXAEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@2@@Z",
+                MSVCP140_BASE + 75,
+            ),
+            (
+                "?read@?$basic_iostream@DU?$char_traits@D@std@@@std@@QEAAAEAV12@PEAD_J@Z",
+                MSVCP140_BASE + 76,
+            ),
+            (
+                "?write@?$basic_iostream@DU?$char_traits@D@std@@@std@@QEAAAEAV12@PEBD_J@Z",
+                MSVCP140_BASE + 77,
+            ),
+            (
+                "?seekg@?$basic_iostream@DU?$char_traits@D@std@@@std@@QEAAAEAV12@V?$fpos@U_Mbstatet@@@2@@Z",
+                MSVCP140_BASE + 78,
+            ),
+            (
+                "?tellg@?$basic_iostream@DU?$char_traits@D@std@@@std@@QEAA?AV?$fpos@U_Mbstatet@@@2@XZ",
+                MSVCP140_BASE + 79,
+            ),
+            (
+                "?seekp@?$basic_iostream@DU?$char_traits@D@std@@@std@@QEAAAEAV12@V?$fpos@U_Mbstatet@@@2@@Z",
+                MSVCP140_BASE + 80,
+            ),
+            (
+                "?tellp@?$basic_iostream@DU?$char_traits@D@std@@@std@@QEAA?AV?$fpos@U_Mbstatet@@@2@XZ",
+                MSVCP140_BASE + 81,
+            ),
+            // Phase 43: std::unordered_map<void*,void*> mangled names
+            (
+                "??0?$unordered_map@PEAXPEAXU?$hash@PEAX@std@@U?$equal_to@PEAX@2@V?$allocator@U?$pair@$$CBPEAXPEAX@std@@@2@@std@@QEAA@XZ",
+                MSVCP140_BASE + 82,
+            ),
+            (
+                "??1?$unordered_map@PEAXPEAXU?$hash@PEAX@std@@U?$equal_to@PEAX@2@V?$allocator@U?$pair@$$CBPEAXPEAX@std@@@2@@std@@QEAA@XZ",
+                MSVCP140_BASE + 83,
+            ),
+            (
+                "?size@?$unordered_map@PEAXPEAXU?$hash@PEAX@std@@U?$equal_to@PEAX@2@V?$allocator@U?$pair@$$CBPEAXPEAX@std@@@2@@std@@QEBA_KXZ",
+                MSVCP140_BASE + 84,
+            ),
+            (
+                "?clear@?$unordered_map@PEAXPEAXU?$hash@PEAX@std@@U?$equal_to@PEAX@2@V?$allocator@U?$pair@$$CBPEAXPEAX@std@@@2@@std@@QEAAXXZ",
+                MSVCP140_BASE + 85,
+            ),
+            (
+                "?insert@?$unordered_map@PEAXPEAXU?$hash@PEAX@std@@U?$equal_to@PEAX@2@V?$allocator@U?$pair@$$CBPEAXPEAX@std@@@2@@std@@QEAA?AV?$pair@_K_N@2@$$QEAV?$pair@PEAXPEAX@2@@Z",
+                MSVCP140_BASE + 86,
+            ),
+            (
+                "?find@?$unordered_map@PEAXPEAXU?$hash@PEAX@std@@U?$equal_to@PEAX@2@V?$allocator@U?$pair@$$CBPEAXPEAX@std@@@2@@std@@QEAA?AV?$pair@_K_N@2@PEAX@Z",
+                MSVCP140_BASE + 87,
             ),
         ];
 

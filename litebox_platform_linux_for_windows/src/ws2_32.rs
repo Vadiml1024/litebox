@@ -2161,7 +2161,7 @@ mod tests {
     #[test]
     fn test_wsa_async_select_stores_mask_and_returns_zero() {
         // Create a real TCP socket and register async interest.
-        let s = unsafe { ws2_socket(libc::AF_INET as i32, libc::SOCK_STREAM, libc::IPPROTO_TCP) };
+        let s = unsafe { ws2_socket(libc::AF_INET, libc::SOCK_STREAM, libc::IPPROTO_TCP) };
         assert_ne!(s, usize::MAX, "socket creation should succeed");
         // FD_READ = 1, FD_WRITE = 2
         let ret = unsafe { ws2_WSAAsyncSelect(s, 0, 0, 1 | 2) };
@@ -2219,13 +2219,13 @@ mod tests {
     #[test]
     fn test_wsapoll_timeout_on_unconnected_socket() {
         // A TCP socket with no data should timeout immediately with timeout=0.
-        let s = unsafe { ws2_socket(libc::AF_INET as i32, libc::SOCK_STREAM, libc::IPPROTO_TCP) };
+        let s = unsafe { ws2_socket(libc::AF_INET, libc::SOCK_STREAM, libc::IPPROTO_TCP) };
         assert_ne!(s, usize::MAX, "socket creation should succeed");
 
         // Build a WSAPOLLFD targeting POLLIN on this socket.
         let mut pfd = WSAPOLLFD {
             fd: s,
-            events: libc::POLLIN as i16,
+            events: libc::POLLIN,
             revents: 0,
         };
         // Poll with 0 ms timeout — must not panic.  The exact return value (0, 1,

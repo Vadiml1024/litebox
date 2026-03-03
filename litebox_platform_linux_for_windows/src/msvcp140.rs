@@ -2092,7 +2092,7 @@ mod tests_map {
             assert!(!ret.is_null());
             assert_eq!(msvcp140__map_size(obj.as_ptr()), 1);
             let found = msvcp140__map_find(obj.as_mut_ptr(), key);
-            assert_eq!(found, val as *mut u8);
+            assert_eq!(found, val.cast_mut());
             msvcp140__map_clear(obj.as_mut_ptr());
             assert_eq!(msvcp140__map_size(obj.as_ptr()), 0);
             msvcp140__map_dtor(obj.as_mut_ptr());
@@ -2244,5 +2244,454 @@ mod tests_istringstream {
         let obj = [0u8; 256];
         let result = unsafe { msvcp140__istringstream_tellg(obj.as_ptr()) };
         assert_eq!(result, -1);
+    }
+}
+
+// ── Phase 43: std::stringstream (bidirectional) ───────────────────────────────
+
+/// Registry for `stringstream` instances: maps `this` pointer → `(buffer, read_pos)`.
+type SsEntry = (Vec<u8>, usize);
+static SS_REGISTRY: Mutex<Option<HashMap<usize, SsEntry>>> = Mutex::new(None);
+
+fn with_ss_registry<R>(f: impl FnOnce(&mut HashMap<usize, SsEntry>) -> R) -> R {
+    let mut guard = SS_REGISTRY.lock().unwrap();
+    let m = guard.get_or_insert_with(HashMap::new);
+    f(m)
+}
+
+/// `std::stringstream` default constructor — registers an empty buffer for `this`.
+///
+/// # Safety
+/// `this` must be a valid, non-null pointer to at least 256 bytes of storage.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__stringstream_ctor(this: *mut u8, _mode: i32) {
+    with_ss_registry(|m| {
+        m.insert(this as usize, (Vec::new(), 0));
+    });
+}
+
+/// `std::stringstream` constructor from a C string.
+///
+/// # Safety
+/// `this` must be a valid, non-null pointer to at least 256 bytes of storage.
+/// `s` must be a valid NUL-terminated string or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__stringstream_ctor_str(this: *mut u8, s: *const u8, _mode: i32) {
+    let buf = if s.is_null() {
+        Vec::new()
+    } else {
+        // SAFETY: s is a valid NUL-terminated string per caller contract.
+        let len = unsafe { libc::strlen(s.cast()) };
+        // SAFETY: s is valid for len bytes.
+        unsafe { core::slice::from_raw_parts(s, len) }.to_vec()
+    };
+    with_ss_registry(|m| {
+        m.insert(this as usize, (buf, 0));
+    });
+}
+
+/// `std::stringstream` destructor — removes the entry for `this`.
+///
+/// # Safety
+/// `this` must be a pointer previously passed to one of the `stringstream` constructors.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__stringstream_dtor(this: *mut u8) {
+    with_ss_registry(|m| {
+        m.remove(&(this as usize));
+    });
+}
+
+/// `std::stringstream::str()` — returns a malloc'd copy of the buffer as a C string.
+///
+/// The caller is responsible for freeing the returned pointer with `free()`.
+/// Returns null if `this` is not registered or allocation fails.
+///
+/// # Safety
+/// `this` must be a pointer previously passed to one of the `stringstream` constructors.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__stringstream_str(this: *const u8) -> *mut u8 {
+    let buf_opt = with_ss_registry(|m| m.get(&(this as usize)).map(|(b, _)| b.clone()));
+    let Some(buf) = buf_opt else {
+        return core::ptr::null_mut();
+    };
+    let len = buf.len();
+    // SAFETY: len + 1 >= 1.
+    let ptr = unsafe { libc::malloc(len + 1) }.cast::<u8>();
+    if ptr.is_null() {
+        return core::ptr::null_mut();
+    }
+    if len > 0 {
+        // SAFETY: ptr is valid for len bytes; buf.as_ptr() is valid for len bytes.
+        unsafe { core::ptr::copy_nonoverlapping(buf.as_ptr(), ptr, len) };
+    }
+    // SAFETY: ptr + len is within the allocation.
+    unsafe { *ptr.add(len) = 0 };
+    ptr
+}
+
+/// `std::stringstream::str(s)` — sets the buffer from a C string and resets both positions to 0.
+///
+/// # Safety
+/// `this` must be a pointer previously passed to one of the `stringstream` constructors.
+/// `s` must be a valid NUL-terminated string or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__stringstream_str_set(this: *mut u8, s: *const u8) {
+    let buf = if s.is_null() {
+        Vec::new()
+    } else {
+        // SAFETY: s is a valid NUL-terminated string per caller contract.
+        let len = unsafe { libc::strlen(s.cast()) };
+        // SAFETY: s is valid for len bytes.
+        unsafe { core::slice::from_raw_parts(s, len) }.to_vec()
+    };
+    with_ss_registry(|m| {
+        if let Some(entry) = m.get_mut(&(this as usize)) {
+            *entry = (buf, 0);
+        }
+    });
+}
+
+/// `std::stringstream::read(buf, count)` — reads up to `count` bytes from the current read position.
+///
+/// Advances the read position by the number of bytes actually read.
+/// Returns `this` (the stream object pointer).
+///
+/// # Safety
+/// `this` must be a pointer previously passed to one of the `stringstream` constructors.
+/// `buf` must be valid for `count` bytes of writes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__stringstream_read(
+    this: *mut u8,
+    buf: *mut u8,
+    count: i64,
+) -> *mut u8 {
+    if buf.is_null() || count <= 0 {
+        return this;
+    }
+    let Ok(count_usize) = usize::try_from(count) else {
+        return this;
+    };
+    with_ss_registry(|m| {
+        if let Some((data, pos)) = m.get_mut(&(this as usize)) {
+            let available = data.len().saturating_sub(*pos);
+            let to_read = count_usize.min(available);
+            if to_read > 0 {
+                // SAFETY: buf is valid for count bytes; data slice is valid for to_read bytes.
+                unsafe { core::ptr::copy_nonoverlapping(data.as_ptr().add(*pos), buf, to_read) };
+                *pos += to_read;
+            }
+        }
+    });
+    this
+}
+
+/// `std::stringstream::write(buf, count)` — appends `count` raw bytes to the buffer.
+///
+/// Returns `this` (the stream object pointer).
+///
+/// # Safety
+/// `this` must be a pointer previously passed to one of the `stringstream` constructors.
+/// `buf` must be valid for `count` bytes of reads.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__stringstream_write(
+    this: *mut u8,
+    buf: *const u8,
+    count: usize,
+) -> *mut u8 {
+    if buf.is_null() || count == 0 {
+        return this;
+    }
+    // SAFETY: buf is valid for count bytes per caller's contract.
+    let slice = unsafe { core::slice::from_raw_parts(buf, count) };
+    with_ss_registry(|m| {
+        if let Some((v, _)) = m.get_mut(&(this as usize)) {
+            v.extend_from_slice(slice);
+        }
+    });
+    this
+}
+
+/// `std::stringstream::seekg(pos)` — seek the read position to `pos`.
+///
+/// # Safety
+/// `this` must be a pointer previously passed to one of the `stringstream` constructors.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__stringstream_seekg(this: *mut u8, pos: i64) {
+    if pos < 0 {
+        return;
+    }
+    let Ok(new_pos) = usize::try_from(pos) else {
+        return;
+    };
+    with_ss_registry(|m| {
+        if let Some((data, read_pos)) = m.get_mut(&(this as usize)) {
+            *read_pos = new_pos.min(data.len());
+        }
+    });
+}
+
+/// `std::stringstream::tellg()` — returns the current read position, or -1 if not registered.
+///
+/// # Safety
+/// `this` must be a pointer previously passed to one of the `stringstream` constructors.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__stringstream_tellg(this: *const u8) -> i64 {
+    with_ss_registry(|m| {
+        m.get(&(this as usize))
+            .map_or(-1, |(_, pos)| i64::try_from(*pos).unwrap_or(i64::MAX))
+    })
+}
+
+/// `std::stringstream::seekp(pos)` — sets the write position by resizing the buffer.
+///
+/// If `pos` is less than the current buffer length, the buffer is truncated.
+/// If `pos` is beyond the current buffer length, the buffer is extended with NUL bytes.
+///
+/// # Safety
+/// `this` must be a pointer previously passed to one of the `stringstream` constructors.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__stringstream_seekp(this: *mut u8, pos: i64) {
+    if pos < 0 {
+        return;
+    }
+    let Ok(new_len) = usize::try_from(pos) else {
+        return;
+    };
+    with_ss_registry(|m| {
+        if let Some((v, _)) = m.get_mut(&(this as usize)) {
+            v.resize(new_len, 0);
+        }
+    });
+}
+
+/// `std::stringstream::tellp()` — returns the current write position (= buffer length).
+///
+/// # Safety
+/// `this` must be a pointer previously passed to one of the `stringstream` constructors.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__stringstream_tellp(this: *const u8) -> i64 {
+    with_ss_registry(|m| {
+        m.get(&(this as usize))
+            .map_or(-1, |(v, _)| i64::try_from(v.len()).unwrap_or(i64::MAX))
+    })
+}
+
+#[cfg(test)]
+mod tests_stringstream {
+    use super::*;
+
+    #[test]
+    fn test_stringstream_ctor_dtor() {
+        let mut obj = [0u8; 256];
+        unsafe {
+            msvcp140__stringstream_ctor(obj.as_mut_ptr(), 0);
+            assert_eq!(msvcp140__stringstream_tellg(obj.as_ptr()), 0);
+            assert_eq!(msvcp140__stringstream_tellp(obj.as_ptr()), 0);
+            msvcp140__stringstream_dtor(obj.as_mut_ptr());
+        }
+    }
+
+    #[test]
+    fn test_stringstream_write_then_read() {
+        let mut obj = [0u8; 256];
+        unsafe {
+            msvcp140__stringstream_ctor(obj.as_mut_ptr(), 0);
+            let data = b"hello";
+            msvcp140__stringstream_write(obj.as_mut_ptr(), data.as_ptr(), data.len());
+            assert_eq!(msvcp140__stringstream_tellp(obj.as_ptr()), 5);
+            // Seek read position to beginning then read back.
+            msvcp140__stringstream_seekg(obj.as_mut_ptr(), 0);
+            let mut buf = [0u8; 8];
+            msvcp140__stringstream_read(obj.as_mut_ptr(), buf.as_mut_ptr(), 5);
+            assert_eq!(&buf[..5], b"hello");
+            msvcp140__stringstream_dtor(obj.as_mut_ptr());
+        }
+    }
+
+    #[test]
+    fn test_stringstream_str_getter() {
+        let mut obj = [0u8; 256];
+        let src = b"test\0";
+        unsafe {
+            msvcp140__stringstream_ctor_str(obj.as_mut_ptr(), src.as_ptr(), 0);
+            let s = msvcp140__stringstream_str(obj.as_ptr());
+            assert!(!s.is_null());
+            let got = core::ffi::CStr::from_ptr(s.cast());
+            assert_eq!(got.to_bytes(), b"test");
+            libc::free(s.cast());
+            msvcp140__stringstream_dtor(obj.as_mut_ptr());
+        }
+    }
+
+    #[test]
+    fn test_stringstream_str_set_resets_pos() {
+        let mut obj = [0u8; 256];
+        let src = b"xyz\0";
+        unsafe {
+            msvcp140__stringstream_ctor(obj.as_mut_ptr(), 0);
+            msvcp140__stringstream_str_set(obj.as_mut_ptr(), src.as_ptr());
+            assert_eq!(msvcp140__stringstream_tellg(obj.as_ptr()), 0);
+            msvcp140__stringstream_dtor(obj.as_mut_ptr());
+        }
+    }
+
+    #[test]
+    fn test_stringstream_seekp_truncates() {
+        let mut obj = [0u8; 256];
+        unsafe {
+            msvcp140__stringstream_ctor(obj.as_mut_ptr(), 0);
+            let data = b"abcdef";
+            msvcp140__stringstream_write(obj.as_mut_ptr(), data.as_ptr(), data.len());
+            msvcp140__stringstream_seekp(obj.as_mut_ptr(), 3);
+            assert_eq!(msvcp140__stringstream_tellp(obj.as_ptr()), 3);
+            let s = msvcp140__stringstream_str(obj.as_ptr());
+            assert!(!s.is_null());
+            let got = core::ffi::CStr::from_ptr(s.cast());
+            assert_eq!(got.to_bytes(), b"abc");
+            libc::free(s.cast());
+            msvcp140__stringstream_dtor(obj.as_mut_ptr());
+        }
+    }
+}
+
+// ── Phase 43: std::unordered_map<void*,void*> ────────────────────────────────
+
+/// Global registry for `unordered_map` instances: maps `this` pointer → inner HashMap.
+static UMAP_REGISTRY: Mutex<Option<HashMap<usize, HashMap<usize, usize>>>> = Mutex::new(None);
+
+fn with_umap_registry<R>(f: impl FnOnce(&mut HashMap<usize, HashMap<usize, usize>>) -> R) -> R {
+    let mut guard = UMAP_REGISTRY.lock().unwrap();
+    let m = guard.get_or_insert_with(HashMap::new);
+    f(m)
+}
+
+/// `std::unordered_map<void*,void*>` default constructor.
+///
+/// # Safety
+/// `this` must be a valid, non-null pointer to at least 8 bytes of storage.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__unordered_map_ctor(this: *mut u8) {
+    with_umap_registry(|m| {
+        m.entry(this as usize).or_insert_with(HashMap::new);
+    });
+}
+
+/// `std::unordered_map<void*,void*>` destructor.
+///
+/// # Safety
+/// `this` must be a pointer previously passed to `msvcp140__unordered_map_ctor`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__unordered_map_dtor(this: *mut u8) {
+    with_umap_registry(|m| {
+        m.remove(&(this as usize));
+    });
+}
+
+/// `std::unordered_map<void*,void*>::insert` — inserts `(key, value)` into the map.
+///
+/// Returns `this` on success, or null if `this` is not registered.
+///
+/// # Safety
+/// `this` must be a pointer previously passed to `msvcp140__unordered_map_ctor`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__unordered_map_insert(
+    this: *mut u8,
+    key: *const u8,
+    value: *const u8,
+) -> *mut u8 {
+    let inserted = with_umap_registry(|m| {
+        if let Some(map) = m.get_mut(&(this as usize)) {
+            map.insert(key as usize, value as usize);
+            true
+        } else {
+            false
+        }
+    });
+    if inserted {
+        this
+    } else {
+        core::ptr::null_mut()
+    }
+}
+
+/// `std::unordered_map<void*,void*>::find` — looks up `key` in the map.
+///
+/// Returns a pointer to the stored value if found, or null.
+///
+/// # Safety
+/// `this` must be a pointer previously passed to `msvcp140__unordered_map_ctor`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__unordered_map_find(this: *mut u8, key: *const u8) -> *mut u8 {
+    with_umap_registry(|m| {
+        m.get(&(this as usize))
+            .and_then(|map| map.get(&(key as usize)).copied())
+            .map_or(core::ptr::null_mut(), |v| v as *mut u8)
+    })
+}
+
+/// `std::unordered_map<void*,void*>::size` — returns the number of elements.
+///
+/// # Safety
+/// `this` must be a pointer previously passed to `msvcp140__unordered_map_ctor`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__unordered_map_size(this: *const u8) -> usize {
+    with_umap_registry(|m| m.get(&(this as usize)).map_or(0, HashMap::len))
+}
+
+/// `std::unordered_map<void*,void*>::clear` — removes all elements.
+///
+/// # Safety
+/// `this` must be a pointer previously passed to `msvcp140__unordered_map_ctor`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__unordered_map_clear(this: *mut u8) {
+    with_umap_registry(|m| {
+        if let Some(map) = m.get_mut(&(this as usize)) {
+            map.clear();
+        }
+    });
+}
+
+#[cfg(test)]
+mod tests_unordered_map {
+    use super::*;
+
+    #[test]
+    fn test_unordered_map_ctor_dtor() {
+        let mut obj = [0u8; 8];
+        unsafe {
+            msvcp140__unordered_map_ctor(obj.as_mut_ptr());
+            assert_eq!(msvcp140__unordered_map_size(obj.as_ptr()), 0);
+            msvcp140__unordered_map_dtor(obj.as_mut_ptr());
+        }
+    }
+
+    #[test]
+    fn test_unordered_map_insert_find_clear() {
+        let mut obj = [0u8; 8];
+        let key = 0x1234usize as *const u8;
+        let val = 0x5678usize as *const u8;
+        unsafe {
+            msvcp140__unordered_map_ctor(obj.as_mut_ptr());
+            let ret = msvcp140__unordered_map_insert(obj.as_mut_ptr(), key, val);
+            assert!(!ret.is_null());
+            assert_eq!(msvcp140__unordered_map_size(obj.as_ptr()), 1);
+            let found = msvcp140__unordered_map_find(obj.as_mut_ptr(), key);
+            assert_eq!(found, val.cast_mut());
+            msvcp140__unordered_map_clear(obj.as_mut_ptr());
+            assert_eq!(msvcp140__unordered_map_size(obj.as_ptr()), 0);
+            msvcp140__unordered_map_dtor(obj.as_mut_ptr());
+        }
+    }
+
+    #[test]
+    fn test_unordered_map_find_missing_returns_null() {
+        let mut obj = [0u8; 8];
+        let missing = 0xDEADusize as *const u8;
+        unsafe {
+            msvcp140__unordered_map_ctor(obj.as_mut_ptr());
+            let found = msvcp140__unordered_map_find(obj.as_mut_ptr(), missing);
+            assert!(found.is_null());
+            msvcp140__unordered_map_dtor(obj.as_mut_ptr());
+        }
     }
 }

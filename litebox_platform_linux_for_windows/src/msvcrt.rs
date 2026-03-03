@@ -7961,6 +7961,110 @@ pub unsafe extern "C" fn msvcrt__makepath_s(
     0
 }
 
+// ── Phase 43: Directory navigation (MSVCRT.dll) ──────────────────────────────
+
+/// `_getcwd(buf, size)` — get the current working directory.
+///
+/// If `buf` is null, allocates a buffer of at least `size` bytes (or `PATH_MAX` if
+/// `size` is 0) and returns it; the caller must `free` it.
+/// If `buf` is non-null, copies the path into it; returns null and sets
+/// `errno = ERANGE` if `size` bytes are insufficient.
+/// If `buf` is non-null and `size` is <= 0, sets `errno = EINVAL` and returns null.
+///
+/// # Safety
+/// `buf`, if non-null, must point to at least `size` writable bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt__getcwd(buf: *mut u8, size: i32) -> *mut u8 {
+    if buf.is_null() {
+        // Allocating variant: use PATH_MAX if size is 0 or negative.
+        let alloc_size = if size <= 0 {
+            libc::PATH_MAX as usize
+        } else {
+            size.unsigned_abs() as usize
+        };
+        // SAFETY: malloc returns a valid pointer or null.
+        let p = unsafe { libc::malloc(alloc_size) }.cast::<u8>();
+        if p.is_null() {
+            return core::ptr::null_mut();
+        }
+        // SAFETY: p is valid for alloc_size bytes; getcwd fills it with the CWD path.
+        let ret = unsafe { libc::getcwd(p.cast(), alloc_size) };
+        if ret.is_null() {
+            // SAFETY: p was allocated above.
+            unsafe { libc::free(p.cast()) };
+            return core::ptr::null_mut();
+        }
+        return p;
+    }
+    // Caller-provided buffer: size must be positive.
+    if size <= 0 {
+        // SAFETY: errno is a valid thread-local.
+        unsafe { *libc::__errno_location() = libc::EINVAL };
+        return core::ptr::null_mut();
+    }
+    // SAFETY: buf is valid for size bytes; getcwd writes the path into it.
+    // size > 0 (checked above), so unsigned_abs() is safe.
+    let ret = unsafe { libc::getcwd(buf.cast(), size.unsigned_abs() as usize) };
+    if ret.is_null() {
+        // SAFETY: errno is a valid thread-local.
+        unsafe { *libc::__errno_location() = libc::ERANGE };
+        return core::ptr::null_mut();
+    }
+    buf
+}
+
+/// `_chdir(dirname)` — change the current working directory.
+///
+/// Returns 0 on success, -1 on failure (errno is set by the OS).
+///
+/// # Safety
+/// `dirname` must be a valid NUL-terminated string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt__chdir(dirname: *const u8) -> i32 {
+    if dirname.is_null() {
+        // SAFETY: errno is a valid thread-local.
+        unsafe { *libc::__errno_location() = libc::EINVAL };
+        return -1;
+    }
+    // SAFETY: dirname is a valid NUL-terminated string per caller contract.
+    unsafe { libc::chdir(dirname.cast()) }
+}
+
+/// `_mkdir(dirname)` — create a directory.
+///
+/// Returns 0 on success, -1 on failure (errno is set by the OS).
+///
+/// # Safety
+/// `dirname` must be a valid NUL-terminated string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt__mkdir(dirname: *const u8) -> i32 {
+    if dirname.is_null() {
+        // SAFETY: errno is a valid thread-local.
+        unsafe { *libc::__errno_location() = libc::EINVAL };
+        return -1;
+    }
+    // SAFETY: dirname is a valid NUL-terminated string per caller contract.
+    // Mode 0o777 is the conventional MSVCRT default.
+    unsafe { libc::mkdir(dirname.cast(), 0o777) }
+}
+
+/// `_rmdir(dirname)` — remove a directory.
+///
+/// Returns 0 on success, -1 on failure (errno is set by the OS).
+///
+/// # Safety
+/// `dirname` must be a valid NUL-terminated string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt__rmdir(dirname: *const u8) -> i32 {
+    if dirname.is_null() {
+        // SAFETY: errno is a valid thread-local.
+        unsafe { *libc::__errno_location() = libc::EINVAL };
+        return -1;
+    }
+    // SAFETY: dirname is a valid NUL-terminated string per caller contract.
+    unsafe { libc::rmdir(dirname.cast()) }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -9790,5 +9894,82 @@ mod tests {
             )
         };
         assert_eq!(ret, libc::ERANGE);
+    }
+
+    // ── Phase 43: _getcwd / _chdir / _mkdir / _rmdir ──────────────────────────
+
+    #[test]
+    fn test_getcwd_null_buf_returns_allocated() {
+        // _getcwd(NULL, 0) should allocate and return the current directory.
+        let p = unsafe { msvcrt__getcwd(core::ptr::null_mut(), 0) };
+        assert!(
+            !p.is_null(),
+            "_getcwd(NULL,0) should return a non-null pointer"
+        );
+        // Must be a valid non-empty string.
+        let len = unsafe { libc::strlen(p.cast()) };
+        assert!(len > 0, "current directory path must be non-empty");
+        unsafe { libc::free(p.cast()) };
+    }
+
+    #[test]
+    fn test_getcwd_provided_buf() {
+        let mut buf = [0u8; 4096];
+        let p = unsafe { msvcrt__getcwd(buf.as_mut_ptr(), 4096_i32) };
+        assert_eq!(
+            p,
+            buf.as_mut_ptr(),
+            "_getcwd should return the provided buffer"
+        );
+        let len = unsafe { libc::strlen(buf.as_ptr().cast()) };
+        assert!(len > 0, "path must be non-empty");
+    }
+
+    #[test]
+    fn test_getcwd_buf_nonnull_size_zero_returns_null() {
+        // When buf is non-null but size is 0 (or negative), must return null with EINVAL
+        // to avoid writing PATH_MAX bytes into an undersized buffer.
+        let mut buf = [0u8; 4096];
+        let p = unsafe { msvcrt__getcwd(buf.as_mut_ptr(), 0) };
+        assert!(
+            p.is_null(),
+            "_getcwd(buf, 0) with non-null buf must return null"
+        );
+        let errno = unsafe { *libc::__errno_location() };
+        assert_eq!(errno, libc::EINVAL, "errno should be EINVAL");
+    }
+
+    #[test]
+    fn test_mkdir_chdir_rmdir_roundtrip() {
+        let tmp = b"/tmp/litebox_phase43_testdir\0";
+        // Cleanup before test in case previous run left it.
+        unsafe { libc::rmdir(tmp.as_ptr().cast()) };
+
+        let r = unsafe { msvcrt__mkdir(tmp.as_ptr()) };
+        assert_eq!(r, 0, "_mkdir should succeed for a new directory");
+
+        let r = unsafe { msvcrt__rmdir(tmp.as_ptr()) };
+        assert_eq!(
+            r, 0,
+            "_rmdir should succeed for an existing empty directory"
+        );
+    }
+
+    #[test]
+    fn test_chdir_null_returns_minus_one() {
+        let r = unsafe { msvcrt__chdir(core::ptr::null()) };
+        assert_eq!(r, -1, "_chdir(NULL) should return -1");
+    }
+
+    #[test]
+    fn test_mkdir_null_returns_minus_one() {
+        let r = unsafe { msvcrt__mkdir(core::ptr::null()) };
+        assert_eq!(r, -1, "_mkdir(NULL) should return -1");
+    }
+
+    #[test]
+    fn test_rmdir_null_returns_minus_one() {
+        let r = unsafe { msvcrt__rmdir(core::ptr::null()) };
+        assert_eq!(r, -1, "_rmdir(NULL) should return -1");
     }
 }

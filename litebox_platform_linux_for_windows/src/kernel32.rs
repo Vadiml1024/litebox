@@ -10684,6 +10684,70 @@ pub unsafe extern "C" fn kernel32_OpenJobObjectW(
     core::ptr::null_mut()
 }
 
+// ── Phase 43: Volume enumeration ─────────────────────────────────────────────
+
+/// `FindFirstVolumeW` — returns a pseudo-handle for enumerating volumes.
+///
+/// On Linux there are no Windows volumes.  This stub returns a sentinel handle
+/// (0x1) and writes a single synthetic volume GUID path `\\?\Volume{00000000-0000-0000-0000-000000000000}\`
+/// into `volume_name`.  The handle must be closed with `FindVolumeClose`.
+///
+/// # Safety
+/// `volume_name` must be valid for `buffer_length` `u16` elements of writes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_FindFirstVolumeW(
+    volume_name: *mut u16,
+    buffer_length: u32,
+) -> *mut core::ffi::c_void {
+    const VOLUME_PATH: &str = "\\\\?\\Volume{00000000-0000-0000-0000-000000000000}\\";
+    let wide: Vec<u16> = VOLUME_PATH
+        .encode_utf16()
+        .chain(core::iter::once(0))
+        .collect();
+    if !volume_name.is_null() && (buffer_length as usize) >= wide.len() {
+        // SAFETY: volume_name is valid for buffer_length u16 elements; wide.len() <= buffer_length.
+        unsafe {
+            core::ptr::copy_nonoverlapping(wide.as_ptr(), volume_name, wide.len());
+        }
+    } else if !volume_name.is_null() {
+        // Buffer too small — set ERROR_FILENAME_EXCED_RANGE and return INVALID_HANDLE_VALUE.
+        unsafe { kernel32_SetLastError(206) }; // ERROR_FILENAME_EXCED_RANGE
+        return usize::MAX as *mut core::ffi::c_void;
+    }
+    // Return a non-null sentinel handle meaning "one volume enumerated".
+    core::ptr::dangling_mut::<core::ffi::c_void>()
+}
+
+/// `FindNextVolumeW` — advances to the next volume in the enumeration.
+///
+/// This stub has only one synthetic volume, so it always sets
+/// `ERROR_NO_MORE_FILES` (18) and returns 0.
+///
+/// # Safety
+/// `find_volume` must be a handle returned by `FindFirstVolumeW`.
+/// `volume_name` must be valid for `buffer_length` `u16` elements of writes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_FindNextVolumeW(
+    _find_volume: *mut core::ffi::c_void,
+    _volume_name: *mut u16,
+    _buffer_length: u32,
+) -> i32 {
+    // SAFETY: no pointer is dereferenced.
+    unsafe { kernel32_SetLastError(18) }; // ERROR_NO_MORE_FILES
+    0
+}
+
+/// `FindVolumeClose` — closes a volume-search handle.
+///
+/// Always returns 1 (success).
+///
+/// # Safety
+/// `find_volume` must be a handle returned by `FindFirstVolumeW`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_FindVolumeClose(_find_volume: *mut core::ffi::c_void) -> i32 {
+    1
+}
+
 // ── Phase 27: File Times ──────────────────────────────────────────────────────
 
 /// GetFileTime - retrieves the date and time a file or directory was created, last accessed, and last written
@@ -16874,5 +16938,46 @@ mod tests {
             kernel32_CloseHandle(pi.h_process as *mut core::ffi::c_void);
             kernel32_CloseHandle(pi.h_thread as *mut core::ffi::c_void);
         }
+    }
+
+    // ── Phase 43: Volume enumeration tests ───────────────────────────────────
+
+    #[test]
+    fn test_find_first_volume_returns_handle_and_path() {
+        let mut name = [0u16; 64];
+        let handle = unsafe { kernel32_FindFirstVolumeW(name.as_mut_ptr(), name.len() as u32) };
+        assert_ne!(
+            handle as usize,
+            usize::MAX,
+            "FindFirstVolumeW should not return INVALID_HANDLE_VALUE"
+        );
+        assert_ne!(handle, core::ptr::null_mut(), "Handle should be non-null");
+        // Verify the returned path starts with the expected prefix.
+        let nul = name.iter().position(|&c| c == 0).unwrap_or(name.len());
+        let path = String::from_utf16_lossy(&name[..nul]);
+        assert!(
+            path.starts_with("\\\\?\\Volume{"),
+            "Volume path should start with '\\\\?\\Volume{{'  got: {path}"
+        );
+        unsafe { kernel32_FindVolumeClose(handle) };
+    }
+
+    #[test]
+    fn test_find_next_volume_returns_no_more_files() {
+        let mut name = [0u16; 64];
+        let handle = unsafe { kernel32_FindFirstVolumeW(name.as_mut_ptr(), name.len() as u32) };
+        assert_ne!(handle as usize, usize::MAX);
+        let ret = unsafe { kernel32_FindNextVolumeW(handle, name.as_mut_ptr(), name.len() as u32) };
+        assert_eq!(ret, 0, "FindNextVolumeW should return 0 (no more volumes)");
+        unsafe { kernel32_FindVolumeClose(handle) };
+    }
+
+    #[test]
+    fn test_find_volume_close_returns_success() {
+        let mut name = [0u16; 64];
+        let handle = unsafe { kernel32_FindFirstVolumeW(name.as_mut_ptr(), name.len() as u32) };
+        assert_ne!(handle as usize, usize::MAX);
+        let ret = unsafe { kernel32_FindVolumeClose(handle) };
+        assert_eq!(ret, 1, "FindVolumeClose should return 1");
     }
 }
