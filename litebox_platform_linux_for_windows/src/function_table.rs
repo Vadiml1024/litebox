@@ -4829,6 +4829,18 @@ pub fn get_function_table() -> Vec<FunctionImpl> {
             num_params: 1,
             impl_address: crate::msvcp140::msvcp140__unordered_map_clear as *const () as usize,
         },
+        FunctionImpl {
+            name: "?insert@?$unordered_map@PEAXPEAXU?$hash@PEAX@std@@U?$equal_to@PEAX@2@V?$allocator@U?$pair@$$CBPEAXPEAX@std@@@2@@std@@QEAA?AV?$pair@_K_N@2@$$QEAV?$pair@PEAXPEAX@2@@Z",
+            dll_name: "msvcp140.dll",
+            num_params: 3,
+            impl_address: crate::msvcp140::msvcp140__unordered_map_insert as *const () as usize,
+        },
+        FunctionImpl {
+            name: "?find@?$unordered_map@PEAXPEAXU?$hash@PEAX@std@@U?$equal_to@PEAX@2@V?$allocator@U?$pair@$$CBPEAXPEAX@std@@@2@@std@@QEAA?AV?$pair@_K_N@2@PEAX@Z",
+            dll_name: "msvcp140.dll",
+            num_params: 2,
+            impl_address: crate::msvcp140::msvcp140__unordered_map_find as *const () as usize,
+        },
     ]
 }
 

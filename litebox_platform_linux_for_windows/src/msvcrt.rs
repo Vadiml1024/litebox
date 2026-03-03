@@ -7969,17 +7969,19 @@ pub unsafe extern "C" fn msvcrt__makepath_s(
 /// `size` is 0) and returns it; the caller must `free` it.
 /// If `buf` is non-null, copies the path into it; returns null and sets
 /// `errno = ERANGE` if `size` bytes are insufficient.
+/// If `buf` is non-null and `size` is <= 0, sets `errno = EINVAL` and returns null.
 ///
 /// # Safety
 /// `buf`, if non-null, must point to at least `size` writable bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn msvcrt__getcwd(buf: *mut u8, size: i32) -> *mut u8 {
-    let alloc_size = if size <= 0 {
-        libc::PATH_MAX as usize
-    } else {
-        size.unsigned_abs() as usize
-    };
     if buf.is_null() {
+        // Allocating variant: use PATH_MAX if size is 0 or negative.
+        let alloc_size = if size <= 0 {
+            libc::PATH_MAX as usize
+        } else {
+            size.unsigned_abs() as usize
+        };
         // SAFETY: malloc returns a valid pointer or null.
         let p = unsafe { libc::malloc(alloc_size) }.cast::<u8>();
         if p.is_null() {
@@ -7994,8 +7996,15 @@ pub unsafe extern "C" fn msvcrt__getcwd(buf: *mut u8, size: i32) -> *mut u8 {
         }
         return p;
     }
+    // Caller-provided buffer: size must be positive.
+    if size <= 0 {
+        // SAFETY: errno is a valid thread-local.
+        unsafe { *libc::__errno_location() = libc::EINVAL };
+        return core::ptr::null_mut();
+    }
     // SAFETY: buf is valid for size bytes; getcwd writes the path into it.
-    let ret = unsafe { libc::getcwd(buf.cast(), alloc_size) };
+    // size > 0 (checked above), so unsigned_abs() is safe.
+    let ret = unsafe { libc::getcwd(buf.cast(), size.unsigned_abs() as usize) };
     if ret.is_null() {
         // SAFETY: errno is a valid thread-local.
         unsafe { *libc::__errno_location() = libc::ERANGE };
@@ -9914,6 +9923,20 @@ mod tests {
         );
         let len = unsafe { libc::strlen(buf.as_ptr().cast()) };
         assert!(len > 0, "path must be non-empty");
+    }
+
+    #[test]
+    fn test_getcwd_buf_nonnull_size_zero_returns_null() {
+        // When buf is non-null but size is 0 (or negative), must return null with EINVAL
+        // to avoid writing PATH_MAX bytes into an undersized buffer.
+        let mut buf = [0u8; 4096];
+        let p = unsafe { msvcrt__getcwd(buf.as_mut_ptr(), 0) };
+        assert!(
+            p.is_null(),
+            "_getcwd(buf, 0) with non-null buf must return null"
+        );
+        let errno = unsafe { *libc::__errno_location() };
+        assert_eq!(errno, libc::EINVAL, "errno should be EINVAL");
     }
 
     #[test]

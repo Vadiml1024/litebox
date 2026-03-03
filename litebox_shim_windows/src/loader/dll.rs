@@ -1576,6 +1576,14 @@ impl DllManager {
                 "?clear@?$unordered_map@PEAXPEAXU?$hash@PEAX@std@@U?$equal_to@PEAX@2@V?$allocator@U?$pair@$$CBPEAXPEAX@std@@@2@@std@@QEAAXXZ",
                 MSVCP140_BASE + 85,
             ),
+            (
+                "?insert@?$unordered_map@PEAXPEAXU?$hash@PEAX@std@@U?$equal_to@PEAX@2@V?$allocator@U?$pair@$$CBPEAXPEAX@std@@@2@@std@@QEAA?AV?$pair@_K_N@2@$$QEAV?$pair@PEAXPEAX@2@@Z",
+                MSVCP140_BASE + 86,
+            ),
+            (
+                "?find@?$unordered_map@PEAXPEAXU?$hash@PEAX@std@@U?$equal_to@PEAX@2@V?$allocator@U?$pair@$$CBPEAXPEAX@std@@@2@@std@@QEAA?AV?$pair@_K_N@2@PEAX@Z",
+                MSVCP140_BASE + 87,
+            ),
         ];
 
         self.register_stub_dll("msvcp140.dll", exports);
