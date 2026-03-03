@@ -393,7 +393,7 @@ All GDI32 functions operate in headless mode: drawing is silently discarded.
 9. Phase 42 DLL exports (MSVCRT path, WS2_32 inet, msvcp140 `std::istringstream`)
 10. Phase 43 DLL exports (MSVCRT dir nav, msvcp140 `std::stringstream`/`std::unordered_map`, KERNEL32 volume enumeration)
 
-**MinGW-gated integration tests (13, require `--run-ignored ignored-only`):**
+**MinGW-gated integration tests (13, run with `cargo test -p litebox_runner_windows_on_linux_userland -- --ignored`):**
 - `test_hello_cli_program_exists` — checks hello_cli.exe is present
 - `test_math_test_program_exists` — checks math_test.exe is present
 - `test_env_test_program_exists` — checks env_test.exe is present
@@ -406,7 +406,7 @@ All GDI32 functions operate in headless mode: drawing is silently discarded.
 - `test_seh_cpp_program` — **runs** seh_cpp_test.exe; verifies 26 passed, 0 failed (MinGW C++ exceptions)
 - `test_seh_cpp_clang_program` — **runs** seh_cpp_test_clang.exe; verifies 26 passed, 0 failed (clang/MinGW C++ exceptions)
 - `test_seh_cpp_msvc_program` — **runs** seh_cpp_test_msvc.exe; verifies 21 passed, 0 failed (MSVC ABI C++ exceptions, all 10 tests)
-- `test_phase27_program` — **runs** phase27_program.exe (Phase 27 extended APIs smoke test)
+- `test_phase27_program` — **runs** phase27_test.exe (Phase 27 extended APIs smoke test)
 
 **CI-validated test programs (7 + 4 SEH):**
 
@@ -516,6 +516,6 @@ litebox_runner_windows_on_linux_userland \
 | 38 | msvcp140 `std::basic_string<wchar_t>` with MSVC x64 SSO ABI (SSO threshold=7, 32-byte layout; ctor, copy, dtor, `c_str`, `size`, `empty`, assign, append); MSVCRT directory enumeration: `_wfindfirst64i32`/`_wfindnext64i32`/`_findclose` (mutex-protected handle table, DOS-style wildcard matching via `libc::opendir/readdir`); locale-aware printf wrappers: `_printf_l`, `_fprintf_l`, `_sprintf_l`, `_snprintf_l`, `_wprintf_l` (locale ignored); +15 new tests (600 total) | ✅ Complete |
 | 39 | MSVCRT low-level POSIX-style file I/O: `_open`, `_close`, `_lseek`, `_lseeki64`, `_tell`, `_telli64`, `_eof`, `_creat`, `_commit`, `_dup`, `_dup2`, `_chsize`, `_chsize_s`, `_filelength`, `_filelengthi64`; msvcp140 `std::vector<char>` with MSVC x64 ABI (24-byte 3-pointer layout; ctor, dtor, `push_back`, `size`, `capacity`, `clear`, `data`, `reserve`); KERNEL32 extended process/job management: `GetPriorityClass`, `SetPriorityClass`, `GetProcessAffinityMask`, `SetProcessAffinityMask`, `FlushInstructionCache`, `ReadProcessMemory`, `WriteProcessMemory`, `VirtualAllocEx`, `VirtualFreeEx`, `CreateJobObjectW`, `AssignProcessToJobObject`, `IsProcessInJob`, `QueryInformationJobObject`, `SetInformationJobObject`; +35 new tests (635 total) | ✅ Complete |
 | 40 | MSVCRT stat functions: `_stat`/`_stat64`/`_fstat`/`_fstat64` (MSVC x64 ABI-compatible layout); wide-path file opens: `_wopen`, `_wsopen`, `_wstat`, `_wstat64`; WS2_32 event APIs: `WSACreateEvent`, `WSACloseEvent`, `WSAResetEvent`, `WSASetEvent`, `WSAEventSelect` (FD_* mask per socket), `WSAEnumNetworkEvents` (poll-based), `WSAWaitForMultipleEvents` (spin-sleep); `gethostbyname` (delegates to `libc::gethostbyname`); +11 new tests (646 total) | ✅ Complete |
-| 41 | msvcp140 `std::map<void*,void*>` (ctor, dtor, insert, find, size, clear); msvcp140 `std::ostringstream` (ctor, dtor, str, write, tellp, seekp); +7 new tests (~653 total) | ✅ Complete |
-| 42 | MSVCRT path manipulation: `_fullpath` (via `realpath`), `_splitpath`/`_splitpath_s` (drive/dir/fname/ext), `_makepath`/`_makepath_s`; WS2_32 inet helpers: `inet_addr`, `inet_pton`, `inet_ntop`; `WSAPoll` (wraps `libc::poll`); `WSAIoctl` (stub, WSAEOPNOTSUPP); msvcp140 `std::istringstream` (ctor, ctor-from-cstr, dtor, str, str_set, read, seekg, tellg); +~19 new tests (672 total) | ✅ Complete |
+| 41 | msvcp140 `std::map<void*,void*>` (ctor, dtor, insert, find, size, clear); msvcp140 `std::ostringstream` (ctor, dtor, str, write, tellp, seekp); +7 new tests (653 total) | ✅ Complete |
+| 42 | MSVCRT path manipulation: `_fullpath` (via `realpath`), `_splitpath`/`_splitpath_s` (drive/dir/fname/ext), `_makepath`/`_makepath_s`; WS2_32 inet helpers: `inet_addr`, `inet_pton`, `inet_ntop`; `WSAPoll` (wraps `libc::poll`); `WSAIoctl` (stub, WSAEOPNOTSUPP); msvcp140 `std::istringstream` (ctor, ctor-from-cstr, dtor, str, str_set, read, seekg, tellg); +19 new tests (672 total) | ✅ Complete |
 | 43 | msvcp140 `std::stringstream` (bidirectional: ctor, ctor-from-cstr, dtor, str, str_set, read, write, seekg, tellg, seekp, tellp); msvcp140 `std::unordered_map<void*,void*>` (ctor, dtor, insert, find, size, clear); MSVCRT directory navigation: `_getcwd`, `_chdir`, `_mkdir`, `_rmdir`; KERNEL32 volume enumeration: `FindFirstVolumeW`, `FindNextVolumeW`, `FindVolumeClose`; +33 new tests (705 total) | ✅ Complete |
