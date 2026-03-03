@@ -707,6 +707,62 @@ fn test_phase42_dll_exports_present() {
     }
 }
 
+#[test]
+fn test_phase43_dll_exports_present() {
+    use litebox_shim_windows::loader::DllManager;
+
+    let mut dll_manager = DllManager::new();
+    let kernel32 = dll_manager.load_library("KERNEL32.dll").unwrap();
+    let msvcrt = dll_manager.load_library("MSVCRT.dll").unwrap();
+    let msvcp140 = dll_manager.load_library("msvcp140.dll").unwrap();
+
+    // Check KERNEL32.dll Phase 43 additions
+    for func_name in ["FindFirstVolumeW", "FindNextVolumeW", "FindVolumeClose"] {
+        let addr = dll_manager.get_proc_address(kernel32, func_name);
+        assert!(
+            addr.is_ok(),
+            "KERNEL32.dll::{func_name} should be resolvable after Phase 43"
+        );
+    }
+
+    // Check MSVCRT.dll Phase 43 additions
+    for func_name in ["_getcwd", "_chdir", "_mkdir", "_rmdir"] {
+        let addr = dll_manager.get_proc_address(msvcrt, func_name);
+        assert!(
+            addr.is_ok(),
+            "MSVCRT.dll::{func_name} should be resolvable after Phase 43"
+        );
+    }
+
+    // Check msvcp140.dll Phase 43 additions (mangled MSVC x64 names)
+    let msvcp140_phase43_functions = vec![
+        // std::stringstream (basic_stringstream<char>) mangled names
+        "??0?$basic_stringstream@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@QEAA@H@Z",
+        "??0?$basic_stringstream@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@QEAA@AEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@2@H@Z",
+        "??1?$basic_stringstream@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@UEAA@XZ",
+        "?str@?$basic_stringstream@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@QEBA?AV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@2@XZ",
+        "?str@?$basic_stringstream@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@QEAAXAEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@2@@Z",
+        "?read@?$basic_iostream@DU?$char_traits@D@std@@@std@@QEAAAEAV12@PEAD_J@Z",
+        "?write@?$basic_iostream@DU?$char_traits@D@std@@@std@@QEAAAEAV12@PEBD_J@Z",
+        "?seekg@?$basic_iostream@DU?$char_traits@D@std@@@std@@QEAAAEAV12@V?$fpos@U_Mbstatet@@@2@@Z",
+        "?tellg@?$basic_iostream@DU?$char_traits@D@std@@@std@@QEAA?AV?$fpos@U_Mbstatet@@@2@XZ",
+        "?seekp@?$basic_iostream@DU?$char_traits@D@std@@@std@@QEAAAEAV12@V?$fpos@U_Mbstatet@@@2@@Z",
+        "?tellp@?$basic_iostream@DU?$char_traits@D@std@@@std@@QEAA?AV?$fpos@U_Mbstatet@@@2@XZ",
+        // std::unordered_map<void*,void*> mangled names
+        "??0?$unordered_map@PEAXPEAXU?$hash@PEAX@std@@U?$equal_to@PEAX@2@V?$allocator@U?$pair@$$CBPEAXPEAX@std@@@2@@std@@QEAA@XZ",
+        "??1?$unordered_map@PEAXPEAXU?$hash@PEAX@std@@U?$equal_to@PEAX@2@V?$allocator@U?$pair@$$CBPEAXPEAX@std@@@2@@std@@QEAA@XZ",
+        "?size@?$unordered_map@PEAXPEAXU?$hash@PEAX@std@@U?$equal_to@PEAX@2@V?$allocator@U?$pair@$$CBPEAXPEAX@std@@@2@@std@@QEBA_KXZ",
+        "?clear@?$unordered_map@PEAXPEAXU?$hash@PEAX@std@@U?$equal_to@PEAX@2@V?$allocator@U?$pair@$$CBPEAXPEAX@std@@@2@@std@@QEAAXXZ",
+    ];
+    for func_name in msvcp140_phase43_functions {
+        let addr = dll_manager.get_proc_address(msvcp140, func_name);
+        assert!(
+            addr.is_ok(),
+            "msvcp140.dll::{func_name} should be resolvable after Phase 43"
+        );
+    }
+}
+
 #[cfg(test)]
 mod test_program_helpers {
     use std::env;

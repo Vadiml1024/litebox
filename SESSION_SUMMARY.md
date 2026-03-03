@@ -1,8 +1,74 @@
-# Windows-on-Linux Support — Session Summary (Phase 42)
+# Windows-on-Linux Support — Session Summary (Phase 43)
 
 ## ⚡ CURRENT STATUS ⚡
 
-**Branch:** `copilot/continue-windows-linux-support-again`
+**Branch:** `copilot/continue-windows-on-linux-support`
+**Goal:** Phase 43 — `std::stringstream`, MSVCRT directory functions, `std::unordered_map`, KERNEL32 volume enumeration.
+
+### Status at checkpoint
+
+| Component | State |
+|-----------|-------|
+| All tests (709 total) | ✅ Passing |
+| Ratchet tests (5) | ✅ Passing |
+| Clippy (`-Dwarnings`) | ✅ Clean |
+
+### Files changed in this session
+- `litebox_platform_linux_for_windows/src/msvcrt.rs`
+  - Added `_getcwd` — get current working directory (delegates to `libc::getcwd`, allocates on null buf)
+  - Added `_chdir` — change current directory (delegates to `libc::chdir`)
+  - Added `_mkdir` — create directory (delegates to `libc::mkdir` with mode 0o777)
+  - Added `_rmdir` — remove directory (delegates to `libc::rmdir`)
+  - 6 unit tests for all new functions
+- `litebox_platform_linux_for_windows/src/msvcp140.rs`
+  - Added `SS_REGISTRY` global for `std::stringstream` state
+  - Added `msvcp140__stringstream_ctor` — default constructor
+  - Added `msvcp140__stringstream_ctor_str` — constructor from C string
+  - Added `msvcp140__stringstream_dtor` — destructor
+  - Added `msvcp140__stringstream_str` — get buffer as malloc'd C string
+  - Added `msvcp140__stringstream_str_set` — set buffer from C string, reset pos
+  - Added `msvcp140__stringstream_read` — read bytes from current read position
+  - Added `msvcp140__stringstream_write` — append bytes to buffer
+  - Added `msvcp140__stringstream_seekg` — seek read position
+  - Added `msvcp140__stringstream_tellg` — get read position
+  - Added `msvcp140__stringstream_seekp` — set write position (resize buffer)
+  - Added `msvcp140__stringstream_tellp` — get write position (buffer length)
+  - 5 unit tests in `tests_stringstream` module
+  - Added `UMAP_REGISTRY` global for `std::unordered_map` state
+  - Added `msvcp140__unordered_map_ctor` — constructor
+  - Added `msvcp140__unordered_map_dtor` — destructor
+  - Added `msvcp140__unordered_map_insert` — insert (key, value) pair
+  - Added `msvcp140__unordered_map_find` — look up key
+  - Added `msvcp140__unordered_map_size` — element count
+  - Added `msvcp140__unordered_map_clear` — remove all elements
+  - 3 unit tests in `tests_unordered_map` module
+  - Pre-existing clippy fix: `val as *mut u8` → `val.cast_mut()` in `tests_map`
+- `litebox_platform_linux_for_windows/src/kernel32.rs`
+  - Added `kernel32_FindFirstVolumeW` — returns sentinel handle + synthetic GUID path
+  - Added `kernel32_FindNextVolumeW` — always returns 0 with ERROR_NO_MORE_FILES
+  - Added `kernel32_FindVolumeClose` — always returns 1 (success)
+  - 3 unit tests for volume enumeration
+- `litebox_platform_linux_for_windows/src/ws2_32.rs`
+  - Pre-existing clippy fix: `libc::AF_INET as i32` → `libc::AF_INET` in 2 tests
+  - Pre-existing clippy fix: `libc::POLLIN as i16` → `libc::POLLIN` in 1 test
+- `litebox_platform_linux_for_windows/src/function_table.rs` — 22 new `FunctionImpl` entries
+- `litebox_shim_windows/src/loader/dll.rs`
+  - 3 new KERNEL32.dll stubs (0xFA–0xFC): FindFirstVolumeW, FindNextVolumeW, FindVolumeClose
+  - 4 new MSVCRT.dll stubs (0x107–0x10A): _getcwd, _chdir, _mkdir, _rmdir
+  - 15 new msvcp140.dll stubs (71–85): stringstream (11) + unordered_map (4)
+- `litebox_runner_windows_on_linux_userland/tests/integration.rs` — Phase 43 resolution test block
+- `dev_tests/src/ratchet.rs` — updated globals count 65→67 for SS_REGISTRY + UMAP_REGISTRY
+
+### Next phase suggestions
+- **Phase 44**: `std::deque<T>` basic stubs (ctor, dtor, push_back, pop_front, front, back, size, clear)
+- **Phase 44**: More MSVCRT: `_tempnam`, `_mktemp`, `tmpnam`, `tmpfile`
+- **Phase 44**: More KERNEL32: `GetVolumePathNamesForVolumeNameW`, `GetVolumeInformationW`
+- **Phase 44**: `std::stack<T>` / `std::queue<T>` basic stubs
+- **Phase 44**: More WinSock: `getservbyname`, `getservbyport`, `getprotobyname`
+
+---
+
+
 **Goal:** Phase 42 — MSVCRT path manipulation, WS2_32 networking, msvcp140 istringstream.
 
 ### Status at checkpoint
