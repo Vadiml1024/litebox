@@ -7651,7 +7651,9 @@ pub unsafe extern "C" fn msvcrt__wstat64(wpath: *const u16, buf: *mut WinStat64)
 
 /// `_fullpath(buffer, path, maxlen)` — resolve an absolute path.
 ///
-/// If `buffer` is null, allocates a buffer of `maxlen` bytes via `malloc`.
+/// If `buffer` is null, allocates a heap buffer for the result (caller must `free`).
+/// If `buffer` is non-null, copies the resolved path into it only if it fits in `maxlen`
+/// bytes; sets `errno = ERANGE` and returns null if the result is too long.
 /// Returns null if `path` is null (sets `errno = EINVAL`).
 ///
 /// # Safety
@@ -7668,31 +7670,47 @@ pub unsafe extern "C" fn msvcrt__fullpath(
         unsafe { *libc::__errno_location() = libc::EINVAL };
         return core::ptr::null_mut();
     }
-    let buf_ptr = if buffer.is_null() {
-        // SAFETY: maxlen >= 1 is the caller's responsibility; we pass it through.
-        unsafe { libc::malloc(maxlen) }.cast::<u8>()
-    } else {
-        buffer
-    };
-    if buf_ptr.is_null() {
+
+    if buffer.is_null() {
+        // When buffer is null, let libc allocate a suitably-sized buffer.
+        // SAFETY: path is non-null (validated above) and a valid NUL-terminated string;
+        //         null dst asks libc to allocate a PATH_MAX-sized buffer for the result.
+        let ret = unsafe { libc::realpath(path.cast(), core::ptr::null_mut()) };
+        return ret.cast::<u8>();
+    }
+
+    // Caller-provided buffer: use a libc-allocated temp to avoid writing past maxlen.
+    // SAFETY: path is non-null (validated above) and a valid NUL-terminated string;
+    //         null dst asks libc to allocate a PATH_MAX-sized buffer for the result.
+    let tmp = unsafe { libc::realpath(path.cast(), core::ptr::null_mut()) };
+    if tmp.is_null() {
         return core::ptr::null_mut();
     }
-    // SAFETY: path is a valid NUL-terminated string; buf_ptr is valid for maxlen bytes.
-    let ret = unsafe { libc::realpath(path.cast(), buf_ptr.cast()) };
-    if ret.is_null() && buffer.is_null() {
-        // SAFETY: buf_ptr was allocated by malloc above.
-        unsafe { libc::free(buf_ptr.cast()) };
+    // SAFETY: tmp is a valid NUL-terminated string returned by realpath.
+    let len = unsafe { libc::strlen(tmp) };
+    if len + 1 > maxlen {
+        // Result does not fit in caller's buffer.
+        // SAFETY: tmp was allocated by libc in the realpath call above.
+        unsafe {
+            libc::free(tmp.cast());
+            *libc::__errno_location() = libc::ERANGE;
+        }
         return core::ptr::null_mut();
     }
-    if ret.is_null() {
-        return core::ptr::null_mut();
+    // Copy resolved path including NUL into caller's buffer.
+    // SAFETY: buffer is valid for maxlen bytes; len + 1 <= maxlen; tmp is valid for len+1 bytes.
+    unsafe {
+        core::ptr::copy_nonoverlapping(tmp.cast::<u8>(), buffer, len + 1);
+        libc::free(tmp.cast());
     }
-    buf_ptr
+    buffer
 }
 
 /// `_splitpath(path, drive, dir, fname, ext)` — split a path into components.
 ///
-/// Drive is always set to empty string on Linux (no drive letters).
+/// If a leading `X:` drive component is found it is written to `drive`; otherwise `drive`
+/// is set to an empty string.  On Linux paths starting with `/` no drive component is
+/// present, so `drive` will be empty for those paths.
 /// All output pointers may be null (component is skipped).
 ///
 /// # Safety
@@ -7714,7 +7732,7 @@ pub unsafe extern "C" fn msvcrt__splitpath(
     // SAFETY: path is valid for len bytes.
     let bytes = unsafe { core::slice::from_raw_parts(path, len) };
 
-    // Drive: check for "X:" pattern — on Linux we always produce "".
+    // Drive: extract leading "X:" pattern if present; otherwise empty.
     let (drive_part, rest) = if bytes.len() >= 2 && bytes[1] == b':' {
         (&bytes[..2], &bytes[2..])
     } else {
@@ -9611,5 +9629,166 @@ mod tests {
         assert_eq!(ret, 0);
         assert!(fd >= 0);
         unsafe { libc::close(fd) };
+    }
+
+    // ── Phase 42 path manipulation tests ──────────────────────────────────────
+
+    #[test]
+    fn test_fullpath_null_path_returns_null() {
+        let mut buf = [0u8; 256];
+        let ret = unsafe { msvcrt__fullpath(buf.as_mut_ptr(), core::ptr::null(), 256) };
+        assert!(ret.is_null());
+        let errno = unsafe { *libc::__errno_location() };
+        assert_eq!(errno, libc::EINVAL);
+    }
+
+    #[test]
+    fn test_fullpath_allocates_when_buffer_is_null() {
+        let path = b"/etc/hostname\0";
+        let ret = unsafe { msvcrt__fullpath(core::ptr::null_mut(), path.as_ptr(), 0) };
+        assert!(!ret.is_null());
+        // SAFETY: ret is a valid NUL-terminated string returned by realpath/malloc.
+        unsafe { libc::free(ret.cast()) };
+    }
+
+    #[test]
+    fn test_fullpath_into_provided_buffer() {
+        let path = b"/etc/hostname\0";
+        let mut buf = [0u8; 512];
+        let ret = unsafe { msvcrt__fullpath(buf.as_mut_ptr(), path.as_ptr(), 512) };
+        assert!(!ret.is_null());
+        assert_eq!(ret, buf.as_mut_ptr());
+        // Result should start with '/'
+        assert_eq!(buf[0], b'/');
+    }
+
+    #[test]
+    fn test_fullpath_buffer_too_small_returns_null() {
+        let path = b"/etc/hostname\0";
+        let mut buf = [0u8; 2]; // Too small for any real path
+        let ret = unsafe { msvcrt__fullpath(buf.as_mut_ptr(), path.as_ptr(), 2) };
+        // Should fail with ERANGE
+        assert!(ret.is_null());
+        let errno = unsafe { *libc::__errno_location() };
+        assert_eq!(errno, libc::ERANGE);
+    }
+
+    #[test]
+    fn test_splitpath_unix_path() {
+        let path = b"/usr/lib/libfoo.so\0";
+        let mut drive = [0u8; 8];
+        let mut dir = [0u8; 64];
+        let mut fname = [0u8; 32];
+        let mut ext = [0u8; 16];
+        unsafe {
+            msvcrt__splitpath(
+                path.as_ptr(),
+                drive.as_mut_ptr(),
+                dir.as_mut_ptr(),
+                fname.as_mut_ptr(),
+                ext.as_mut_ptr(),
+            );
+        }
+        assert_eq!(drive[0], 0, "no drive on Linux");
+        assert_eq!(&dir[..9], b"/usr/lib/");
+        assert_eq!(&fname[..6], b"libfoo");
+        assert_eq!(&ext[..3], b".so");
+    }
+
+    #[test]
+    fn test_splitpath_windows_path_with_drive() {
+        let path = b"C:\\dir\\file.txt\0";
+        let mut drive = [0u8; 8];
+        let mut dir = [0u8; 64];
+        let mut fname = [0u8; 32];
+        let mut ext = [0u8; 16];
+        unsafe {
+            msvcrt__splitpath(
+                path.as_ptr(),
+                drive.as_mut_ptr(),
+                dir.as_mut_ptr(),
+                fname.as_mut_ptr(),
+                ext.as_mut_ptr(),
+            );
+        }
+        assert_eq!(&drive[..2], b"C:");
+        assert_eq!(&dir[..5], b"\\dir\\");
+        assert_eq!(&fname[..4], b"file");
+        assert_eq!(&ext[..4], b".txt");
+    }
+
+    #[test]
+    fn test_splitpath_s_buffer_too_small_returns_erange() {
+        let path = b"/usr/lib/libfoo.so\0";
+        let mut dir = [0u8; 2]; // Too small
+        let ret = unsafe {
+            msvcrt__splitpath_s(
+                path.as_ptr(),
+                core::ptr::null_mut(),
+                0,
+                dir.as_mut_ptr(),
+                2,
+                core::ptr::null_mut(),
+                0,
+                core::ptr::null_mut(),
+                0,
+            )
+        };
+        assert_eq!(ret, libc::ERANGE);
+    }
+
+    #[test]
+    fn test_splitpath_s_null_path_returns_einval() {
+        let ret = unsafe {
+            msvcrt__splitpath_s(
+                core::ptr::null(),
+                core::ptr::null_mut(),
+                0,
+                core::ptr::null_mut(),
+                0,
+                core::ptr::null_mut(),
+                0,
+                core::ptr::null_mut(),
+                0,
+            )
+        };
+        assert_eq!(ret, libc::EINVAL);
+    }
+
+    #[test]
+    fn test_makepath_basic() {
+        let mut buf = [0u8; 128];
+        let drive = b"C:\0";
+        let dir = b"\\dir\\\0";
+        let fname = b"file\0";
+        let ext = b".txt\0";
+        unsafe {
+            msvcrt__makepath(
+                buf.as_mut_ptr(),
+                drive.as_ptr(),
+                dir.as_ptr(),
+                fname.as_ptr(),
+                ext.as_ptr(),
+            );
+        }
+        let result = core::ffi::CStr::from_bytes_until_nul(&buf).unwrap();
+        assert_eq!(result.to_bytes(), b"C:\\dir\\file.txt");
+    }
+
+    #[test]
+    fn test_makepath_s_overflow_returns_erange() {
+        let mut buf = [0u8; 4]; // Too small
+        let fname = b"very_long_filename\0";
+        let ret = unsafe {
+            msvcrt__makepath_s(
+                buf.as_mut_ptr(),
+                4,
+                core::ptr::null(),
+                core::ptr::null(),
+                fname.as_ptr(),
+                core::ptr::null(),
+            )
+        };
+        assert_eq!(ret, libc::ERANGE);
     }
 }
