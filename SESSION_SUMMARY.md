@@ -1,3 +1,58 @@
+# Windows-on-Linux Support — Session Summary (Phase 42)
+
+## ⚡ CURRENT STATUS ⚡
+
+**Branch:** `copilot/continue-windows-linux-support-again`
+**Goal:** Phase 42 — MSVCRT path manipulation, WS2_32 networking, msvcp140 istringstream.
+
+### Status at checkpoint
+
+| Component | State |
+|-----------|-------|
+| All tests (672 total) | ✅ Passing |
+| Ratchet tests (5) | ✅ Passing |
+| Clippy (`-Dwarnings`) | ✅ Clean |
+
+### Files changed in this session
+- `litebox_platform_linux_for_windows/src/msvcrt.rs`
+  - Added `_fullpath` — resolves absolute path via `realpath()`
+  - Added `_splitpath` — splits path into drive/dir/fname/ext components
+  - Added `_splitpath_s` — safe version of `_splitpath` with length parameters
+  - Added `build_makepath` private helper
+  - Added `_makepath` — builds path from components
+  - Added `_makepath_s` — safe version of `_makepath`
+  - Unit tests for all new functions
+- `litebox_platform_linux_for_windows/src/ws2_32.rs`
+  - Added `WSAIoctl` — stub returning SOCKET_ERROR + WSAEOPNOTSUPP
+  - Added `inet_addr` — converts dotted-decimal IPv4 to binary via `libc::inet_addr`
+  - Added `inet_pton` — converts text address to binary via `libc::inet_pton`
+  - Added `inet_ntop` — converts binary address to text via `libc::inet_ntop`
+  - Added `WSAPoll` — wraps `libc::poll`
+- `litebox_platform_linux_for_windows/src/msvcp140.rs`
+  - Added `ISS_REGISTRY` global for `std::istringstream` state
+  - Added `msvcp140__istringstream_ctor` — default constructor
+  - Added `msvcp140__istringstream_ctor_str` — constructor from C string
+  - Added `msvcp140__istringstream_dtor` — destructor
+  - Added `msvcp140__istringstream_str` — get buffer as malloc'd C string
+  - Added `msvcp140__istringstream_str_set` — set buffer from C string, reset pos
+  - Added `msvcp140__istringstream_read` — read bytes from current position
+  - Added `msvcp140__istringstream_seekg` — seek read position
+  - Added `msvcp140__istringstream_tellg` — get read position
+  - 6 unit tests in `tests_istringstream` module
+- `litebox_platform_linux_for_windows/src/function_table.rs` — 18 new `FunctionImpl` entries
+- `litebox_shim_windows/src/loader/dll.rs` — 5 MSVCRT stubs (0x102–0x106), 5 WS2_32 stubs (0x2A–0x2E), 8 msvcp140 stubs (63–70)
+- `litebox_runner_windows_on_linux_userland/tests/integration.rs` — Phase 42 resolution test block
+- `dev_tests/src/ratchet.rs` — updated globals count 64→65 for ISS_REGISTRY
+
+### Next phase suggestions
+- **Phase 43**: `std::stringstream` (bidirectional: combines istringstream + ostringstream)
+- **Phase 43**: More MSVCRT path: `_getcwd`, `_chdir`, `_mkdir`, `_rmdir`
+- **Phase 43**: More WinSock: `WSAStartup` improvements, `getaddrinfo`/`freeaddrinfo` edge cases
+- **Phase 43**: `std::unordered_map<K,V>` basic stubs (ctor, dtor, insert, find, size, clear)
+- **Phase 43**: More KERNEL32: `FindFirstVolumeW`, `FindNextVolumeW`, `FindVolumeClose`
+
+---
+
 # Windows-on-Linux Support — Session Summary (Phase 40)
 
 ## ⚡ CURRENT STATUS ⚡

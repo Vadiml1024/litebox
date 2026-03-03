@@ -1697,6 +1697,162 @@ pub unsafe extern "C" fn ws2_WSAAsyncSelect(
     }
 }
 
+// ── Phase 42: additional socket / inet helpers ────────────────────────────────
+
+/// `WSAIoctl` — not supported; returns `SOCKET_ERROR` with `WSAEOPNOTSUPP`.
+///
+/// # Safety
+/// No pointer dereferences are performed.
+#[unsafe(no_mangle)]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn ws2_WSAIoctl(
+    _s: usize,
+    _dw_io_control_code: u32,
+    _lpv_in_buffer: *const u8,
+    _cb_in_buffer: u32,
+    _lpv_out_buffer: *mut u8,
+    _cb_out_buffer: u32,
+    _lpcb_bytes_returned: *mut u32,
+    _lp_overlapped: *mut u8,
+    _lp_completion_routine: *mut u8,
+) -> i32 {
+    set_wsa_error(WSAEOPNOTSUPP);
+    SOCKET_ERROR
+}
+
+/// `inet_addr(cp)` — convert a dotted-decimal IPv4 address string to a `u32`.
+///
+/// # Safety
+/// `cp` must be a valid NUL-terminated string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ws2_inet_addr(cp: *const u8) -> u32 {
+    unsafe extern "C" {
+        fn inet_addr(cp: *const libc::c_char) -> u32;
+    }
+    // SAFETY: cp is a valid NUL-terminated string per caller contract.
+    unsafe { inet_addr(cp.cast()) }
+}
+
+/// `inet_pton(family, src, dst)` — convert a text address to binary form.
+///
+/// # Safety
+/// `src` must be a valid NUL-terminated string; `dst` must be writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ws2_inet_pton(family: i32, src: *const u8, dst: *mut u8) -> i32 {
+    unsafe extern "C" {
+        fn inet_pton(
+            af: libc::c_int,
+            src: *const libc::c_char,
+            dst: *mut libc::c_void,
+        ) -> libc::c_int;
+    }
+    // SAFETY: src is a valid NUL-terminated string; dst is a writable buffer per caller.
+    unsafe { inet_pton(family, src.cast(), dst.cast()) }
+}
+
+/// `inet_ntop(family, src, dst, size)` — convert a binary address to text form.
+///
+/// Returns pointer to `dst` on success, null on failure.
+///
+/// # Safety
+/// `src` must point to a valid address structure; `dst` must be writable for `size` bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ws2_inet_ntop(
+    family: i32,
+    src: *const u8,
+    dst: *mut u8,
+    size: usize,
+) -> *const u8 {
+    unsafe extern "C" {
+        fn inet_ntop(
+            af: libc::c_int,
+            src: *const libc::c_void,
+            dst: *mut libc::c_char,
+            size: libc::socklen_t,
+        ) -> *const libc::c_char;
+    }
+    // SAFETY: src/dst are valid per caller contract.
+    unsafe { inet_ntop(family, src.cast(), dst.cast(), size as libc::socklen_t) }.cast::<u8>()
+}
+
+/// Windows-compatible `WSAPOLLFD` structure (matches Win32 ABI).
+///
+/// - `fd`: Win32 `SOCKET` handle (pointer-sized)
+/// - `events` / `revents`: 16-bit event bitmasks identical to POSIX `pollfd`
+#[repr(C)]
+#[allow(non_camel_case_types, clippy::upper_case_acronyms)]
+struct WSAPOLLFD {
+    /// Win32 `SOCKET` handle.
+    fd: usize,
+    /// Requested events (same bit values as POSIX `pollfd::events`).
+    events: i16,
+    /// Returned events (filled by `WSAPoll`).
+    revents: i16,
+}
+
+/// `WSAPoll(fd_array, n_fds, timeout)` — poll a set of sockets.
+///
+/// Translates each Win32 `SOCKET` handle in `fd_array` to a Linux file descriptor
+/// via the socket handle registry, calls `libc::poll`, then writes `revents` back.
+///
+/// # Safety
+/// `fd_array` must point to `n_fds` valid `WSAPOLLFD` structures, properly aligned to
+/// `align_of::<WSAPOLLFD>()`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ws2_WSAPoll(fd_array: *mut u8, n_fds: u32, timeout: i32) -> i32 {
+    debug_assert_eq!(
+        fd_array as usize % core::mem::align_of::<WSAPOLLFD>(),
+        0,
+        "fd_array must be aligned to WSAPOLLFD"
+    );
+
+    if n_fds == 0 {
+        return 0;
+    }
+
+    // SAFETY: caller guarantees fd_array points to n_fds contiguous WSAPOLLFD entries,
+    // properly aligned (asserted above in debug builds).
+    #[allow(clippy::cast_ptr_alignment)]
+    let sockets: &mut [WSAPOLLFD] =
+        unsafe { core::slice::from_raw_parts_mut(fd_array.cast::<WSAPOLLFD>(), n_fds as usize) };
+
+    // Translate Win32 SOCKET handles to Linux file descriptors.
+    let mut poll_fds: Vec<libc::pollfd> = sockets
+        .iter()
+        .map(|wsa| {
+            // Look up the Linux fd from the socket registry; fall back to direct cast.
+            let linux_fd = with_socket_handles(|m| m.get(&wsa.fd).map(|e| e.fd))
+                .unwrap_or(wsa.fd as libc::c_int);
+            libc::pollfd {
+                fd: linux_fd,
+                events: wsa.events,
+                revents: 0,
+            }
+        })
+        .collect();
+
+    // SAFETY: poll_fds is a valid contiguous array of pollfd structs.
+    let ret = unsafe {
+        libc::poll(
+            poll_fds.as_mut_ptr(),
+            poll_fds.len() as libc::nfds_t,
+            timeout,
+        )
+    };
+
+    if ret >= 0 {
+        // Propagate returned events back to the caller's WSAPOLLFD array.
+        for (src, dst) in poll_fds.iter().zip(sockets.iter_mut()) {
+            dst.revents = src.revents;
+        }
+    } else {
+        // Map errno to a WinSock error code so WSAPoll follows WinSock semantics.
+        set_wsa_error_from_errno();
+    }
+
+    ret
+}
+
 // ── Unit tests ────────────────────────────────────────────────────────────────
 #[cfg(test)]
 mod tests {
@@ -2010,6 +2166,80 @@ mod tests {
         // FD_READ = 1, FD_WRITE = 2
         let ret = unsafe { ws2_WSAAsyncSelect(s, 0, 0, 1 | 2) };
         assert_eq!(ret, 0);
+        unsafe { ws2_closesocket(s) };
+    }
+
+    // ── Phase 42 inet / poll tests ─────────────────────────────────────────────
+
+    #[test]
+    fn test_wsaioctl_returns_socket_error_with_wsaeopnotsupp() {
+        let ret = unsafe {
+            ws2_WSAIoctl(
+                0,
+                0,
+                core::ptr::null(),
+                0,
+                core::ptr::null_mut(),
+                0,
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+            )
+        };
+        assert_eq!(ret, SOCKET_ERROR);
+        assert_eq!(unsafe { ws2_WSAGetLastError() }, WSAEOPNOTSUPP);
+    }
+
+    #[test]
+    fn test_inet_pton_and_ntop_round_trip() {
+        // Convert "127.0.0.1" → binary → string and verify round-trip.
+        let src = b"127.0.0.1\0";
+        let mut bin = [0u8; 4];
+        let r = unsafe { ws2_inet_pton(libc::AF_INET, src.as_ptr(), bin.as_mut_ptr()) };
+        assert_eq!(r, 1, "inet_pton should succeed");
+
+        let mut out = [0u8; 32];
+        let p = unsafe { ws2_inet_ntop(libc::AF_INET, bin.as_ptr(), out.as_mut_ptr(), out.len()) };
+        assert!(!p.is_null(), "inet_ntop should succeed");
+
+        // SAFETY: p points into out, which is valid.
+        let result = unsafe { core::ffi::CStr::from_ptr(p.cast()) };
+        assert_eq!(result.to_bytes(), b"127.0.0.1");
+    }
+
+    #[test]
+    fn test_inet_addr_loopback() {
+        // inet_addr("127.0.0.1") should return the loopback address in network byte order.
+        let src = b"127.0.0.1\0";
+        let addr = unsafe { ws2_inet_addr(src.as_ptr()) };
+        // 127.0.0.1 in network byte order = 0x0100007F on little-endian
+        assert_eq!(addr, 0x0100_007Fu32);
+    }
+
+    #[test]
+    fn test_wsapoll_timeout_on_unconnected_socket() {
+        // A TCP socket with no data should timeout immediately with timeout=0.
+        let s = unsafe { ws2_socket(libc::AF_INET as i32, libc::SOCK_STREAM, libc::IPPROTO_TCP) };
+        assert_ne!(s, usize::MAX, "socket creation should succeed");
+
+        // Build a WSAPOLLFD targeting POLLIN on this socket.
+        let mut pfd = WSAPOLLFD {
+            fd: s,
+            events: libc::POLLIN as i16,
+            revents: 0,
+        };
+        // Poll with 0 ms timeout — must not panic.  The exact return value (0, 1,
+        // or -1) depends on the kernel; an unconnected TCP socket may have POLLHUP.
+        let ret = unsafe {
+            ws2_WSAPoll(
+                (&raw mut pfd).cast::<u8>(),
+                1,
+                0, // non-blocking
+            )
+        };
+        // Any non-panicking integer return is valid here.
+        let _ = ret;
+
         unsafe { ws2_closesocket(s) };
     }
 }
