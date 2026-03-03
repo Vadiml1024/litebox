@@ -4841,6 +4841,205 @@ pub fn get_function_table() -> Vec<FunctionImpl> {
             num_params: 2,
             impl_address: crate::msvcp140::msvcp140__unordered_map_find as *const () as usize,
         },
+        // Phase 44: std::deque<void*>
+        FunctionImpl {
+            name: "??0?$deque@PEAXV?$allocator@PEAX@std@@@std@@QEAA@XZ",
+            dll_name: "msvcp140.dll",
+            num_params: 1,
+            impl_address: crate::msvcp140::msvcp140__deque_ctor as *const () as usize,
+        },
+        FunctionImpl {
+            name: "??1?$deque@PEAXV?$allocator@PEAX@std@@@std@@UEAA@XZ",
+            dll_name: "msvcp140.dll",
+            num_params: 1,
+            impl_address: crate::msvcp140::msvcp140__deque_dtor as *const () as usize,
+        },
+        FunctionImpl {
+            name: "?push_back@?$deque@PEAXV?$allocator@PEAX@std@@@std@@QEAAXPEAX@Z",
+            dll_name: "msvcp140.dll",
+            num_params: 2,
+            impl_address: crate::msvcp140::msvcp140__deque_push_back as *const () as usize,
+        },
+        FunctionImpl {
+            name: "?push_front@?$deque@PEAXV?$allocator@PEAX@std@@@std@@QEAAXPEAX@Z",
+            dll_name: "msvcp140.dll",
+            num_params: 2,
+            impl_address: crate::msvcp140::msvcp140__deque_push_front as *const () as usize,
+        },
+        FunctionImpl {
+            name: "?pop_front@?$deque@PEAXV?$allocator@PEAX@std@@@std@@QEAAXXZ",
+            dll_name: "msvcp140.dll",
+            num_params: 1,
+            impl_address: crate::msvcp140::msvcp140__deque_pop_front as *const () as usize,
+        },
+        FunctionImpl {
+            name: "?pop_back@?$deque@PEAXV?$allocator@PEAX@std@@@std@@QEAAXXZ",
+            dll_name: "msvcp140.dll",
+            num_params: 1,
+            impl_address: crate::msvcp140::msvcp140__deque_pop_back as *const () as usize,
+        },
+        FunctionImpl {
+            name: "?front@?$deque@PEAXV?$allocator@PEAX@std@@@std@@QEAAAEAPEAXXZ",
+            dll_name: "msvcp140.dll",
+            num_params: 1,
+            impl_address: crate::msvcp140::msvcp140__deque_front as *const () as usize,
+        },
+        FunctionImpl {
+            name: "?back@?$deque@PEAXV?$allocator@PEAX@std@@@std@@QEAAAEAPEAXXZ",
+            dll_name: "msvcp140.dll",
+            num_params: 1,
+            impl_address: crate::msvcp140::msvcp140__deque_back as *const () as usize,
+        },
+        FunctionImpl {
+            name: "?size@?$deque@PEAXV?$allocator@PEAX@std@@@std@@QEBA_KXZ",
+            dll_name: "msvcp140.dll",
+            num_params: 1,
+            impl_address: crate::msvcp140::msvcp140__deque_size as *const () as usize,
+        },
+        FunctionImpl {
+            name: "?clear@?$deque@PEAXV?$allocator@PEAX@std@@@std@@QEAAXXZ",
+            dll_name: "msvcp140.dll",
+            num_params: 1,
+            impl_address: crate::msvcp140::msvcp140__deque_clear as *const () as usize,
+        },
+        // Phase 44: std::stack<void*>
+        FunctionImpl {
+            name: "??0?$stack@PEAXV?$deque@PEAXV?$allocator@PEAX@std@@@std@@@std@@QEAA@XZ",
+            dll_name: "msvcp140.dll",
+            num_params: 1,
+            impl_address: crate::msvcp140::msvcp140__stack_ctor as *const () as usize,
+        },
+        FunctionImpl {
+            name: "??1?$stack@PEAXV?$deque@PEAXV?$allocator@PEAX@std@@@std@@@std@@UEAA@XZ",
+            dll_name: "msvcp140.dll",
+            num_params: 1,
+            impl_address: crate::msvcp140::msvcp140__stack_dtor as *const () as usize,
+        },
+        FunctionImpl {
+            name: "?push@?$stack@PEAXV?$deque@PEAXV?$allocator@PEAX@std@@@std@@@std@@QEAAXPEAX@Z",
+            dll_name: "msvcp140.dll",
+            num_params: 2,
+            impl_address: crate::msvcp140::msvcp140__stack_push as *const () as usize,
+        },
+        FunctionImpl {
+            name: "?pop@?$stack@PEAXV?$deque@PEAXV?$allocator@PEAX@std@@@std@@@std@@QEAAXXZ",
+            dll_name: "msvcp140.dll",
+            num_params: 1,
+            impl_address: crate::msvcp140::msvcp140__stack_pop as *const () as usize,
+        },
+        FunctionImpl {
+            name: "?top@?$stack@PEAXV?$deque@PEAXV?$allocator@PEAX@std@@@std@@@std@@QEAAAEAPEAXXZ",
+            dll_name: "msvcp140.dll",
+            num_params: 1,
+            impl_address: crate::msvcp140::msvcp140__stack_top as *const () as usize,
+        },
+        FunctionImpl {
+            name: "?size@?$stack@PEAXV?$deque@PEAXV?$allocator@PEAX@std@@@std@@@std@@QEBA_KXZ",
+            dll_name: "msvcp140.dll",
+            num_params: 1,
+            impl_address: crate::msvcp140::msvcp140__stack_size as *const () as usize,
+        },
+        FunctionImpl {
+            name: "?empty@?$stack@PEAXV?$deque@PEAXV?$allocator@PEAX@std@@@std@@@std@@QEBA_NXZ",
+            dll_name: "msvcp140.dll",
+            num_params: 1,
+            impl_address: crate::msvcp140::msvcp140__stack_empty as *const () as usize,
+        },
+        // Phase 44: std::queue<void*>
+        FunctionImpl {
+            name: "??0?$queue@PEAXV?$deque@PEAXV?$allocator@PEAX@std@@@std@@@std@@QEAA@XZ",
+            dll_name: "msvcp140.dll",
+            num_params: 1,
+            impl_address: crate::msvcp140::msvcp140__queue_ctor as *const () as usize,
+        },
+        FunctionImpl {
+            name: "??1?$queue@PEAXV?$deque@PEAXV?$allocator@PEAX@std@@@std@@@std@@UEAA@XZ",
+            dll_name: "msvcp140.dll",
+            num_params: 1,
+            impl_address: crate::msvcp140::msvcp140__queue_dtor as *const () as usize,
+        },
+        FunctionImpl {
+            name: "?push@?$queue@PEAXV?$deque@PEAXV?$allocator@PEAX@std@@@std@@@std@@QEAAXPEAX@Z",
+            dll_name: "msvcp140.dll",
+            num_params: 2,
+            impl_address: crate::msvcp140::msvcp140__queue_push as *const () as usize,
+        },
+        FunctionImpl {
+            name: "?pop@?$queue@PEAXV?$deque@PEAXV?$allocator@PEAX@std@@@std@@@std@@QEAAXXZ",
+            dll_name: "msvcp140.dll",
+            num_params: 1,
+            impl_address: crate::msvcp140::msvcp140__queue_pop as *const () as usize,
+        },
+        FunctionImpl {
+            name: "?front@?$queue@PEAXV?$deque@PEAXV?$allocator@PEAX@std@@@std@@@std@@QEAAAEAPEAXXZ",
+            dll_name: "msvcp140.dll",
+            num_params: 1,
+            impl_address: crate::msvcp140::msvcp140__queue_front as *const () as usize,
+        },
+        FunctionImpl {
+            name: "?back@?$queue@PEAXV?$deque@PEAXV?$allocator@PEAX@std@@@std@@@std@@QEAAAEAPEAXXZ",
+            dll_name: "msvcp140.dll",
+            num_params: 1,
+            impl_address: crate::msvcp140::msvcp140__queue_back as *const () as usize,
+        },
+        FunctionImpl {
+            name: "?size@?$queue@PEAXV?$deque@PEAXV?$allocator@PEAX@std@@@std@@@std@@QEBA_KXZ",
+            dll_name: "msvcp140.dll",
+            num_params: 1,
+            impl_address: crate::msvcp140::msvcp140__queue_size as *const () as usize,
+        },
+        FunctionImpl {
+            name: "?empty@?$queue@PEAXV?$deque@PEAXV?$allocator@PEAX@std@@@std@@@std@@QEBA_NXZ",
+            dll_name: "msvcp140.dll",
+            num_params: 1,
+            impl_address: crate::msvcp140::msvcp140__queue_empty as *const () as usize,
+        },
+        // Phase 44: MSVCRT temp functions
+        FunctionImpl {
+            name: "tmpnam",
+            dll_name: "MSVCRT.dll",
+            num_params: 1,
+            impl_address: crate::msvcrt::msvcrt_tmpnam as *const () as usize,
+        },
+        FunctionImpl {
+            name: "_mktemp",
+            dll_name: "MSVCRT.dll",
+            num_params: 1,
+            impl_address: crate::msvcrt::msvcrt__mktemp as *const () as usize,
+        },
+        FunctionImpl {
+            name: "_tempnam",
+            dll_name: "MSVCRT.dll",
+            num_params: 2,
+            impl_address: crate::msvcrt::msvcrt__tempnam as *const () as usize,
+        },
+        // Phase 44: WS2_32 service/protocol lookup
+        FunctionImpl {
+            name: "getservbyname",
+            dll_name: "WS2_32.dll",
+            num_params: 2,
+            impl_address: crate::ws2_32::ws2_getservbyname as *const () as usize,
+        },
+        FunctionImpl {
+            name: "getservbyport",
+            dll_name: "WS2_32.dll",
+            num_params: 2,
+            impl_address: crate::ws2_32::ws2_getservbyport as *const () as usize,
+        },
+        FunctionImpl {
+            name: "getprotobyname",
+            dll_name: "WS2_32.dll",
+            num_params: 1,
+            impl_address: crate::ws2_32::ws2_getprotobyname as *const () as usize,
+        },
+        // Phase 44: KERNEL32 volume paths
+        FunctionImpl {
+            name: "GetVolumePathNamesForVolumeNameW",
+            dll_name: "KERNEL32.dll",
+            num_params: 4,
+            impl_address: crate::kernel32::kernel32_GetVolumePathNamesForVolumeNameW as *const ()
+                as usize,
+        },
     ]
 }
 

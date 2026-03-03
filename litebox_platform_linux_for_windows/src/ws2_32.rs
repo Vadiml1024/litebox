@@ -49,6 +49,7 @@ const WSAENOTCONN: i32 = 10057;
 const WSAESHUTDOWN: i32 = 10058;
 const WSAENOPROTOOPT: i32 = 10042;
 const WSAHOST_NOT_FOUND: i32 = 11001;
+const WSANO_DATA: i32 = 11004;
 
 // WinSock constants
 const INVALID_SOCKET: usize = usize::MAX;
@@ -1665,6 +1666,63 @@ pub unsafe extern "C" fn ws2_gethostbyname(name: *const u8) -> *mut libc::hosten
     result
 }
 
+// SAFETY: POSIX legacy functions; caller ensures pointer validity.
+unsafe extern "C" {
+    fn getservbyname(name: *const libc::c_char, proto: *const libc::c_char) -> *mut libc::servent;
+    fn getservbyport(port: libc::c_int, proto: *const libc::c_char) -> *mut libc::servent;
+    fn getprotobyname(name: *const libc::c_char) -> *mut libc::protoent;
+}
+
+/// `getservbyname(name, proto)` — look up a service by name.
+///
+/// # Safety
+/// `name` must be a non-null NUL-terminated C string. `proto` may be null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ws2_getservbyname(name: *const u8, proto: *const u8) -> *mut u8 {
+    if name.is_null() {
+        set_wsa_error(WSAEFAULT);
+        return core::ptr::null_mut();
+    }
+    // SAFETY: name is a valid NUL-terminated string per caller's contract.
+    let result = unsafe { getservbyname(name.cast(), proto.cast()) };
+    if result.is_null() {
+        set_wsa_error(WSANO_DATA);
+    }
+    result.cast()
+}
+
+/// `getservbyport(port, proto)` — look up a service by port number.
+///
+/// # Safety
+/// `proto` must be null or a valid NUL-terminated C string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ws2_getservbyport(port: i32, proto: *const u8) -> *mut u8 {
+    // SAFETY: proto is null or a valid NUL-terminated string per caller's contract.
+    let result = unsafe { getservbyport(port, proto.cast()) };
+    if result.is_null() {
+        set_wsa_error(WSANO_DATA);
+    }
+    result.cast()
+}
+
+/// `getprotobyname(name)` — look up a protocol entry by name.
+///
+/// # Safety
+/// `name` must be a non-null NUL-terminated C string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ws2_getprotobyname(name: *const u8) -> *mut u8 {
+    if name.is_null() {
+        set_wsa_error(WSAEFAULT);
+        return core::ptr::null_mut();
+    }
+    // SAFETY: name is a valid NUL-terminated string per caller's contract.
+    let result = unsafe { getprotobyname(name.cast()) };
+    if result.is_null() {
+        set_wsa_error(WSANO_DATA);
+    }
+    result.cast()
+}
+
 /// `WSAAsyncSelect(s, hwnd, wmsg, levent)` — register async network-event interest.
 ///
 /// Stores the network-event mask on the socket entry (like `WSAEventSelect` but
@@ -2241,5 +2299,48 @@ mod tests {
         let _ = ret;
 
         unsafe { ws2_closesocket(s) };
+    }
+
+    #[test]
+    fn test_getservbyname_http() {
+        let name = b"http\0";
+        let result = unsafe { ws2_getservbyname(name.as_ptr(), core::ptr::null()) };
+        assert!(
+            !result.is_null(),
+            "getservbyname(\"http\") should return non-null"
+        );
+    }
+
+    #[test]
+    fn test_getservbyport_80() {
+        // Port 80 in network byte order (htons(80)).
+        let port = i32::from(libc::htons(80));
+        let result = unsafe { ws2_getservbyport(port, core::ptr::null()) };
+        assert!(
+            !result.is_null(),
+            "getservbyport(80) should return non-null"
+        );
+    }
+
+    #[test]
+    fn test_getprotobyname_tcp() {
+        let name = b"tcp\0";
+        let result = unsafe { ws2_getprotobyname(name.as_ptr()) };
+        assert!(
+            !result.is_null(),
+            "getprotobyname(\"tcp\") should return non-null"
+        );
+    }
+
+    #[test]
+    fn test_getservbyname_null_returns_null() {
+        let result = unsafe { ws2_getservbyname(core::ptr::null(), core::ptr::null()) };
+        assert!(result.is_null(), "getservbyname(NULL) should return null");
+    }
+
+    #[test]
+    fn test_getprotobyname_null_returns_null() {
+        let result = unsafe { ws2_getprotobyname(core::ptr::null()) };
+        assert!(result.is_null(), "getprotobyname(NULL) should return null");
     }
 }

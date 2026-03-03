@@ -10748,6 +10748,39 @@ pub unsafe extern "C" fn kernel32_FindVolumeClose(_find_volume: *mut core::ffi::
     1
 }
 
+/// `GetVolumePathNamesForVolumeNameW` — returns mount-point paths for a volume.
+///
+/// Returns a double-NUL terminated list of wide-string paths.  This stub always
+/// returns a single root path `\`.
+///
+/// # Safety
+/// `buf` must point to `buf_len` u16-sized slots (or be null with `buf_len == 0`).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kernel32_GetVolumePathNamesForVolumeNameW(
+    _volume_name: *const u16,
+    buf: *mut u16,
+    buf_len: u32,
+    ret_len: *mut u32,
+) -> i32 {
+    // Single path: `\` encoded as one u16 (0x005c) + two NUL terminators.
+    let needed: u32 = 3; // 1 char + 2 NUL words
+    if !ret_len.is_null() {
+        // SAFETY: ret_len is non-null per check above.
+        unsafe { ret_len.write(needed) };
+    }
+    if buf_len < needed || buf.is_null() {
+        kernel32_SetLastError(234); // ERROR_MORE_DATA
+        return 0;
+    }
+    // SAFETY: buf has at least `buf_len` u16 slots per caller's contract.
+    unsafe {
+        buf.write(0x005c); // backslash
+        buf.add(1).write(0);
+        buf.add(2).write(0);
+    }
+    1
+}
+
 // ── Phase 27: File Times ──────────────────────────────────────────────────────
 
 /// GetFileTime - retrieves the date and time a file or directory was created, last accessed, and last written
@@ -16979,5 +17012,43 @@ mod tests {
         assert_ne!(handle as usize, usize::MAX);
         let ret = unsafe { kernel32_FindVolumeClose(handle) };
         assert_eq!(ret, 1, "FindVolumeClose should return 1");
+    }
+
+    #[test]
+    fn test_get_volume_path_names_returns_backslash() {
+        let mut buf = [0u16; 8];
+        let mut ret_len: u32 = 0;
+        let result = unsafe {
+            kernel32_GetVolumePathNamesForVolumeNameW(
+                core::ptr::null(),
+                buf.as_mut_ptr(),
+                buf.len() as u32,
+                &raw mut ret_len,
+            )
+        };
+        assert_eq!(
+            result, 1,
+            "GetVolumePathNamesForVolumeNameW should return 1"
+        );
+        assert_eq!(ret_len, 3, "ret_len should be 3 (backslash + 2 NULs)");
+        assert_eq!(buf[0], 0x005c, "first char should be backslash");
+        assert_eq!(buf[1], 0, "second char should be NUL");
+        assert_eq!(buf[2], 0, "third char should be NUL");
+    }
+
+    #[test]
+    fn test_get_volume_path_names_buffer_too_small_returns_zero() {
+        let mut buf = [0u16; 2]; // too small: needs 3
+        let mut ret_len: u32 = 0;
+        let result = unsafe {
+            kernel32_GetVolumePathNamesForVolumeNameW(
+                core::ptr::null(),
+                buf.as_mut_ptr(),
+                buf.len() as u32,
+                &raw mut ret_len,
+            )
+        };
+        assert_eq!(result, 0, "should return 0 when buffer is too small");
+        assert_eq!(ret_len, 3, "ret_len should still indicate required size");
     }
 }

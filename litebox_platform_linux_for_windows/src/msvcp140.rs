@@ -2695,3 +2695,542 @@ mod tests_unordered_map {
         }
     }
 }
+
+// ── Phase 44: std::deque<void*> ───────────────────────────────────────────────
+
+static DEQUE_REGISTRY: Mutex<Option<HashMap<usize, std::collections::VecDeque<usize>>>> =
+    Mutex::new(None);
+
+fn with_deque_registry<R>(
+    f: impl FnOnce(&mut HashMap<usize, std::collections::VecDeque<usize>>) -> R,
+) -> R {
+    let mut guard = DEQUE_REGISTRY.lock().unwrap();
+    let m = guard.get_or_insert_with(HashMap::new);
+    f(m)
+}
+
+/// `std::deque<void*>::deque()` — construct an empty deque.
+///
+/// # Safety
+/// `this` must be a non-null pointer to at least 1 byte of writable memory.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__deque_ctor(this: *mut u8) {
+    with_deque_registry(|m| {
+        m.insert(this as usize, std::collections::VecDeque::new());
+    });
+}
+
+/// `std::deque<void*>::~deque()` — destroy the deque.
+///
+/// # Safety
+/// `this` must be a pointer previously passed to `msvcp140__deque_ctor`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__deque_dtor(this: *mut u8) {
+    with_deque_registry(|m| {
+        m.remove(&(this as usize));
+    });
+}
+
+/// `std::deque<void*>::push_back(val)` — append `val` to the back.
+///
+/// # Safety
+/// `this` must be a pointer previously passed to `msvcp140__deque_ctor`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__deque_push_back(this: *mut u8, val: *const u8) {
+    with_deque_registry(|m| {
+        if let Some(dq) = m.get_mut(&(this as usize)) {
+            dq.push_back(val as usize);
+        }
+    });
+}
+
+/// `std::deque<void*>::push_front(val)` — prepend `val` to the front.
+///
+/// # Safety
+/// `this` must be a pointer previously passed to `msvcp140__deque_ctor`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__deque_push_front(this: *mut u8, val: *const u8) {
+    with_deque_registry(|m| {
+        if let Some(dq) = m.get_mut(&(this as usize)) {
+            dq.push_front(val as usize);
+        }
+    });
+}
+
+/// `std::deque<void*>::pop_front()` — remove the front element and return it.
+///
+/// Note: the real C++ `pop_front()` returns void; this stub returns the removed
+/// value as a convenience for callers that need the value after popping.
+/// Returns null if the deque is empty.
+///
+/// # Safety
+/// `this` must be a pointer previously passed to `msvcp140__deque_ctor`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__deque_pop_front(this: *mut u8) -> *mut u8 {
+    with_deque_registry(|m| {
+        m.get_mut(&(this as usize))
+            .and_then(std::collections::VecDeque::pop_front)
+            .map_or(core::ptr::null_mut(), |v| v as *mut u8)
+    })
+}
+
+/// `std::deque<void*>::pop_back()` — remove the back element and return it.
+///
+/// Note: the real C++ `pop_back()` returns void; this stub returns the removed
+/// value as a convenience for callers that need the value after popping.
+/// Returns null if the deque is empty.
+///
+/// # Safety
+/// `this` must be a pointer previously passed to `msvcp140__deque_ctor`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__deque_pop_back(this: *mut u8) -> *mut u8 {
+    with_deque_registry(|m| {
+        m.get_mut(&(this as usize))
+            .and_then(std::collections::VecDeque::pop_back)
+            .map_or(core::ptr::null_mut(), |v| v as *mut u8)
+    })
+}
+
+/// `std::deque<void*>::front()` — peek at the front element without removing.
+///
+/// Returns null if the deque is empty.
+///
+/// # Safety
+/// `this` must be a pointer previously passed to `msvcp140__deque_ctor`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__deque_front(this: *const u8) -> *mut u8 {
+    with_deque_registry(|m| {
+        m.get(&(this as usize))
+            .and_then(|dq| dq.front().copied())
+            .map_or(core::ptr::null_mut(), |v| v as *mut u8)
+    })
+}
+
+/// `std::deque<void*>::back()` — peek at the back element without removing.
+///
+/// Returns null if the deque is empty.
+///
+/// # Safety
+/// `this` must be a pointer previously passed to `msvcp140__deque_ctor`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__deque_back(this: *const u8) -> *mut u8 {
+    with_deque_registry(|m| {
+        m.get(&(this as usize))
+            .and_then(|dq| dq.back().copied())
+            .map_or(core::ptr::null_mut(), |v| v as *mut u8)
+    })
+}
+
+/// `std::deque<void*>::size()` — return the number of elements.
+///
+/// # Safety
+/// `this` must be a pointer previously passed to `msvcp140__deque_ctor`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__deque_size(this: *const u8) -> usize {
+    with_deque_registry(|m| {
+        m.get(&(this as usize))
+            .map_or(0, std::collections::VecDeque::len)
+    })
+}
+
+/// `std::deque<void*>::clear()` — remove all elements.
+///
+/// # Safety
+/// `this` must be a pointer previously passed to `msvcp140__deque_ctor`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__deque_clear(this: *mut u8) {
+    with_deque_registry(|m| {
+        if let Some(dq) = m.get_mut(&(this as usize)) {
+            dq.clear();
+        }
+    });
+}
+
+#[cfg(test)]
+mod tests_deque {
+    use super::*;
+
+    #[test]
+    fn test_deque_ctor_dtor() {
+        let mut obj = [0u8; 8];
+        unsafe {
+            msvcp140__deque_ctor(obj.as_mut_ptr());
+            assert_eq!(msvcp140__deque_size(obj.as_ptr()), 0);
+            msvcp140__deque_dtor(obj.as_mut_ptr());
+        }
+    }
+
+    #[test]
+    fn test_deque_push_back_pop_front() {
+        let mut obj = [0u8; 8];
+        let a = 0x1111usize as *const u8;
+        let b = 0x2222usize as *const u8;
+        unsafe {
+            msvcp140__deque_ctor(obj.as_mut_ptr());
+            msvcp140__deque_push_back(obj.as_mut_ptr(), a);
+            msvcp140__deque_push_back(obj.as_mut_ptr(), b);
+            assert_eq!(msvcp140__deque_size(obj.as_ptr()), 2);
+            assert_eq!(msvcp140__deque_pop_front(obj.as_mut_ptr()), a.cast_mut());
+            assert_eq!(msvcp140__deque_pop_front(obj.as_mut_ptr()), b.cast_mut());
+            assert_eq!(msvcp140__deque_size(obj.as_ptr()), 0);
+            msvcp140__deque_dtor(obj.as_mut_ptr());
+        }
+    }
+
+    #[test]
+    fn test_deque_push_front_pop_back() {
+        let mut obj = [0u8; 8];
+        let a = 0x3333usize as *const u8;
+        let b = 0x4444usize as *const u8;
+        unsafe {
+            msvcp140__deque_ctor(obj.as_mut_ptr());
+            msvcp140__deque_push_front(obj.as_mut_ptr(), a);
+            msvcp140__deque_push_front(obj.as_mut_ptr(), b);
+            // front = b, back = a
+            assert_eq!(msvcp140__deque_front(obj.as_ptr()), b.cast_mut());
+            assert_eq!(msvcp140__deque_back(obj.as_ptr()), a.cast_mut());
+            assert_eq!(msvcp140__deque_pop_back(obj.as_mut_ptr()), a.cast_mut());
+            assert_eq!(msvcp140__deque_pop_back(obj.as_mut_ptr()), b.cast_mut());
+            msvcp140__deque_dtor(obj.as_mut_ptr());
+        }
+    }
+
+    #[test]
+    fn test_deque_empty_pops_return_null() {
+        let mut obj = [0u8; 8];
+        unsafe {
+            msvcp140__deque_ctor(obj.as_mut_ptr());
+            assert!(msvcp140__deque_pop_front(obj.as_mut_ptr()).is_null());
+            assert!(msvcp140__deque_pop_back(obj.as_mut_ptr()).is_null());
+            assert!(msvcp140__deque_front(obj.as_ptr()).is_null());
+            assert!(msvcp140__deque_back(obj.as_ptr()).is_null());
+            msvcp140__deque_dtor(obj.as_mut_ptr());
+        }
+    }
+
+    #[test]
+    fn test_deque_clear() {
+        let mut obj = [0u8; 8];
+        unsafe {
+            msvcp140__deque_ctor(obj.as_mut_ptr());
+            msvcp140__deque_push_back(obj.as_mut_ptr(), 0x10usize as *const u8);
+            msvcp140__deque_push_back(obj.as_mut_ptr(), 0x20usize as *const u8);
+            msvcp140__deque_clear(obj.as_mut_ptr());
+            assert_eq!(msvcp140__deque_size(obj.as_ptr()), 0);
+            msvcp140__deque_dtor(obj.as_mut_ptr());
+        }
+    }
+}
+
+// ── Phase 44: std::stack<void*> ───────────────────────────────────────────────
+
+static STACK_REGISTRY: Mutex<Option<HashMap<usize, std::collections::VecDeque<usize>>>> =
+    Mutex::new(None);
+
+fn with_stack_registry<R>(
+    f: impl FnOnce(&mut HashMap<usize, std::collections::VecDeque<usize>>) -> R,
+) -> R {
+    let mut guard = STACK_REGISTRY.lock().unwrap();
+    let m = guard.get_or_insert_with(HashMap::new);
+    f(m)
+}
+
+/// `std::stack<void*>::stack()` — construct an empty stack.
+///
+/// # Safety
+/// `this` must be a non-null pointer to at least 1 byte of writable memory.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__stack_ctor(this: *mut u8) {
+    with_stack_registry(|m| {
+        m.insert(this as usize, std::collections::VecDeque::new());
+    });
+}
+
+/// `std::stack<void*>::~stack()` — destroy the stack.
+///
+/// # Safety
+/// `this` must be a pointer previously passed to `msvcp140__stack_ctor`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__stack_dtor(this: *mut u8) {
+    with_stack_registry(|m| {
+        m.remove(&(this as usize));
+    });
+}
+
+/// `std::stack<void*>::push(val)` — push `val` onto the top of the stack.
+///
+/// # Safety
+/// `this` must be a pointer previously passed to `msvcp140__stack_ctor`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__stack_push(this: *mut u8, val: *const u8) {
+    with_stack_registry(|m| {
+        if let Some(st) = m.get_mut(&(this as usize)) {
+            st.push_back(val as usize);
+        }
+    });
+}
+
+/// `std::stack<void*>::pop()` — remove the top element and return it (LIFO).
+///
+/// Note: the real C++ `std::stack::pop()` returns void; this stub returns the
+/// removed value as a convenience for callers that need the value after popping.
+/// Returns null if the stack is empty.
+///
+/// # Safety
+/// `this` must be a pointer previously passed to `msvcp140__stack_ctor`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__stack_pop(this: *mut u8) -> *mut u8 {
+    with_stack_registry(|m| {
+        m.get_mut(&(this as usize))
+            .and_then(std::collections::VecDeque::pop_back)
+            .map_or(core::ptr::null_mut(), |v| v as *mut u8)
+    })
+}
+
+/// `std::stack<void*>::top()` — peek at the top element without removing.
+///
+/// Returns null if the stack is empty.
+///
+/// # Safety
+/// `this` must be a pointer previously passed to `msvcp140__stack_ctor`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__stack_top(this: *const u8) -> *mut u8 {
+    with_stack_registry(|m| {
+        m.get(&(this as usize))
+            .and_then(|st| st.back().copied())
+            .map_or(core::ptr::null_mut(), |v| v as *mut u8)
+    })
+}
+
+/// `std::stack<void*>::size()` — return the number of elements.
+///
+/// # Safety
+/// `this` must be a pointer previously passed to `msvcp140__stack_ctor`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__stack_size(this: *const u8) -> usize {
+    with_stack_registry(|m| {
+        m.get(&(this as usize))
+            .map_or(0, std::collections::VecDeque::len)
+    })
+}
+
+/// `std::stack<void*>::empty()` — return true if the stack has no elements.
+///
+/// # Safety
+/// `this` must be a pointer previously passed to `msvcp140__stack_ctor`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__stack_empty(this: *const u8) -> bool {
+    with_stack_registry(|m| {
+        m.get(&(this as usize))
+            .is_none_or(std::collections::VecDeque::is_empty)
+    })
+}
+
+#[cfg(test)]
+mod tests_stack {
+    use super::*;
+
+    #[test]
+    fn test_stack_ctor_dtor() {
+        let mut obj = [0u8; 8];
+        unsafe {
+            msvcp140__stack_ctor(obj.as_mut_ptr());
+            assert_eq!(msvcp140__stack_size(obj.as_ptr()), 0);
+            assert!(msvcp140__stack_empty(obj.as_ptr()));
+            msvcp140__stack_dtor(obj.as_mut_ptr());
+        }
+    }
+
+    #[test]
+    fn test_stack_push_pop_lifo() {
+        let mut obj = [0u8; 8];
+        let a = 0xAAAAusize as *const u8;
+        let b = 0xBBBBusize as *const u8;
+        unsafe {
+            msvcp140__stack_ctor(obj.as_mut_ptr());
+            msvcp140__stack_push(obj.as_mut_ptr(), a);
+            msvcp140__stack_push(obj.as_mut_ptr(), b);
+            assert_eq!(msvcp140__stack_top(obj.as_ptr()), b.cast_mut());
+            assert_eq!(msvcp140__stack_pop(obj.as_mut_ptr()), b.cast_mut());
+            assert_eq!(msvcp140__stack_pop(obj.as_mut_ptr()), a.cast_mut());
+            assert!(msvcp140__stack_empty(obj.as_ptr()));
+            msvcp140__stack_dtor(obj.as_mut_ptr());
+        }
+    }
+
+    #[test]
+    fn test_stack_empty_pop_returns_null() {
+        let mut obj = [0u8; 8];
+        unsafe {
+            msvcp140__stack_ctor(obj.as_mut_ptr());
+            assert!(msvcp140__stack_pop(obj.as_mut_ptr()).is_null());
+            assert!(msvcp140__stack_top(obj.as_ptr()).is_null());
+            msvcp140__stack_dtor(obj.as_mut_ptr());
+        }
+    }
+}
+
+// ── Phase 44: std::queue<void*> ───────────────────────────────────────────────
+
+static QUEUE_REGISTRY: Mutex<Option<HashMap<usize, std::collections::VecDeque<usize>>>> =
+    Mutex::new(None);
+
+fn with_queue_registry<R>(
+    f: impl FnOnce(&mut HashMap<usize, std::collections::VecDeque<usize>>) -> R,
+) -> R {
+    let mut guard = QUEUE_REGISTRY.lock().unwrap();
+    let m = guard.get_or_insert_with(HashMap::new);
+    f(m)
+}
+
+/// `std::queue<void*>::queue()` — construct an empty queue.
+///
+/// # Safety
+/// `this` must be a non-null pointer to at least 1 byte of writable memory.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__queue_ctor(this: *mut u8) {
+    with_queue_registry(|m| {
+        m.insert(this as usize, std::collections::VecDeque::new());
+    });
+}
+
+/// `std::queue<void*>::~queue()` — destroy the queue.
+///
+/// # Safety
+/// `this` must be a pointer previously passed to `msvcp140__queue_ctor`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__queue_dtor(this: *mut u8) {
+    with_queue_registry(|m| {
+        m.remove(&(this as usize));
+    });
+}
+
+/// `std::queue<void*>::push(val)` — enqueue `val` at the back.
+///
+/// # Safety
+/// `this` must be a pointer previously passed to `msvcp140__queue_ctor`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__queue_push(this: *mut u8, val: *const u8) {
+    with_queue_registry(|m| {
+        if let Some(q) = m.get_mut(&(this as usize)) {
+            q.push_back(val as usize);
+        }
+    });
+}
+
+/// `std::queue<void*>::pop()` — dequeue the front element and return it (FIFO).
+///
+/// Note: the real C++ `std::queue::pop()` returns void; this stub returns the
+/// dequeued value as a convenience for callers that need it after popping.
+/// Returns null if the queue is empty.
+///
+/// # Safety
+/// `this` must be a pointer previously passed to `msvcp140__queue_ctor`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__queue_pop(this: *mut u8) -> *mut u8 {
+    with_queue_registry(|m| {
+        m.get_mut(&(this as usize))
+            .and_then(std::collections::VecDeque::pop_front)
+            .map_or(core::ptr::null_mut(), |v| v as *mut u8)
+    })
+}
+
+/// `std::queue<void*>::front()` — peek at the front element without removing.
+///
+/// Returns null if the queue is empty.
+///
+/// # Safety
+/// `this` must be a pointer previously passed to `msvcp140__queue_ctor`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__queue_front(this: *const u8) -> *mut u8 {
+    with_queue_registry(|m| {
+        m.get(&(this as usize))
+            .and_then(|q| q.front().copied())
+            .map_or(core::ptr::null_mut(), |v| v as *mut u8)
+    })
+}
+
+/// `std::queue<void*>::back()` — peek at the back element without removing.
+///
+/// Returns null if the queue is empty.
+///
+/// # Safety
+/// `this` must be a pointer previously passed to `msvcp140__queue_ctor`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__queue_back(this: *const u8) -> *mut u8 {
+    with_queue_registry(|m| {
+        m.get(&(this as usize))
+            .and_then(|q| q.back().copied())
+            .map_or(core::ptr::null_mut(), |v| v as *mut u8)
+    })
+}
+
+/// `std::queue<void*>::size()` — return the number of elements.
+///
+/// # Safety
+/// `this` must be a pointer previously passed to `msvcp140__queue_ctor`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__queue_size(this: *const u8) -> usize {
+    with_queue_registry(|m| {
+        m.get(&(this as usize))
+            .map_or(0, std::collections::VecDeque::len)
+    })
+}
+
+/// `std::queue<void*>::empty()` — return true if the queue has no elements.
+///
+/// # Safety
+/// `this` must be a pointer previously passed to `msvcp140__queue_ctor`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcp140__queue_empty(this: *const u8) -> bool {
+    with_queue_registry(|m| {
+        m.get(&(this as usize))
+            .is_none_or(std::collections::VecDeque::is_empty)
+    })
+}
+
+#[cfg(test)]
+mod tests_queue {
+    use super::*;
+
+    #[test]
+    fn test_queue_ctor_dtor() {
+        let mut obj = [0u8; 8];
+        unsafe {
+            msvcp140__queue_ctor(obj.as_mut_ptr());
+            assert_eq!(msvcp140__queue_size(obj.as_ptr()), 0);
+            assert!(msvcp140__queue_empty(obj.as_ptr()));
+            msvcp140__queue_dtor(obj.as_mut_ptr());
+        }
+    }
+
+    #[test]
+    fn test_queue_push_pop_fifo() {
+        let mut obj = [0u8; 8];
+        let a = 0xCCCCusize as *const u8;
+        let b = 0xDDDDusize as *const u8;
+        unsafe {
+            msvcp140__queue_ctor(obj.as_mut_ptr());
+            msvcp140__queue_push(obj.as_mut_ptr(), a);
+            msvcp140__queue_push(obj.as_mut_ptr(), b);
+            assert_eq!(msvcp140__queue_front(obj.as_ptr()), a.cast_mut());
+            assert_eq!(msvcp140__queue_back(obj.as_ptr()), b.cast_mut());
+            assert_eq!(msvcp140__queue_pop(obj.as_mut_ptr()), a.cast_mut());
+            assert_eq!(msvcp140__queue_pop(obj.as_mut_ptr()), b.cast_mut());
+            assert!(msvcp140__queue_empty(obj.as_ptr()));
+            msvcp140__queue_dtor(obj.as_mut_ptr());
+        }
+    }
+
+    #[test]
+    fn test_queue_empty_pop_returns_null() {
+        let mut obj = [0u8; 8];
+        unsafe {
+            msvcp140__queue_ctor(obj.as_mut_ptr());
+            assert!(msvcp140__queue_pop(obj.as_mut_ptr()).is_null());
+            assert!(msvcp140__queue_front(obj.as_ptr()).is_null());
+            assert!(msvcp140__queue_back(obj.as_ptr()).is_null());
+            msvcp140__queue_dtor(obj.as_mut_ptr());
+        }
+    }
+}

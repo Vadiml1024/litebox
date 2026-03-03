@@ -588,6 +588,8 @@ impl DllManager {
             ("FindFirstVolumeW", KERNEL32_BASE + 0xFA),
             ("FindNextVolumeW", KERNEL32_BASE + 0xFB),
             ("FindVolumeClose", KERNEL32_BASE + 0xFC),
+            // Phase 44: Volume path names
+            ("GetVolumePathNamesForVolumeNameW", KERNEL32_BASE + 0xFD),
         ];
 
         self.register_stub_dll("KERNEL32.dll", exports);
@@ -924,6 +926,10 @@ impl DllManager {
             ("_chdir", MSVCRT_BASE + 0x108),
             ("_mkdir", MSVCRT_BASE + 0x109),
             ("_rmdir", MSVCRT_BASE + 0x10A),
+            // Phase 44: temp file functions
+            ("tmpnam", MSVCRT_BASE + 0x10B),
+            ("_mktemp", MSVCRT_BASE + 0x10C),
+            ("_tempnam", MSVCRT_BASE + 0x10D),
         ];
 
         self.register_stub_dll("MSVCRT.dll", exports);
@@ -1015,6 +1021,10 @@ impl DllManager {
             ("inet_pton", WS2_32_BASE + 0x2C),
             ("inet_ntop", WS2_32_BASE + 0x2D),
             ("WSAPoll", WS2_32_BASE + 0x2E),
+            // Phase 44: service/protocol lookup
+            ("getservbyname", WS2_32_BASE + 0x2F),
+            ("getservbyport", WS2_32_BASE + 0x30),
+            ("getprotobyname", WS2_32_BASE + 0x31),
         ];
 
         self.register_stub_dll("WS2_32.dll", exports);
@@ -1583,6 +1593,109 @@ impl DllManager {
             (
                 "?find@?$unordered_map@PEAXPEAXU?$hash@PEAX@std@@U?$equal_to@PEAX@2@V?$allocator@U?$pair@$$CBPEAXPEAX@std@@@2@@std@@QEAA?AV?$pair@_K_N@2@PEAX@Z",
                 MSVCP140_BASE + 87,
+            ),
+            // Phase 44: std::deque<void*>
+            (
+                "??0?$deque@PEAXV?$allocator@PEAX@std@@@std@@QEAA@XZ",
+                MSVCP140_BASE + 88,
+            ),
+            (
+                "??1?$deque@PEAXV?$allocator@PEAX@std@@@std@@UEAA@XZ",
+                MSVCP140_BASE + 89,
+            ),
+            (
+                "?push_back@?$deque@PEAXV?$allocator@PEAX@std@@@std@@QEAAXPEAX@Z",
+                MSVCP140_BASE + 90,
+            ),
+            (
+                "?push_front@?$deque@PEAXV?$allocator@PEAX@std@@@std@@QEAAXPEAX@Z",
+                MSVCP140_BASE + 91,
+            ),
+            (
+                "?pop_front@?$deque@PEAXV?$allocator@PEAX@std@@@std@@QEAAXXZ",
+                MSVCP140_BASE + 92,
+            ),
+            (
+                "?pop_back@?$deque@PEAXV?$allocator@PEAX@std@@@std@@QEAAXXZ",
+                MSVCP140_BASE + 93,
+            ),
+            (
+                "?front@?$deque@PEAXV?$allocator@PEAX@std@@@std@@QEAAAEAPEAXXZ",
+                MSVCP140_BASE + 94,
+            ),
+            (
+                "?back@?$deque@PEAXV?$allocator@PEAX@std@@@std@@QEAAAEAPEAXXZ",
+                MSVCP140_BASE + 95,
+            ),
+            (
+                "?size@?$deque@PEAXV?$allocator@PEAX@std@@@std@@QEBA_KXZ",
+                MSVCP140_BASE + 96,
+            ),
+            (
+                "?clear@?$deque@PEAXV?$allocator@PEAX@std@@@std@@QEAAXXZ",
+                MSVCP140_BASE + 97,
+            ),
+            // Phase 44: std::stack<void*>
+            (
+                "??0?$stack@PEAXV?$deque@PEAXV?$allocator@PEAX@std@@@std@@@std@@QEAA@XZ",
+                MSVCP140_BASE + 98,
+            ),
+            (
+                "??1?$stack@PEAXV?$deque@PEAXV?$allocator@PEAX@std@@@std@@@std@@UEAA@XZ",
+                MSVCP140_BASE + 99,
+            ),
+            (
+                "?push@?$stack@PEAXV?$deque@PEAXV?$allocator@PEAX@std@@@std@@@std@@QEAAXPEAX@Z",
+                MSVCP140_BASE + 100,
+            ),
+            (
+                "?pop@?$stack@PEAXV?$deque@PEAXV?$allocator@PEAX@std@@@std@@@std@@QEAAXXZ",
+                MSVCP140_BASE + 101,
+            ),
+            (
+                "?top@?$stack@PEAXV?$deque@PEAXV?$allocator@PEAX@std@@@std@@@std@@QEAAAEAPEAXXZ",
+                MSVCP140_BASE + 102,
+            ),
+            (
+                "?size@?$stack@PEAXV?$deque@PEAXV?$allocator@PEAX@std@@@std@@@std@@QEBA_KXZ",
+                MSVCP140_BASE + 103,
+            ),
+            (
+                "?empty@?$stack@PEAXV?$deque@PEAXV?$allocator@PEAX@std@@@std@@@std@@QEBA_NXZ",
+                MSVCP140_BASE + 104,
+            ),
+            // Phase 44: std::queue<void*>
+            (
+                "??0?$queue@PEAXV?$deque@PEAXV?$allocator@PEAX@std@@@std@@@std@@QEAA@XZ",
+                MSVCP140_BASE + 105,
+            ),
+            (
+                "??1?$queue@PEAXV?$deque@PEAXV?$allocator@PEAX@std@@@std@@@std@@UEAA@XZ",
+                MSVCP140_BASE + 106,
+            ),
+            (
+                "?push@?$queue@PEAXV?$deque@PEAXV?$allocator@PEAX@std@@@std@@@std@@QEAAXPEAX@Z",
+                MSVCP140_BASE + 107,
+            ),
+            (
+                "?pop@?$queue@PEAXV?$deque@PEAXV?$allocator@PEAX@std@@@std@@@std@@QEAAXXZ",
+                MSVCP140_BASE + 108,
+            ),
+            (
+                "?front@?$queue@PEAXV?$deque@PEAXV?$allocator@PEAX@std@@@std@@@std@@QEAAAEAPEAXXZ",
+                MSVCP140_BASE + 109,
+            ),
+            (
+                "?back@?$queue@PEAXV?$deque@PEAXV?$allocator@PEAX@std@@@std@@@std@@QEAAAEAPEAXXZ",
+                MSVCP140_BASE + 110,
+            ),
+            (
+                "?size@?$queue@PEAXV?$deque@PEAXV?$allocator@PEAX@std@@@std@@@std@@QEBA_KXZ",
+                MSVCP140_BASE + 111,
+            ),
+            (
+                "?empty@?$queue@PEAXV?$deque@PEAXV?$allocator@PEAX@std@@@std@@@std@@QEBA_NXZ",
+                MSVCP140_BASE + 112,
             ),
         ];
 
