@@ -248,6 +248,10 @@ jobs:
         with:
           components: rustfmt,clippy
       - uses: Swatinem/rust-cache@v2
+      - name: Install nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: nextest@${{ env.NEXTEST_VERSION }}
       - name: Install Vulkan ICD loader and software driver
         # libvulkan1 provides libvulkan.so.1 (the ICD loader).
         # mesa-vulkan-drivers provides the lavapipe software Vulkan renderer,
@@ -258,7 +262,7 @@ jobs:
       - name: Build with real_vulkan feature
         run: cargo build -p litebox_platform_linux_for_windows --features real_vulkan
       - name: Run unit tests with real_vulkan feature
-        run: cargo test -p litebox_platform_linux_for_windows --features real_vulkan
+        run: cargo nextest run --profile ci -p litebox_platform_linux_for_windows --features real_vulkan
 
   build_and_test_snp:
     name: Build and Test SNP

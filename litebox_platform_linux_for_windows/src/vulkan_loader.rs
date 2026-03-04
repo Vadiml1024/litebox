@@ -106,7 +106,7 @@ mod tests {
 
     /// Symbol resolution must not panic even when Vulkan is unavailable.
     #[test]
-    fn test_resolve_missing_symbol_returns_none_or_some() {
+    fn test_resolve_symbol_does_not_panic() {
         // Again, just check it doesn't panic.
         let _ = resolve_vulkan_symbol("vkCreateInstance");
     }
