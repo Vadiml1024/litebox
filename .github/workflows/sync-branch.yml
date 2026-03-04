@@ -23,11 +23,16 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Create or update sync-branch from upstream
+      - name: Rebase sync-branch on upstream/main
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git remote add upstream https://github.com/microsoft/litebox.git || git remote set-url upstream https://github.com/microsoft/litebox.git
           git fetch upstream main
-          git checkout -B sync-branch upstream/main
-          git push origin sync-branch --force
+          git checkout -B sync-branch origin/main
+          if ! git rebase upstream/main; then
+            git rebase --abort
+            echo "::error::Rebase of origin/main onto upstream/main failed due to conflicts. Manual intervention required."
+            exit 1
+          fi
+          git push origin sync-branch --force-with-lease=sync-branch
