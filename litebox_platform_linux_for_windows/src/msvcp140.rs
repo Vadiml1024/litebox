@@ -1676,7 +1676,7 @@ pub unsafe extern "C" fn msvcp140__map_clear(this: *mut u8) {
 // std::ostringstream stub
 // ============================================================================
 
-/// Global registry: ostringstream_this_ptr → Vec<u8> (byte buffer)
+/// Global registry: ostringstream_this_ptr → `Vec<u8>` (byte buffer)
 static OSS_REGISTRY: Mutex<Option<HashMap<usize, Vec<u8>>>> = Mutex::new(None);
 
 fn with_oss_registry<R>(f: impl FnOnce(&mut HashMap<usize, Vec<u8>>) -> R) -> R {
