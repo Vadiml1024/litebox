@@ -949,7 +949,7 @@ mod tests {
                 std::ptr::null_mut(),
                 std::ptr::null(),
                 0,
-                &mut bits,
+                &raw mut bits,
                 std::ptr::null_mut(),
                 0,
             )

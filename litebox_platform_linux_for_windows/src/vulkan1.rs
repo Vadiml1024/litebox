@@ -37,7 +37,7 @@ use core::ffi::c_void;
 
 /// Look up a Vulkan function in the real ICD loader and cast it to `F`.
 ///
-/// Used internally by the [`forward_real`] macro.  When the `real_vulkan`
+/// Used internally by the `forward_real!` macro.  When the `real_vulkan`
 /// feature is enabled this function is called for every Vulkan stub to
 /// attempt to forward the call to the host's `libvulkan.so.1`.
 ///
@@ -1765,7 +1765,7 @@ mod tests {
         let result = unsafe {
             vulkan1_vkEnumerateInstanceExtensionProperties(
                 core::ptr::null(),
-                &mut count,
+                &raw mut count,
                 core::ptr::null_mut(),
             )
         };
