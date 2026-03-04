@@ -37,8 +37,14 @@ use core::ffi::c_void;
 
 /// Look up a Vulkan function in the real ICD loader and cast it to `F`.
 ///
-/// Returns `None` when the `real_vulkan` feature is disabled, when
-/// `libvulkan.so.1` is not installed, or when the symbol is absent.
+/// Used internally by the [`forward_real`] macro.  When the `real_vulkan`
+/// feature is enabled this function is called for every Vulkan stub to
+/// attempt to forward the call to the host's `libvulkan.so.1`.
+///
+/// Returns `Some(f)` where `f` is a typed function pointer to the real
+/// implementation, or `None` when the library could not be loaded or the
+/// symbol is absent (in which case the stub falls through to its headless
+/// fallback body).
 ///
 /// # Safety
 /// `F` **must** be the correct function-pointer type for the named
@@ -55,11 +61,11 @@ unsafe fn real_vk<F: Copy>(name: &str) -> Option<F> {
     })
 }
 
-/// Forward a Vulkan call to the real library when the `real_vulkan`
-/// feature is active — no-op expansion when the feature is disabled.
+/// No-op expansion used when the `real_vulkan` feature is **disabled**.
 ///
-/// Expands to a `return` expression so the rest of the function body
-/// serves as the headless fallback.
+/// When the feature is inactive the stub functions retain their original
+/// headless behaviour and every `forward_real!` invocation compiles away
+/// to nothing, leaving only the stub body.
 ///
 /// Usage: `forward_real!("vkName", FnType, arg0, arg1, …);`
 #[cfg(not(feature = "real_vulkan"))]
@@ -67,11 +73,14 @@ macro_rules! forward_real {
     ($name:literal, $ty:ty, $($arg:expr),*) => {};
 }
 
-/// Forward a Vulkan call to the real library when the `real_vulkan`
-/// feature is active — dispatches to the real symbol when available.
+/// Dispatch variant used when the `real_vulkan` feature is **enabled**.
 ///
-/// Expands to a `return` expression so the rest of the function body
-/// serves as the headless fallback.
+/// Attempts to resolve the named Vulkan symbol from the host's real
+/// `libvulkan.so.1` ICD loader via [`real_vk`].  If the symbol is found
+/// the call is forwarded to the real implementation and the function
+/// returns immediately.  When the symbol cannot be resolved (library
+/// absent or symbol missing) execution falls through to the stub body
+/// below, which provides the original headless fallback behaviour.
 ///
 /// Usage: `forward_real!("vkName", FnType, arg0, arg1, …);`
 #[cfg(feature = "real_vulkan")]

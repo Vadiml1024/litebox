@@ -52,7 +52,12 @@ fn load_real_vulkan() -> Option<VulkanHandle> {
             continue;
         };
         // SAFETY: `c_name` is a valid null-terminated C string.
-        let handle = unsafe { libc::dlopen(c_name.as_ptr(), libc::RTLD_LAZY | libc::RTLD_GLOBAL) };
+        //
+        // `RTLD_LOCAL` (rather than `RTLD_GLOBAL`) is used deliberately: it
+        // keeps the Vulkan symbols scoped to this handle and avoids polluting
+        // the process-wide symbol table, which would risk shadowing symbols in
+        // other loaded libraries and causing hard-to-debug test failures.
+        let handle = unsafe { libc::dlopen(c_name.as_ptr(), libc::RTLD_LAZY | libc::RTLD_LOCAL) };
         if !handle.is_null() {
             return Some(VulkanHandle(handle));
         }
