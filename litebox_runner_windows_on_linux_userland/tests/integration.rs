@@ -765,6 +765,75 @@ fn test_phase43_dll_exports_present() {
     }
 }
 
+// Phase 44 resolution: verify new DLL exports are resolvable
+#[test]
+fn test_phase44_symbol_resolution() {
+    use litebox_shim_windows::loader::DllManager;
+
+    let mut dll_manager = DllManager::new();
+    let k32 = dll_manager.load_library("KERNEL32.dll").unwrap();
+    let crt = dll_manager.load_library("MSVCRT.dll").unwrap();
+    let ws2 = dll_manager.load_library("WS2_32.dll").unwrap();
+    let msvcp = dll_manager.load_library("msvcp140.dll").unwrap();
+
+    // Check KERNEL32.dll Phase 44 additions
+    let func_name = "GetVolumePathNamesForVolumeNameW";
+    assert!(
+        dll_manager.get_proc_address(k32, func_name).is_ok(),
+        "KERNEL32.dll::{func_name} should be resolvable after Phase 44"
+    );
+
+    // Check MSVCRT.dll Phase 44 additions
+    for func_name in ["tmpnam", "_mktemp", "_tempnam"] {
+        assert!(
+            dll_manager.get_proc_address(crt, func_name).is_ok(),
+            "MSVCRT.dll::{func_name} should be resolvable after Phase 44"
+        );
+    }
+
+    // Check WS2_32.dll Phase 44 additions
+    for func_name in ["getservbyname", "getservbyport", "getprotobyname"] {
+        assert!(
+            dll_manager.get_proc_address(ws2, func_name).is_ok(),
+            "WS2_32.dll::{func_name} should be resolvable after Phase 44"
+        );
+    }
+
+    // Check msvcp140.dll Phase 44 additions (deque/stack/queue mangled names)
+    for func_name in [
+        "??0?$deque@PEAXV?$allocator@PEAX@std@@@std@@QEAA@XZ",
+        "??1?$deque@PEAXV?$allocator@PEAX@std@@@std@@UEAA@XZ",
+        "?push_back@?$deque@PEAXV?$allocator@PEAX@std@@@std@@QEAAXPEAX@Z",
+        "?push_front@?$deque@PEAXV?$allocator@PEAX@std@@@std@@QEAAXPEAX@Z",
+        "?pop_front@?$deque@PEAXV?$allocator@PEAX@std@@@std@@QEAAXXZ",
+        "?pop_back@?$deque@PEAXV?$allocator@PEAX@std@@@std@@QEAAXXZ",
+        "?front@?$deque@PEAXV?$allocator@PEAX@std@@@std@@QEAAAEAPEAXXZ",
+        "?back@?$deque@PEAXV?$allocator@PEAX@std@@@std@@QEAAAEAPEAXXZ",
+        "?size@?$deque@PEAXV?$allocator@PEAX@std@@@std@@QEBA_KXZ",
+        "?clear@?$deque@PEAXV?$allocator@PEAX@std@@@std@@QEAAXXZ",
+        "??0?$stack@PEAXV?$deque@PEAXV?$allocator@PEAX@std@@@std@@@std@@QEAA@XZ",
+        "??1?$stack@PEAXV?$deque@PEAXV?$allocator@PEAX@std@@@std@@@std@@UEAA@XZ",
+        "?push@?$stack@PEAXV?$deque@PEAXV?$allocator@PEAX@std@@@std@@@std@@QEAAXPEAX@Z",
+        "?pop@?$stack@PEAXV?$deque@PEAXV?$allocator@PEAX@std@@@std@@@std@@QEAAXXZ",
+        "?top@?$stack@PEAXV?$deque@PEAXV?$allocator@PEAX@std@@@std@@@std@@QEAAAEAPEAXXZ",
+        "?size@?$stack@PEAXV?$deque@PEAXV?$allocator@PEAX@std@@@std@@@std@@QEBA_KXZ",
+        "?empty@?$stack@PEAXV?$deque@PEAXV?$allocator@PEAX@std@@@std@@@std@@QEBA_NXZ",
+        "??0?$queue@PEAXV?$deque@PEAXV?$allocator@PEAX@std@@@std@@@std@@QEAA@XZ",
+        "??1?$queue@PEAXV?$deque@PEAXV?$allocator@PEAX@std@@@std@@@std@@UEAA@XZ",
+        "?push@?$queue@PEAXV?$deque@PEAXV?$allocator@PEAX@std@@@std@@@std@@QEAAXPEAX@Z",
+        "?pop@?$queue@PEAXV?$deque@PEAXV?$allocator@PEAX@std@@@std@@@std@@QEAAXXZ",
+        "?front@?$queue@PEAXV?$deque@PEAXV?$allocator@PEAX@std@@@std@@@std@@QEAAAEAPEAXXZ",
+        "?back@?$queue@PEAXV?$deque@PEAXV?$allocator@PEAX@std@@@std@@@std@@QEAAAEAPEAXXZ",
+        "?size@?$queue@PEAXV?$deque@PEAXV?$allocator@PEAX@std@@@std@@@std@@QEBA_KXZ",
+        "?empty@?$queue@PEAXV?$deque@PEAXV?$allocator@PEAX@std@@@std@@@std@@QEBA_NXZ",
+    ] {
+        assert!(
+            dll_manager.get_proc_address(msvcp, func_name).is_ok(),
+            "msvcp140.dll::{func_name} should be resolvable after Phase 44"
+        );
+    }
+}
+
 #[cfg(test)]
 mod test_program_helpers {
     use std::env;

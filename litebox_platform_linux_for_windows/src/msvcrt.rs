@@ -6324,6 +6324,55 @@ pub unsafe extern "C" fn msvcrt_tmpfile() -> *mut u8 {
     result.cast()
 }
 
+/// `tmpnam(buf) -> *mut i8`
+///
+/// Returns a unique temporary file name.  If `buf` is non-null the name is
+/// written into it (must hold at least `L_tmpnam` bytes); if null a static
+/// buffer is used.
+///
+/// # Safety
+/// `buf` must be null or point to at least `L_tmpnam` bytes of writable memory.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt_tmpnam(buf: *mut i8) -> *mut i8 {
+    // SAFETY: libc::tmpnam delegates directly to the OS.
+    unsafe { libc::tmpnam(buf) }
+}
+
+// POSIX functions not exposed by libc for Linux targets.
+unsafe extern "C" {
+    fn mktemp(template: *mut libc::c_char) -> *mut libc::c_char;
+    fn tempnam(dir: *const libc::c_char, prefix: *const libc::c_char) -> *mut libc::c_char;
+}
+
+/// `_mktemp(template) -> *mut i8`
+///
+/// Modifies `template` in-place, replacing trailing `X` characters with
+/// unique chars.  Returns `template` on success, null on failure.
+///
+/// # Safety
+/// `template` must be a valid mutable NUL-terminated C string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt__mktemp(template: *mut i8) -> *mut i8 {
+    if template.is_null() {
+        return core::ptr::null_mut();
+    }
+    // SAFETY: caller guarantees template is a valid mutable NUL-terminated string.
+    unsafe { mktemp(template) }
+}
+
+/// `_tempnam(dir, prefix) -> *mut i8`
+///
+/// Creates a unique temp file name in `dir` (or `$TMPDIR` if `dir` is null).
+/// The returned pointer must be freed with `free`.
+///
+/// # Safety
+/// `dir` and `prefix` must each be null or a valid NUL-terminated C string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn msvcrt__tempnam(dir: *const i8, prefix: *const i8) -> *mut i8 {
+    // SAFETY: caller guarantees strings are valid if non-null.
+    unsafe { tempnam(dir, prefix) }
+}
+
 /// `remove(path) -> int`
 ///
 /// Deletes the file specified by `path`. Returns 0 on success, -1 on error.
@@ -9971,5 +10020,43 @@ mod tests {
     fn test_rmdir_null_returns_minus_one() {
         let r = unsafe { msvcrt__rmdir(core::ptr::null()) };
         assert_eq!(r, -1, "_rmdir(NULL) should return -1");
+    }
+
+    #[test]
+    fn test_tmpnam_null_buf_returns_nonnull() {
+        let result = unsafe { msvcrt_tmpnam(core::ptr::null_mut()) };
+        assert!(
+            !result.is_null(),
+            "tmpnam(NULL) should return a non-null pointer"
+        );
+    }
+
+    #[test]
+    fn test_tempnam_returns_nonnull_and_free() {
+        let prefix = b"tmp\0";
+        let result = unsafe { msvcrt__tempnam(core::ptr::null(), prefix.as_ptr().cast()) };
+        assert!(
+            !result.is_null(),
+            "_tempnam should return a non-null pointer"
+        );
+        // Free the returned allocation via libc::free.
+        // SAFETY: result was allocated by the C library and must be freed with free().
+        unsafe { libc::free(result.cast()) };
+    }
+
+    #[test]
+    fn test_mktemp_modifies_template() {
+        let mut template = *b"/tmp/testXXXXXX\0";
+        let result = unsafe { msvcrt__mktemp(template.as_mut_ptr().cast()) };
+        assert!(
+            !result.is_null(),
+            "_mktemp should return non-null on success"
+        );
+    }
+
+    #[test]
+    fn test_mktemp_null_returns_null() {
+        let result = unsafe { msvcrt__mktemp(core::ptr::null_mut()) };
+        assert!(result.is_null(), "_mktemp(NULL) should return null");
     }
 }

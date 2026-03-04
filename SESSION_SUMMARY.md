@@ -1,17 +1,84 @@
-# Windows-on-Linux Support — Session Summary (Phase 43)
+# Windows-on-Linux Support — Session Summary (Phase 44)
 
 ## ⚡ CURRENT STATUS ⚡
 
-**Branch:** `copilot/continue-windows-on-linux-support`
-**Goal:** Phase 43 — `std::stringstream`, MSVCRT directory functions, `std::unordered_map`, KERNEL32 volume enumeration.
+**Branch:** `copilot/implement-windows-on-linux-support`
+**Goal:** Phase 44 — `std::deque<void*>`, `std::stack<void*>`, `std::queue<void*>`, MSVCRT temp-file helpers, WinSock service/protocol lookup, KERNEL32 volume path enumeration.
 
 ### Status at checkpoint
 
 | Component | State |
 |-----------|-------|
-| All tests (709 total) | ✅ Passing |
+| All tests (728 total) | ✅ Passing |
 | Ratchet tests (5) | ✅ Passing |
 | Clippy (`-Dwarnings`) | ✅ Clean |
+
+### Files changed in this session
+- `litebox_platform_linux_for_windows/src/msvcp140.rs`
+  - Added `DEQUE_REGISTRY` global for `std::deque<void*>` state
+  - Added `msvcp140__deque_ctor` — default constructor
+  - Added `msvcp140__deque_dtor` — destructor
+  - Added `msvcp140__deque_push_back` — append to back
+  - Added `msvcp140__deque_push_front` — prepend to front
+  - Added `msvcp140__deque_pop_front` — remove and return front element
+  - Added `msvcp140__deque_pop_back` — remove and return back element
+  - Added `msvcp140__deque_front` — return reference (`void*&`) to front element (returns `*mut *mut u8`)
+  - Added `msvcp140__deque_back` — return reference (`void*&`) to back element (returns `*mut *mut u8`)
+  - Added `msvcp140__deque_size` — element count
+  - Added `msvcp140__deque_clear` — remove all elements
+  - 4 unit tests in `tests_deque` module
+  - Added `STACK_REGISTRY` global for `std::stack<void*>` state
+  - Added `msvcp140__stack_ctor` — default constructor
+  - Added `msvcp140__stack_dtor` — destructor
+  - Added `msvcp140__stack_push` — push element (LIFO)
+  - Added `msvcp140__stack_pop` — pop element (LIFO)
+  - Added `msvcp140__stack_top` — return reference (`void*&`) to top element (returns `*mut *mut u8`)
+  - Added `msvcp140__stack_size` — element count
+  - Added `msvcp140__stack_empty` — empty predicate
+  - 3 unit tests in `tests_stack` module
+  - Added `QUEUE_REGISTRY` global for `std::queue<void*>` state
+  - Added `msvcp140__queue_ctor` — default constructor
+  - Added `msvcp140__queue_dtor` — destructor
+  - Added `msvcp140__queue_push` — enqueue element
+  - Added `msvcp140__queue_pop` — dequeue element (FIFO)
+  - Added `msvcp140__queue_front` — return reference (`void*&`) to front element (returns `*mut *mut u8`)
+  - Added `msvcp140__queue_back` — return reference (`void*&`) to back element (returns `*mut *mut u8`)
+  - Added `msvcp140__queue_size` — element count
+  - Added `msvcp140__queue_empty` — empty predicate
+  - 3 unit tests in `tests_queue` module
+- `litebox_platform_linux_for_windows/src/msvcrt.rs`
+  - Added `tmpnam` — generate unique temp file name (delegates to libc `tmpnam`)
+  - Added `_mktemp` — modify template in-place with unique suffix (delegates to libc `mktemp`)
+  - Added `_tempnam` — allocate temp file name in given directory (delegates to libc `tempnam`)
+  - 3 unit tests
+- `litebox_platform_linux_for_windows/src/ws2_32.rs`
+  - Added `WSANO_DATA` (11004) constant
+  - Added `getservbyname` — look up service entry by name (delegates to libc)
+  - Added `getservbyport` — look up service entry by port (delegates to libc)
+  - Added `getprotobyname` — look up protocol entry by name (delegates to libc)
+  - 3 unit tests
+- `litebox_platform_linux_for_windows/src/kernel32.rs`
+  - Added `kernel32_GetVolumePathNamesForVolumeNameW` — returns single `\` mount path
+  - 1 unit test
+- `litebox_platform_linux_for_windows/src/function_table.rs` — 37 new `FunctionImpl` entries
+- `litebox_shim_windows/src/loader/dll.rs`
+  - 25 new msvcp140.dll stubs (88–112): deque (10) + stack (7) + queue (8)
+  - 3 new MSVCRT.dll stubs (0x10B–0x10D): tmpnam, _mktemp, _tempnam
+  - 3 new WS2_32.dll stubs (0x2F–0x31): getservbyname, getservbyport, getprotobyname
+  - 1 new KERNEL32.dll stub (0xFD): GetVolumePathNamesForVolumeNameW
+- `litebox_runner_windows_on_linux_userland/tests/integration.rs` — Phase 44 resolution test block
+- `dev_tests/src/ratchet.rs` — updated globals count 67→70 for DEQUE_REGISTRY + STACK_REGISTRY + QUEUE_REGISTRY
+
+### Next phase suggestions
+- **Phase 45**: `std::priority_queue<T>` basic stubs (ctor, dtor, push, pop, top, size, empty)
+- **Phase 45**: More MSVCRT: `_access`, `_access_s`, `_chmod`, `_umask`
+- **Phase 45**: More KERNEL32: `GetDriveTypeW`, `GetDiskFreeSpaceExW`, `GetLogicalDrives`
+- **Phase 45**: More WinSock: `gethostbyaddr`, `getservbyport` edge cases
+- **Phase 45**: `std::set<void*>` basic stubs (ctor, dtor, insert, find, size, clear)
+
+---
+
+# Windows-on-Linux Support — Session Summary (Phase 43)
 
 ### Files changed in this session
 - `litebox_platform_linux_for_windows/src/msvcrt.rs`
