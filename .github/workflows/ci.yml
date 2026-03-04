@@ -233,7 +233,7 @@ jobs:
             windows_test_programs/dynload_test/getprocaddress_test.exe \
             2>"$stderr_file") || { echo "ERROR: getprocaddress_test.exe runner failed"; cat "$stderr_file"; exit 1; }
           echo "$output"
-          echo "$output" | grep -q "0 failed" || { echo "ERROR: getprocaddress_test.exe reported failures"; exit 1; }
+          echo "$output" | grep -q ", 0 failed ===" || { echo "ERROR: getprocaddress_test.exe reported failures"; cat "$stderr_file"; exit 1; }
       - name: Build gui_test.exe (C program)
         working-directory: windows_test_programs/gui_test
         run: make
@@ -244,7 +244,7 @@ jobs:
             windows_test_programs/gui_test/gui_test.exe \
             2>"$stderr_file") || { echo "ERROR: gui_test.exe runner failed"; cat "$stderr_file"; exit 1; }
           echo "$output"
-          echo "$output" | grep -q "0 failed" || { echo "ERROR: gui_test.exe reported failures"; exit 1; }
+          echo "$output" | grep -q ", 0 failed ===" || { echo "ERROR: gui_test.exe reported failures"; cat "$stderr_file"; exit 1; }
 
   build_and_test_real_vulkan:
     name: Build and Test real_vulkan feature
