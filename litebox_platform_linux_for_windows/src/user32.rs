@@ -35,6 +35,12 @@ const FAKE_HICON: usize = 0x0000_1C04;
 /// Fake non-null HDC returned by `GetDC`, `BeginPaint`, etc.
 const FAKE_HDC: usize = 0x0000_0D0C;
 
+/// Fake non-null HMENU returned by `CreateMenu` / `CreatePopupMenu`
+const FAKE_HMENU: usize = 0x0000_FEED;
+
+/// IDCANCEL — returned by `DialogBoxParamW` cancel path
+const IDCANCEL: i32 = 2;
+
 // ── Wide-string helper ────────────────────────────────────────────────────────
 
 /// Convert a null-terminated UTF-16 pointer to a `String`, or return an empty
@@ -857,6 +863,730 @@ pub unsafe extern "C" fn user32_SetFocus(_hwnd: *mut c_void) -> *mut c_void {
     core::ptr::null_mut()
 }
 
+// ── Phase 45: Dialog, menu, clipboard, drawing, capture, misc GUI ─────────────
+
+/// `RegisterClassW` — non-Ex variant; equivalent to `RegisterClassExW` in our stub.
+///
+/// Returns a fake non-zero ATOM.
+///
+/// # Safety
+/// `wndclass` must be a valid pointer or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_RegisterClassW(_wndclass: *const c_void) -> u16 {
+    FAKE_ATOM
+}
+
+/// `CreateWindowW` — non-Ex variant; delegates to the Ex variant with `ex_style = 0`.
+///
+/// Returns a fake non-null HWND.
+///
+/// # Safety
+/// All pointer parameters must be valid or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_CreateWindowW(
+    class_name: *const u16,
+    window_name: *const u16,
+    style: u32,
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+    parent: *mut c_void,
+    menu: *mut c_void,
+    instance: *mut c_void,
+    param: *mut c_void,
+) -> *mut c_void {
+    user32_CreateWindowExW(
+        0,
+        class_name,
+        window_name,
+        style,
+        x,
+        y,
+        width,
+        height,
+        parent,
+        menu,
+        instance,
+        param,
+    )
+}
+
+/// `DialogBoxParamW` — create and display a modal dialog box.
+///
+/// In headless mode, the dialog is never shown; returns IDCANCEL (2).
+///
+/// # Safety
+/// Pointer parameters must be valid or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_DialogBoxParamW(
+    _instance: *mut c_void,
+    _template_name: *const u16,
+    _parent: *mut c_void,
+    _dialog_proc: *const c_void,
+    _init_param: isize,
+) -> isize {
+    IDCANCEL as isize
+}
+
+/// `CreateDialogParamW` — create a modeless dialog box.
+///
+/// Returns a fake non-null HWND; the dialog is never shown in headless mode.
+///
+/// # Safety
+/// Pointer parameters must be valid or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_CreateDialogParamW(
+    _instance: *mut c_void,
+    _template_name: *const u16,
+    _parent: *mut c_void,
+    _dialog_proc: *const c_void,
+    _init_param: isize,
+) -> *mut c_void {
+    FAKE_HWND as *mut c_void
+}
+
+/// `EndDialog` — destroy a modal dialog box.
+///
+/// Returns 1 (TRUE); the dialog was never created in headless mode.
+///
+/// # Safety
+/// `hwnd` is not meaningfully dereferenced; always safe.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_EndDialog(_hwnd: *mut c_void, _result: isize) -> i32 {
+    1
+}
+
+/// `GetDlgItem` — retrieve a handle to a control in a dialog box.
+///
+/// Returns a fake non-null HWND for any control ID.
+///
+/// # Safety
+/// `hwnd` is not meaningfully dereferenced; always safe.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_GetDlgItem(_hwnd: *mut c_void, _id_dlg_item: i32) -> *mut c_void {
+    FAKE_HWND as *mut c_void
+}
+
+/// `GetDlgItemTextW` — retrieve the text of a dialog control.
+///
+/// Writes an empty string and returns 0 (headless mode).
+///
+/// # Safety
+/// `string` must be a valid buffer of at least `max_count` UTF-16 code units,
+/// or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_GetDlgItemTextW(
+    _hwnd: *mut c_void,
+    _id_dlg_item: i32,
+    string: *mut u16,
+    max_count: i32,
+) -> u32 {
+    if !string.is_null() && max_count > 0 {
+        // SAFETY: caller guarantees `string` points to at least `max_count` u16s.
+        string.write(0);
+    }
+    0
+}
+
+/// `SetDlgItemTextW` — set the text of a dialog control.
+///
+/// Returns 1 (TRUE); the operation is silently discarded in headless mode.
+///
+/// # Safety
+/// `string` must be a valid null-terminated UTF-16 string or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_SetDlgItemTextW(
+    _hwnd: *mut c_void,
+    _id_dlg_item: i32,
+    _string: *const u16,
+) -> i32 {
+    1
+}
+
+/// `SendDlgItemMessageW` — send a message to a control in a dialog box.
+///
+/// Returns 0; all messages are silently discarded in headless mode.
+///
+/// # Safety
+/// Parameters are not meaningfully dereferenced; always safe.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_SendDlgItemMessageW(
+    _hwnd: *mut c_void,
+    _id_dlg_item: i32,
+    _msg: u32,
+    _wparam: usize,
+    _lparam: isize,
+) -> isize {
+    0
+}
+
+/// `GetDlgItemInt` — retrieve an integer value from a dialog control.
+///
+/// Returns 0 and sets `*translated` to 0 in headless mode.
+///
+/// # Safety
+/// `translated` must be a valid writable pointer or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_GetDlgItemInt(
+    _hwnd: *mut c_void,
+    _id_dlg_item: i32,
+    translated: *mut i32,
+    _signed: i32,
+) -> u32 {
+    if !translated.is_null() {
+        // SAFETY: caller guarantees `translated` is a valid pointer.
+        translated.write(0);
+    }
+    0
+}
+
+/// `SetDlgItemInt` — set an integer value in a dialog control.
+///
+/// Returns 1 (TRUE); the operation is silently discarded in headless mode.
+///
+/// # Safety
+/// `hwnd` is not meaningfully dereferenced; always safe.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_SetDlgItemInt(
+    _hwnd: *mut c_void,
+    _id_dlg_item: i32,
+    _value: u32,
+    _signed: i32,
+) -> i32 {
+    1
+}
+
+/// `CheckDlgButton` — change the check state of a button in a dialog box.
+///
+/// Returns 1 (TRUE); the operation is silently discarded in headless mode.
+///
+/// # Safety
+/// `hwnd` is not meaningfully dereferenced; always safe.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_CheckDlgButton(
+    _hwnd: *mut c_void,
+    _id_button: i32,
+    _check: u32,
+) -> i32 {
+    1
+}
+
+/// `IsDlgButtonChecked` — determine whether a dialog button is checked.
+///
+/// Returns 0 (BST_UNCHECKED) in headless mode.
+///
+/// # Safety
+/// `hwnd` is not meaningfully dereferenced; always safe.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_IsDlgButtonChecked(_hwnd: *mut c_void, _id_button: i32) -> u32 {
+    0 // BST_UNCHECKED
+}
+
+/// `DrawTextW` — draw formatted text in the specified rectangle.
+///
+/// Returns 1 (non-zero line count); text is silently discarded in headless mode.
+///
+/// # Safety
+/// Pointer parameters are not meaningfully dereferenced; always safe.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_DrawTextW(
+    _hdc: *mut c_void,
+    _string: *const u16,
+    _count: i32,
+    _rect: *mut c_void,
+    _format: u32,
+) -> i32 {
+    1
+}
+
+/// `DrawTextA` — draw formatted text (ANSI) in the specified rectangle.
+///
+/// Returns 1 (non-zero line count); text is silently discarded in headless mode.
+///
+/// # Safety
+/// Pointer parameters are not meaningfully dereferenced; always safe.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_DrawTextA(
+    _hdc: *mut c_void,
+    _string: *const u8,
+    _count: i32,
+    _rect: *mut c_void,
+    _format: u32,
+) -> i32 {
+    1
+}
+
+/// `DrawTextExW` — draw formatted text with extended options.
+///
+/// Returns 1 (non-zero line count); text is silently discarded in headless mode.
+///
+/// # Safety
+/// Pointer parameters are not meaningfully dereferenced; always safe.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_DrawTextExW(
+    _hdc: *mut c_void,
+    _string: *mut u16,
+    _count: i32,
+    _rect: *mut c_void,
+    _format: u32,
+    _dtp: *mut c_void,
+) -> i32 {
+    1
+}
+
+/// `AdjustWindowRect` — calculate the required size of the window rectangle.
+///
+/// Leaves the rectangle unchanged (0-sized client area would be same as window);
+/// returns 1 (TRUE).
+///
+/// # Safety
+/// `rect` must be a valid 4-i32 buffer or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_AdjustWindowRect(_rect: *mut i32, _style: u32, _menu: i32) -> i32 {
+    1
+}
+
+/// `AdjustWindowRectEx` — calculate the required size of the window rectangle
+/// including extended style.
+///
+/// Leaves the rectangle unchanged; returns 1 (TRUE).
+///
+/// # Safety
+/// `rect` must be a valid 4-i32 buffer or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_AdjustWindowRectEx(
+    _rect: *mut i32,
+    _style: u32,
+    _menu: i32,
+    _ex_style: u32,
+) -> i32 {
+    1
+}
+
+/// `SystemParametersInfoW` — query or set system-wide parameters.
+///
+/// Returns 1 (TRUE); parameters are not modified in headless mode.
+///
+/// # Safety
+/// `pv_param` is not meaningfully dereferenced; always safe.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_SystemParametersInfoW(
+    _action: u32,
+    _ui_param: u32,
+    _pv_param: *mut c_void,
+    _win_ini: u32,
+) -> i32 {
+    1
+}
+
+/// `SystemParametersInfoA` — ANSI variant of `SystemParametersInfoW`.
+///
+/// Returns 1 (TRUE); parameters are not modified in headless mode.
+///
+/// # Safety
+/// `pv_param` is not meaningfully dereferenced; always safe.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_SystemParametersInfoA(
+    _action: u32,
+    _ui_param: u32,
+    _pv_param: *mut c_void,
+    _win_ini: u32,
+) -> i32 {
+    1
+}
+
+/// `CreateMenu` — create a menu.
+///
+/// Returns a fake non-null HMENU in headless mode.
+///
+/// # Safety
+/// No parameters; always safe.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_CreateMenu() -> *mut c_void {
+    FAKE_HMENU as *mut c_void
+}
+
+/// `CreatePopupMenu` — create a pop-up menu.
+///
+/// Returns a fake non-null HMENU in headless mode.
+///
+/// # Safety
+/// No parameters; always safe.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_CreatePopupMenu() -> *mut c_void {
+    FAKE_HMENU as *mut c_void
+}
+
+/// `DestroyMenu` — destroy a menu.
+///
+/// Returns 1 (TRUE); no real menu to destroy in headless mode.
+///
+/// # Safety
+/// `menu` is not meaningfully dereferenced; always safe.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_DestroyMenu(_menu: *mut c_void) -> i32 {
+    1
+}
+
+/// `AppendMenuW` — append a new item to a menu.
+///
+/// Returns 1 (TRUE); menu items are silently discarded in headless mode.
+///
+/// # Safety
+/// Pointer parameters are not meaningfully dereferenced; always safe.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_AppendMenuW(
+    _menu: *mut c_void,
+    _flags: u32,
+    _id_new_item: usize,
+    _new_item: *const u16,
+) -> i32 {
+    1
+}
+
+/// `InsertMenuItemW` — insert a new menu item.
+///
+/// Returns 1 (TRUE); menu items are silently discarded in headless mode.
+///
+/// # Safety
+/// Pointer parameters are not meaningfully dereferenced; always safe.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_InsertMenuItemW(
+    _menu: *mut c_void,
+    _item: u32,
+    _by_position: i32,
+    _mii: *const c_void,
+) -> i32 {
+    1
+}
+
+/// `GetMenu` — retrieve the handle of the menu assigned to the specified window.
+///
+/// Returns a fake non-null HMENU in headless mode.
+///
+/// # Safety
+/// `hwnd` is not meaningfully dereferenced; always safe.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_GetMenu(_hwnd: *mut c_void) -> *mut c_void {
+    FAKE_HMENU as *mut c_void
+}
+
+/// `SetMenu` — assign a new menu to the specified window.
+///
+/// Returns 1 (TRUE); the operation is silently discarded in headless mode.
+///
+/// # Safety
+/// Parameters are not meaningfully dereferenced; always safe.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_SetMenu(_hwnd: *mut c_void, _menu: *mut c_void) -> i32 {
+    1
+}
+
+/// `DrawMenuBar` — redraw the menu bar of the specified window.
+///
+/// Returns 1 (TRUE); no-op in headless mode.
+///
+/// # Safety
+/// `hwnd` is not meaningfully dereferenced; always safe.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_DrawMenuBar(_hwnd: *mut c_void) -> i32 {
+    1
+}
+
+/// `TrackPopupMenu` — display a shortcut menu and track the selection.
+///
+/// Returns 0 (no item selected) in headless mode.
+///
+/// # Safety
+/// Pointer parameters are not meaningfully dereferenced; always safe.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_TrackPopupMenu(
+    _menu: *mut c_void,
+    _flags: u32,
+    _x: i32,
+    _y: i32,
+    _reserved: i32,
+    _hwnd: *mut c_void,
+    _rect: *const c_void,
+) -> i32 {
+    0
+}
+
+/// `SetCapture` — capture the mouse and associate it with the specified window.
+///
+/// Returns a fake HWND (previous capture owner, none in headless mode).
+///
+/// # Safety
+/// `hwnd` is not meaningfully dereferenced; always safe.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_SetCapture(_hwnd: *mut c_void) -> *mut c_void {
+    core::ptr::null_mut()
+}
+
+/// `ReleaseCapture` — release the mouse capture.
+///
+/// Returns 1 (TRUE); no-op in headless mode.
+///
+/// # Safety
+/// No parameters; always safe.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_ReleaseCapture() -> i32 {
+    1
+}
+
+/// `GetCapture` — retrieve the handle to the window that has captured the mouse.
+///
+/// Returns null (no capture) in headless mode.
+///
+/// # Safety
+/// No parameters; always safe.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_GetCapture() -> *mut c_void {
+    core::ptr::null_mut()
+}
+
+/// `TrackMouseEvent` — post messages when the mouse pointer leaves a window.
+///
+/// Returns 1 (TRUE); no-op in headless mode.
+///
+/// # Safety
+/// `event_track` is not meaningfully dereferenced; always safe.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_TrackMouseEvent(_event_track: *mut c_void) -> i32 {
+    1
+}
+
+/// `RedrawWindow` — update the specified rectangle/region in a window's client area.
+///
+/// Returns 1 (TRUE); no-op in headless mode.
+///
+/// # Safety
+/// Pointer parameters are not meaningfully dereferenced; always safe.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_RedrawWindow(
+    _hwnd: *mut c_void,
+    _update_rect: *const c_void,
+    _update_rgn: *mut c_void,
+    _flags: u32,
+) -> i32 {
+    1
+}
+
+/// `OpenClipboard` — open the clipboard for examination or modification.
+///
+/// Returns 1 (TRUE); no-op in headless mode.
+///
+/// # Safety
+/// `hwnd_new_owner` is not meaningfully dereferenced; always safe.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_OpenClipboard(_hwnd_new_owner: *mut c_void) -> i32 {
+    1
+}
+
+/// `CloseClipboard` — close the clipboard.
+///
+/// Returns 1 (TRUE); no-op in headless mode.
+///
+/// # Safety
+/// No parameters; always safe.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_CloseClipboard() -> i32 {
+    1
+}
+
+/// `EmptyClipboard` — empty the clipboard and free handles to data.
+///
+/// Returns 1 (TRUE); no-op in headless mode.
+///
+/// # Safety
+/// No parameters; always safe.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_EmptyClipboard() -> i32 {
+    1
+}
+
+/// `GetClipboardData` — retrieve data from the clipboard in a specified format.
+///
+/// Returns null (no clipboard data) in headless mode.
+///
+/// # Safety
+/// No pointer parameters; always safe.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_GetClipboardData(_format: u32) -> *mut c_void {
+    core::ptr::null_mut()
+}
+
+/// `SetClipboardData` — place data on the clipboard in a specified format.
+///
+/// Returns `mem_handle`; the data is silently discarded in headless mode.
+///
+/// # Safety
+/// `mem_handle` is not meaningfully dereferenced; always safe.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_SetClipboardData(
+    _format: u32,
+    mem_handle: *mut c_void,
+) -> *mut c_void {
+    mem_handle
+}
+
+/// `LoadStringW` — load a string resource from an executable file.
+///
+/// Writes an empty string and returns 0 in headless mode (no resources).
+///
+/// # Safety
+/// `buffer` must be a valid buffer of at least `n_buf_max` UTF-16 code units,
+/// or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_LoadStringW(
+    _instance: *mut c_void,
+    _uid: u32,
+    buffer: *mut u16,
+    n_buf_max: i32,
+) -> i32 {
+    if !buffer.is_null() && n_buf_max > 0 {
+        // SAFETY: caller guarantees `buffer` is a valid buffer of `n_buf_max` u16s.
+        buffer.write(0);
+    }
+    0
+}
+
+/// `LoadBitmapW` — load a bitmap resource from an executable file.
+///
+/// Returns null (no bitmap) in headless mode.
+///
+/// # Safety
+/// Pointer parameters are not meaningfully dereferenced; always safe.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_LoadBitmapW(
+    _instance: *mut c_void,
+    _bitmap_name: *const u16,
+) -> *mut c_void {
+    core::ptr::null_mut()
+}
+
+/// `LoadImageW` — load a bitmap, cursor, or icon resource.
+///
+/// Returns null (no image) in headless mode.
+///
+/// # Safety
+/// Pointer parameters are not meaningfully dereferenced; always safe.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_LoadImageW(
+    _instance: *mut c_void,
+    _name: *const u16,
+    _type: u32,
+    _cx: i32,
+    _cy: i32,
+    _load: u32,
+) -> *mut c_void {
+    core::ptr::null_mut()
+}
+
+/// `CallWindowProcW` — pass a message to the specified window procedure.
+///
+/// Returns 0; no real window procedure to call in headless mode.
+///
+/// # Safety
+/// Pointer parameters are not meaningfully dereferenced; always safe.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_CallWindowProcW(
+    _prev_wnd_func: *const c_void,
+    _hwnd: *mut c_void,
+    _msg: u32,
+    _wparam: usize,
+    _lparam: isize,
+) -> isize {
+    0
+}
+
+/// `GetWindowInfo` — retrieve information about the specified window.
+///
+/// Returns 1 (TRUE) and zeroes the info structure in headless mode.
+///
+/// # Safety
+/// `pwi` must be a valid writable pointer to at least 60 bytes (WINDOWINFO), or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_GetWindowInfo(_hwnd: *mut c_void, pwi: *mut u8) -> i32 {
+    if !pwi.is_null() {
+        // WINDOWINFO is ~60 bytes; zero it out
+        // SAFETY: caller guarantees `pwi` points to a WINDOWINFO structure.
+        for i in 0..60 {
+            pwi.add(i).write(0);
+        }
+    }
+    1
+}
+
+/// `MapWindowPoints` — convert a set of points from one window's coordinate space
+/// to another.
+///
+/// Returns 0; no-op in headless mode (no real coordinate spaces).
+///
+/// # Safety
+/// `points` is not meaningfully dereferenced; always safe.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_MapWindowPoints(
+    _hwnd_from: *mut c_void,
+    _hwnd_to: *mut c_void,
+    _points: *mut c_void,
+    _count: u32,
+) -> i32 {
+    0
+}
+
+/// `MonitorFromWindow` — retrieve the handle of the display monitor nearest to a window.
+///
+/// Returns a fake non-null HMONITOR in headless mode.
+///
+/// # Safety
+/// `hwnd` is not meaningfully dereferenced; always safe.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_MonitorFromWindow(_hwnd: *mut c_void, _flags: u32) -> *mut c_void {
+    // Return a sentinel HMONITOR value
+    core::ptr::dangling_mut::<c_void>()
+}
+
+/// `MonitorFromPoint` — retrieve the handle of the display monitor nearest to a point.
+///
+/// Returns a fake non-null HMONITOR in headless mode.
+///
+/// # Safety
+/// No meaningful pointer parameters; always safe.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_MonitorFromPoint(_x: i32, _y: i32, _flags: u32) -> *mut c_void {
+    core::ptr::dangling_mut::<c_void>()
+}
+
+/// `GetMonitorInfoW` — retrieve information about a display monitor.
+///
+/// Fills a fake 800×600 monitor info and returns 1 (TRUE).
+///
+/// # Safety
+/// `lpmi` must be a valid writable pointer to at least 40 bytes (MONITORINFO), or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn user32_GetMonitorInfoW(_monitor: *mut c_void, lpmi: *mut i32) -> i32 {
+    if !lpmi.is_null() {
+        // MONITORINFO layout (40 bytes):
+        //   cbSize  (4 bytes) — already set by caller; leave
+        //   rcMonitor: left, top, right, bottom  (16 bytes)
+        //   rcWork:    left, top, right, bottom  (16 bytes)
+        //   dwFlags   (4 bytes)
+        // SAFETY: caller guarantees `lpmi` points to a MONITORINFO structure.
+        lpmi.add(1).write(0); // rcMonitor.left
+        lpmi.add(2).write(0); // rcMonitor.top
+        lpmi.add(3).write(800); // rcMonitor.right
+        lpmi.add(4).write(600); // rcMonitor.bottom
+        lpmi.add(5).write(0); // rcWork.left
+        lpmi.add(6).write(0); // rcWork.top
+        lpmi.add(7).write(800); // rcWork.right
+        lpmi.add(8).write(600); // rcWork.bottom
+        lpmi.add(9).write(1); // dwFlags = MONITORINFOF_PRIMARY
+    }
+    1
+}
+
 // ── Unit tests ────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1216,6 +1946,191 @@ mod tests {
             assert_eq!(user32_ShowCursor(1), 1);
             assert!(user32_GetFocus().is_null());
             assert!(user32_SetFocus(null).is_null());
+        }
+    }
+
+    // ── Phase 45 tests ────────────────────────────────────────────────────
+    #[test]
+    fn test_register_class_w_returns_nonzero() {
+        // SAFETY: null pointer; stub does not dereference it.
+        let atom = unsafe { user32_RegisterClassW(std::ptr::null()) };
+        assert_ne!(atom, 0);
+    }
+
+    #[test]
+    fn test_create_window_w_returns_nonnull() {
+        // SAFETY: null pointer parameters; stub does not dereference them.
+        let hwnd = unsafe {
+            user32_CreateWindowW(
+                std::ptr::null(),
+                std::ptr::null(),
+                0,
+                0,
+                0,
+                800,
+                600,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            )
+        };
+        assert!(!hwnd.is_null());
+    }
+
+    #[test]
+    fn test_dialog_box_param_returns_idcancel() {
+        // SAFETY: all null/zero parameters; stub does not dereference them.
+        let result = unsafe {
+            user32_DialogBoxParamW(
+                std::ptr::null_mut(),
+                std::ptr::null(),
+                std::ptr::null_mut(),
+                std::ptr::null(),
+                0,
+            )
+        };
+        assert_eq!(result, IDCANCEL as isize);
+    }
+
+    #[test]
+    fn test_create_dialog_param_returns_nonnull() {
+        // SAFETY: null parameters; stub does not dereference them.
+        let hwnd = unsafe {
+            user32_CreateDialogParamW(
+                std::ptr::null_mut(),
+                std::ptr::null(),
+                std::ptr::null_mut(),
+                std::ptr::null(),
+                0,
+            )
+        };
+        assert!(!hwnd.is_null());
+    }
+
+    #[test]
+    fn test_end_dialog_returns_one() {
+        // SAFETY: null HWND; stub does not dereference it.
+        let result = unsafe { user32_EndDialog(std::ptr::null_mut(), 0) };
+        assert_eq!(result, 1);
+    }
+
+    #[test]
+    fn test_get_dlg_item_returns_nonnull() {
+        // SAFETY: null HWND; stub returns a fake HWND.
+        let hwnd = unsafe { user32_GetDlgItem(std::ptr::null_mut(), 1001) };
+        assert!(!hwnd.is_null());
+    }
+
+    #[test]
+    fn test_get_dlg_item_text_writes_empty_string() {
+        let mut buf = vec![0xFFu16; 64];
+        // SAFETY: valid buffer of 64 u16s.
+        let result =
+            unsafe { user32_GetDlgItemTextW(std::ptr::null_mut(), 1, buf.as_mut_ptr(), 64) };
+        assert_eq!(result, 0);
+        assert_eq!(buf[0], 0, "should write null terminator");
+    }
+
+    #[test]
+    fn test_set_dlg_item_text_returns_one() {
+        // SAFETY: null parameters; stub does not dereference them.
+        let result = unsafe { user32_SetDlgItemTextW(std::ptr::null_mut(), 1, std::ptr::null()) };
+        assert_eq!(result, 1);
+    }
+
+    #[test]
+    fn test_check_dlg_button_returns_one() {
+        // SAFETY: null HWND; stub does not dereference it.
+        let result = unsafe { user32_CheckDlgButton(std::ptr::null_mut(), 1, 1) };
+        assert_eq!(result, 1);
+    }
+
+    #[test]
+    fn test_is_dlg_button_checked_returns_zero() {
+        // SAFETY: null HWND; stub does not dereference it.
+        let result = unsafe { user32_IsDlgButtonChecked(std::ptr::null_mut(), 1) };
+        assert_eq!(result, 0);
+    }
+
+    #[test]
+    fn test_draw_text_returns_one() {
+        // SAFETY: null parameters; stub does not dereference them.
+        let result = unsafe {
+            user32_DrawTextW(
+                std::ptr::null_mut(),
+                std::ptr::null(),
+                0,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        assert_eq!(result, 1);
+    }
+
+    #[test]
+    fn test_adjust_window_rect_ext_returns_one() {
+        let mut rect = [0i32; 4];
+        // SAFETY: valid 4-i32 buffer.
+        let result = unsafe { user32_AdjustWindowRectEx(rect.as_mut_ptr(), 0, 0, 0) };
+        assert_eq!(result, 1);
+    }
+
+    #[test]
+    fn test_menu_apis() {
+        unsafe {
+            let hmenu = user32_CreateMenu();
+            assert!(!hmenu.is_null());
+            let popup = user32_CreatePopupMenu();
+            assert!(!popup.is_null());
+            assert_eq!(user32_AppendMenuW(hmenu, 0, 0, std::ptr::null()), 1);
+            assert_eq!(user32_DestroyMenu(hmenu), 1);
+            let null = std::ptr::null_mut::<c_void>();
+            assert!(!user32_GetMenu(null).is_null());
+            assert_eq!(user32_SetMenu(null, null), 1);
+            assert_eq!(user32_DrawMenuBar(null), 1);
+        }
+    }
+
+    #[test]
+    fn test_mouse_capture_apis() {
+        unsafe {
+            let null = std::ptr::null_mut::<c_void>();
+            assert!(user32_SetCapture(null).is_null());
+            assert_eq!(user32_ReleaseCapture(), 1);
+            assert!(user32_GetCapture().is_null());
+        }
+    }
+
+    #[test]
+    fn test_clipboard_apis() {
+        unsafe {
+            assert_eq!(user32_OpenClipboard(std::ptr::null_mut()), 1);
+            assert_eq!(user32_EmptyClipboard(), 1);
+            assert!(user32_GetClipboardData(1).is_null()); // CF_TEXT
+            assert_eq!(user32_CloseClipboard(), 1);
+        }
+    }
+
+    #[test]
+    fn test_load_string_w_writes_empty_string() {
+        let mut buf = vec![0xFFu16; 32];
+        // SAFETY: valid buffer of 32 u16s.
+        let result = unsafe { user32_LoadStringW(std::ptr::null_mut(), 1, buf.as_mut_ptr(), 32) };
+        assert_eq!(result, 0);
+        assert_eq!(buf[0], 0, "should write null terminator");
+    }
+
+    #[test]
+    fn test_monitor_apis() {
+        unsafe {
+            let null = std::ptr::null_mut::<c_void>();
+            assert!(!user32_MonitorFromWindow(null, 0).is_null());
+            // MONITORINFO: cbSize (4) + rcMonitor (16) + rcWork (16) + dwFlags (4) = 40 bytes = 10 i32s
+            let mut mi = [0i32; 10];
+            assert_eq!(user32_GetMonitorInfoW(null, mi.as_mut_ptr()), 1);
+            assert_eq!(mi[3], 800); // rcMonitor.right
+            assert_eq!(mi[4], 600); // rcMonitor.bottom
         }
     }
 }

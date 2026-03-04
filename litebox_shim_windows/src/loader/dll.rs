@@ -67,6 +67,9 @@ mod stub_addresses {
 
     /// msvcp140.dll function address range: 0x11000-0x11FFF
     pub const MSVCP140_BASE: usize = 0x11000;
+
+    /// vulkan-1.dll function address range: 0x12000-0x12FFF
+    pub const VULKAN1_BASE: usize = 0x12000;
 }
 
 /// Type for a DLL function pointer
@@ -151,6 +154,7 @@ impl DllManager {
         manager.load_stub_winrt_error();
         manager.load_stub_ole32();
         manager.load_stub_msvcp140();
+        manager.load_stub_vulkan1();
 
         manager
     }
@@ -1119,6 +1123,55 @@ impl DllManager {
             ("ShowCursor", USER32_BASE + 54),
             ("GetFocus", USER32_BASE + 55),
             ("SetFocus", USER32_BASE + 56),
+            // Phase 45: Dialog, menu, clipboard, drawing, capture, misc GUI
+            ("RegisterClassW", USER32_BASE + 57),
+            ("CreateWindowW", USER32_BASE + 58),
+            ("DialogBoxParamW", USER32_BASE + 59),
+            ("CreateDialogParamW", USER32_BASE + 60),
+            ("EndDialog", USER32_BASE + 61),
+            ("GetDlgItem", USER32_BASE + 62),
+            ("GetDlgItemTextW", USER32_BASE + 63),
+            ("SetDlgItemTextW", USER32_BASE + 64),
+            ("SendDlgItemMessageW", USER32_BASE + 65),
+            ("GetDlgItemInt", USER32_BASE + 66),
+            ("SetDlgItemInt", USER32_BASE + 67),
+            ("CheckDlgButton", USER32_BASE + 68),
+            ("IsDlgButtonChecked", USER32_BASE + 69),
+            ("DrawTextW", USER32_BASE + 70),
+            ("DrawTextA", USER32_BASE + 71),
+            ("DrawTextExW", USER32_BASE + 72),
+            ("AdjustWindowRect", USER32_BASE + 73),
+            ("AdjustWindowRectEx", USER32_BASE + 74),
+            ("SystemParametersInfoW", USER32_BASE + 75),
+            ("SystemParametersInfoA", USER32_BASE + 76),
+            ("CreateMenu", USER32_BASE + 77),
+            ("CreatePopupMenu", USER32_BASE + 78),
+            ("DestroyMenu", USER32_BASE + 79),
+            ("AppendMenuW", USER32_BASE + 80),
+            ("InsertMenuItemW", USER32_BASE + 81),
+            ("GetMenu", USER32_BASE + 82),
+            ("SetMenu", USER32_BASE + 83),
+            ("DrawMenuBar", USER32_BASE + 84),
+            ("TrackPopupMenu", USER32_BASE + 85),
+            ("SetCapture", USER32_BASE + 86),
+            ("ReleaseCapture", USER32_BASE + 87),
+            ("GetCapture", USER32_BASE + 88),
+            ("TrackMouseEvent", USER32_BASE + 89),
+            ("RedrawWindow", USER32_BASE + 90),
+            ("OpenClipboard", USER32_BASE + 91),
+            ("CloseClipboard", USER32_BASE + 92),
+            ("EmptyClipboard", USER32_BASE + 93),
+            ("GetClipboardData", USER32_BASE + 94),
+            ("SetClipboardData", USER32_BASE + 95),
+            ("LoadStringW", USER32_BASE + 96),
+            ("LoadBitmapW", USER32_BASE + 97),
+            ("LoadImageW", USER32_BASE + 98),
+            ("CallWindowProcW", USER32_BASE + 99),
+            ("GetWindowInfo", USER32_BASE + 100),
+            ("MapWindowPoints", USER32_BASE + 101),
+            ("MonitorFromWindow", USER32_BASE + 102),
+            ("MonitorFromPoint", USER32_BASE + 103),
+            ("GetMonitorInfoW", USER32_BASE + 104),
         ];
 
         self.register_stub_dll("USER32.dll", exports);
@@ -1170,6 +1223,44 @@ impl DllManager {
             // Font
             ("CreateFontW", GDI32_BASE + 11),
             ("GetTextExtentPoint32W", GDI32_BASE + 12),
+            // Phase 45: Extended graphics primitives
+            ("GetDeviceCaps", GDI32_BASE + 13),
+            ("SetBkMode", GDI32_BASE + 14),
+            ("SetMapMode", GDI32_BASE + 15),
+            ("SetViewportOrgEx", GDI32_BASE + 16),
+            ("CreatePen", GDI32_BASE + 17),
+            ("CreatePenIndirect", GDI32_BASE + 18),
+            ("CreateBrushIndirect", GDI32_BASE + 19),
+            ("CreatePatternBrush", GDI32_BASE + 20),
+            ("CreateHatchBrush", GDI32_BASE + 21),
+            ("CreateBitmap", GDI32_BASE + 22),
+            ("CreateCompatibleBitmap", GDI32_BASE + 23),
+            ("CreateDIBSection", GDI32_BASE + 24),
+            ("GetDIBits", GDI32_BASE + 25),
+            ("SetDIBits", GDI32_BASE + 26),
+            ("BitBlt", GDI32_BASE + 27),
+            ("StretchBlt", GDI32_BASE + 28),
+            ("PatBlt", GDI32_BASE + 29),
+            ("GetPixel", GDI32_BASE + 30),
+            ("SetPixel", GDI32_BASE + 31),
+            ("MoveToEx", GDI32_BASE + 32),
+            ("LineTo", GDI32_BASE + 33),
+            ("Polyline", GDI32_BASE + 34),
+            ("Polygon", GDI32_BASE + 35),
+            ("Ellipse", GDI32_BASE + 36),
+            ("Arc", GDI32_BASE + 37),
+            ("RoundRect", GDI32_BASE + 38),
+            ("GetTextMetricsW", GDI32_BASE + 39),
+            ("CreateRectRgn", GDI32_BASE + 40),
+            ("SelectClipRgn", GDI32_BASE + 41),
+            ("GetClipBox", GDI32_BASE + 42),
+            ("SetStretchBltMode", GDI32_BASE + 43),
+            ("GetObjectW", GDI32_BASE + 44),
+            ("GetCurrentObject", GDI32_BASE + 45),
+            ("ExcludeClipRect", GDI32_BASE + 46),
+            ("IntersectClipRect", GDI32_BASE + 47),
+            ("SaveDC", GDI32_BASE + 48),
+            ("RestoreDC", GDI32_BASE + 49),
         ];
 
         self.register_stub_dll("GDI32.dll", exports);
@@ -1701,6 +1792,95 @@ impl DllManager {
 
         self.register_stub_dll("msvcp140.dll", exports);
     }
+
+    /// Load stub vulkan-1.dll (Vulkan API stubs, Phase 45)
+    fn load_stub_vulkan1(&mut self) {
+        use stub_addresses::VULKAN1_BASE;
+
+        let exports = vec![
+            // Instance management
+            ("vkCreateInstance", VULKAN1_BASE),
+            ("vkDestroyInstance", VULKAN1_BASE + 1),
+            ("vkEnumerateInstanceExtensionProperties", VULKAN1_BASE + 2),
+            ("vkEnumerateInstanceLayerProperties", VULKAN1_BASE + 3),
+            // Physical device
+            ("vkEnumeratePhysicalDevices", VULKAN1_BASE + 4),
+            ("vkGetPhysicalDeviceProperties", VULKAN1_BASE + 5),
+            ("vkGetPhysicalDeviceFeatures", VULKAN1_BASE + 6),
+            ("vkGetPhysicalDeviceQueueFamilyProperties", VULKAN1_BASE + 7),
+            ("vkGetPhysicalDeviceMemoryProperties", VULKAN1_BASE + 8),
+            // Logical device
+            ("vkCreateDevice", VULKAN1_BASE + 9),
+            ("vkDestroyDevice", VULKAN1_BASE + 10),
+            ("vkGetDeviceQueue", VULKAN1_BASE + 11),
+            // Surface (KHR_win32_surface)
+            ("vkCreateWin32SurfaceKHR", VULKAN1_BASE + 12),
+            ("vkDestroySurfaceKHR", VULKAN1_BASE + 13),
+            ("vkGetPhysicalDeviceSurfaceSupportKHR", VULKAN1_BASE + 14),
+            (
+                "vkGetPhysicalDeviceSurfaceCapabilitiesKHR",
+                VULKAN1_BASE + 15,
+            ),
+            ("vkGetPhysicalDeviceSurfaceFormatsKHR", VULKAN1_BASE + 16),
+            (
+                "vkGetPhysicalDeviceSurfacePresentModesKHR",
+                VULKAN1_BASE + 17,
+            ),
+            // Swapchain (KHR_swapchain)
+            ("vkCreateSwapchainKHR", VULKAN1_BASE + 18),
+            ("vkDestroySwapchainKHR", VULKAN1_BASE + 19),
+            ("vkGetSwapchainImagesKHR", VULKAN1_BASE + 20),
+            ("vkAcquireNextImageKHR", VULKAN1_BASE + 21),
+            ("vkQueuePresentKHR", VULKAN1_BASE + 22),
+            // Memory & Resources
+            ("vkAllocateMemory", VULKAN1_BASE + 23),
+            ("vkFreeMemory", VULKAN1_BASE + 24),
+            ("vkCreateBuffer", VULKAN1_BASE + 25),
+            ("vkDestroyBuffer", VULKAN1_BASE + 26),
+            ("vkCreateImage", VULKAN1_BASE + 27),
+            ("vkDestroyImage", VULKAN1_BASE + 28),
+            // Render passes & pipelines
+            ("vkCreateRenderPass", VULKAN1_BASE + 29),
+            ("vkDestroyRenderPass", VULKAN1_BASE + 30),
+            ("vkCreateFramebuffer", VULKAN1_BASE + 31),
+            ("vkDestroyFramebuffer", VULKAN1_BASE + 32),
+            ("vkCreateGraphicsPipelines", VULKAN1_BASE + 33),
+            ("vkDestroyPipeline", VULKAN1_BASE + 34),
+            ("vkCreateShaderModule", VULKAN1_BASE + 35),
+            ("vkDestroyShaderModule", VULKAN1_BASE + 36),
+            // Command pools & buffers
+            ("vkCreateCommandPool", VULKAN1_BASE + 37),
+            ("vkDestroyCommandPool", VULKAN1_BASE + 38),
+            ("vkAllocateCommandBuffers", VULKAN1_BASE + 39),
+            ("vkFreeCommandBuffers", VULKAN1_BASE + 40),
+            ("vkBeginCommandBuffer", VULKAN1_BASE + 41),
+            ("vkEndCommandBuffer", VULKAN1_BASE + 42),
+            ("vkCmdBeginRenderPass", VULKAN1_BASE + 43),
+            ("vkCmdEndRenderPass", VULKAN1_BASE + 44),
+            ("vkCmdDraw", VULKAN1_BASE + 45),
+            ("vkCmdDrawIndexed", VULKAN1_BASE + 46),
+            ("vkQueueSubmit", VULKAN1_BASE + 47),
+            ("vkQueueWaitIdle", VULKAN1_BASE + 48),
+            ("vkDeviceWaitIdle", VULKAN1_BASE + 49),
+            // Synchronization
+            ("vkCreateFence", VULKAN1_BASE + 50),
+            ("vkDestroyFence", VULKAN1_BASE + 51),
+            ("vkWaitForFences", VULKAN1_BASE + 52),
+            ("vkResetFences", VULKAN1_BASE + 53),
+            ("vkCreateSemaphore", VULKAN1_BASE + 54),
+            ("vkDestroySemaphore", VULKAN1_BASE + 55),
+            // Descriptor sets & pipeline layout
+            ("vkCreateDescriptorSetLayout", VULKAN1_BASE + 56),
+            ("vkDestroyDescriptorSetLayout", VULKAN1_BASE + 57),
+            ("vkCreatePipelineLayout", VULKAN1_BASE + 58),
+            ("vkDestroyPipelineLayout", VULKAN1_BASE + 59),
+            // Proc address
+            ("vkGetInstanceProcAddr", VULKAN1_BASE + 60),
+            ("vkGetDeviceProcAddr", VULKAN1_BASE + 61),
+        ];
+
+        self.register_stub_dll("vulkan-1.dll", exports);
+    }
 }
 
 /// Map Windows API Set DLL names to their real implementation DLLs
@@ -1776,10 +1956,10 @@ mod tests {
     #[test]
     fn test_dll_manager_creation() {
         let manager = DllManager::new();
-        // Should have 17 pre-loaded stub DLLs (KERNEL32, NTDLL, MSVCRT, bcrypt, USERENV,
+        // Should have 18 pre-loaded stub DLLs (KERNEL32, NTDLL, MSVCRT, bcrypt, USERENV,
         // WS2_32, api-ms-win-core-synch, USER32, ADVAPI32, GDI32, SHELL32, VERSION, SHLWAPI,
-        // OLEAUT32, api-ms-win-core-winrt-error-l1-1-0, ole32, msvcp140)
-        assert_eq!(manager.dlls.len(), 17);
+        // OLEAUT32, api-ms-win-core-winrt-error-l1-1-0, ole32, msvcp140, vulkan-1)
+        assert_eq!(manager.dlls.len(), 18);
     }
 
     #[test]

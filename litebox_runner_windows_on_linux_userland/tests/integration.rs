@@ -834,6 +834,191 @@ fn test_phase44_symbol_resolution() {
     }
 }
 
+// Phase 45 resolution: verify new USER32, GDI32 and vulkan-1 exports are resolvable
+#[test]
+fn test_phase45_dll_exports_present() {
+    use litebox_shim_windows::loader::DllManager;
+
+    let mut dll_manager = DllManager::new();
+    let user32 = dll_manager.load_library("USER32.dll").unwrap();
+    let gdi32 = dll_manager.load_library("GDI32.dll").unwrap();
+    let vulkan1 = dll_manager.load_library("vulkan-1.dll").unwrap();
+
+    // Check USER32.dll Phase 45 additions
+    for func_name in [
+        "RegisterClassW",
+        "CreateWindowW",
+        "DialogBoxParamW",
+        "CreateDialogParamW",
+        "EndDialog",
+        "GetDlgItem",
+        "GetDlgItemTextW",
+        "SetDlgItemTextW",
+        "SendDlgItemMessageW",
+        "GetDlgItemInt",
+        "SetDlgItemInt",
+        "CheckDlgButton",
+        "IsDlgButtonChecked",
+        "DrawTextW",
+        "DrawTextA",
+        "DrawTextExW",
+        "AdjustWindowRect",
+        "AdjustWindowRectEx",
+        "SystemParametersInfoW",
+        "SystemParametersInfoA",
+        "CreateMenu",
+        "CreatePopupMenu",
+        "DestroyMenu",
+        "AppendMenuW",
+        "InsertMenuItemW",
+        "GetMenu",
+        "SetMenu",
+        "DrawMenuBar",
+        "TrackPopupMenu",
+        "SetCapture",
+        "ReleaseCapture",
+        "GetCapture",
+        "TrackMouseEvent",
+        "RedrawWindow",
+        "OpenClipboard",
+        "CloseClipboard",
+        "EmptyClipboard",
+        "GetClipboardData",
+        "SetClipboardData",
+        "LoadStringW",
+        "LoadBitmapW",
+        "LoadImageW",
+        "CallWindowProcW",
+        "GetWindowInfo",
+        "MapWindowPoints",
+        "MonitorFromWindow",
+        "MonitorFromPoint",
+        "GetMonitorInfoW",
+    ] {
+        assert!(
+            dll_manager.get_proc_address(user32, func_name).is_ok(),
+            "USER32.dll::{func_name} should be resolvable after Phase 45"
+        );
+    }
+
+    // Check GDI32.dll Phase 45 additions
+    for func_name in [
+        "GetDeviceCaps",
+        "SetBkMode",
+        "SetMapMode",
+        "SetViewportOrgEx",
+        "CreatePen",
+        "CreatePenIndirect",
+        "CreateBrushIndirect",
+        "CreatePatternBrush",
+        "CreateHatchBrush",
+        "CreateBitmap",
+        "CreateCompatibleBitmap",
+        "CreateDIBSection",
+        "GetDIBits",
+        "SetDIBits",
+        "BitBlt",
+        "StretchBlt",
+        "PatBlt",
+        "GetPixel",
+        "SetPixel",
+        "MoveToEx",
+        "LineTo",
+        "Polyline",
+        "Polygon",
+        "Ellipse",
+        "Arc",
+        "RoundRect",
+        "GetTextMetricsW",
+        "CreateRectRgn",
+        "SelectClipRgn",
+        "GetClipBox",
+        "SetStretchBltMode",
+        "GetObjectW",
+        "GetCurrentObject",
+        "ExcludeClipRect",
+        "IntersectClipRect",
+        "SaveDC",
+        "RestoreDC",
+    ] {
+        assert!(
+            dll_manager.get_proc_address(gdi32, func_name).is_ok(),
+            "GDI32.dll::{func_name} should be resolvable after Phase 45"
+        );
+    }
+
+    // Check vulkan-1.dll Phase 45 additions
+    for func_name in [
+        "vkCreateInstance",
+        "vkDestroyInstance",
+        "vkEnumerateInstanceExtensionProperties",
+        "vkEnumerateInstanceLayerProperties",
+        "vkEnumeratePhysicalDevices",
+        "vkGetPhysicalDeviceProperties",
+        "vkGetPhysicalDeviceFeatures",
+        "vkGetPhysicalDeviceQueueFamilyProperties",
+        "vkGetPhysicalDeviceMemoryProperties",
+        "vkCreateDevice",
+        "vkDestroyDevice",
+        "vkGetDeviceQueue",
+        "vkCreateWin32SurfaceKHR",
+        "vkDestroySurfaceKHR",
+        "vkGetPhysicalDeviceSurfaceSupportKHR",
+        "vkGetPhysicalDeviceSurfaceCapabilitiesKHR",
+        "vkGetPhysicalDeviceSurfaceFormatsKHR",
+        "vkGetPhysicalDeviceSurfacePresentModesKHR",
+        "vkCreateSwapchainKHR",
+        "vkDestroySwapchainKHR",
+        "vkGetSwapchainImagesKHR",
+        "vkAcquireNextImageKHR",
+        "vkQueuePresentKHR",
+        "vkAllocateMemory",
+        "vkFreeMemory",
+        "vkCreateBuffer",
+        "vkDestroyBuffer",
+        "vkCreateImage",
+        "vkDestroyImage",
+        "vkCreateRenderPass",
+        "vkDestroyRenderPass",
+        "vkCreateFramebuffer",
+        "vkDestroyFramebuffer",
+        "vkCreateGraphicsPipelines",
+        "vkDestroyPipeline",
+        "vkCreateShaderModule",
+        "vkDestroyShaderModule",
+        "vkCreateCommandPool",
+        "vkDestroyCommandPool",
+        "vkAllocateCommandBuffers",
+        "vkFreeCommandBuffers",
+        "vkBeginCommandBuffer",
+        "vkEndCommandBuffer",
+        "vkCmdBeginRenderPass",
+        "vkCmdEndRenderPass",
+        "vkCmdDraw",
+        "vkCmdDrawIndexed",
+        "vkQueueSubmit",
+        "vkQueueWaitIdle",
+        "vkDeviceWaitIdle",
+        "vkCreateFence",
+        "vkDestroyFence",
+        "vkWaitForFences",
+        "vkResetFences",
+        "vkCreateSemaphore",
+        "vkDestroySemaphore",
+        "vkCreateDescriptorSetLayout",
+        "vkDestroyDescriptorSetLayout",
+        "vkCreatePipelineLayout",
+        "vkDestroyPipelineLayout",
+        "vkGetInstanceProcAddr",
+        "vkGetDeviceProcAddr",
+    ] {
+        assert!(
+            dll_manager.get_proc_address(vulkan1, func_name).is_ok(),
+            "vulkan-1.dll::{func_name} should be resolvable after Phase 45"
+        );
+    }
+}
+
 #[cfg(test)]
 mod test_program_helpers {
     use std::env;
