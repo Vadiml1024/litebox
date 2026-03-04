@@ -1,0 +1,33 @@
+name: Sync Branch
+
+permissions:
+  contents: write
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: sync-branch
+  cancel-in-progress: true
+
+jobs:
+  sync:
+    name: Sync sync-branch with upstream/main
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Create or update sync-branch from upstream
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git remote add upstream https://github.com/microsoft/litebox.git || git remote set-url upstream https://github.com/microsoft/litebox.git
+          git fetch upstream main
+          git checkout -B sync-branch upstream/main
+          git push origin sync-branch --force
