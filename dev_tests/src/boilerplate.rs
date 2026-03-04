@@ -146,6 +146,7 @@ const SKIP_FILES: &[&str] = &[
     "windows_test_programs/seh_test/Makefile",
     "windows_test_programs/phase27_test/Makefile",
     "windows_test_programs/sync_test/Makefile",
+    "windows_test_programs/gui_test/Makefile",
     "litebox_runner_linux_on_windows_userland/tests/test-bins/hello_exec_nolibc",
     "litebox_runner_linux_on_windows_userland/tests/test-bins/hello_thread",
     "litebox_runner_linux_on_windows_userland/tests/test-bins/hello_thread_static",

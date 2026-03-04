@@ -1,8 +1,8 @@
 # Windows on Linux: Implementation Status
 
-**Last Updated:** 2026-03-03  
-**Total Tests:** 728 passing in Windows-on-Linux crates (657 platform + 51 shim + 20 runner) + 5 dev_tests ratchet checks — Phase 44 adds `std::deque<void*>`, `std::stack<void*>`, `std::queue<void*>`, MSVCRT temp-file helpers (`tmpnam`/`_mktemp`/`_tempnam`), WinSock service/protocol lookup (`getservbyname`/`getservbyport`/`getprotobyname`), and KERNEL32 `GetVolumePathNamesForVolumeNameW`  
-**Overall Status:** Core infrastructure complete. Seven Rust-based test programs (hello_cli, math_test, env_test, args_test, file_io_test, string_test, getprocaddress_test) run successfully end-to-end through the runner on Linux. **All API stub functions have been fully replaced — stub count is now 0.** Full C++ exception handling implemented and validated: `seh_c_test` (21/21), `seh_cpp_test` MinGW (26/26), `seh_cpp_test_clang` clang/MinGW (26/26), and `seh_cpp_test_msvc` MSVC ABI (21/21) all pass. Phases 33–44 add msvcp140.dll C++ runtime stubs, extended MSVCRT printf/scanf/va variants, `std::basic_string<char/wchar_t>`, file enumeration, locale-aware printf wrappers, low-level POSIX file I/O, stat functions, wide-path file opens, WinSock2 event APIs, path manipulation utilities, `std::vector<char>`, `std::map`, `std::ostringstream`, `std::istringstream`, `std::stringstream`, `std::unordered_map`, extended KERNEL32 process/job management, volume enumeration APIs, `std::deque`/`std::stack`/`std::queue`, and service/protocol lookup APIs.
+**Last Updated:** 2026-03-04  
+**Total Tests:** 769 passing in Windows-on-Linux crates (697 platform + 51 shim + 12 runner + 9 runner integration) + 5 dev_tests ratchet checks — Phase 45 adds extended USER32 GUI APIs (dialog boxes, menus, clipboard, drawing, capture, monitor info), extended GDI32 graphics primitives (bitmaps, pens, BitBlt, DIBSection, drawing primitives, DC management), and full vulkan-1.dll stub layer (62 Vulkan API functions covering instance, device, surface, swapchain, memory, pipelines, command buffers, synchronisation)  
+**Overall Status:** Core infrastructure complete. Seven Rust-based test programs (hello_cli, math_test, env_test, args_test, file_io_test, string_test, getprocaddress_test) run successfully end-to-end through the runner on Linux. **All API stub functions have been fully replaced — stub count is now 0.** Full C++ exception handling implemented and validated: `seh_c_test` (21/21), `seh_cpp_test` MinGW (26/26), `seh_cpp_test_clang` clang/MinGW (26/26), and `seh_cpp_test_msvc` MSVC ABI (21/21) all pass. Phases 33–44 add msvcp140.dll C++ runtime stubs, extended MSVCRT printf/scanf/va variants, `std::basic_string<char/wchar_t>`, file enumeration, locale-aware printf wrappers, low-level POSIX file I/O, stat functions, wide-path file opens, WinSock2 event APIs, path manipulation utilities, `std::vector<char>`, `std::map`, `std::ostringstream`, `std::istringstream`, `std::stringstream`, `std::unordered_map`, extended KERNEL32 process/job management, volume enumeration APIs, `std::deque`/`std::stack`/`std::queue`, and service/protocol lookup APIs. Phase 45 adds full Windows GUI API support and a Vulkan API stub layer.
 
 ---
 
@@ -222,7 +222,7 @@
 | Event-based I/O (Phase 40) | `WSACreateEvent`, `WSACloseEvent`, `WSAResetEvent`, `WSASetEvent`, `WSAEventSelect`, `WSAEnumNetworkEvents`, `WSAWaitForMultipleEvents` |
 | Misc | `WSADuplicateSocketW`, `WSAIoctl` |
 
-### USER32 — Extended GUI Support (Phases 24 + 27, 42 functions)
+### USER32 — Extended GUI Support (Phases 24 + 27 + 28, 42 core functions)
 | Category | Implemented Functions |
 |---|---|
 | Basic | `MessageBoxW`, `RegisterClassExW`, `CreateWindowExW`, `ShowWindow`, `UpdateWindow`, `DestroyWindow` |
@@ -238,11 +238,28 @@
 | Character classification | `IsCharAlphaW`, `IsCharAlphaNumericW`, `IsCharUpperW`, `IsCharLowerW` |
 | Window utilities | `IsWindow`, `IsWindowEnabled`, `IsWindowVisible`, `EnableWindow`, `GetWindowTextW`, `SetWindowTextW`, `GetParent` |
 
+**Phase 45 — Extended GUI APIs (57 additional functions):**
+| Category | Implemented Functions |
+|---|---|
+| Non-Ex variants | `RegisterClassW`, `CreateWindowW` |
+| Dialog boxes | `DialogBoxParamW`, `CreateDialogParamW`, `EndDialog`, `GetDlgItem`, `GetDlgItemTextW`, `SetDlgItemTextW`, `SendDlgItemMessageW`, `GetDlgItemInt`, `SetDlgItemInt`, `CheckDlgButton`, `IsDlgButtonChecked` |
+| Drawing | `DrawTextW`, `DrawTextA`, `DrawTextExW` |
+| Window rect | `AdjustWindowRect`, `AdjustWindowRectEx` |
+| System params | `SystemParametersInfoW`, `SystemParametersInfoA` |
+| Menus | `CreateMenu`, `CreatePopupMenu`, `DestroyMenu`, `AppendMenuW`, `InsertMenuItemW`, `GetMenu`, `SetMenu`, `DrawMenuBar`, `TrackPopupMenu` |
+| Mouse capture | `SetCapture`, `ReleaseCapture`, `GetCapture`, `TrackMouseEvent` |
+| Window updates | `RedrawWindow` |
+| Clipboard | `OpenClipboard`, `CloseClipboard`, `EmptyClipboard`, `GetClipboardData`, `SetClipboardData` |
+| Resources | `LoadStringW`, `LoadBitmapW`, `LoadImageW` |
+| Window proc | `CallWindowProcW` |
+| Window info | `GetWindowInfo`, `MapWindowPoints` |
+| Monitor | `MonitorFromWindow`, `MonitorFromPoint`, `GetMonitorInfoW` |
+
 All USER32 functions operate in headless mode: no real windows are created, no messages
 are dispatched, and drawing operations are silently discarded.
 
-### GDI32 — Graphics Device Interface (Phase 24, 13 functions)
-| Category | Implemented Functions |
+### GDI32 — Graphics Device Interface (Phases 24 + 45)
+| Category | Implemented Functions (Phase 24) |
 |---|---|
 | Objects | `GetStockObject`, `CreateSolidBrush`, `DeleteObject`, `SelectObject` |
 | Device context | `CreateCompatibleDC`, `DeleteDC` |
@@ -250,7 +267,51 @@ are dispatched, and drawing operations are silently discarded.
 | Drawing | `TextOutW`, `Rectangle`, `FillRect` |
 | Font | `CreateFontW`, `GetTextExtentPoint32W` |
 
+**Phase 45 — Extended Graphics Primitives (37 additional functions):**
+| Category | Implemented Functions |
+|---|---|
+| Device context | `GetDeviceCaps`, `SetBkMode`, `SetMapMode`, `SetViewportOrgEx`, `SaveDC`, `RestoreDC` |
+| Pen creation | `CreatePen`, `CreatePenIndirect` |
+| Brush creation | `CreateBrushIndirect`, `CreatePatternBrush`, `CreateHatchBrush` |
+| Bitmaps | `CreateBitmap`, `CreateCompatibleBitmap`, `CreateDIBSection`, `GetDIBits`, `SetDIBits` |
+| Blit | `BitBlt`, `StretchBlt`, `PatBlt`, `SetStretchBltMode` |
+| Pixels | `GetPixel`, `SetPixel` |
+| Line drawing | `MoveToEx`, `LineTo`, `Polyline` |
+| Shape drawing | `Polygon`, `Ellipse`, `Arc`, `RoundRect` |
+| Text metrics | `GetTextMetricsW` |
+| Regions | `CreateRectRgn`, `SelectClipRgn`, `GetClipBox`, `ExcludeClipRect`, `IntersectClipRect` |
+| Objects | `GetObjectW`, `GetCurrentObject` |
+
 All GDI32 functions operate in headless mode: drawing is silently discarded.
+
+### vulkan-1.dll — Vulkan API Stubs (Phase 45, 62 functions)
+
+All Vulkan functions are headless stubs.  Query functions (`vkEnumerate*`) return
+`VK_SUCCESS` with a count of 0.  Creation functions return
+`VK_ERROR_INITIALIZATION_FAILED` (-3) to clearly signal that no real GPU / ICD
+is available.  Wait/idle functions return `VK_SUCCESS` immediately.
+
+| Category | Implemented Functions |
+|---|---|
+| Instance | `vkCreateInstance`, `vkDestroyInstance`, `vkEnumerateInstanceExtensionProperties`, `vkEnumerateInstanceLayerProperties` |
+| Physical device | `vkEnumeratePhysicalDevices`, `vkGetPhysicalDeviceProperties`, `vkGetPhysicalDeviceFeatures`, `vkGetPhysicalDeviceQueueFamilyProperties`, `vkGetPhysicalDeviceMemoryProperties` |
+| Logical device | `vkCreateDevice`, `vkDestroyDevice`, `vkGetDeviceQueue`, `vkQueueWaitIdle`, `vkDeviceWaitIdle` |
+| Surface | `vkCreateWin32SurfaceKHR`, `vkDestroySurfaceKHR`, `vkGetPhysicalDeviceSurfaceSupportKHR`, `vkGetPhysicalDeviceSurfaceCapabilitiesKHR`, `vkGetPhysicalDeviceSurfaceFormatsKHR`, `vkGetPhysicalDeviceSurfacePresentModesKHR` |
+| Swapchain | `vkCreateSwapchainKHR`, `vkDestroySwapchainKHR`, `vkGetSwapchainImagesKHR`, `vkAcquireNextImageKHR`, `vkQueuePresentKHR` |
+| Memory & resources | `vkAllocateMemory`, `vkFreeMemory`, `vkCreateBuffer`, `vkDestroyBuffer`, `vkCreateImage`, `vkDestroyImage` |
+| Render passes | `vkCreateRenderPass`, `vkDestroyRenderPass`, `vkCreateFramebuffer`, `vkDestroyFramebuffer` |
+| Pipelines | `vkCreateGraphicsPipelines`, `vkDestroyPipeline`, `vkCreateShaderModule`, `vkDestroyShaderModule`, `vkCreatePipelineLayout`, `vkDestroyPipelineLayout` |
+| Descriptors | `vkCreateDescriptorSetLayout`, `vkDestroyDescriptorSetLayout` |
+| Commands | `vkCreateCommandPool`, `vkDestroyCommandPool`, `vkAllocateCommandBuffers`, `vkFreeCommandBuffers`, `vkBeginCommandBuffer`, `vkEndCommandBuffer`, `vkCmdBeginRenderPass`, `vkCmdEndRenderPass`, `vkCmdDraw`, `vkCmdDrawIndexed`, `vkQueueSubmit` |
+| Synchronization | `vkCreateFence`, `vkDestroyFence`, `vkWaitForFences`, `vkResetFences`, `vkCreateSemaphore`, `vkDestroySemaphore` |
+| Proc address | `vkGetInstanceProcAddr`, `vkGetDeviceProcAddr` |
+
+### C Test Program — GUI + Vulkan (Phase 45)
+
+`windows_test_programs/gui_test/gui_test.c` exercises 25 tests covering:
+- USER32: window creation, painting, menus, clipboard, monitor info, `DrawTextW`, `AdjustWindowRectEx`, `LoadStringW`
+- GDI32: `GetDeviceCaps`, pen/line drawing, compatible bitmap / BitBlt, ellipse/rectangle/roundrect, `GetTextMetricsW`, `SaveDC`/`RestoreDC`, `CreateDIBSection`
+- Vulkan-1: `vkEnumerateInstanceExtensionProperties` (VK_SUCCESS + count=0), `vkEnumerateInstanceLayerProperties`, `vkCreateInstance` (VK_ERROR_INITIALIZATION_FAILED), `vkEnumeratePhysicalDevices`, `vkGetInstanceProcAddr`
 
 ### SHELL32.dll — Shell API (Phase 25, 4 functions)
 | Category | Implemented Functions |
@@ -354,6 +415,7 @@ All GDI32 functions operate in headless mode: drawing is silently discarded.
 | Feature | Status |
 |---|---|
 | Full GUI rendering | USER32/GDI32 are headless stubs; no real window/drawing output |
+| Vulkan rendering | `vulkan-1.dll` stubs return `VK_ERROR_INITIALIZATION_FAILED`; no real GPU/ICD |
 | Overlapped (async) I/O | `ReadFileEx`, `WriteFileEx`, `GetOverlappedResult` return `ERROR_NOT_SUPPORTED` |
 | Process creation (`CreateProcessW`) | Returns `ERROR_NOT_SUPPORTED`; sandboxed environment |
 | Toolhelp32 enumeration | `CreateToolhelp32Snapshot`, `Module32FirstW/NextW` return `ERROR_NOT_SUPPORTED` |
@@ -372,26 +434,28 @@ All GDI32 functions operate in headless mode: drawing is silently discarded.
 
 ## Test Coverage
 
-**705 Windows-on-Linux crate tests + 5 dev_tests ratchet checks (all passing):**
+**769 Windows-on-Linux crate tests + 5 dev_tests ratchet checks (all passing):**
 
 | Package | Tests | Notes |
 |---|---|---|
-| `litebox_platform_linux_for_windows` | 635 | KERNEL32, MSVCRT, WS2_32, advapi32, user32, gdi32, shell32, version, ole32, msvcp140, platform APIs |
+| `litebox_platform_linux_for_windows` | 697 | KERNEL32, MSVCRT, WS2_32, advapi32, user32, gdi32, shell32, version, ole32, msvcp140, vulkan1, platform APIs |
 | `litebox_shim_windows` | 51 | ABI translation, PE loader, tracing, DLL manager |
-| `litebox_runner_windows_on_linux_userland` | 19 | 9 tracing + 10 integration tests (including ole32, msvcp140 exports, phases 39–43 resolution) |
+| `litebox_runner_windows_on_linux_userland` | 12 | integration: 9 non-ignored + 3 new Phase 45 checks |
 | `dev_tests` | 5 | Ratchet constraints (globals, transmutes, MaybeUninit, stubs, copyright) — run separately with `cargo test -p dev_tests` |
 
-**Integration tests (10, plus 13 MinGW-gated):**
+**Integration tests (12, plus 13 MinGW-gated):**
 1. PE loader with minimal binary
 2. DLL loading infrastructure
 3. Command-line APIs (`GetCommandLineW`, `CommandLineToArgvW`)
 4. File search APIs (`FindFirstFileW`, `FindNextFileW`, `FindClose`)
 5. Memory protection APIs (`NtProtectVirtualMemory`)
 6. Error handling APIs (`GetLastError` / `SetLastError`)
-7. DLL exports validation (all critical KERNEL32, WS2_32, USER32, GDI32, ole32, and msvcp140 exports — including Phases 33–43 additions)
+7. DLL exports validation (all critical KERNEL32, WS2_32, USER32, GDI32, ole32, and msvcp140 exports — including Phases 33–44 additions)
 8. Phase 41 DLL exports (msvcp140 `std::map`, `std::ostringstream`)
 9. Phase 42 DLL exports (MSVCRT path, WS2_32 inet, msvcp140 `std::istringstream`)
 10. Phase 43 DLL exports (MSVCRT dir nav, msvcp140 `std::stringstream`/`std::unordered_map`, KERNEL32 volume enumeration)
+11. Phase 44 DLL exports (`getservbyname`, `getservbyport`, `getprotobyname`, `tmpnam`, `_mktemp`, `_tempnam`, `GetVolumePathNamesForVolumeNameW`, msvcp140 `std::deque`/`std::stack`/`std::queue`)
+12. Phase 45 DLL exports (USER32 dialog/menu/clipboard/monitor APIs, GDI32 extended graphics, vulkan-1.dll 62 Vulkan functions)
 
 **MinGW-gated integration tests (13, run with `cargo test -p litebox_runner_windows_on_linux_userland -- --ignored`):**
 - `test_hello_cli_program_exists` — checks hello_cli.exe is present

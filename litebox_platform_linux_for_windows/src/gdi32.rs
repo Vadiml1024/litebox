@@ -31,6 +31,15 @@ const FAKE_COMPAT_HDC: usize = 0x0000_0DC1;
 /// Fake non-null HFONT returned by `CreateFontW`
 const FAKE_HFONT: usize = 0x0000_F001;
 
+/// Fake non-null HBITMAP returned by `CreateCompatibleBitmap` / `CreateDIBSection`
+const FAKE_HBITMAP: usize = 0x0000_B177;
+
+/// Fake non-null HPEN returned by `CreatePen`
+const FAKE_HPEN: usize = 0x0000_CEED;
+
+/// Fake non-null HRGN returned by `CreateRectRgn`
+const FAKE_HRGN: usize = 0x0000_BEEF;
+
 // ── GDI32 stub implementations ────────────────────────────────────────────────
 
 /// `GetStockObject` — retrieve a handle to one of the stock pens, brushes,
@@ -224,6 +233,573 @@ pub unsafe extern "C" fn gdi32_GetTextExtentPoint32W(
     1
 }
 
+// ── Phase 45: Extended graphics primitives ────────────────────────────────────
+
+/// `GetDeviceCaps` — retrieve device-specific information for the specified device.
+///
+/// Returns representative values for a headless 800×600 display.
+///
+/// # Safety
+/// `hdc` is not meaningfully dereferenced; always safe.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gdi32_GetDeviceCaps(_hdc: *mut c_void, index: i32) -> i32 {
+    // Common CAPS indices
+    match index {
+        8 => 96,    // LOGPIXELSX — 96 dpi
+        4 => 32,    // BITSPIXEL — 32-bit color
+        118 => 800, // HORZRES — horizontal resolution
+        117 => 600, // VERTRES — vertical resolution
+        _ => 0,
+    }
+}
+
+/// `SetBkMode` — set the background mix mode for the specified device context.
+///
+/// Returns 1 (previous background mode = OPAQUE); no-op in headless mode.
+///
+/// # Safety
+/// `hdc` is not meaningfully dereferenced; always safe.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gdi32_SetBkMode(_hdc: *mut c_void, _mode: i32) -> i32 {
+    1 // OPAQUE
+}
+
+/// `SetMapMode` — set the mapping mode of the specified device context.
+///
+/// Returns 1 (MM_TEXT); no-op in headless mode.
+///
+/// # Safety
+/// `hdc` is not meaningfully dereferenced; always safe.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gdi32_SetMapMode(_hdc: *mut c_void, _mode: i32) -> i32 {
+    1 // MM_TEXT
+}
+
+/// `SetViewportOrgEx` — set the origin of the viewport for the specified device context.
+///
+/// Writes (0, 0) as the previous origin and returns 1 (TRUE).
+///
+/// # Safety
+/// `point` must be a valid 2-i32 buffer or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gdi32_SetViewportOrgEx(
+    _hdc: *mut c_void,
+    _x: i32,
+    _y: i32,
+    point: *mut i32,
+) -> i32 {
+    if !point.is_null() {
+        // SAFETY: caller guarantees `point` points to a POINT (2 × i32).
+        point.write(0);
+        point.add(1).write(0);
+    }
+    1
+}
+
+/// `CreatePen` — create a logical pen with the specified style, width, and color.
+///
+/// Returns a fake non-null HPEN in headless mode.
+///
+/// # Safety
+/// No pointer parameters; always safe.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gdi32_CreatePen(_style: i32, _width: i32, _color: u32) -> *mut c_void {
+    FAKE_HPEN as *mut c_void
+}
+
+/// `CreatePenIndirect` — create a logical cosmetic pen from a LOGPEN structure.
+///
+/// Returns a fake non-null HPEN in headless mode.
+///
+/// # Safety
+/// `logpen` is not meaningfully dereferenced; always safe.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gdi32_CreatePenIndirect(_logpen: *const c_void) -> *mut c_void {
+    FAKE_HPEN as *mut c_void
+}
+
+/// `CreateBrushIndirect` — create a logical brush from a LOGBRUSH structure.
+///
+/// Returns a fake non-null HBRUSH in headless mode.
+///
+/// # Safety
+/// `logbrush` is not meaningfully dereferenced; always safe.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gdi32_CreateBrushIndirect(_logbrush: *const c_void) -> *mut c_void {
+    FAKE_HBRUSH as *mut c_void
+}
+
+/// `CreatePatternBrush` — create a logical brush with the specified bitmap pattern.
+///
+/// Returns a fake non-null HBRUSH in headless mode.
+///
+/// # Safety
+/// `hbm` is not meaningfully dereferenced; always safe.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gdi32_CreatePatternBrush(_hbm: *mut c_void) -> *mut c_void {
+    FAKE_HBRUSH as *mut c_void
+}
+
+/// `CreateHatchBrush` — create a logical brush with the specified hatch pattern.
+///
+/// Returns a fake non-null HBRUSH in headless mode.
+///
+/// # Safety
+/// No pointer parameters; always safe.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gdi32_CreateHatchBrush(_style: i32, _color: u32) -> *mut c_void {
+    FAKE_HBRUSH as *mut c_void
+}
+
+/// `CreateBitmap` — create a bitmap with the specified width, height, and color format.
+///
+/// Returns a fake non-null HBITMAP in headless mode.
+///
+/// # Safety
+/// `pbm_bits` is not meaningfully dereferenced; always safe.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gdi32_CreateBitmap(
+    _width: i32,
+    _height: i32,
+    _planes: u32,
+    _bit_count: u32,
+    _pbm_bits: *const c_void,
+) -> *mut c_void {
+    FAKE_HBITMAP as *mut c_void
+}
+
+/// `CreateCompatibleBitmap` — create a bitmap compatible with the specified device context.
+///
+/// Returns a fake non-null HBITMAP in headless mode.
+///
+/// # Safety
+/// `hdc` is not meaningfully dereferenced; always safe.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gdi32_CreateCompatibleBitmap(
+    _hdc: *mut c_void,
+    _cx: i32,
+    _cy: i32,
+) -> *mut c_void {
+    FAKE_HBITMAP as *mut c_void
+}
+
+/// `CreateDIBSection` — create a DIB that applications can write to directly.
+///
+/// Returns a fake non-null HBITMAP; `*ppv_bits` is set to null in headless mode.
+///
+/// # Safety
+/// `ppv_bits` must be a valid pointer-to-pointer or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gdi32_CreateDIBSection(
+    _hdc: *mut c_void,
+    _pbmi: *const c_void,
+    _usage: u32,
+    ppv_bits: *mut *mut c_void,
+    _h_section: *mut c_void,
+    _offset: u32,
+) -> *mut c_void {
+    if !ppv_bits.is_null() {
+        // SAFETY: caller guarantees `ppv_bits` is a valid pointer-to-pointer.
+        ppv_bits.write(core::ptr::null_mut());
+    }
+    FAKE_HBITMAP as *mut c_void
+}
+
+/// `GetDIBits` — retrieve the bits of the specified compatible bitmap.
+///
+/// Returns 0 (no scan lines transferred) in headless mode.
+///
+/// # Safety
+/// Pointer parameters are not meaningfully dereferenced; always safe.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gdi32_GetDIBits(
+    _hdc: *mut c_void,
+    _hbm: *mut c_void,
+    _start: u32,
+    _lines: u32,
+    _pv_bits: *mut c_void,
+    _pbmi: *mut c_void,
+    _usage: u32,
+) -> i32 {
+    0
+}
+
+/// `SetDIBits` — set the pixels in a compatible bitmap.
+///
+/// Returns 1 (non-zero = success); pixels are silently discarded in headless mode.
+///
+/// # Safety
+/// Pointer parameters are not meaningfully dereferenced; always safe.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gdi32_SetDIBits(
+    _hdc: *mut c_void,
+    _hbm: *mut c_void,
+    _start: u32,
+    _lines: u32,
+    _pv_bits: *const c_void,
+    _pbmi: *const c_void,
+    _usage: u32,
+) -> i32 {
+    1
+}
+
+/// `BitBlt` — perform a bit-block transfer between device contexts.
+///
+/// Returns 1 (TRUE); the operation is silently discarded in headless mode.
+///
+/// # Safety
+/// Parameters are not meaningfully dereferenced; always safe.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gdi32_BitBlt(
+    _hdc_dst: *mut c_void,
+    _x: i32,
+    _y: i32,
+    _cx: i32,
+    _cy: i32,
+    _hdc_src: *mut c_void,
+    _x1: i32,
+    _y1: i32,
+    _rop: u32,
+) -> i32 {
+    1
+}
+
+/// `StretchBlt` — copy a bitmap from source to destination, stretching or compressing as needed.
+///
+/// Returns 1 (TRUE); the operation is silently discarded in headless mode.
+///
+/// # Safety
+/// Parameters are not meaningfully dereferenced; always safe.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gdi32_StretchBlt(
+    _hdc_dst: *mut c_void,
+    _xdst: i32,
+    _ydst: i32,
+    _wdst: i32,
+    _hdst: i32,
+    _hdc_src: *mut c_void,
+    _xsrc: i32,
+    _ysrc: i32,
+    _wsrc: i32,
+    _hsrc: i32,
+    _rop: u32,
+) -> i32 {
+    1
+}
+
+/// `PatBlt` — paint the specified rectangle using the brush currently selected into the DC.
+///
+/// Returns 1 (TRUE); the operation is silently discarded in headless mode.
+///
+/// # Safety
+/// `hdc` is not meaningfully dereferenced; always safe.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gdi32_PatBlt(
+    _hdc: *mut c_void,
+    _x: i32,
+    _y: i32,
+    _w: i32,
+    _h: i32,
+    _rop: u32,
+) -> i32 {
+    1
+}
+
+/// `GetPixel` — retrieve the red, green, blue (RGB) color value of the pixel at the given coordinates.
+///
+/// Returns 0 (black) in headless mode.
+///
+/// # Safety
+/// `hdc` is not meaningfully dereferenced; always safe.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gdi32_GetPixel(_hdc: *mut c_void, _x: i32, _y: i32) -> u32 {
+    0
+}
+
+/// `SetPixel` — set the pixel at the given coordinates to the specified color.
+///
+/// Returns the color value passed (clr_ref); pixels are silently discarded in headless mode.
+///
+/// # Safety
+/// `hdc` is not meaningfully dereferenced; always safe.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gdi32_SetPixel(_hdc: *mut c_void, _x: i32, _y: i32, clr_ref: u32) -> u32 {
+    clr_ref
+}
+
+/// `MoveToEx` — update the current position to the specified point.
+///
+/// Writes (0, 0) as the previous position and returns 1 (TRUE).
+///
+/// # Safety
+/// `point` must be a valid 2-i32 buffer or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gdi32_MoveToEx(
+    _hdc: *mut c_void,
+    _x: i32,
+    _y: i32,
+    point: *mut i32,
+) -> i32 {
+    if !point.is_null() {
+        // SAFETY: caller guarantees `point` points to a POINT (2 × i32).
+        point.write(0);
+        point.add(1).write(0);
+    }
+    1
+}
+
+/// `LineTo` — draw a line from the current position to the specified point.
+///
+/// Returns 1 (TRUE); the line is silently discarded in headless mode.
+///
+/// # Safety
+/// `hdc` is not meaningfully dereferenced; always safe.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gdi32_LineTo(_hdc: *mut c_void, _x: i32, _y: i32) -> i32 {
+    1
+}
+
+/// `Polyline` — draw a series of line segments by connecting points in a buffer.
+///
+/// Returns 1 (TRUE); the polyline is silently discarded in headless mode.
+///
+/// # Safety
+/// `apt` is not meaningfully dereferenced; always safe.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gdi32_Polyline(
+    _hdc: *mut c_void,
+    _apt: *const c_void,
+    _count: i32,
+) -> i32 {
+    1
+}
+
+/// `Polygon` — draw a polygon.
+///
+/// Returns 1 (TRUE); the polygon is silently discarded in headless mode.
+///
+/// # Safety
+/// `apt` is not meaningfully dereferenced; always safe.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gdi32_Polygon(_hdc: *mut c_void, _apt: *const c_void, _count: i32) -> i32 {
+    1
+}
+
+/// `Ellipse` — draw an ellipse.
+///
+/// Returns 1 (TRUE); the ellipse is silently discarded in headless mode.
+///
+/// # Safety
+/// `hdc` is not meaningfully dereferenced; always safe.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gdi32_Ellipse(
+    _hdc: *mut c_void,
+    _left: i32,
+    _top: i32,
+    _right: i32,
+    _bottom: i32,
+) -> i32 {
+    1
+}
+
+/// `Arc` — draw an elliptical arc.
+///
+/// Returns 1 (TRUE); the arc is silently discarded in headless mode.
+///
+/// # Safety
+/// `hdc` is not meaningfully dereferenced; always safe.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gdi32_Arc(
+    _hdc: *mut c_void,
+    _left: i32,
+    _top: i32,
+    _right: i32,
+    _bottom: i32,
+    _xstart: i32,
+    _ystart: i32,
+    _xend: i32,
+    _yend: i32,
+) -> i32 {
+    1
+}
+
+/// `RoundRect` — draw a rectangle with rounded corners.
+///
+/// Returns 1 (TRUE); the rounded rectangle is silently discarded in headless mode.
+///
+/// # Safety
+/// `hdc` is not meaningfully dereferenced; always safe.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gdi32_RoundRect(
+    _hdc: *mut c_void,
+    _left: i32,
+    _top: i32,
+    _right: i32,
+    _bottom: i32,
+    _width: i32,
+    _height: i32,
+) -> i32 {
+    1
+}
+
+/// `GetTextMetricsW` — fill a TEXTMETRICW structure for the current font.
+///
+/// Writes placeholder metrics (height=16, average width=8) and returns 1 (TRUE).
+///
+/// # Safety
+/// `tm` must be a valid writable pointer to at least 57 × 4 = 228 bytes (TEXTMETRICW), or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gdi32_GetTextMetricsW(_hdc: *mut c_void, tm: *mut i32) -> i32 {
+    if !tm.is_null() {
+        // TEXTMETRICW: zero the entire structure first (57 i32-equivalent fields)
+        // SAFETY: caller guarantees `tm` points to a TEXTMETRICW.
+        for i in 0..57 {
+            tm.add(i).write(0);
+        }
+        // tmHeight (offset 0) = 16
+        tm.write(16);
+        // tmAveCharWidth (offset 7 × 4 bytes) = 8
+        tm.add(7).write(8);
+        // tmMaxCharWidth (offset 8) = 16
+        tm.add(8).write(16);
+    }
+    1
+}
+
+/// `CreateRectRgn` — create a rectangular region.
+///
+/// Returns a fake non-null HRGN in headless mode.
+///
+/// # Safety
+/// No pointer parameters; always safe.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gdi32_CreateRectRgn(
+    _left: i32,
+    _top: i32,
+    _right: i32,
+    _bottom: i32,
+) -> *mut c_void {
+    FAKE_HRGN as *mut c_void
+}
+
+/// `SelectClipRgn` — select a region as the current clipping region for the device context.
+///
+/// Returns 1 (SIMPLEREGION); no-op in headless mode.
+///
+/// # Safety
+/// Parameters are not meaningfully dereferenced; always safe.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gdi32_SelectClipRgn(_hdc: *mut c_void, _hrgn: *mut c_void) -> i32 {
+    1 // SIMPLEREGION
+}
+
+/// `GetClipBox` — retrieve the bounding rectangle of the current clipping region.
+///
+/// Fills a fake 800×600 clip region and returns 1 (SIMPLEREGION).
+///
+/// # Safety
+/// `rect` must be a valid 4-i32 buffer or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gdi32_GetClipBox(_hdc: *mut c_void, rect: *mut i32) -> i32 {
+    if !rect.is_null() {
+        // SAFETY: caller guarantees `rect` points to a RECT (4 × i32).
+        rect.write(0); // left
+        rect.add(1).write(0); // top
+        rect.add(2).write(800); // right
+        rect.add(3).write(600); // bottom
+    }
+    1 // SIMPLEREGION
+}
+
+/// `SetStretchBltMode` — set the bitmap stretching mode in the specified device context.
+///
+/// Returns 1 (previous BLACKONWHITE mode); no-op in headless mode.
+///
+/// # Safety
+/// `hdc` is not meaningfully dereferenced; always safe.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gdi32_SetStretchBltMode(_hdc: *mut c_void, _mode: i32) -> i32 {
+    1 // BLACKONWHITE
+}
+
+/// `GetObjectW` — retrieve information for the specified graphics object.
+///
+/// Returns 0 (object not found) in headless mode.
+///
+/// # Safety
+/// `pv` is not meaningfully dereferenced; always safe.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gdi32_GetObjectW(_h: *mut c_void, _c: i32, _pv: *mut c_void) -> i32 {
+    0
+}
+
+/// `GetCurrentObject` — retrieve a handle to the currently selected object of a given type.
+///
+/// Returns a fake non-null object handle in headless mode.
+///
+/// # Safety
+/// `hdc` is not meaningfully dereferenced; always safe.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gdi32_GetCurrentObject(_hdc: *mut c_void, _type: u32) -> *mut c_void {
+    FAKE_HGDIOBJ as *mut c_void
+}
+
+/// `ExcludeClipRect` — remove a rectangle from the clipping region.
+///
+/// Returns 1 (SIMPLEREGION); no-op in headless mode.
+///
+/// # Safety
+/// `hdc` is not meaningfully dereferenced; always safe.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gdi32_ExcludeClipRect(
+    _hdc: *mut c_void,
+    _left: i32,
+    _top: i32,
+    _right: i32,
+    _bottom: i32,
+) -> i32 {
+    1
+}
+
+/// `IntersectClipRect` — create a new clipping region from the intersection.
+///
+/// Returns 1 (SIMPLEREGION); no-op in headless mode.
+///
+/// # Safety
+/// `hdc` is not meaningfully dereferenced; always safe.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gdi32_IntersectClipRect(
+    _hdc: *mut c_void,
+    _left: i32,
+    _top: i32,
+    _right: i32,
+    _bottom: i32,
+) -> i32 {
+    1
+}
+
+/// `SaveDC` — save the current state of the specified device context.
+///
+/// Returns 1 (saved state ID); no-op in headless mode.
+///
+/// # Safety
+/// `hdc` is not meaningfully dereferenced; always safe.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gdi32_SaveDC(_hdc: *mut c_void) -> i32 {
+    1
+}
+
+/// `RestoreDC` — restore a device context to the specified state.
+///
+/// Returns 1 (TRUE); no-op in headless mode.
+///
+/// # Safety
+/// `hdc` is not meaningfully dereferenced; always safe.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gdi32_RestoreDC(_hdc: *mut c_void, _saved_dc: i32) -> i32 {
+    1
+}
+
 // ── Unit tests ────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -346,5 +922,130 @@ mod tests {
             )
         };
         assert_eq!(result, 1);
+    }
+
+    // ── Phase 45 tests ────────────────────────────────────────────────────
+    #[test]
+    fn test_create_pen_returns_nonnull() {
+        // SAFETY: integer parameters; always safe.
+        let hpen = unsafe { gdi32_CreatePen(0, 1, 0) };
+        assert!(!hpen.is_null());
+    }
+
+    #[test]
+    fn test_create_compatible_bitmap_returns_nonnull() {
+        // SAFETY: null HDC; stub returns a fake HBITMAP.
+        let hbm = unsafe { gdi32_CreateCompatibleBitmap(std::ptr::null_mut(), 100, 100) };
+        assert!(!hbm.is_null());
+    }
+
+    #[test]
+    fn test_create_dib_section_returns_nonnull_and_nulls_bits() {
+        let mut bits: *mut c_void = 0xDEAD as *mut c_void;
+        // SAFETY: bits is a valid pointer-to-pointer.
+        let hbm = unsafe {
+            gdi32_CreateDIBSection(
+                std::ptr::null_mut(),
+                std::ptr::null(),
+                0,
+                &mut bits,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        assert!(!hbm.is_null());
+        assert!(bits.is_null());
+    }
+
+    #[test]
+    fn test_bit_blt_returns_one() {
+        // SAFETY: null parameters; stub does not dereference them.
+        let result = unsafe {
+            gdi32_BitBlt(
+                std::ptr::null_mut(),
+                0,
+                0,
+                100,
+                100,
+                std::ptr::null_mut(),
+                0,
+                0,
+                0xCC0020,
+            )
+        };
+        assert_eq!(result, 1);
+    }
+
+    #[test]
+    fn test_move_to_ex_writes_zero_origin() {
+        let mut pt = [1i32; 2];
+        // SAFETY: pt is a valid 2-i32 buffer.
+        let result = unsafe { gdi32_MoveToEx(std::ptr::null_mut(), 50, 50, pt.as_mut_ptr()) };
+        assert_eq!(result, 1);
+        assert_eq!(pt, [0i32; 2]);
+    }
+
+    #[test]
+    fn test_line_to_returns_one() {
+        // SAFETY: null HDC; stub does not dereference it.
+        let result = unsafe { gdi32_LineTo(std::ptr::null_mut(), 100, 100) };
+        assert_eq!(result, 1);
+    }
+
+    #[test]
+    fn test_ellipse_returns_one() {
+        // SAFETY: null HDC; stub does not dereference it.
+        let result = unsafe { gdi32_Ellipse(std::ptr::null_mut(), 0, 0, 100, 100) };
+        assert_eq!(result, 1);
+    }
+
+    #[test]
+    fn test_round_rect_returns_one() {
+        // SAFETY: null HDC; stub does not dereference it.
+        let result = unsafe { gdi32_RoundRect(std::ptr::null_mut(), 0, 0, 100, 100, 10, 10) };
+        assert_eq!(result, 1);
+    }
+
+    #[test]
+    fn test_get_text_metrics_fills_height() {
+        let mut tm = [0i32; 57];
+        // SAFETY: tm is a valid 57-i32 buffer.
+        let result = unsafe { gdi32_GetTextMetricsW(std::ptr::null_mut(), tm.as_mut_ptr()) };
+        assert_eq!(result, 1);
+        assert_eq!(tm[0], 16); // tmHeight
+        assert_eq!(tm[7], 8); // tmAveCharWidth
+    }
+
+    #[test]
+    fn test_create_rect_rgn_returns_nonnull() {
+        // SAFETY: integer parameters; always safe.
+        let hrgn = unsafe { gdi32_CreateRectRgn(0, 0, 100, 100) };
+        assert!(!hrgn.is_null());
+    }
+
+    #[test]
+    fn test_get_clip_box_fills_800x600() {
+        let mut rect = [0i32; 4];
+        // SAFETY: rect is a valid 4-i32 buffer.
+        let result = unsafe { gdi32_GetClipBox(std::ptr::null_mut(), rect.as_mut_ptr()) };
+        assert_eq!(result, 1);
+        assert_eq!(rect[2], 800);
+        assert_eq!(rect[3], 600);
+    }
+
+    #[test]
+    fn test_save_restore_dc() {
+        // SAFETY: null HDC; stubs do not dereference it.
+        let saved = unsafe { gdi32_SaveDC(std::ptr::null_mut()) };
+        assert_eq!(saved, 1);
+        let result = unsafe { gdi32_RestoreDC(std::ptr::null_mut(), saved) };
+        assert_eq!(result, 1);
+    }
+
+    #[test]
+    fn test_set_bk_mode_returns_previous() {
+        // SAFETY: null HDC; stub does not dereference it.
+        let prev = unsafe { gdi32_SetBkMode(std::ptr::null_mut(), 2) }; // TRANSPARENT
+        assert_eq!(prev, 1); // previous = OPAQUE
     }
 }

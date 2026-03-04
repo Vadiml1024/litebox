@@ -25,6 +25,7 @@ pub mod trampoline;
 pub mod user32;
 pub mod userenv;
 pub mod version;
+pub mod vulkan1;
 pub mod ws2_32;
 
 pub use kernel32::register_dynamic_exports;
