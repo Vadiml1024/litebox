@@ -2791,33 +2791,43 @@ pub unsafe extern "C" fn msvcp140__deque_pop_back(this: *mut u8) -> *mut u8 {
     })
 }
 
-/// `std::deque<void*>::front()` — peek at the front element without removing.
+/// `std::deque<void*>::front()` — returns a reference (pointer) to the front element.
 ///
-/// Returns null if the deque is empty.
+/// Returns a pointer to the stored `void*` element (i.e., `void**`), or null if the
+/// deque is empty.  The MSVC mangled name ending in `QEAAAEAPEAXXZ` indicates the C++
+/// return type is `void*&`, which is passed as a pointer in the Windows x64 ABI.
 ///
 /// # Safety
 /// `this` must be a pointer previously passed to `msvcp140__deque_ctor`.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn msvcp140__deque_front(this: *const u8) -> *mut u8 {
+pub unsafe extern "C" fn msvcp140__deque_front(this: *const u8) -> *mut *mut u8 {
     with_deque_registry(|m| {
-        m.get(&(this as usize))
-            .and_then(|dq| dq.front().copied())
-            .map_or(core::ptr::null_mut(), |v| v as *mut u8)
+        m.get_mut(&(this as usize))
+            .and_then(|dq| dq.front_mut())
+            // SAFETY: usize and *mut u8 have identical size and alignment on all targets.
+            .map_or(core::ptr::null_mut(), |slot| {
+                core::ptr::from_mut(slot).cast::<*mut u8>()
+            })
     })
 }
 
-/// `std::deque<void*>::back()` — peek at the back element without removing.
+/// `std::deque<void*>::back()` — returns a reference (pointer) to the back element.
 ///
-/// Returns null if the deque is empty.
+/// Returns a pointer to the stored `void*` element (i.e., `void**`), or null if the
+/// deque is empty.  The MSVC mangled name ending in `QEAAAEAPEAXXZ` indicates the C++
+/// return type is `void*&`, which is passed as a pointer in the Windows x64 ABI.
 ///
 /// # Safety
 /// `this` must be a pointer previously passed to `msvcp140__deque_ctor`.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn msvcp140__deque_back(this: *const u8) -> *mut u8 {
+pub unsafe extern "C" fn msvcp140__deque_back(this: *const u8) -> *mut *mut u8 {
     with_deque_registry(|m| {
-        m.get(&(this as usize))
-            .and_then(|dq| dq.back().copied())
-            .map_or(core::ptr::null_mut(), |v| v as *mut u8)
+        m.get_mut(&(this as usize))
+            .and_then(|dq| dq.back_mut())
+            // SAFETY: usize and *mut u8 have identical size and alignment on all targets.
+            .map_or(core::ptr::null_mut(), |slot| {
+                core::ptr::from_mut(slot).cast::<*mut u8>()
+            })
     })
 }
 
@@ -2886,9 +2896,11 @@ mod tests_deque {
             msvcp140__deque_ctor(obj.as_mut_ptr());
             msvcp140__deque_push_front(obj.as_mut_ptr(), a);
             msvcp140__deque_push_front(obj.as_mut_ptr(), b);
-            // front = b, back = a
-            assert_eq!(msvcp140__deque_front(obj.as_ptr()), b.cast_mut());
-            assert_eq!(msvcp140__deque_back(obj.as_ptr()), a.cast_mut());
+            // front = b, back = a; dereference the returned references to get stored values
+            let front = msvcp140__deque_front(obj.as_ptr());
+            let back = msvcp140__deque_back(obj.as_ptr());
+            assert_eq!(*front, b.cast_mut());
+            assert_eq!(*back, a.cast_mut());
             assert_eq!(msvcp140__deque_pop_back(obj.as_mut_ptr()), a.cast_mut());
             assert_eq!(msvcp140__deque_pop_back(obj.as_mut_ptr()), b.cast_mut());
             msvcp140__deque_dtor(obj.as_mut_ptr());
@@ -2987,18 +2999,23 @@ pub unsafe extern "C" fn msvcp140__stack_pop(this: *mut u8) -> *mut u8 {
     })
 }
 
-/// `std::stack<void*>::top()` — peek at the top element without removing.
+/// `std::stack<void*>::top()` — returns a reference (pointer) to the top element.
 ///
-/// Returns null if the stack is empty.
+/// Returns a pointer to the stored `void*` element (i.e., `void**`), or null if the
+/// stack is empty.  The MSVC mangled name ending in `QEAAAEAPEAXXZ` indicates the C++
+/// return type is `void*&`, which is passed as a pointer in the Windows x64 ABI.
 ///
 /// # Safety
 /// `this` must be a pointer previously passed to `msvcp140__stack_ctor`.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn msvcp140__stack_top(this: *const u8) -> *mut u8 {
+pub unsafe extern "C" fn msvcp140__stack_top(this: *const u8) -> *mut *mut u8 {
     with_stack_registry(|m| {
-        m.get(&(this as usize))
-            .and_then(|st| st.back().copied())
-            .map_or(core::ptr::null_mut(), |v| v as *mut u8)
+        m.get_mut(&(this as usize))
+            .and_then(|st| st.back_mut())
+            // SAFETY: usize and *mut u8 have identical size and alignment on all targets.
+            .map_or(core::ptr::null_mut(), |slot| {
+                core::ptr::from_mut(slot).cast::<*mut u8>()
+            })
     })
 }
 
@@ -3050,7 +3067,9 @@ mod tests_stack {
             msvcp140__stack_ctor(obj.as_mut_ptr());
             msvcp140__stack_push(obj.as_mut_ptr(), a);
             msvcp140__stack_push(obj.as_mut_ptr(), b);
-            assert_eq!(msvcp140__stack_top(obj.as_ptr()), b.cast_mut());
+            // dereference the returned reference to get the stored top value
+            let top = msvcp140__stack_top(obj.as_ptr());
+            assert_eq!(*top, b.cast_mut());
             assert_eq!(msvcp140__stack_pop(obj.as_mut_ptr()), b.cast_mut());
             assert_eq!(msvcp140__stack_pop(obj.as_mut_ptr()), a.cast_mut());
             assert!(msvcp140__stack_empty(obj.as_ptr()));
@@ -3135,33 +3154,43 @@ pub unsafe extern "C" fn msvcp140__queue_pop(this: *mut u8) -> *mut u8 {
     })
 }
 
-/// `std::queue<void*>::front()` — peek at the front element without removing.
+/// `std::queue<void*>::front()` — returns a reference (pointer) to the front element.
 ///
-/// Returns null if the queue is empty.
+/// Returns a pointer to the stored `void*` element (i.e., `void**`), or null if the
+/// queue is empty.  The MSVC mangled name ending in `QEAAAEAPEAXXZ` indicates the C++
+/// return type is `void*&`, which is passed as a pointer in the Windows x64 ABI.
 ///
 /// # Safety
 /// `this` must be a pointer previously passed to `msvcp140__queue_ctor`.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn msvcp140__queue_front(this: *const u8) -> *mut u8 {
+pub unsafe extern "C" fn msvcp140__queue_front(this: *const u8) -> *mut *mut u8 {
     with_queue_registry(|m| {
-        m.get(&(this as usize))
-            .and_then(|q| q.front().copied())
-            .map_or(core::ptr::null_mut(), |v| v as *mut u8)
+        m.get_mut(&(this as usize))
+            .and_then(|q| q.front_mut())
+            // SAFETY: usize and *mut u8 have identical size and alignment on all targets.
+            .map_or(core::ptr::null_mut(), |slot| {
+                core::ptr::from_mut(slot).cast::<*mut u8>()
+            })
     })
 }
 
-/// `std::queue<void*>::back()` — peek at the back element without removing.
+/// `std::queue<void*>::back()` — returns a reference (pointer) to the back element.
 ///
-/// Returns null if the queue is empty.
+/// Returns a pointer to the stored `void*` element (i.e., `void**`), or null if the
+/// queue is empty.  The MSVC mangled name ending in `QEAAAEAPEAXXZ` indicates the C++
+/// return type is `void*&`, which is passed as a pointer in the Windows x64 ABI.
 ///
 /// # Safety
 /// `this` must be a pointer previously passed to `msvcp140__queue_ctor`.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn msvcp140__queue_back(this: *const u8) -> *mut u8 {
+pub unsafe extern "C" fn msvcp140__queue_back(this: *const u8) -> *mut *mut u8 {
     with_queue_registry(|m| {
-        m.get(&(this as usize))
-            .and_then(|q| q.back().copied())
-            .map_or(core::ptr::null_mut(), |v| v as *mut u8)
+        m.get_mut(&(this as usize))
+            .and_then(|q| q.back_mut())
+            // SAFETY: usize and *mut u8 have identical size and alignment on all targets.
+            .map_or(core::ptr::null_mut(), |slot| {
+                core::ptr::from_mut(slot).cast::<*mut u8>()
+            })
     })
 }
 
@@ -3213,8 +3242,11 @@ mod tests_queue {
             msvcp140__queue_ctor(obj.as_mut_ptr());
             msvcp140__queue_push(obj.as_mut_ptr(), a);
             msvcp140__queue_push(obj.as_mut_ptr(), b);
-            assert_eq!(msvcp140__queue_front(obj.as_ptr()), a.cast_mut());
-            assert_eq!(msvcp140__queue_back(obj.as_ptr()), b.cast_mut());
+            // dereference the returned references to get the stored values
+            let front = msvcp140__queue_front(obj.as_ptr());
+            let back = msvcp140__queue_back(obj.as_ptr());
+            assert_eq!(*front, a.cast_mut());
+            assert_eq!(*back, b.cast_mut());
             assert_eq!(msvcp140__queue_pop(obj.as_mut_ptr()), a.cast_mut());
             assert_eq!(msvcp140__queue_pop(obj.as_mut_ptr()), b.cast_mut());
             assert!(msvcp140__queue_empty(obj.as_ptr()));

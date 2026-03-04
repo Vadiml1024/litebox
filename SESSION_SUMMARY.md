@@ -22,8 +22,8 @@
   - Added `msvcp140__deque_push_front` — prepend to front
   - Added `msvcp140__deque_pop_front` — remove and return front element
   - Added `msvcp140__deque_pop_back` — remove and return back element
-  - Added `msvcp140__deque_front` — peek front element
-  - Added `msvcp140__deque_back` — peek back element
+  - Added `msvcp140__deque_front` — return reference (`void*&`) to front element (returns `*mut *mut u8`)
+  - Added `msvcp140__deque_back` — return reference (`void*&`) to back element (returns `*mut *mut u8`)
   - Added `msvcp140__deque_size` — element count
   - Added `msvcp140__deque_clear` — remove all elements
   - 4 unit tests in `tests_deque` module
@@ -32,7 +32,7 @@
   - Added `msvcp140__stack_dtor` — destructor
   - Added `msvcp140__stack_push` — push element (LIFO)
   - Added `msvcp140__stack_pop` — pop element (LIFO)
-  - Added `msvcp140__stack_top` — peek top element
+  - Added `msvcp140__stack_top` — return reference (`void*&`) to top element (returns `*mut *mut u8`)
   - Added `msvcp140__stack_size` — element count
   - Added `msvcp140__stack_empty` — empty predicate
   - 3 unit tests in `tests_stack` module
@@ -41,8 +41,8 @@
   - Added `msvcp140__queue_dtor` — destructor
   - Added `msvcp140__queue_push` — enqueue element
   - Added `msvcp140__queue_pop` — dequeue element (FIFO)
-  - Added `msvcp140__queue_front` — peek front
-  - Added `msvcp140__queue_back` — peek back
+  - Added `msvcp140__queue_front` — return reference (`void*&`) to front element (returns `*mut *mut u8`)
+  - Added `msvcp140__queue_back` — return reference (`void*&`) to back element (returns `*mut *mut u8`)
   - Added `msvcp140__queue_size` — element count
   - Added `msvcp140__queue_empty` — empty predicate
   - 3 unit tests in `tests_queue` module
