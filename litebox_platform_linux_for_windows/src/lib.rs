@@ -26,6 +26,8 @@ pub mod user32;
 pub mod userenv;
 pub mod version;
 pub mod vulkan1;
+#[cfg(feature = "real_vulkan")]
+pub mod vulkan_loader;
 pub mod ws2_32;
 
 pub use kernel32::register_dynamic_exports;

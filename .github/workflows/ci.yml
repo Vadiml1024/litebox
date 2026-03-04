@@ -235,6 +235,35 @@ jobs:
           echo "$output"
           echo "$output" | grep -q "0 failed" || { echo "ERROR: getprocaddress_test.exe reported failures"; exit 1; }
 
+  build_and_test_real_vulkan:
+    name: Build and Test real_vulkan feature
+    runs-on: ubuntu-latest
+    env:
+      RUSTFLAGS: -Dwarnings
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+      - name: Set up Rust
+        uses: ./.github/actions/setup-rust
+        with:
+          components: rustfmt,clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Install nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: nextest@${{ env.NEXTEST_VERSION }}
+      - name: Install Vulkan ICD loader and software driver
+        # libvulkan1 provides libvulkan.so.1 (the ICD loader).
+        # mesa-vulkan-drivers provides the lavapipe software Vulkan renderer,
+        # which enables functional testing on GPU-less CI machines.
+        run: sudo apt-get install -y libvulkan1 mesa-vulkan-drivers
+      - name: Clippy with real_vulkan feature
+        run: cargo clippy -p litebox_platform_linux_for_windows --all-targets --features real_vulkan
+      - name: Build with real_vulkan feature
+        run: cargo build -p litebox_platform_linux_for_windows --features real_vulkan
+      - name: Run unit tests with real_vulkan feature
+        run: cargo nextest run --profile ci -p litebox_platform_linux_for_windows --features real_vulkan
+
   build_and_test_snp:
     name: Build and Test SNP
     runs-on: ubuntu-latest
