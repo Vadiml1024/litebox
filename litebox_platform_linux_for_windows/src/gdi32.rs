@@ -245,10 +245,10 @@ pub unsafe extern "C" fn gdi32_GetTextExtentPoint32W(
 pub unsafe extern "C" fn gdi32_GetDeviceCaps(_hdc: *mut c_void, index: i32) -> i32 {
     // Common CAPS indices
     match index {
-        8 => 96,    // LOGPIXELSX — 96 dpi
-        4 => 32,    // BITSPIXEL — 32-bit color
-        118 => 800, // HORZRES — horizontal resolution
-        117 => 600, // VERTRES — vertical resolution
+        8 => 800,      // HORZRES — horizontal resolution in pixels
+        10 => 600,     // VERTRES — vertical resolution in pixels
+        12 => 32,      // BITSPIXEL — 32-bit color
+        88 | 90 => 96, // LOGPIXELSX / LOGPIXELSY — 96 dpi
         _ => 0,
     }
 }
@@ -647,21 +647,22 @@ pub unsafe extern "C" fn gdi32_RoundRect(
 /// Writes placeholder metrics (height=16, average width=8) and returns 1 (TRUE).
 ///
 /// # Safety
-/// `tm` must be a valid writable pointer to at least 57 × 4 = 228 bytes (TEXTMETRICW), or null.
+/// `tm` must be a valid writable pointer to at least `sizeof(TEXTMETRICW) = 60` bytes
+/// (15 i32-equivalent units), or null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn gdi32_GetTextMetricsW(_hdc: *mut c_void, tm: *mut i32) -> i32 {
     if !tm.is_null() {
-        // TEXTMETRICW: zero the entire structure first (57 i32-equivalent fields)
+        // TEXTMETRICW: zero the entire structure first (15 i32-equivalent fields = 60 bytes)
         // SAFETY: caller guarantees `tm` points to a TEXTMETRICW.
-        for i in 0..57 {
+        for i in 0..15 {
             tm.add(i).write(0);
         }
         // tmHeight (offset 0) = 16
         tm.write(16);
-        // tmAveCharWidth (offset 7 × 4 bytes) = 8
-        tm.add(7).write(8);
-        // tmMaxCharWidth (offset 8) = 16
-        tm.add(8).write(16);
+        // tmAveCharWidth (offset 5 × 4 bytes) = 8
+        tm.add(5).write(8);
+        // tmMaxCharWidth (offset 6 × 4 bytes) = 16
+        tm.add(6).write(16);
     }
     1
 }
@@ -1008,12 +1009,13 @@ mod tests {
 
     #[test]
     fn test_get_text_metrics_fills_height() {
-        let mut tm = [0i32; 57];
-        // SAFETY: tm is a valid 57-i32 buffer.
+        let mut tm = [0i32; 15];
+        // SAFETY: tm is a valid 15-i32 buffer (sizeof(TEXTMETRICW) = 60 bytes).
         let result = unsafe { gdi32_GetTextMetricsW(std::ptr::null_mut(), tm.as_mut_ptr()) };
         assert_eq!(result, 1);
         assert_eq!(tm[0], 16); // tmHeight
-        assert_eq!(tm[7], 8); // tmAveCharWidth
+        assert_eq!(tm[5], 8); // tmAveCharWidth
+        assert_eq!(tm[6], 16); // tmMaxCharWidth
     }
 
     #[test]

@@ -238,7 +238,7 @@
 | Character classification | `IsCharAlphaW`, `IsCharAlphaNumericW`, `IsCharUpperW`, `IsCharLowerW` |
 | Window utilities | `IsWindow`, `IsWindowEnabled`, `IsWindowVisible`, `EnableWindow`, `GetWindowTextW`, `SetWindowTextW`, `GetParent` |
 
-**Phase 45 — Extended GUI APIs (57 additional functions):**
+**Phase 45 — Extended GUI APIs (49 additional functions):**
 | Category | Implemented Functions |
 |---|---|
 | Non-Ex variants | `RegisterClassW`, `CreateWindowW` |
