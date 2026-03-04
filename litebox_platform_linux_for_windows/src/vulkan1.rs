@@ -1765,7 +1765,7 @@ mod tests {
         let result = unsafe {
             vulkan1_vkEnumerateInstanceExtensionProperties(
                 core::ptr::null(),
-                &mut count,
+                &raw mut count,
                 core::ptr::null_mut(),
             )
         };
