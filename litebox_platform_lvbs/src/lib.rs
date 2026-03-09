@@ -7,6 +7,7 @@
 #![no_std]
 
 use crate::{host::per_cpu_variables::PerCpuVariablesAsm, mshv::vsm::Vtl0KernelInfo};
+use crate::user_context::UserContextMap;
 use core::{
     arch::asm,
     sync::atomic::{AtomicU32, AtomicU64},
@@ -48,6 +49,7 @@ pub mod arch;
 pub mod host;
 pub mod mm;
 pub mod mshv;
+pub(crate) mod user_context;
 
 pub mod syscall_entry;
 
@@ -623,6 +625,7 @@ impl<Host: HostInterface> LinuxKernel<Host> {
             page_table_manager: PageTableManager::new(base_pt),
             vtl1_phys_frame_range: vtl1_range,
             vtl0_kernel_info: Vtl0KernelInfo::new(),
+            user_contexts: UserContextMap::new(),
         }))
     }
 
@@ -942,6 +945,24 @@ impl<Host: HostInterface> LinuxKernel<Host> {
     /// Enable syscall support in the platform.
     pub fn enable_syscall_support() {
         syscall_entry::init();
+    }
+
+    /// Create a new page table for VTL1 user space.
+    #[allow(dead_code)]
+    pub(crate) fn new_user_page_table(&self) -> mm::PageTable<PAGE_SIZE> {
+        let pt = unsafe { mm::PageTable::new_top_level() };
+        if pt
+            .map_phys_frame_range(
+                self.vtl1_phys_frame_range,
+                PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
+                None,
+            )
+            .is_err()
+        {
+            panic!("Failed to map VTL1 physical memory");
+        }
+
+        pt
     }
 }
 

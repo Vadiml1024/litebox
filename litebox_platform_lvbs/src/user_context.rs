@@ -154,7 +154,7 @@ impl<Host: HostInterface> UserSpaceManagement for LinuxKernel<Host> {
                 rsp = user_ctx.rsp;
                 rip = user_ctx.rip;
                 rflags = user_ctx.rflags;
-                user_ctx.page_table.change_address_space();
+                user_ctx.page_table.load();
             } else {
                 panic!("Userspace with ID: {} does not exist", userspace_id);
             }
