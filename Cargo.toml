@@ -18,7 +18,10 @@ members = [
     "litebox_shim_linux",
     "litebox_shim_windows",
     "litebox_syscall_rewriter",
+    "litebox_packager",
     "litebox_runner_snp",
+    "litebox_util_log",
+    "litebox_util_log_macros",
     # The CI tests are not meant to be released (thus are not prefixed with
     # `litebox_`), but exist purely to better manage development on LiteBox.
     "dev_tests",
@@ -41,6 +44,9 @@ default-members = [
     "litebox_shim_windows",
     "litebox_shim_optee",
     "litebox_syscall_rewriter",
+    "litebox_packager",
+    "litebox_util_log",
+    "litebox_util_log_macros",
     "dev_tests",
     "dev_bench",
 ]

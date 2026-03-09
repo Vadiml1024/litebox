@@ -3,7 +3,7 @@
 
 //! Process/thread related syscalls.
 
-use crate::{ConstPtr, MutPtr, Task};
+use crate::{ConstPtr, MutPtr, ShimFS, Task};
 use alloc::boxed::Box;
 use alloc::collections::btree_map::BTreeMap;
 use alloc::sync::Arc;
@@ -228,7 +228,7 @@ impl Process {
     }
 }
 
-impl Task {
+impl<FS: ShimFS> Task<FS> {
     /// Updates the process exit status for a thread exit.
     fn exit_thread(&self, code: i8) {
         let mut inner = self.thread.process.inner.lock();
@@ -320,7 +320,7 @@ pub(crate) struct Credentials {
     pub egid: u32,
 }
 
-impl Task {
+impl<FS: ShimFS> Task<FS> {
     pub(crate) fn process(&self) -> &Arc<Process> {
         &self.thread.process
     }
@@ -527,7 +527,7 @@ fn wake_robust_list(
     Ok(())
 }
 
-impl Task {
+impl<FS: ShimFS> Task<FS> {
     /// Called when the task is exiting.
     pub(crate) fn prepare_for_exit(&mut self) {
         self.thread.detach_from_process();
@@ -575,12 +575,12 @@ type ThreadLocalDescriptor = MutPtr<u8>;
 #[cfg(target_arch = "x86")]
 type ThreadLocalDescriptor = litebox_common_linux::UserDesc;
 
-struct NewThreadArgs {
+struct NewThreadArgs<FS: ShimFS> {
     /// Task struct that maintains all per-thread data
-    task: Task,
+    task: Task<FS>,
 }
 
-impl litebox::shim::InitThread for NewThreadArgs {
+impl<FS: ShimFS> litebox::shim::InitThread for NewThreadArgs<FS> {
     type ExecutionContext = litebox_common_linux::PtRegs;
 
     fn init(
@@ -596,7 +596,7 @@ impl litebox::shim::InitThread for NewThreadArgs {
     }
 }
 
-impl Task {
+impl<FS: ShimFS> Task<FS> {
     pub(crate) fn sys_clone(
         &self,
         ctx: &litebox_common_linux::PtRegs,
@@ -881,7 +881,7 @@ impl ResourceLimits {
     }
 }
 
-impl Task {
+impl<FS: ShimFS> Task<FS> {
     /// Get resource limits, and optionally set new limits.
     pub(crate) fn do_prlimit(
         &self,
@@ -1217,7 +1217,7 @@ impl CpuSet {
     }
 }
 
-impl Task {
+impl<FS: ShimFS> Task<FS> {
     /// Handle syscall `sched_getaffinity`.
     ///
     /// Note this is a dummy implementation that always returns the same CPU set
@@ -1228,7 +1228,7 @@ impl Task {
     }
 }
 
-impl Task {
+impl<FS: ShimFS> Task<FS> {
     /// Handle syscall `futex`
     pub(crate) fn sys_futex(
         &self,
@@ -1304,7 +1304,7 @@ impl Task {
 const MAX_VEC: usize = 4096; // limit count
 const MAX_TOTAL_BYTES: usize = 256 * 1024; // size cap
 
-impl Task {
+impl<FS: ShimFS> Task<FS> {
     /// Handle syscall `execve`.
     pub(crate) fn sys_execve(
         &self,
@@ -1405,7 +1405,7 @@ impl Task {
     /// to start executing it.
     pub(crate) fn load_program(
         &self,
-        mut loader: crate::loader::elf::ElfLoader<'_>,
+        mut loader: crate::loader::elf::ElfLoader<'_, FS>,
         argv: Vec<alloc::ffi::CString>,
         mut envp: Vec<alloc::ffi::CString>,
     ) -> Result<(), crate::loader::elf::ElfLoaderError> {

@@ -250,15 +250,18 @@ impl WindowsUserland {
         // `TASK_ADDR_MIN` and `TASK_ADDR_MAX`.
         // Will remove these prints once we have a better way to replace
         // the current `const` values in PageManagementProvider.
-        println!("System information.");
-        println!(
-            "=> Max user address: {:#x}",
-            sys_info.lpMaximumApplicationAddress as usize
-        );
-        println!(
-            "=> Min user address: {:#x}",
-            sys_info.lpMinimumApplicationAddress as usize
-        );
+        #[cfg(debug_assertions)]
+        {
+            println!("System information.");
+            println!(
+                "=> Max user address: {:#x}",
+                sys_info.lpMaximumApplicationAddress as usize
+            );
+            println!(
+                "=> Min user address: {:#x}",
+                sys_info.lpMinimumApplicationAddress as usize
+            );
+        }
 
         let reserved_pages = Self::read_memory_maps();
 
@@ -1747,6 +1750,7 @@ unsafe extern "C-unwind" fn exception_handler(
         exception,
         error_code,
         cr2,
+        kernel_mode: false,
     };
 
     thread_ctx.call_shim(|shim, ctx, _interrupt| shim.exception(ctx, &info));
@@ -1759,7 +1763,7 @@ unsafe extern "C-unwind" fn interrupt_handler(thread_ctx: &mut ThreadContext<'_>
         } else {
             // We likely got here just to restore fsbase, so don't bother the
             // shim.
-            ContinueOperation::ResumeGuest
+            ContinueOperation::Resume
         }
     });
 }
@@ -1785,8 +1789,8 @@ impl ThreadContext<'_> {
         // before returning.
         let op = f(self.shim, self.ctx, self.tls.interrupt.replace(false));
         match op {
-            ContinueOperation::ResumeGuest => unsafe { switch_to_guest(self.ctx) },
-            ContinueOperation::ExitThread => {}
+            ContinueOperation::Resume => unsafe { switch_to_guest(self.ctx) },
+            ContinueOperation::Terminate => {}
         }
     }
 }
@@ -1827,6 +1831,25 @@ unsafe impl litebox::platform::ThreadLocalStorageProvider for WindowsUserland {
 impl litebox::platform::CrngProvider for WindowsUserland {
     fn fill_bytes_crng(&self, buf: &mut [u8]) {
         getrandom::fill(buf).expect("getrandom failed");
+    }
+}
+
+/// Dummy `VmemPageFaultHandler`.
+///
+/// Page faults are handled transparently by the host Windows kernel.
+/// Provided to satisfy trait bounds for `PageManager::handle_page_fault`.
+impl litebox::mm::linux::VmemPageFaultHandler for WindowsUserland {
+    unsafe fn handle_page_fault(
+        &self,
+        _fault_addr: usize,
+        _flags: litebox::mm::linux::VmFlags,
+        _error_code: u64,
+    ) -> Result<(), litebox::mm::linux::PageFaultError> {
+        unreachable!("host kernel handles page faults for Windows userland")
+    }
+
+    fn access_error(_error_code: u64, _flags: litebox::mm::linux::VmFlags) -> bool {
+        unreachable!("host kernel handles page faults for Windows userland")
     }
 }
 

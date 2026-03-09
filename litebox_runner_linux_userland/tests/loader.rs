@@ -11,7 +11,7 @@ use litebox_platform_multiplex::Platform;
 
 struct TestLauncher {
     platform: &'static Platform,
-    shim_builder: litebox_shim_linux::LinuxShimBuilder,
+    shim_builder: litebox_shim_linux::LinuxShimBuilder<litebox_shim_linux::DefaultFS>,
     fs: litebox_shim_linux::DefaultFS,
 }
 
@@ -95,12 +95,12 @@ impl TestLauncher {
         let program = shim
             .load_program(self.platform.init_task(), executable_path, argv, envp)
             .unwrap();
-        let _ = unsafe {
+        unsafe {
             litebox_platform_linux_userland::run_thread(
                 program.entrypoints,
                 &mut litebox_common_linux::PtRegs::default(),
-            )
-        };
+            );
+        }
         assert_eq!(
             program.process.wait(),
             0,

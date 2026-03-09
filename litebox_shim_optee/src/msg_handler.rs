@@ -17,16 +17,19 @@
 //! shared memory).
 use crate::{NormalWorldConstPtr, NormalWorldMutPtr};
 use alloc::{boxed::Box, vec::Vec};
+use core::mem::size_of;
 use hashbrown::HashMap;
 use litebox::{mm::linux::PAGE_SIZE, utils::TruncateExt};
 use litebox_common_linux::vmap::{PhysPageAddr, PhysPointerError};
 use litebox_common_optee::{
-    OpteeMessageCommand, OpteeMsgArgs, OpteeMsgAttrType, OpteeMsgParamRmem, OpteeMsgParamTmem,
-    OpteeMsgParamValue, OpteeSecureWorldCapabilities, OpteeSmcArgs, OpteeSmcFunction,
-    OpteeSmcResult, OpteeSmcReturnCode, TeeParamType, TeeUuid, UteeEntryFunc, UteeParamOwned,
-    UteeParams,
+    OpteeMessageCommand, OpteeMsgArgs, OpteeMsgArgsHeader, OpteeMsgAttrType, OpteeMsgParamRmem,
+    OpteeMsgParamTmem, OpteeMsgParamValue, OpteeRpcArgs, OpteeSecureWorldCapabilities,
+    OpteeSmcArgs, OpteeSmcFunction, OpteeSmcResult, OpteeSmcReturnCode, TeeIdentity, TeeLogin,
+    TeeOrigin, TeeParamType, TeeResult, TeeUuid, UteeEntryFunc, UteeParamOwned, UteeParams,
+    optee_msg_args_total_size,
 };
 use once_cell::race::OnceBox;
+use zerocopy::{FromBytes, Immutable};
 
 // OP-TEE version and build info (2.0)
 // TODO: Consider replacing it with our own version info
@@ -50,7 +53,6 @@ const OPTEE_MSG_OS_OPTEE_UUID_3: u32 = 0xa5d5_c51b;
 
 // We do not support notification for now
 const MAX_NOTIF_VALUE: usize = 0;
-const NUM_RPC_PARMS: usize = 4;
 
 #[inline]
 fn page_align_down(address: u64) -> u64 {
@@ -62,10 +64,109 @@ fn page_align_up(len: u64) -> u64 {
     len.next_multiple_of(PAGE_SIZE as u64)
 }
 
+/// Read `OpteeMsgArgs` (and optional `OpteeRpcArgs`) from a VTL0 physical address.
+///
+/// Copies the maximum possible size in one shot into a private VTL1 buffer, then
+/// parses entirely from that buffer. This eliminates TOCTOU (double-fetch) issues:
+/// VTL0 cannot mutate the data between validation and use because we only touch
+/// our private copy after the single read.
+///
+/// The copy size is determined by known-good upper bounds, not by untrusted data:
+///   - Main args: `optee_msg_args_total_size(MAX_ARG_PARAM_COUNT = 6)` = 224 bytes (the Linux
+///     driver always allocates at least this much for the main arg).
+///   - RPC args (when present): `optee_msg_args_total_size(rpc_num_params)`, where
+///     `rpc_num_params` is our own negotiated value from `EXCHANGE_CAPABILITIES`.
+///
+/// If `has_rpc_arg` is true, expects an appended RPC `optee_msg_arg` immediately after
+/// the main one at offset `optee_msg_args_total_size(num_params)` (the *actual* `num_params`,
+/// not `MAX_ARG_PARAM_COUNT`). This matches the Linux driver's layout.
+///
+/// VTL0 physical memory layout at `phys_addr`:
+///
+/// ```text
+///  phys_addr
+///  |
+///  v
+///  +--------+------+--------+--------+------+----------~-+
+///  | header |par[0]|par[N-1]| header |par[0]|par[R-1]|xxx|
+///  | 32B    | ...  |  32B   | 32B    | ...  |  32B   |xxx|
+///  +--------+------+--------+--------+------+----------~-+
+///  |<--- main_size -------->|<--- rpc_size --------->|   |
+///  |                        ^            ^               |
+///  |                 RPC starts here    main_max         |
+///  |<----- copy_size = main_max + rpc_max -------------~>|
+///
+///  N = actual num_params from header (validated <= MAX_ARG_PARAM_COUNT after copy)
+///  R = rpc_num_params (negotiated during OPTEE_SMC_EXCHANGE_CAPABILITIES)
+///
+///  We copy main_max + rpc_max bytes (the upper bound), which covers the
+///  actual data (main_size + rpc_size) plus some unused area between
+///  main_size and main_max. We parse using main_size from our private
+///  snapshot, so the RPC arg is found at its correct offset.
+/// ```
+///
+/// Returns `(main_args, Option<rpc_args>)`.
+pub fn read_optee_msg_args_from_phys(
+    phys_addr: usize,
+    has_rpc_arg: bool,
+) -> Result<(Box<OpteeMsgArgs>, Option<Box<OpteeRpcArgs>>), OpteeSmcReturnCode> {
+    // Compute copy size from known-good upper bounds — no untrusted data involved.
+    let main_max = optee_msg_args_total_size(OpteeMsgArgs::MAX_ARG_PARAM_COUNT.truncate());
+    let copy_size = if has_rpc_arg {
+        main_max + optee_msg_args_total_size(OpteeRpcArgs::MAX_RPC_ARG_PARAM_COUNT.truncate())
+    } else {
+        main_max
+    };
+
+    let mut blob = alloc::vec![0u8; copy_size];
+
+    let mut blob_ptr =
+        NormalWorldConstPtr::<u8, PAGE_SIZE>::with_contiguous_pages(phys_addr, copy_size)
+            .map_err(|_| OpteeSmcReturnCode::EBadAddr)?;
+    unsafe { blob_ptr.read_slice_at_offset(0, &mut blob) }
+        .map_err(|_| OpteeSmcReturnCode::EBadAddr)?;
+
+    // Parse main header from the private buffer.
+    let main_header = OpteeMsgArgsHeader::read_from_prefix(&blob)
+        .map_err(|_| OpteeSmcReturnCode::EBadAddr)?
+        .0;
+
+    // Validate num_params from the snapshot.
+    if main_header.num_params as usize > OpteeMsgArgs::MAX_ARG_PARAM_COUNT {
+        return Err(OpteeSmcReturnCode::EBadCmd);
+    }
+
+    let main_size = optee_msg_args_total_size(main_header.num_params);
+    let main_params = &blob[size_of::<OpteeMsgArgsHeader>()..main_size];
+    let main_args = OpteeMsgArgs::from_header_and_raw_params(&main_header, main_params)?;
+
+    // Parse RPC args if present.
+    // The Linux kernel driver places the RPC arg at offset main_size (based on the actual
+    // num_params, not MAX_ARG_PARAM_COUNT). Since we copied main_max bytes which is >= main_size,
+    // and main_size is computed from our own validated snapshot, this is safe.
+    let rpc_args = if has_rpc_arg {
+        let rpc_blob = &blob[main_size..];
+        let rpc_header = OpteeMsgArgsHeader::read_from_prefix(rpc_blob)
+            .map_err(|_| OpteeSmcReturnCode::EBadAddr)?
+            .0;
+        // Re-validate RPC num_params from the snapshot against our negotiated limit.
+        if rpc_header.num_params as usize > OpteeRpcArgs::MAX_RPC_ARG_PARAM_COUNT {
+            return Err(OpteeSmcReturnCode::EBadCmd);
+        }
+        let rpc_params = &rpc_blob[size_of::<OpteeMsgArgsHeader>()..];
+        let rpc = OpteeRpcArgs::from_header_and_raw_params(&rpc_header, rpc_params)?;
+        Some(Box::new(rpc))
+    } else {
+        None
+    };
+
+    Ok((Box::new(main_args), rpc_args))
+}
+
 /// This function handles `OpteeSmcArgs` passed from the normal world (VTL0) via an OP-TEE SMC call.
 /// It returns an `OpteeSmcResult` representing the result of the SMC call or `OpteeMsgArgs` it contains
 /// if the SMC call involves with an OP-TEE message which should be handled by
-/// `handle_optee_msg_arg` or `handle_ta_request`.
+/// `handle_optee_msg_args` or `handle_ta_request`.
 pub fn handle_optee_smc_args(
     smc: &mut OpteeSmcArgs,
 ) -> Result<OpteeSmcResult<'_>, OpteeSmcReturnCode> {
@@ -77,18 +178,20 @@ pub fn handle_optee_smc_args(
         func_id
     );
     match func_id {
-        OpteeSmcFunction::CallWithArg
-        | OpteeSmcFunction::CallWithRpcArg
-        | OpteeSmcFunction::CallWithRegdArg => {
-            let msg_arg_addr = smc.optee_msg_arg_phys_addr()?;
-            let msg_arg_addr: usize = msg_arg_addr.truncate();
-            let mut ptr = NormalWorldConstPtr::<OpteeMsgArgs, PAGE_SIZE>::with_usize(msg_arg_addr)
-                .map_err(|_| OpteeSmcReturnCode::EBadAddr)?;
-            let msg_arg =
-                unsafe { ptr.read_at_offset(0) }.map_err(|_| OpteeSmcReturnCode::EBadAddr)?;
+        OpteeSmcFunction::CallWithArg => {
+            let msg_args_addr = smc.optee_msg_args_phys_addr()?;
+            let msg_args_addr: usize = msg_args_addr.truncate();
+            let (msg_args, _) = read_optee_msg_args_from_phys(msg_args_addr, false)?;
             Ok(OpteeSmcResult::CallWithArg {
-                msg_arg: Box::new(*msg_arg),
+                msg_args,
+                rpc_args: None,
             })
+        }
+        OpteeSmcFunction::CallWithRpcArg | OpteeSmcFunction::CallWithRegdArg => {
+            let msg_args_addr = smc.optee_msg_args_phys_addr()?;
+            let msg_args_addr: usize = msg_args_addr.truncate();
+            let (msg_args, rpc_args) = read_optee_msg_args_from_phys(msg_args_addr, true)?;
+            Ok(OpteeSmcResult::CallWithArg { msg_args, rpc_args })
         }
         OpteeSmcFunction::ExchangeCapabilities => {
             // TODO: update the below when we support more features
@@ -99,7 +202,7 @@ pub fn handle_optee_smc_args(
                 status: OpteeSmcReturnCode::Ok,
                 capabilities: default_cap,
                 max_notif_value: MAX_NOTIF_VALUE,
-                data: NUM_RPC_PARMS,
+                data: OpteeRpcArgs::MAX_RPC_ARG_PARAM_COUNT,
             })
         }
         OpteeSmcFunction::DisableShmCache => {
@@ -144,11 +247,11 @@ pub fn handle_optee_smc_args(
 /// If an OP-TEE message involves with a TA request, it simply returns
 /// `Err(OpteeSmcReturnCode::Ok)` while expecting that the caller will handle
 /// the message with `handle_ta_request`.
-pub fn handle_optee_msg_arg(msg_arg: &OpteeMsgArgs) -> Result<(), OpteeSmcReturnCode> {
-    msg_arg.validate()?;
-    match msg_arg.cmd {
+pub fn handle_optee_msg_args(msg_args: &OpteeMsgArgs) -> Result<(), OpteeSmcReturnCode> {
+    msg_args.validate()?;
+    match msg_args.cmd {
         OpteeMessageCommand::RegisterShm => {
-            let tmem = msg_arg.get_param_tmem(0)?;
+            let tmem = msg_args.get_param_tmem(0)?;
             if tmem.buf_ptr == 0 || tmem.size == 0 || tmem.shm_ref == 0 {
                 return Err(OpteeSmcReturnCode::EBadAddr);
             }
@@ -166,19 +269,19 @@ pub fn handle_optee_msg_arg(msg_arg: &OpteeMsgArgs) -> Result<(), OpteeSmcReturn
             )?;
         }
         OpteeMessageCommand::UnregisterShm => {
-            let tmem = msg_arg.get_param_tmem(0)?;
-            if tmem.shm_ref == 0 {
+            let rmem = msg_args.get_param_rmem(0)?;
+            if rmem.shm_ref == 0 {
                 return Err(OpteeSmcReturnCode::EBadAddr);
             }
             shm_ref_map()
-                .remove(tmem.shm_ref)
+                .remove(rmem.shm_ref)
                 .ok_or(OpteeSmcReturnCode::EBadAddr)?;
         }
         OpteeMessageCommand::OpenSession
         | OpteeMessageCommand::InvokeCommand
         | OpteeMessageCommand::CloseSession => return Err(OpteeSmcReturnCode::Ok),
         _ => {
-            todo!("Unimplemented OpteeMessageCommand: {:?}", msg_arg.cmd);
+            todo!("Unimplemented OpteeMessageCommand: {:?}", msg_args.cmd);
         }
     }
     Ok(())
@@ -191,6 +294,7 @@ pub fn handle_optee_msg_arg(msg_arg: &OpteeMsgArgs) -> Result<(), OpteeSmcReturn
 /// write back output data to the normal world once the TA execution is done.
 pub struct TaRequestInfo<const ALIGN: usize> {
     pub uuid: Option<TeeUuid>,
+    pub client_identity: Option<TeeIdentity>,
     pub session: u32,
     pub entry_func: UteeEntryFunc,
     pub cmd_id: u32,
@@ -208,42 +312,49 @@ pub struct TaRequestInfo<const ALIGN: usize> {
 ///
 /// Panics if any conversion from `u64` to `usize` fails. OP-TEE shim doesn't support a 32-bit environment.
 pub fn decode_ta_request(
-    msg_arg: &OpteeMsgArgs,
+    msg_args: &OpteeMsgArgs,
 ) -> Result<TaRequestInfo<PAGE_SIZE>, OpteeSmcReturnCode> {
-    let ta_entry_func: UteeEntryFunc = msg_arg.cmd.try_into()?;
-    let (ta_uuid, skip): (Option<TeeUuid>, usize) = if ta_entry_func == UteeEntryFunc::OpenSession {
-        // If it is an OpenSession request, extract the TA UUID from the first two parameters
-        // This might use four 32-bit values or two 64-bit values depending on the OP-TEE configuration
-        if msg_arg.params[1].attr_type() == OpteeMsgAttrType::ValueInput {
-            let mut data = [0u32; 4];
-            data[0] = (msg_arg.get_param_value(0)?.a).truncate();
-            data[1] = (msg_arg.get_param_value(0)?.b).truncate();
-            data[2] = (msg_arg.get_param_value(1)?.a).truncate();
-            data[3] = (msg_arg.get_param_value(1)?.b).truncate();
-            // Skip the first two parameters as they convey the TA UUID
-            (Some(TeeUuid::from_u32_array(data)), 2)
+    let ta_entry_func: UteeEntryFunc = msg_args.cmd.try_into()?;
+    let (ta_uuid, client_identity, skip): (Option<TeeUuid>, Option<TeeIdentity>, usize) =
+        if ta_entry_func == UteeEntryFunc::OpenSession {
+            // If it is an OpenSession request, extract UUIDs and login from params[0] and params[1]
+            // Based on observed Linux kernel behavior:
+            // - params[0].a/b = TA UUID (two little-endian u64 values)
+            // - params[1].a/b = client UUID (two little-endian u64 values)
+            // - params[1].c = client login type (TEE_LOGIN_*)
+            let param0 = msg_args.get_param_value(0)?;
+            let ta_data = [param0.a, param0.b];
+
+            let param1 = msg_args.get_param_value(1)?;
+            let client_data = [param1.a, param1.b];
+            let login: u32 = param1.c.truncate();
+            let login = TeeLogin::try_from(login).unwrap_or(TeeLogin::Public);
+
+            // Skip the first two parameters as they convey TA and client UUIDs
+            (
+                Some(TeeUuid::from_u64_array(ta_data)),
+                Some(TeeIdentity {
+                    login,
+                    uuid: TeeUuid::from_u64_array(client_data),
+                }),
+                2,
+            )
         } else {
-            let mut data = [0u64; 2];
-            data[0] = msg_arg.get_param_value(0)?.a;
-            data[1] = msg_arg.get_param_value(0)?.b;
-            // Skip the first two parameters as they convey the TA UUID
-            (Some(TeeUuid::from_u64_array(data)), 2)
-        }
-    } else {
-        (None, 0)
-    };
+            (None, None, 0)
+        };
 
     let mut ta_req_info = TaRequestInfo {
         uuid: ta_uuid,
-        session: msg_arg.session,
+        client_identity,
+        session: msg_args.session,
         entry_func: ta_entry_func,
-        cmd_id: msg_arg.func,
+        cmd_id: msg_args.func,
         params: [const { UteeParamOwned::None }; UteeParamOwned::TEE_NUM_PARAMS],
         out_shm_info: [const { None }; UteeParamOwned::TEE_NUM_PARAMS],
     };
 
-    let num_params = msg_arg.num_params as usize;
-    for (i, param) in msg_arg
+    let num_params = msg_args.num_params as usize;
+    for (i, param) in msg_args
         .params
         .iter()
         .take(num_params)
@@ -341,18 +452,35 @@ fn build_memref_inout(
     })
 }
 
-/// This function prepares for returning from OP-TEE secure world to the normal world.
+/// This function updates the OP-TEE message arguments for returning from the secure world to the normal world.
 ///
 /// It writes back TA execution outputs associated with shared memory references and updates
 /// the `OpteeMsgArgs` structure to return value-based outputs.
+/// `return_code` indicates the result of an OP-TEE request and `return_origin` indicates which component
+/// generated the return code. `session_id` can be provided if this is for an OpenSession request.
 /// `ta_params` is a reference to `UteeParams` structure that stores TA's output within its memory.
 /// `ta_req_info` refers to the decoded TA request information including the normal world
 /// shared memory addresses to write back output data.
-pub fn prepare_for_return_to_normal_world(
-    ta_params: &UteeParams,
-    ta_req_info: &TaRequestInfo<PAGE_SIZE>,
-    msg_arg: &mut OpteeMsgArgs,
+pub fn update_optee_msg_args(
+    return_code: TeeResult,
+    return_origin: TeeOrigin,
+    session_id: Option<u32>,
+    ta_params: Option<&UteeParams>,
+    ta_req_info: Option<&TaRequestInfo<PAGE_SIZE>>,
+    msg_args: &mut OpteeMsgArgs,
 ) -> Result<(), OpteeSmcReturnCode> {
+    msg_args.ret = return_code;
+    msg_args.ret_origin = return_origin;
+    if let Some(session_id) = session_id {
+        msg_args.session = session_id;
+    }
+
+    let Some(ta_params) = ta_params else {
+        return Ok(());
+    };
+    let Some(ta_req_info) = ta_req_info else {
+        return Ok(());
+    };
     for index in 0..UteeParams::TEE_NUM_PARAMS {
         let param_type = ta_params
             .get_type(index)
@@ -360,7 +488,7 @@ pub fn prepare_for_return_to_normal_world(
         match param_type {
             TeeParamType::ValueOutput | TeeParamType::ValueInout => {
                 if let Ok(Some((value_a, value_b))) = ta_params.get_values(index) {
-                    msg_arg.set_param_value(
+                    msg_args.set_param_value(
                         index,
                         OpteeMsgParamValue {
                             a: value_a,
@@ -380,6 +508,10 @@ pub fn prepare_for_return_to_normal_world(
                     let slice = ptr
                         .to_owned_slice(len.truncate())
                         .ok_or(OpteeSmcReturnCode::EBadAddr)?;
+
+                    // Update the output size in msg_args
+                    // For rmem/tmem params, size is at the same offset as value.b in the union
+                    msg_args.set_param_memref_size(index, len)?;
 
                     if slice.is_empty() {
                         continue;
@@ -403,15 +535,14 @@ pub fn prepare_for_return_to_normal_world(
 /// virtually contiguous in the normal world. All these address values must be page aligned.
 ///
 /// `pages_data` from [Linux](https://elixir.bootlin.com/linux/v6.18.2/source/drivers/tee/optee/smc_abi.c#L409)
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, FromBytes, Immutable)]
 #[repr(C)]
 struct ShmRefPagesData {
     pub pages_list: [u64; Self::PAGELIST_ENTRIES_PER_PAGE],
     pub next_page_data: u64,
 }
 impl ShmRefPagesData {
-    const PAGELIST_ENTRIES_PER_PAGE: usize =
-        PAGE_SIZE / core::mem::size_of::<u64>() - core::mem::size_of::<u64>();
+    const PAGELIST_ENTRIES_PER_PAGE: usize = PAGE_SIZE / core::mem::size_of::<u64>() - 1;
 }
 
 /// Data structure to maintain the information of OP-TEE shared memory in VTL0 referenced by `shm_ref`.
@@ -552,19 +683,37 @@ fn shm_ref_map() -> &'static ShmRefMap<PAGE_SIZE> {
 
 /// Get the normal world shared memory information (physical addresses and page offset) from `OpteeMsgParamTmem`.
 ///
-/// Note that we use this function for handling TA requests and in this context
-/// `OpteeMsgParamTmem` and `OpteeMsgParamRmem` are equivalent because every shared memory
-/// reference accessible by TAs must be registered in advance.
-/// `OpteeMsgParamTmem` is needed when we register shared memory regions (rmem is not allowed for this purpose).
+/// TMEM (temporary memory) parameters contain direct physical addresses, unlike RMEM which
+/// references pre-registered shared memory regions. For TMEM, we create ShmInfo directly
+/// from the physical address without looking up in the shm_ref_map.
 fn get_shm_info_from_optee_msg_param_tmem(
     tmem: OpteeMsgParamTmem,
 ) -> Result<ShmInfo<PAGE_SIZE>, OpteeSmcReturnCode> {
-    let rmem = OpteeMsgParamRmem {
-        offs: tmem.buf_ptr,
-        size: tmem.size,
-        shm_ref: tmem.shm_ref,
-    };
-    get_shm_info_from_optee_msg_param_rmem(rmem)
+    if tmem.buf_ptr == 0 {
+        // NULL buffer - create empty ShmInfo
+        return ShmInfo::new(Box::new([]), 0);
+    }
+
+    let phys_addr = tmem.buf_ptr;
+    let size: usize = tmem.size.truncate();
+
+    // Calculate page-aligned address and offset
+    let phys_addr_usize: usize = phys_addr.truncate();
+    let page_offset = phys_addr_usize % PAGE_SIZE;
+    let aligned_addr = phys_addr - page_offset as u64;
+
+    // Calculate number of pages needed
+    let num_pages = (page_offset + size).div_ceil(PAGE_SIZE);
+
+    // Build page address list
+    let mut page_addrs = Vec::with_capacity(num_pages);
+    for i in 0..num_pages {
+        let page_addr = aligned_addr + (i * PAGE_SIZE) as u64;
+        page_addrs
+            .push(PhysPageAddr::new(page_addr.truncate()).ok_or(OpteeSmcReturnCode::EBadAddr)?);
+    }
+
+    ShmInfo::new(page_addrs.into_boxed_slice(), page_offset)
 }
 
 /// Get the normal world shared memory information (physical addresses and page offset) from `OpteeMsgParamRmem`.
@@ -591,7 +740,7 @@ fn get_shm_info_from_optee_msg_param_rmem(
     }
     let mut page_addrs = Vec::with_capacity(end_page_index - start_page_index);
     page_addrs.extend_from_slice(&shm_info.page_addrs[start_page_index..end_page_index]);
-    ShmInfo::new(page_addrs.into_boxed_slice(), page_offset)
+    ShmInfo::new(page_addrs.into_boxed_slice(), start % PAGE_SIZE)
 }
 
 /// Read data from the normal world shared memory pages whose physical addresses are given in

@@ -11,7 +11,7 @@ use alloc::{
 use litebox::{
     event::{Events, wait::WaitError},
     fd::{FdEnabledSubsystem, MetadataError, TypedFd},
-    fs::{FileSystem as _, Mode, OFlags, SeekWhence},
+    fs::{Mode, OFlags, SeekWhence},
     path,
     platform::{RawConstPointer, RawMutPointer},
     utils::{ReinterpretSignedExt as _, ReinterpretUnsignedExt as _, TruncateExt as _},
@@ -22,18 +22,23 @@ use litebox_common_linux::{
 };
 use litebox_platform_multiplex::Platform;
 
-use crate::{ConstPtr, Descriptor, Descriptors, GlobalState, MutPtr, Task};
+use crate::{ConstPtr, Descriptor, Descriptors, GlobalState, MutPtr, ShimFS, Task};
 use core::sync::atomic::Ordering;
 
 /// Task state shared by `CLONE_FS`.
 pub(crate) struct FsState {
     umask: core::sync::atomic::AtomicU32,
+    /// The current working directory
+    ///
+    /// Must end with a '/'.
+    cwd: litebox::sync::RwLock<Platform, String>,
 }
 
 impl Clone for FsState {
     fn clone(&self) -> Self {
         Self {
             umask: self.umask.load(Ordering::Relaxed).into(),
+            cwd: litebox::sync::RwLock::new(self.cwd.read().clone()),
         }
     }
 }
@@ -42,6 +47,7 @@ impl FsState {
     pub fn new() -> Self {
         Self {
             umask: (Mode::WGRP | Mode::WOTH).bits().into(),
+            cwd: litebox::sync::RwLock::new(String::from("/")),
         }
     }
 
@@ -51,12 +57,12 @@ impl FsState {
 }
 
 /// Task state shared by `CLONE_FILES`.
-pub(crate) struct FilesState {
-    pub file_descriptors: litebox::sync::RwLock<Platform, Descriptors>,
+pub(crate) struct FilesState<FS: ShimFS> {
+    pub file_descriptors: litebox::sync::RwLock<Platform, Descriptors<FS>>,
     pub raw_descriptor_store: litebox::sync::RwLock<Platform, litebox::fd::RawDescriptorStorage>,
 }
 
-impl FilesState {
+impl<FS: ShimFS> FilesState<FS> {
     pub fn new() -> Self {
         Self {
             file_descriptors: litebox::sync::RwLock::new(Descriptors::new()),
@@ -68,16 +74,15 @@ impl FilesState {
 }
 
 /// Path in the file system
-enum FsPath<P: path::Arg> {
+#[derive(Debug)]
+enum FsPath {
     /// Absolute path
-    Absolute { path: P },
-    /// Path is relative to `cwd`
-    CwdRelative { path: P },
+    Absolute { path: CString },
     /// Current working directory
     Cwd,
     /// Path is relative to a file descriptor
     #[expect(dead_code, reason = "currently unused, might want to use later")]
-    FdRelative { fd: u32, path: P },
+    FdRelative { fd: u32, path: CString },
     /// Fd
     Fd(u32),
 }
@@ -85,26 +90,42 @@ enum FsPath<P: path::Arg> {
 /// Maximum size of a file path
 pub const PATH_MAX: usize = 4096;
 
-impl<P: path::Arg> FsPath<P> {
-    fn new(dirfd: i32, path: P) -> Result<Self, Errno> {
+impl FsPath {
+    /// Create a new `FsPath` from a dirfd and path.
+    ///
+    /// CWD-relative paths are resolved immediately to absolute paths.
+    fn new(
+        dirfd: i32,
+        path: impl path::Arg,
+        get_cwd: impl FnOnce() -> String,
+    ) -> Result<Self, Errno> {
         let path_str = path.as_rust_str()?;
         if path_str.len() > PATH_MAX {
             return Err(Errno::ENAMETOOLONG);
         }
         let fs_path = if path_str.starts_with('/') {
-            FsPath::Absolute { path }
+            let cpath = path.to_c_str()?.into_owned();
+            FsPath::Absolute { path: cpath }
         } else if dirfd >= 0 {
             let dirfd = u32::try_from(dirfd).expect("dirfd >= 0");
             if path_str.is_empty() {
                 FsPath::Fd(dirfd)
             } else {
-                FsPath::FdRelative { fd: dirfd, path }
+                let cpath = path.to_c_str()?.into_owned();
+                FsPath::FdRelative {
+                    fd: dirfd,
+                    path: cpath,
+                }
             }
         } else if dirfd == litebox_common_linux::AT_FDCWD {
             if path_str.is_empty() {
                 FsPath::Cwd
             } else {
-                FsPath::CwdRelative { path }
+                // Resolve CWD-relative path to absolute.
+                let mut abs = get_cwd();
+                abs.push_str(path_str);
+                let cpath = CString::new(abs).map_err(|_| Errno::EINVAL)?;
+                FsPath::Absolute { path: cpath }
             }
         } else {
             return Err(Errno::EBADF);
@@ -113,9 +134,21 @@ impl<P: path::Arg> FsPath<P> {
     }
 }
 
-impl Task {
+impl<FS: ShimFS> Task<FS> {
     fn get_umask(&self) -> Mode {
         self.fs.borrow().umask()
+    }
+
+    /// Resolve a path against the current working directory.
+    fn resolve_path(&self, path: impl path::Arg) -> Result<CString, Errno> {
+        let path_str = path.as_rust_str().map_err(|_| Errno::EINVAL)?;
+        if path_str.starts_with('/') {
+            CString::new(path_str.to_string()).map_err(|_| Errno::EINVAL)
+        } else {
+            let mut cwd = self.fs.borrow().cwd.read().clone();
+            cwd.push_str(path_str);
+            CString::new(cwd).map_err(|_| Errno::EINVAL)
+        }
     }
 
     /// Handle syscall `umask`
@@ -131,6 +164,7 @@ impl Task {
 
     /// Handle syscall `open`
     pub fn sys_open(&self, path: impl path::Arg, flags: OFlags, mode: Mode) -> Result<u32, Errno> {
+        let path = self.resolve_path(path)?;
         let mode = mode & !self.get_umask();
         let file = self.global.fs.open(path, flags - OFlags::CLOEXEC, mode)?;
         if flags.contains(OFlags::CLOEXEC) {
@@ -160,12 +194,11 @@ impl Task {
         flags: OFlags,
         mode: Mode,
     ) -> Result<u32, Errno> {
-        let fs_path = FsPath::new(dirfd, pathname)?;
+        let get_cwd = || self.fs.borrow().cwd.read().clone();
+        let fs_path = FsPath::new(dirfd, pathname, get_cwd)?;
         match fs_path {
-            FsPath::Absolute { path } | FsPath::CwdRelative { path } => {
-                self.sys_open(path, flags, mode)
-            }
-            FsPath::Cwd => self.sys_open("", flags, mode),
+            FsPath::Absolute { path } => self.sys_open(path, flags, mode),
+            FsPath::Cwd => self.sys_open(get_cwd(), flags, mode),
             FsPath::Fd(_fd) => {
                 log_unsupported!("openat with FsPath::Fd");
                 Err(Errno::EINVAL)
@@ -213,9 +246,10 @@ impl Task {
             return Err(Errno::EINVAL);
         }
 
-        let fs_path = FsPath::new(dirfd, pathname)?;
+        let get_cwd = || self.fs.borrow().cwd.read().clone();
+        let fs_path = FsPath::new(dirfd, pathname, get_cwd)?;
         match fs_path {
-            FsPath::Absolute { path } | FsPath::CwdRelative { path } => {
+            FsPath::Absolute { path } => {
                 if flags.contains(AtFlags::AT_REMOVEDIR) {
                     self.global.fs.rmdir(path).map_err(Errno::from)
                 } else {
@@ -376,7 +410,7 @@ pub(crate) fn try_into_whence(value: i16) -> Result<SeekWhence, i16> {
     }
 }
 
-impl Task {
+impl<FS: ShimFS> Task<FS> {
     /// Handle syscall `lseek`
     pub fn sys_lseek(&self, fd: i32, offset: isize, whence: SeekWhence) -> Result<usize, Errno> {
         let Ok(fd) = u32::try_from(fd) else {
@@ -402,11 +436,12 @@ impl Task {
 
     /// Handle syscall `mkdir`
     pub fn sys_mkdir(&self, pathname: impl path::Arg, mode: u32) -> Result<(), Errno> {
+        let pathname = self.resolve_path(pathname)?;
         let mode = Mode::from_bits_retain(mode) & !self.get_umask();
         self.global.fs.mkdir(pathname, mode).map_err(Errno::from)
     }
 
-    pub(crate) fn do_close(&self, desc: Descriptor) -> Result<(), Errno> {
+    pub(crate) fn do_close(&self, desc: Descriptor<FS>) -> Result<(), Errno> {
         let files = self.files.borrow();
         match desc {
             Descriptor::LiteBoxRawFd(raw_fd) => {
@@ -553,7 +588,7 @@ where
     Ok(total_written)
 }
 
-impl Task {
+impl<FS: ShimFS> Task<FS> {
     /// Handle syscall `writev`
     pub fn sys_writev(
         &self,
@@ -615,6 +650,7 @@ impl Task {
         pathname: impl path::Arg,
         mode: litebox_common_linux::AccessFlags,
     ) -> Result<(), Errno> {
+        let pathname = self.resolve_path(pathname)?;
         let status = self.global.fs.file_status(pathname)?;
         if mode == litebox_common_linux::AccessFlags::F_OK {
             return Ok(());
@@ -641,10 +677,11 @@ impl Task {
 
     /// Read the target of a symbolic link
     ///
+    /// The caller must pass an absolute path.
+    ///
     /// Note that this function only handles the following cases that we hardcoded:
     /// - `/proc/self/fd/<fd>`
     fn do_readlink(&self, fullpath: &str) -> Result<String, Errno> {
-        // It assumes that the path is absolute. Will fix once #71 is done.
         if let Some(stripped) = fullpath.strip_prefix("/proc/self/fd/") {
             let fd = stripped.parse::<u32>().map_err(|_| Errno::EINVAL)?;
             match fd {
@@ -671,15 +708,15 @@ impl Task {
         pathname: impl path::Arg,
         buf: &mut [u8],
     ) -> Result<usize, Errno> {
-        let fspath = FsPath::new(dirfd, pathname)?;
+        let get_cwd = || self.fs.borrow().cwd.read().clone();
+        let fspath = FsPath::new(dirfd, pathname, get_cwd)?;
         let path = match fspath {
-            FsPath::Absolute { path } => self.do_readlink(path.normalized()?.as_str()),
-            // Note we don't support changing cwd yet; cwd is always `/`.
-            FsPath::Cwd => self.do_readlink("/"),
-            FsPath::CwdRelative { path } => {
-                let normalized_path = path.normalized()?;
-                let full_path = alloc::format!("/{}", normalized_path.as_str());
-                self.do_readlink(&full_path)
+            FsPath::Absolute { path } => {
+                self.do_readlink(path.to_str().map_err(|_| Errno::EINVAL)?)
+            }
+            FsPath::Cwd => {
+                let cwd = self.fs.borrow().cwd.read().clone();
+                self.do_readlink(&cwd)
             }
             FsPath::Fd(_) | FsPath::FdRelative { .. } => unimplemented!(),
         }?;
@@ -690,8 +727,8 @@ impl Task {
     }
 }
 
-impl Descriptor {
-    fn stat(&self, task: &Task) -> Result<FileStat, Errno> {
+impl<FS: ShimFS> Descriptor<FS> {
+    fn stat(&self, task: &Task<FS>) -> Result<FileStat, Errno> {
         let fstat = match self {
             Descriptor::LiteBoxRawFd(raw_fd) => task
                 .files
@@ -798,13 +835,13 @@ impl Descriptor {
 
     pub(crate) fn get_file_descriptor_flags(
         &self,
-        global: &GlobalState,
-        files: &FilesState,
+        global: &GlobalState<FS>,
+        files: &FilesState<FS>,
     ) -> Result<FileDescriptorFlags, Errno> {
         // Currently, only one such flag is defined: FD_CLOEXEC, the close-on-exec flag.
         // See https://www.man7.org/linux/man-pages/man2/F_GETFD.2const.html
-        fn get_flags<S: FdEnabledSubsystem>(
-            global: &GlobalState,
+        fn get_flags<FS: ShimFS, S: FdEnabledSubsystem>(
+            global: &GlobalState<FS>,
             fd: &TypedFd<S>,
         ) -> FileDescriptorFlags {
             global
@@ -833,12 +870,12 @@ impl Descriptor {
     }
     fn set_file_descriptor_flags(
         &self,
-        global: &GlobalState,
-        files: &FilesState,
+        global: &GlobalState<FS>,
+        files: &FilesState<FS>,
         flags: FileDescriptorFlags,
     ) -> Result<(), Errno> {
-        fn set_flags<S: FdEnabledSubsystem>(
-            global: &GlobalState,
+        fn set_flags<FS: ShimFS, S: FdEnabledSubsystem>(
+            global: &GlobalState<FS>,
             fd: &TypedFd<S>,
             flags: FileDescriptorFlags,
         ) {
@@ -868,11 +905,13 @@ impl Descriptor {
     }
 }
 
-impl Task {
+impl<FS: ShimFS> Task<FS> {
+    /// Get the file status of `pathname`.
+    ///
+    /// The `pathname` must be absolute.
     fn do_stat(&self, pathname: impl path::Arg, follow_symlink: bool) -> Result<FileStat, Errno> {
         let normalized_path = pathname.normalized()?;
         let path = if follow_symlink {
-            // TODO: `do_readlink` assumes the path is absolute
             self.do_readlink(normalized_path.as_str())
                 .unwrap_or(normalized_path)
         } else {
@@ -884,6 +923,7 @@ impl Task {
 
     /// Handle syscall `stat`
     pub fn sys_stat(&self, pathname: impl path::Arg) -> Result<FileStat, Errno> {
+        let pathname = self.resolve_path(pathname)?;
         self.do_stat(pathname, true)
     }
 
@@ -893,6 +933,7 @@ impl Task {
     /// then it returns information about the link itself, not the file that the link refers to.
     /// TODO: we do not support symbolic links yet.
     pub fn sys_lstat(&self, pathname: impl path::Arg) -> Result<FileStat, Errno> {
+        let pathname = self.resolve_path(pathname)?;
         self.do_stat(pathname, false)
     }
 
@@ -923,12 +964,13 @@ impl Task {
         }
 
         let files = self.files.borrow();
-        let fs_path = FsPath::new(dirfd, pathname)?;
+        let get_cwd = || self.fs.borrow().cwd.read().clone();
+        let fs_path = FsPath::new(dirfd, pathname, get_cwd)?;
         let fstat: FileStat = match fs_path {
-            FsPath::Absolute { path } | FsPath::CwdRelative { path } => {
+            FsPath::Absolute { path } => {
                 self.do_stat(path, !flags.contains(AtFlags::AT_SYMLINK_NOFOLLOW))?
             }
-            FsPath::Cwd => self.global.fs.file_status("")?.into(),
+            FsPath::Cwd => self.global.fs.file_status(get_cwd())?.into(),
             FsPath::Fd(fd) => files
                 .file_descriptors
                 .read()
@@ -1164,8 +1206,7 @@ impl Task {
 
     /// Handle syscall `getcwd`
     pub fn sys_getcwd(&self, buf: &mut [u8]) -> Result<usize, Errno> {
-        // TODO: use a fixed path for now
-        let cwd = "/";
+        let cwd = self.fs.borrow().cwd.read().clone();
         // need to account for the null terminator
         if cwd.len() >= buf.len() {
             return Err(Errno::ERANGE);
@@ -1178,11 +1219,49 @@ impl Task {
         buf[..bytes.len()].copy_from_slice(bytes);
         Ok(bytes.len())
     }
+
+    /// Handle syscall `chdir`
+    pub fn sys_chdir(&self, pathname: impl path::Arg) -> Result<(), Errno> {
+        use litebox::fs::FileType;
+        use litebox::fs::errors::{FileStatusError, PathError};
+        use litebox::path::Arg as _;
+
+        // Resolve relative paths against CWD, then normalize (handle `.` / `..`).
+        let resolved = self.resolve_path(pathname)?;
+        let abs_path = resolved.normalized().map_err(|_| Errno::EINVAL)?;
+
+        // Verify the path exists and is a directory.
+        match self.global.fs.file_status(abs_path.as_str()) {
+            Ok(status) => {
+                if status.file_type != FileType::Directory {
+                    return Err(Errno::ENOTDIR);
+                }
+            }
+            Err(FileStatusError::PathError(PathError::NoSuchFileOrDirectory)) => {
+                return Err(Errno::ENOENT);
+            }
+            Err(FileStatusError::PathError(_)) => {
+                return Err(Errno::EACCES);
+            }
+            Err(_) => {
+                return Err(Errno::ENOENT);
+            }
+        }
+
+        // Ensure the CWD ends with '/'.
+        let mut new_cwd = abs_path;
+        if !new_cwd.ends_with('/') {
+            new_cwd.push('/');
+        }
+
+        *self.fs.borrow().cwd.write() = new_cwd;
+        Ok(())
+    }
 }
 
 const DEFAULT_PIPE_BUF_SIZE: usize = 1024 * 1024;
 
-impl Task {
+impl<FS: ShimFS> Task<FS> {
     /// Handle syscall `pipe2`
     pub fn sys_pipe2(&self, flags: OFlags) -> Result<(u32, u32), Errno> {
         let (pipe_flags, cloexec) = {
@@ -1293,7 +1372,7 @@ impl Task {
         }
     }
 
-    fn is_stdio(&self, fd: &TypedFd<crate::LinuxFS>) -> Result<bool, Errno> {
+    fn is_stdio(&self, fd: &TypedFd<FS>) -> Result<bool, Errno> {
         match self.global.fs.fd_file_status(fd) {
             Ok(status) => {
                 // See https://www.kernel.org/doc/Documentation/admin-guide/devices.txt
@@ -1729,17 +1808,17 @@ impl Task {
         Ok(count)
     }
 
-    fn do_dup(&self, file: &Descriptor, flags: OFlags) -> Result<Descriptor, Errno> {
+    fn do_dup(&self, file: &Descriptor<FS>, flags: OFlags) -> Result<Descriptor<FS>, Errno> {
         let close_on_exec = flags.contains(OFlags::CLOEXEC);
         let files = self.files.borrow();
         match file {
             Descriptor::LiteBoxRawFd(raw_fd) => {
-                fn dup<S: FdEnabledSubsystem>(
-                    global: &GlobalState,
-                    files: &FilesState,
+                fn dup<FS: ShimFS, S: FdEnabledSubsystem>(
+                    global: &GlobalState<FS>,
+                    files: &FilesState<FS>,
                     fd: &TypedFd<S>,
                     close_on_exec: bool,
-                ) -> Result<Descriptor, Errno> {
+                ) -> Result<Descriptor<FS>, Errno> {
                     let mut dt = global.litebox.descriptor_table_mut();
                     let fd: TypedFd<_> = dt.duplicate(fd).ok_or(Errno::EBADF)?;
                     if close_on_exec {
@@ -1843,7 +1922,7 @@ struct Diroff(usize);
 const DIRENT_STRUCT_BYTES_WITHOUT_NAME: usize =
     core::mem::offset_of!(litebox_common_linux::LinuxDirent64, __name);
 
-impl Task {
+impl<FS: ShimFS> Task<FS> {
     /// Handle syscall `getdents64`
     pub(crate) fn sys_getdirent64(
         &self,
@@ -1920,5 +1999,200 @@ impl Task {
             |_fd| todo!("net"),
             |_fd| todo!("pipes"),
         )?
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::string::String;
+    use litebox::fs::Mode;
+
+    extern crate std;
+
+    #[test]
+    fn fspath_new() {
+        // Absolute paths should never invoke the get_cwd closure.
+        let fp = FsPath::new(litebox_common_linux::AT_FDCWD, "/usr/bin", || {
+            panic!("get_cwd should not be called for absolute paths")
+        })
+        .unwrap();
+        assert!(matches!(fp, FsPath::Absolute { path } if path.to_str().unwrap() == "/usr/bin"));
+
+        // Relative path resolves against CWD.
+        let fp = FsPath::new(litebox_common_linux::AT_FDCWD, "foo/bar", || {
+            String::from("/home/")
+        })
+        .unwrap();
+        assert!(
+            matches!(fp, FsPath::Absolute { path } if path.to_str().unwrap() == "/home/foo/bar")
+        );
+
+        // Empty path at AT_FDCWD → Cwd variant.
+        let fp = FsPath::new(litebox_common_linux::AT_FDCWD, "", || {
+            panic!("get_cwd should not be called for empty Cwd path")
+        })
+        .unwrap();
+        assert!(matches!(fp, FsPath::Cwd));
+
+        // Positive fd + empty path → Fd variant.
+        let fp = FsPath::new(5, "", || panic!("should not be called")).unwrap();
+        assert!(matches!(fp, FsPath::Fd(5)));
+
+        // Invalid dirfd → EBADF.
+        let err = FsPath::new(-1, "file.txt", || panic!("should not be called")).unwrap_err();
+        assert_eq!(err, Errno::EBADF);
+
+        // Path exceeding PATH_MAX → ENAMETOOLONG.
+        let long_path = "a".repeat(PATH_MAX + 1);
+        let err = FsPath::new(litebox_common_linux::AT_FDCWD, long_path.as_str(), || {
+            String::from("/")
+        })
+        .unwrap_err();
+        assert_eq!(err, Errno::ENAMETOOLONG);
+    }
+
+    #[test]
+    fn getcwd_and_chdir() {
+        let task = crate::syscalls::tests::init_platform(None);
+
+        // Default CWD is root.
+        let mut buf = [0u8; 256];
+        let len = task.sys_getcwd(&mut buf).unwrap();
+        let cwd = core::str::from_utf8(&buf[..len - 1]).unwrap(); // strip NUL
+        assert_eq!(cwd, "/");
+
+        // chdir + getcwd round trip.
+        task.sys_mkdir("/test_chdir_dir", 0o777).unwrap();
+        task.sys_chdir("/test_chdir_dir").unwrap();
+        let len = task.sys_getcwd(&mut buf).unwrap();
+        let cwd = core::str::from_utf8(&buf[..len - 1]).unwrap();
+        assert_eq!(cwd, "/test_chdir_dir/");
+
+        // chdir to nonexistent path → ENOENT.
+        assert_eq!(
+            task.sys_chdir("/does_not_exist").unwrap_err(),
+            Errno::ENOENT
+        );
+
+        // chdir to a regular file → ENOTDIR.
+        let fd = task
+            .sys_open(
+                "/test_chdir_file",
+                litebox::fs::OFlags::CREAT | litebox::fs::OFlags::WRONLY,
+                Mode::RUSR | Mode::WUSR,
+            )
+            .unwrap();
+        let _ = task.sys_close(i32::try_from(fd).unwrap());
+        assert_eq!(
+            task.sys_chdir("/test_chdir_file").unwrap_err(),
+            Errno::ENOTDIR
+        );
+
+        // getcwd with too-small buffer → ERANGE.
+        let mut tiny = [0u8; 1];
+        assert_eq!(task.sys_getcwd(&mut tiny).unwrap_err(), Errno::ERANGE);
+    }
+
+    #[test]
+    fn chdir_relative_path() {
+        let task = crate::syscalls::tests::init_platform(None);
+
+        // Create nested dirs: /rel_parent/rel_child
+        task.sys_mkdir("/rel_parent", 0o777).unwrap();
+        task.sys_mkdir("/rel_parent/rel_child", 0o777).unwrap();
+
+        // chdir to /rel_parent first, then relative chdir into child.
+        task.sys_chdir("/rel_parent").unwrap();
+        task.sys_chdir("rel_child").unwrap();
+
+        let mut buf = [0u8; 256];
+        let len = task.sys_getcwd(&mut buf).unwrap();
+        let cwd = core::str::from_utf8(&buf[..len - 1]).unwrap();
+        assert_eq!(cwd, "/rel_parent/rel_child/");
+
+        // chdir("..") should normalize back to /rel_parent/.
+        task.sys_chdir("..").unwrap();
+        let len = task.sys_getcwd(&mut buf).unwrap();
+        let cwd = core::str::from_utf8(&buf[..len - 1]).unwrap();
+        assert_eq!(cwd, "/rel_parent/");
+    }
+
+    /// Verify every path-taking syscall resolves relative paths after `chdir`.
+    #[test]
+    fn all_path_syscalls_respect_chdir() {
+        use litebox_common_linux::{AccessFlags, AtFlags};
+
+        let task = crate::syscalls::tests::init_platform(None);
+
+        // Set up: mkdir + chdir into /cwd_test/.
+        task.sys_mkdir("/cwd_test", 0o777).unwrap();
+        task.sys_chdir("/cwd_test").unwrap();
+
+        // ── sys_open: create a file via relative path ──
+        let fd = task
+            .sys_open(
+                "file.txt",
+                litebox::fs::OFlags::CREAT | litebox::fs::OFlags::WRONLY,
+                Mode::RUSR | Mode::WUSR,
+            )
+            .unwrap();
+        task.sys_close(i32::try_from(fd).unwrap()).unwrap();
+
+        // ── sys_stat: stat the relative file ──
+        task.sys_stat("file.txt").unwrap();
+
+        // ── sys_lstat: lstat the relative file ──
+        task.sys_lstat("file.txt").unwrap();
+
+        // ── sys_access: check relative file is accessible ──
+        task.sys_access("file.txt", AccessFlags::F_OK).unwrap();
+
+        // ── sys_mkdir: create a subdirectory via relative path ──
+        task.sys_mkdir("subdir", 0o777).unwrap();
+        task.sys_stat("/cwd_test/subdir").unwrap(); // verify via absolute
+
+        // ── sys_openat (AT_FDCWD + relative): open inside the new subdir ──
+        let fd = task
+            .sys_openat(
+                litebox_common_linux::AT_FDCWD,
+                "subdir/inner.txt",
+                litebox::fs::OFlags::CREAT | litebox::fs::OFlags::WRONLY,
+                Mode::RUSR | Mode::WUSR,
+            )
+            .unwrap();
+        task.sys_close(i32::try_from(fd).unwrap()).unwrap();
+
+        // ── sys_newfstatat (AT_FDCWD + relative) ──
+        task.sys_newfstatat(
+            litebox_common_linux::AT_FDCWD,
+            "subdir/inner.txt",
+            AtFlags::empty(),
+        )
+        .unwrap();
+
+        // ── sys_unlinkat: remove a file via relative path ──
+        task.sys_unlinkat(
+            litebox_common_linux::AT_FDCWD,
+            "subdir/inner.txt",
+            AtFlags::empty(),
+        )
+        .unwrap();
+        assert_eq!(
+            task.sys_stat("/cwd_test/subdir/inner.txt").unwrap_err(),
+            Errno::ENOENT
+        );
+
+        // ── sys_unlinkat (AT_REMOVEDIR): remove directory via relative path ──
+        task.sys_unlinkat(
+            litebox_common_linux::AT_FDCWD,
+            "subdir",
+            AtFlags::AT_REMOVEDIR,
+        )
+        .unwrap();
+        assert_eq!(
+            task.sys_stat("/cwd_test/subdir").unwrap_err(),
+            Errno::ENOENT
+        );
     }
 }

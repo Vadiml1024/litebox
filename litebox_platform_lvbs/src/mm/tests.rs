@@ -218,7 +218,7 @@ fn test_page_table() {
 
     // unmap all pages
     let range = PageRange::new(start_addr, new_addr + 4 * PAGE_SIZE).unwrap();
-    unsafe { pgtable.unmap_pages(range, true) }.unwrap();
+    unsafe { pgtable.unmap_pages(range, true, true, false) }.unwrap();
     for page in PageRange::<PAGE_SIZE>::new(start_addr, new_addr + 4 * PAGE_SIZE).unwrap() {
         assert!(matches!(
             pgtable.translate(VirtAddr::new(page as _)),
@@ -231,9 +231,9 @@ fn test_page_table() {
 #[test]
 fn test_vmm_page_fault() {
     let start_addr: usize = 0x1_0000;
-    let p4 = PageTableAllocator::<MockKernel>::allocate_frame(true).unwrap();
     let platform = MockKernel::new(
-        p4.start_address(),
+        x86_64::PhysAddr::new(0),
+        x86_64::PhysAddr::new(0),
         x86_64::PhysAddr::new(0),
         x86_64::PhysAddr::new(0),
     );

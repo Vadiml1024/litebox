@@ -85,17 +85,17 @@ pub trait EnterShim {
     /// By default, this implementation just exits the thread because `reenter` is
     /// not supported by all shims.
     fn reenter(&self, _ctx: &mut Self::ExecutionContext) -> ContinueOperation {
-        ContinueOperation::ExitThread
+        ContinueOperation::Terminate
     }
 }
 
 /// The operation to perform after returning from a shim handler
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum ContinueOperation {
-    /// Resume execution of the guest.
-    ResumeGuest,
-    /// Exit the current thread.
-    ExitThread,
+    /// Resume the interrupted execution.
+    Resume,
+    /// Terminate the interrupted execution.
+    Terminate,
 }
 
 /// Information about a hardware exception.
@@ -109,6 +109,9 @@ pub struct ExceptionInfo {
     /// The value of the CR2 register at the time of the exception, if
     /// applicable (e.g., for page faults).
     pub cr2: usize,
+    /// Whether the exception occurred in kernel mode (e.g., a demand page
+    /// fault during a kernel-mode access to a user-space address).
+    pub kernel_mode: bool,
 }
 
 /// An x86 exception type.

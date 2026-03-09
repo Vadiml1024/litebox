@@ -5,7 +5,7 @@
 
 use crate::{
     Errno, HostInterface, arch::ioport::serial_print_string,
-    host::per_cpu_variables::with_per_cpu_variables_mut,
+    host::per_cpu_variables::with_per_cpu_variables,
 };
 
 pub type LvbsLinuxKernel = crate::LinuxKernel<HostLvbsInterface>;
@@ -34,7 +34,7 @@ mod alloc {
     }
 
     impl crate::mm::MemoryProvider for super::LvbsLinuxKernel {
-        const GVA_OFFSET: x86_64::VirtAddr = x86_64::VirtAddr::new(0);
+        const GVA_OFFSET: x86_64::VirtAddr = x86_64::VirtAddr::new(crate::GVA_OFFSET);
         const PRIVATE_PTE_MASK: u64 = 0;
 
         fn mem_allocate_pages(order: u32) -> Option<*mut u8> {
@@ -50,6 +50,24 @@ mod alloc {
         unsafe fn mem_fill_pages(start: usize, size: usize) {
             unsafe { LVBS_ALLOCATOR.fill_pages(start, size) };
         }
+    }
+}
+
+#[cfg(test)]
+impl crate::mm::MemoryProvider for LvbsLinuxKernel {
+    const GVA_OFFSET: x86_64::VirtAddr = x86_64::VirtAddr::new(crate::GVA_OFFSET);
+    const PRIVATE_PTE_MASK: u64 = 0;
+
+    fn mem_allocate_pages(_order: u32) -> Option<*mut u8> {
+        unimplemented!("not used in tests")
+    }
+
+    unsafe fn mem_free_pages(_ptr: *mut u8, _order: u32) {
+        unimplemented!("not used in tests")
+    }
+
+    unsafe fn mem_fill_pages(_start: usize, _size: usize) {
+        unimplemented!("not used in tests")
     }
 }
 
@@ -69,14 +87,14 @@ impl LvbsLinuxKernel {
 
 unsafe impl litebox::platform::ThreadLocalStorageProvider for LvbsLinuxKernel {
     fn get_thread_local_storage() -> *mut () {
-        let tls = with_per_cpu_variables_mut(|pcv| pcv.tls);
+        let tls = with_per_cpu_variables(|pcv| pcv.tls.get());
         tls.as_mut_ptr::<()>()
     }
 
     unsafe fn replace_thread_local_storage(value: *mut ()) -> *mut () {
-        with_per_cpu_variables_mut(|pcv| {
-            let old = pcv.tls;
-            pcv.tls = x86_64::VirtAddr::new(value as u64);
+        with_per_cpu_variables(|pcv| {
+            let old = pcv.tls.get();
+            pcv.tls.set(x86_64::VirtAddr::new(value as u64));
             old.as_u64() as *mut ()
         })
     }

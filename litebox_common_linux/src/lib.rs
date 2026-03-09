@@ -781,7 +781,7 @@ cfg_if::cfg_if! {
 }
 
 /// timespec from [Linux](https://elixir.bootlin.com/linux/v5.19.17/source/include/uapi/linux/time_types.h#L7)
-#[derive(Debug, Clone, Copy, PartialOrd, PartialEq, Eq, FromBytes, IntoBytes)]
+#[derive(Debug, Clone, Copy, PartialOrd, PartialEq, Eq, FromBytes, IntoBytes, Default)]
 #[repr(C)]
 pub struct Timespec {
     /// Seconds.
@@ -1882,6 +1882,9 @@ pub enum SyscallRequest<Platform: litebox::platform::RawPointerProvider> {
         pathname: Platform::RawConstPointer<i8>,
         mode: u32,
     },
+    Chdir {
+        pathname: Platform::RawConstPointer<i8>,
+    },
     Mmap {
         addr: usize,
         length: usize,
@@ -2370,6 +2373,7 @@ impl<Platform: litebox::platform::RawPointerProvider> SyscallRequest<Platform> {
             Sysno::fstat => sys_req!(Fstat { fd, buf:* }),
             Sysno::lstat => sys_req!(Lstat { pathname:*, buf:* }),
             Sysno::mkdir => sys_req!(Mkdir { pathname:*, mode }),
+            Sysno::chdir => sys_req!(Chdir { pathname:* }),
             #[cfg(target_arch = "x86_64")]
             Sysno::mmap => sys_req!(Mmap {
                 addr,
