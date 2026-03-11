@@ -6,8 +6,8 @@
 #![cfg(target_arch = "x86_64")]
 #![no_std]
 
-use crate::{host::per_cpu_variables::PerCpuVariablesAsm, mshv::vsm::Vtl0KernelInfo};
 use crate::user_context::UserContextMap;
+use crate::{host::per_cpu_variables::PerCpuVariablesAsm, mshv::vsm::Vtl0KernelInfo};
 use core::{
     arch::asm,
     sync::atomic::{AtomicU32, AtomicU64},

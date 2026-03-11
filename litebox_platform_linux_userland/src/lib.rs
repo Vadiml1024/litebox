@@ -195,11 +195,23 @@ impl LinuxUserland {
             file_length: data.len(),
         };
 
+        let end = start + data.len();
         let mut regions = self.cow_regions.write().unwrap();
+
+        // Check for any existing region whose start falls inside the new range.
         assert!(
-            regions.range(start..start + data.len()).next().is_none(),
+            regions.range(start..end).next().is_none(),
             "Attempting to register an overlapping region"
         );
+
+        // Check if the previous region (starting before `start`) extends into [start, end).
+        if let Some((&prev_start, prev_info)) = regions.range(..start).next_back() {
+            assert!(
+                prev_start + prev_info.file_length <= start,
+                "Attempting to register an overlapping region"
+            );
+        }
+
         let old = regions.insert(start, info);
         assert!(old.is_none());
     }
