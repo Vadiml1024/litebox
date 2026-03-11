@@ -16,7 +16,7 @@ use x86_64 as arch;
 use zerocopy::FromZeros;
 
 use crate::syscalls::process::ExitStatus;
-use crate::{ConstPtr, MutPtr, Task};
+use crate::{ConstPtr, MutPtr, ShimFS, Task};
 use alloc::collections::vec_deque::VecDeque;
 use alloc::sync::Arc;
 use core::cell::{Cell, RefCell};
@@ -63,6 +63,7 @@ impl SignalState {
                 exception: litebox::shim::Exception(0),
                 error_code: 0,
                 cr2: 0,
+                kernel_mode: false,
             }),
         }
     }
@@ -378,7 +379,7 @@ impl SignalState {
 /// A fault when delivering a signal.
 struct DeliverFault;
 
-impl Task {
+impl<FS: ShimFS> Task<FS> {
     pub(crate) fn sys_rt_sigprocmask(
         &self,
         how: SigmaskHow,

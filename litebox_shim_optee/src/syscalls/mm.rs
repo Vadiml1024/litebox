@@ -58,8 +58,7 @@ impl Task {
                 | MapFlags::MAP_SYNC
                 | MapFlags::MAP_HUGETLB
                 | MapFlags::MAP_HUGE_2MB
-                | MapFlags::MAP_HUGE_1GB
-                | MapFlags::MAP_FIXED_NOREPLACE,
+                | MapFlags::MAP_HUGE_1GB,
         ) {
             todo!("Unsupported flags {:?}", flags);
         }
@@ -82,7 +81,6 @@ impl Task {
     }
 
     /// Handle syscall `munmap`
-    #[allow(dead_code)]
     pub(crate) fn sys_munmap(&self, addr: UserMutPtr<u8>, len: usize) -> Result<(), Errno> {
         let pm = &self.global.pm;
         litebox_common_linux::mm::sys_munmap(pm, addr, len)

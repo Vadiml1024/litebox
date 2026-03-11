@@ -16,6 +16,8 @@ pub(crate) use x86_64::{
     },
 };
 
+use core::arch::x86_64::__cpuid_count as cpuid_count;
+
 #[cfg(test)]
 pub(crate) use x86_64::structures::paging::mapper::{MappedFrame, TranslateResult};
 
@@ -23,7 +25,6 @@ pub(crate) use x86_64::structures::paging::mapper::{MappedFrame, TranslateResult
 #[inline]
 #[allow(unused_unsafe)]
 pub fn get_core_id() -> usize {
-    use core::arch::x86_64::__cpuid_count as cpuid_count;
     const CPU_VERSION_INFO: u32 = 1;
 
     // SAFETY: cpuid is safe to call on x86_64
@@ -88,4 +89,60 @@ pub fn enable_extended_states() {
 #[inline]
 pub fn write_kernel_gsbase_msr(addr: VirtAddr) {
     x86_64::registers::model_specific::KernelGsBase::write(addr);
+}
+
+/// Enable Data Execution Prevention (DEP).
+///
+/// This enables support for the `NO_EXECUTE` page table flag, allowing
+/// data pages to be marked non-executable.
+///
+/// # Panics
+///
+/// Panics if CPUID does not advertise NX support.
+#[cfg(target_arch = "x86_64")]
+pub fn enable_dep() {
+    // CPUID.80000001h:EDX bit 20 = NX support
+    let ext_features = cpuid_count(0x8000_0001, 0);
+    assert!(
+        ext_features.edx & (1 << 20) != 0,
+        "CPU does not support NX/XD bit"
+    );
+
+    unsafe {
+        let efer = x86_64::registers::model_specific::Efer::read();
+        x86_64::registers::model_specific::Efer::write(
+            efer | x86_64::registers::model_specific::EferFlags::NO_EXECUTE_ENABLE,
+        );
+    }
+}
+
+/// Enable Supervisor Mode Execution/Access Prevention (SMEP & SMAP).
+///
+/// - **CR4.SMEP**: prevents the kernel from executing code that resides
+///   in user-accessible pages.
+/// - **CR4.SMAP**: prevents the kernel from accessing user-accessible pages
+///   unless explicitly overridden (via `STAC`/`CLAC`).
+///
+/// # Panics
+///
+/// Panics if the CPUID does not advertise SMEP or SMAP support.
+#[cfg(target_arch = "x86_64")]
+pub fn enable_smep_smap() {
+    // CPUID.07h:EBX bit 7 = SMEP, bit 20 = SMAP
+    let structured_features = cpuid_count(0x07, 0);
+    assert!(
+        structured_features.ebx & (1 << 7) != 0,
+        "CPU does not support SMEP"
+    );
+    assert!(
+        structured_features.ebx & (1 << 20) != 0,
+        "CPU does not support SMAP"
+    );
+
+    let mut cr4 = x86_64::registers::control::Cr4::read();
+    cr4.insert(x86_64::registers::control::Cr4Flags::SUPERVISOR_MODE_EXECUTION_PROTECTION);
+    cr4.insert(x86_64::registers::control::Cr4Flags::SUPERVISOR_MODE_ACCESS_PREVENTION);
+    unsafe {
+        x86_64::registers::control::Cr4::write(cr4);
+    }
 }

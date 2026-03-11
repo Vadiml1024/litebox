@@ -29,7 +29,7 @@ jobs:
       RUSTDOCFLAGS: -Dwarnings
     steps:
       - name: Check out repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
       - name: Use Node.js
         uses: actions/setup-node@v4
         with:
@@ -49,9 +49,12 @@ jobs:
       - name: Install iperf3
         run: |
           sudo apt install -y iperf3
+      - name: Install diod
+        run: |
+          sudo apt install -y diod
       - uses: Swatinem/rust-cache@v2
       - name: Cache custom out directories
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             target/*/build/litebox_runner_linux_userland-*/out
@@ -83,7 +86,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
       # LVBS requires a nightly toolchain because:
       # 1. It uses a custom target (x86_64_vtl1.json) for bare-metal VTL1 kernel development
       # 2. The custom target requires `-Z build-std` to build core/alloc from source
@@ -111,7 +114,7 @@ jobs:
           sudo ./litebox_platform_linux_userland/scripts/tun-setup.sh
       - uses: Swatinem/rust-cache@v2
       - name: Cache custom out directories
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             target/*/build/litebox_runner_linux_userland-*/out
@@ -139,7 +142,7 @@ jobs:
       RUSTDOCFLAGS: -Dwarnings
     steps:
       - name: Check out repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
       - name: Set up Rust
         uses: ./.github/actions/setup-rust
         with:
@@ -169,7 +172,7 @@ jobs:
       RUSTFLAGS: -Dwarnings
     steps:
       - name: Check out repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
       - name: Set up Rust
         uses: ./.github/actions/setup-rust
         with:
@@ -301,7 +304,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
       - name: Set up Rust
         uses: ./.github/actions/setup-rust
         with:
@@ -373,6 +376,9 @@ jobs:
           # - `litebox_syscall_rewriter` is allowed to have `std` access since
           #   it is a helper binary that runs in userland to AOT "compile" ELFs.
           #
+          # - `litebox_packager` is allowed to have `std` access since it is a
+          #   userland CLI tool that packages ELF programs for LiteBox.
+          #
           # - `litebox_runner_snp` is `no_std` but requires custom target to build
           #
           # - `dev_tests` is meant to only be used for tests, and thus can
@@ -413,6 +419,7 @@ jobs:
             -not -path './litebox_shim_windows/Cargo.toml' \
             -not -path './litebox_shim_optee/Cargo.toml' \
             -not -path './litebox_syscall_rewriter/Cargo.toml' \
+            -not -path './litebox_packager/Cargo.toml' \
             -not -path './litebox_runner_snp/Cargo.toml' \
             -not -path './litebox_rtld_audit/Cargo.toml' \
             -not -path './dev_tests/Cargo.toml' \

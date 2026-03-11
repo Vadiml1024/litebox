@@ -9,12 +9,15 @@
 
 use std::cell::Cell;
 use std::os::fd::{AsRawFd as _, FromRawFd as _};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicI32, AtomicU32, Ordering};
 use std::time::Duration;
 
 use litebox::fs::OFlags;
 use litebox::platform::UnblockedOrTimedOut;
-use litebox::platform::page_mgmt::{FixedAddressBehavior, MemoryRegionPermissions};
+use litebox::platform::page_mgmt::{
+    CowAllocationError, FixedAddressBehavior, MemoryRegionPermissions,
+};
 use litebox::platform::{ImmediatelyWokenUp, RawConstPointer as _};
 use litebox::shim::ContinueOperation;
 use litebox::utils::{ReinterpretSignedExt, ReinterpretUnsignedExt as _, TruncateExt};
@@ -40,12 +43,24 @@ pub struct LinuxUserland {
     reserved_pages: Vec<core::ops::Range<usize>>,
     /// The base address of the VDSO.
     vdso_address: Option<usize>,
+    /// CoW-eligible memory regions. Maps start address of the static slice, to the info needed to
+    /// re-mmap the file.
+    cow_regions: std::sync::RwLock<std::collections::BTreeMap<usize, CowRegionInfo>>,
 }
 
 impl core::fmt::Debug for LinuxUserland {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("LinuxUserland").finish_non_exhaustive()
     }
+}
+
+/// Information about a CoW-eligible memory region backed by a file.
+#[derive(Debug, Clone)]
+struct CowRegionInfo {
+    /// The path to the backing file on the host filesystem.
+    file_path: PathBuf,
+    /// Length of the backing file.
+    file_length: usize,
 }
 
 const IF_NAMESIZE: usize = 16;
@@ -163,8 +178,63 @@ impl LinuxUserland {
             seccomp_interception_enabled: std::sync::atomic::AtomicBool::new(false),
             reserved_pages,
             vdso_address,
+            cow_regions: std::sync::RwLock::new(std::collections::BTreeMap::new()),
         };
         Box::leak(Box::new(platform))
+    }
+
+    /// Register a CoW-eligible memory region backed by a file.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an overlapping region is already registered.
+    pub fn register_cow_region(&self, data: &'static [u8], file_path: impl Into<PathBuf>) {
+        let start = data.as_ptr() as usize;
+        let info = CowRegionInfo {
+            file_path: file_path.into(),
+            file_length: data.len(),
+        };
+
+        let end = start + data.len();
+        let mut regions = self.cow_regions.write().unwrap();
+
+        // Check for any existing region whose start falls inside the new range.
+        assert!(
+            regions.range(start..end).next().is_none(),
+            "Attempting to register an overlapping region"
+        );
+
+        // Check if the previous region (starting before `start`) extends into [start, end).
+        if let Some((&prev_start, prev_info)) = regions.range(..start).next_back() {
+            assert!(
+                prev_start + prev_info.file_length <= start,
+                "Attempting to register an overlapping region"
+            );
+        }
+
+        let old = regions.insert(start, info);
+        assert!(old.is_none());
+    }
+
+    /// Look up the file backing a static slice for CoW mapping.
+    ///
+    /// Returns `Some((file_path, offset_in_file))` if the slice is backed by a registered
+    /// CoW region, `None` otherwise.
+    fn lookup_cow_region(&self, source_data: &'static [u8]) -> Option<(PathBuf, usize)> {
+        let slice_start = source_data.as_ptr() as usize;
+        let slice_len = source_data.len();
+
+        let regions = self.cow_regions.read().unwrap();
+
+        if let Some((&region_start, info)) = regions.range(..=slice_start).next_back() {
+            let region_end = region_start.checked_add(info.file_length).unwrap();
+            let slice_end = slice_start.checked_add(slice_len).unwrap();
+
+            if slice_start >= region_start && slice_end <= region_end {
+                return Some((info.file_path.clone(), slice_start - region_start));
+            }
+        }
+        None
     }
 
     /// Enable seccomp syscall interception on the platform.
@@ -314,30 +384,39 @@ impl litebox::platform::Provider for LinuxUserland {}
 ///
 /// # Safety
 /// The context must be valid guest context.
-pub unsafe fn run_thread<T>(shim: T, ctx: &mut litebox_common_linux::PtRegs) -> T
+pub unsafe fn run_thread<T>(shim: T, ctx: &mut litebox_common_linux::PtRegs)
 where
     T: litebox::shim::EnterShim<ExecutionContext = litebox_common_linux::PtRegs>,
 {
     run_thread_inner(&shim, ctx, false);
-    shim
 }
 
-/// Re-enters a guest thread using the provided shim and the given initial context.
+/// Run a guest thread using a reference to the shim.
 ///
-/// This will run until the thread terminates or returns.
-///
-/// # Arguments
-/// * `shim` - The shim to use for handling syscalls and other events.
-/// * `ctx` - The initial execution context for the thread.
+/// Unlike `run_thread`, this version takes a reference instead of ownership,
+/// avoiding struct moves that could invalidate internal state.
 ///
 /// # Safety
 /// The context must be valid guest context.
-pub unsafe fn reenter_thread<T>(shim: T, ctx: &mut litebox_common_linux::PtRegs) -> T
+pub unsafe fn run_thread_ref<T>(shim: &T, ctx: &mut litebox_common_linux::PtRegs)
 where
     T: litebox::shim::EnterShim<ExecutionContext = litebox_common_linux::PtRegs>,
 {
-    run_thread_inner(&shim, ctx, true);
-    shim
+    run_thread_inner(shim, ctx, false);
+}
+
+/// Re-enter a guest thread using a reference to the shim.
+///
+/// This version takes a reference instead of ownership, avoiding struct moves
+/// that could invalidate internal state.
+///
+/// # Safety
+/// The context must be valid guest context.
+pub unsafe fn reenter_thread<T>(shim: &T, ctx: &mut litebox_common_linux::PtRegs)
+where
+    T: litebox::shim::EnterShim<ExecutionContext = litebox_common_linux::PtRegs>,
+{
+    run_thread_inner(shim, ctx, true);
 }
 
 struct ThreadContext<'a> {
@@ -1515,6 +1594,89 @@ impl<const ALIGN: usize> litebox::platform::PageManagementProvider<ALIGN> for Li
     fn reserved_pages(&self) -> impl Iterator<Item = &core::ops::Range<usize>> {
         self.reserved_pages.iter()
     }
+
+    fn try_allocate_cow_pages(
+        &self,
+        suggested_start: usize,
+        source_data: &'static [u8],
+        permissions: MemoryRegionPermissions,
+        fixed_address_behavior: FixedAddressBehavior,
+    ) -> Result<Self::RawMutPointer<u8>, CowAllocationError> {
+        let Some((file_path, file_offset)) = self.lookup_cow_region(source_data) else {
+            return Err(CowAllocationError::UnsupportedSourceRegion);
+        };
+        if !file_offset.is_multiple_of(ALIGN) {
+            return Err(CowAllocationError::Unaligned);
+        }
+
+        let file_path_cstr =
+            std::ffi::CString::new(file_path.as_os_str().as_encoded_bytes()).unwrap();
+        // TODO(jb): We should likely be storing pre-opened FDs, right?
+        let fd = unsafe {
+            syscalls::syscall4(
+                syscalls::Sysno::open,
+                file_path_cstr.as_ptr() as usize,
+                OFlags::RDONLY.bits() as usize,
+                0,
+                // Unused by the syscall but would be checked by Seccomp filter if enabled.
+                syscall_intercept::SYSCALL_ARG_MAGIC,
+            )
+        };
+        let fd = fd.expect("file should remain unchanged on host");
+
+        let mut flags = MapFlags::MAP_PRIVATE;
+        match fixed_address_behavior {
+            FixedAddressBehavior::Hint => {}
+            FixedAddressBehavior::Replace => flags |= MapFlags::MAP_FIXED,
+            FixedAddressBehavior::NoReplace => flags |= MapFlags::MAP_FIXED_NOREPLACE,
+        }
+
+        let result = unsafe {
+            syscalls::syscall6(
+                {
+                    #[cfg(target_arch = "x86_64")]
+                    {
+                        syscalls::Sysno::mmap
+                    }
+                    #[cfg(target_arch = "x86")]
+                    {
+                        syscalls::Sysno::mmap2
+                    }
+                },
+                suggested_start,
+                source_data.len(),
+                prot_flags(permissions).bits().reinterpret_as_unsigned() as usize,
+                (flags.bits().reinterpret_as_unsigned()
+                    // This is to ensure it won't be intercepted by Seccomp if enabled.
+                    | syscall_intercept::MMAP_FLAG_MAGIC) as usize,
+                fd,
+                {
+                    #[cfg(target_arch = "x86_64")]
+                    {
+                        file_offset
+                    }
+                    #[cfg(target_arch = "x86")]
+                    {
+                        // mmap2 takes offset in pages, not bytes
+                        file_offset / ALIGN
+                    }
+                },
+            )
+        };
+
+        let _ = unsafe {
+            syscalls::syscall2(
+                syscalls::Sysno::close,
+                fd, // This is to ensure it won't be intercepted by Seccomp if enabled.
+                syscall_intercept::SYSCALL_ARG_MAGIC,
+            )
+        };
+
+        match result {
+            Ok(ptr) => Ok(UserMutPtr::from_usize(ptr)),
+            Err(_) => Err(CowAllocationError::InternalFailure),
+        }
+    }
 }
 
 impl litebox::platform::StdioProvider for LinuxUserland {
@@ -1621,6 +1783,7 @@ extern "C-unwind" fn exception_handler(
         exception: litebox::shim::Exception(trapno.try_into().unwrap()),
         error_code: error.try_into().unwrap(),
         cr2,
+        kernel_mode: false,
     };
     thread_ctx.call_shim(|shim, ctx| shim.exception(ctx, &info));
 }
@@ -1655,8 +1818,8 @@ impl ThreadContext<'_> {
         }
         let op = f(self.shim, self.ctx);
         match op {
-            ContinueOperation::ResumeGuest => unsafe { switch_to_guest(self.ctx) },
-            ContinueOperation::ExitThread => {}
+            ContinueOperation::Resume => unsafe { switch_to_guest(self.ctx) },
+            ContinueOperation::Terminate => {}
         }
     }
 }
@@ -2252,6 +2415,25 @@ impl litebox::platform::CrngProvider for LinuxUserland {
 /// We might need to emulate these functions' behaviors using virtual addresses for development or
 /// testing, or use a kernel module to provide this functionality (if needed).
 impl<const ALIGN: usize> VmapManager<ALIGN> for LinuxUserland {}
+
+/// Dummy `VmemPageFaultHandler`.
+///
+/// Page faults are handled transparently by the host Linux kernel.
+/// Provided to satisfy trait bounds for `PageManager::handle_page_fault`.
+impl litebox::mm::linux::VmemPageFaultHandler for LinuxUserland {
+    unsafe fn handle_page_fault(
+        &self,
+        _fault_addr: usize,
+        _flags: litebox::mm::linux::VmFlags,
+        _error_code: u64,
+    ) -> Result<(), litebox::mm::linux::PageFaultError> {
+        unreachable!("host kernel handles page faults for Linux userland")
+    }
+
+    fn access_error(_error_code: u64, _flags: litebox::mm::linux::VmFlags) -> bool {
+        unreachable!("host kernel handles page faults for Linux userland")
+    }
+}
 
 #[cfg(test)]
 mod tests {

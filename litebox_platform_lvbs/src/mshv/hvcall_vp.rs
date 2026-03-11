@@ -9,7 +9,7 @@ use crate::{
         msr::{MSR_EFER, MSR_IA32_CR_PAT},
     },
     debug_serial_println,
-    host::per_cpu_variables::with_per_cpu_variables_mut,
+    host::per_cpu_variables::with_per_cpu_variables,
     mshv::{
         HV_PARTITION_ID_SELF, HV_VP_INDEX_SELF, HV_VTL_NORMAL, HV_VTL_SECURE, HVCALL_ENABLE_VP_VTL,
         HVCALL_GET_VP_REGISTERS, HVCALL_SET_VP_REGISTERS, HvEnableVpVtl, HvGetVpRegistersInput,
@@ -31,26 +31,25 @@ fn hvcall_set_vp_registers_internal(
     value: u64,
     target_vtl: HvInputVtl,
 ) -> Result<u64, HypervCallError> {
-    let hvin = with_per_cpu_variables_mut(|per_cpu_variables| unsafe {
-        &mut *per_cpu_variables
-            .hv_hypercall_input_page_as_mut_ptr()
-            .cast::<HvSetVpRegistersInput>()
-    });
-    *hvin = HvSetVpRegistersInput::new();
+    with_per_cpu_variables(|pcv| {
+        pcv.with_hvcall_input::<HvSetVpRegistersInput, _>(|hvin| {
+            *hvin = HvSetVpRegistersInput::new();
 
-    hvin.header.partitionid = HV_PARTITION_ID_SELF;
-    hvin.header.vpindex = HV_VP_INDEX_SELF;
-    hvin.header.target_vtl = target_vtl;
-    hvin.element[0].name = reg_name;
-    hvin.element[0].valuelow = value;
+            hvin.header.partitionid = HV_PARTITION_ID_SELF;
+            hvin.header.vpindex = HV_VP_INDEX_SELF;
+            hvin.header.target_vtl = target_vtl;
+            hvin.element[0].name = reg_name;
+            hvin.element[0].valuelow = value;
 
-    hv_do_rep_hypercall(
-        HVCALL_SET_VP_REGISTERS,
-        1,
-        0,
-        (&raw const *hvin).cast::<core::ffi::c_void>(),
-        core::ptr::null_mut(),
-    )
+            hv_do_rep_hypercall(
+                HVCALL_SET_VP_REGISTERS,
+                1,
+                0,
+                (&raw const *hvin).cast::<core::ffi::c_void>(),
+                core::ptr::null_mut(),
+            )
+        })
+    })
 }
 
 /// Hyper-V Hypercall to set current VTL (i.e., VTL1)'s registers. It can program Hyper-V registers
@@ -70,33 +69,30 @@ fn hvcall_get_vp_registers_internal(
     reg_name: u32,
     target_vtl: HvInputVtl,
 ) -> Result<u64, HypervCallError> {
-    let hvin = with_per_cpu_variables_mut(|per_cpu_variables| unsafe {
-        &mut *per_cpu_variables
-            .hv_hypercall_input_page_as_mut_ptr()
-            .cast::<HvGetVpRegistersInput>()
-    });
-    *hvin = HvGetVpRegistersInput::new();
-    let hvout = with_per_cpu_variables_mut(|per_cpu_variables| unsafe {
-        &mut *per_cpu_variables
-            .hv_hypercall_output_page_as_mut_ptr()
-            .cast::<HvGetVpRegistersOutput>()
-    });
-    *hvout = HvGetVpRegistersOutput::new();
+    with_per_cpu_variables(|pcv| {
+        pcv.with_hvcall_input::<HvGetVpRegistersInput, _>(|hvin| {
+            *hvin = HvGetVpRegistersInput::new();
 
-    hvin.header.partitionid = HV_PARTITION_ID_SELF;
-    hvin.header.vpindex = HV_VP_INDEX_SELF;
-    hvin.header.target_vtl = target_vtl;
-    hvin.element[0].name0 = reg_name;
+            hvin.header.partitionid = HV_PARTITION_ID_SELF;
+            hvin.header.vpindex = HV_VP_INDEX_SELF;
+            hvin.header.target_vtl = target_vtl;
+            hvin.element[0].name0 = reg_name;
 
-    hv_do_rep_hypercall(
-        HVCALL_GET_VP_REGISTERS,
-        1,
-        0,
-        (&raw const *hvin).cast::<core::ffi::c_void>(),
-        (&raw mut *hvout).cast::<core::ffi::c_void>(),
-    )?;
+            pcv.with_hvcall_output::<HvGetVpRegistersOutput, _>(|hvout| {
+                *hvout = HvGetVpRegistersOutput::new();
 
-    Ok(hvout.as64().0)
+                hv_do_rep_hypercall(
+                    HVCALL_GET_VP_REGISTERS,
+                    1,
+                    0,
+                    (&raw const *hvin).cast::<core::ffi::c_void>(),
+                    (&raw mut *hvout).cast::<core::ffi::c_void>(),
+                )?;
+
+                Ok(hvout.as64().0)
+            })
+        })
+    })
 }
 
 /// Hyper-V Hypercall to get current VTL (i.e., VTL1)'s registers. It can access Hyper-V registers
@@ -208,12 +204,12 @@ fn hvcall_enable_vp_vtl(
 }
 
 unsafe extern "C" {
-    static _start: u8;
+    static _ap_start: u8;
 }
 
 #[inline]
 fn get_entry() -> u64 {
-    &raw const _start as u64
+    &raw const _ap_start as u64
 }
 
 /// Hyper-V Hypercall to initialize VTL (VTL1 for now) for a core (except core 0)
@@ -228,8 +224,18 @@ pub fn init_vtl_ap(core: u32) -> Result<u64, HypervCallError> {
         return Ok(0);
     }
 
-    let rip: u64 = get_entry() as *const () as u64;
-    let rsp = get_address_of_special_page(VTL1_KERNEL_STACK_PAGE) + PAGE_SIZE as u64 - 1;
+    // After two-phase relocation, linker symbols (`_start`, `_memory_base`, etc.)
+    // resolve to high-canonical VAs directly. The Phase 2 page table only
+    // has high-canonical mappings, so these are ready to use as-is for the
+    // AP's initial VP context.
+    let rip: u64 = get_entry();
+    // All APs share this single boot stack. `_ap_start` spin-acquires
+    // `AP_BOOT_STACK_LOCK` before touching the stack and releases it after
+    // switching to a per-CPU kernel stack, so concurrent AP entry is safe.
+    //
+    // This RSP is part of `HV_INITIAL_VP_CONTEXT` provided to Hyper-V
+    // via `HvCallEnableVpVtl`. It is expected to be 16-byte aligned.
+    let rsp = get_address_of_special_page(VTL1_KERNEL_STACK_PAGE) + PAGE_SIZE as u64;
     let tss = get_address_of_special_page(VTL1_TSS_PAGE);
 
     let result = hvcall_enable_vp_vtl(core, HV_VTL_SECURE, tss, rip, rsp);

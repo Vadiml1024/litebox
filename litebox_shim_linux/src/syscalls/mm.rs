@@ -5,12 +5,16 @@
 //! Most of these syscalls which are not backed by files are implemented in [`litebox_common_linux::mm`].
 
 use litebox::{
-    mm::linux::{MappingError, PAGE_SIZE},
-    platform::RawMutPointer,
+    mm::linux::{MappingError, PAGE_SIZE, PageRange},
+    platform::{
+        PageManagementProvider, RawConstPointer, RawMutPointer,
+        page_mgmt::{FixedAddressBehavior, MemoryRegionPermissions},
+    },
 };
 use litebox_common_linux::{MRemapFlags, MapFlags, ProtFlags, errno::Errno};
 
 use crate::MutPtr;
+use crate::ShimFS;
 use crate::Task;
 
 #[inline]
@@ -29,7 +33,7 @@ fn align_down(addr: usize, align: usize) -> usize {
     addr & !(align - 1)
 }
 
-impl Task {
+impl<FS: ShimFS> Task<FS> {
     #[inline]
     fn do_mmap(
         &self,
@@ -72,6 +76,131 @@ impl Task {
         fd: i32,
         offset: usize,
     ) -> Result<MutPtr<u8>, MappingError> {
+        if let Some(cow_result) =
+            self.try_cow_mmap_file(suggested_addr, len, &prot, &flags, fd, offset)
+        {
+            return cow_result;
+        }
+        self.do_mmap_file_memcpy(suggested_addr, len, prot, flags, fd, offset)
+    }
+
+    /// Attempt to create a CoW mapping for a file with static backing data.
+    ///
+    /// Returns `Some(result)` if CoW was attempted (success or failure),
+    /// `None` if CoW is not applicable (fall back to memcpy).
+    // TODO(jb): does this need to be Option-Result or can it just be Option?
+    fn try_cow_mmap_file(
+        &self,
+        suggested_addr: Option<usize>,
+        len: usize,
+        prot: &ProtFlags,
+        flags: &MapFlags,
+        fd: i32,
+        offset: usize,
+    ) -> Option<Result<MutPtr<u8>, MappingError>> {
+        if !len.is_multiple_of(PAGE_SIZE) {
+            return None;
+        }
+
+        let Ok(fd) = u32::try_from(fd) else {
+            return None;
+        };
+
+        let files = self.files.borrow();
+        let raw_fd = match files.file_descriptors.read().get_fd(fd)? {
+            crate::Descriptor::LiteBoxRawFd(raw_fd) => *raw_fd,
+            _ => return None,
+        };
+
+        let static_data = files
+            .run_on_raw_fd(
+                raw_fd,
+                |typed_fd| self.global.fs.get_static_backing_data(typed_fd),
+                |_| None,
+                |_| None,
+            )
+            .ok()??;
+
+        if offset > static_data.len() {
+            return None;
+        }
+
+        let available_len = static_data.len().saturating_sub(offset);
+        if available_len < len {
+            // Cannot fill full page
+            return None;
+        }
+
+        let fixed_behavior = if flags.contains(MapFlags::MAP_FIXED_NOREPLACE) {
+            FixedAddressBehavior::NoReplace
+        } else if flags.contains(MapFlags::MAP_FIXED) {
+            FixedAddressBehavior::Replace
+        } else {
+            FixedAddressBehavior::Hint
+        };
+
+        let permissions = {
+            let mut perms = MemoryRegionPermissions::empty();
+            perms.set(
+                MemoryRegionPermissions::READ,
+                prot.contains(ProtFlags::PROT_READ),
+            );
+            perms.set(
+                MemoryRegionPermissions::WRITE,
+                prot.contains(ProtFlags::PROT_WRITE),
+            );
+            perms.set(
+                MemoryRegionPermissions::EXEC,
+                prot.contains(ProtFlags::PROT_EXEC),
+            );
+            perms
+        };
+
+        // XXX: `try_allocate_cow_pages` and `register_existing_mapping` are not called under a
+        // unified lock, so there is a theoretical race if two threads concurrently attempt a
+        // fixed-address mapping with replacement at the same address. In practice this is benign:
+        // if a program races like this both threads will register the same mapping anyway. Updating
+        // to a begin/attempt/commit scheme could close this race window entirely.
+        match <_ as PageManagementProvider<{ PAGE_SIZE }>>::try_allocate_cow_pages(
+            litebox_platform_multiplex::platform(),
+            suggested_addr.unwrap_or(0),
+            &static_data[offset..offset + len],
+            permissions,
+            fixed_behavior,
+        ) {
+            Ok(ptr) => {
+                let range =
+                    PageRange::new(ptr.as_usize(), ptr.as_usize().checked_add(len).unwrap())
+                        .unwrap();
+                // SAFETY: ptr is the freshly CoW-mapped region of exactly `len` bytes with
+                // `permissions`.
+                unsafe {
+                    self.global.pm.register_existing_mapping(
+                        range,
+                        permissions,
+                        true,
+                        fixed_behavior == FixedAddressBehavior::Replace,
+                        flags.contains(MapFlags::MAP_SHARED),
+                    )
+                }
+                .unwrap();
+                Some(Ok(ptr))
+            }
+            Err(_cow_not_supported) => None,
+        }
+    }
+
+    /// Fallback mmap implementation using page-by-page memcpy, for files where the CoW attempt
+    /// fails (either due to lack of support on platform, or non-static-backed data, etc.)
+    fn do_mmap_file_memcpy(
+        &self,
+        suggested_addr: Option<usize>,
+        len: usize,
+        prot: ProtFlags,
+        flags: MapFlags,
+        fd: i32,
+        offset: usize,
+    ) -> Result<MutPtr<u8>, MappingError> {
         let op = |ptr: MutPtr<u8>| -> Result<usize, MappingError> {
             // Note a malicious user may unmap ptr while we are reading.
             // `sys_read` does not handle page faults, so we need to use a
@@ -99,7 +228,7 @@ impl Task {
             }
             Ok(copied)
         };
-        let fixed_addr = flags.contains(MapFlags::MAP_FIXED);
+        let fixed_addr = flags.intersects(MapFlags::MAP_FIXED | MapFlags::MAP_FIXED_NOREPLACE);
         self.do_mmap(
             suggested_addr,
             len,
@@ -126,17 +255,30 @@ impl Task {
         if !offset.is_multiple_of(PAGE_SIZE) || !addr.is_multiple_of(PAGE_SIZE) || len == 0 {
             return Err(Errno::EINVAL);
         }
+
+        // MAP_SHARED is partially supported:
+        // - Anonymous shared mappings are fully supported (no backing file concerns).
+        //   Note: since fork is not yet supported, shared anonymous mappings behave
+        //   identically to private ones (no cross-process sharing occurs).
+        // - File-backed shared mappings are read-only: writable permission is rejected
+        //   upfront and cannot be added later via mprotect, because writes cannot be
+        //   propagated back to the underlying file.
+        if flags.contains(MapFlags::MAP_SHARED)
+            && prot.contains(ProtFlags::PROT_WRITE)
+            && !flags.contains(MapFlags::MAP_ANONYMOUS)
+        {
+            todo!("MAP_SHARED with PROT_WRITE on file-backed mappings is not supported");
+        }
+
         if flags.intersects(
-            MapFlags::MAP_SHARED
-                | MapFlags::MAP_32BIT
+            MapFlags::MAP_32BIT
                 | MapFlags::MAP_GROWSDOWN
                 | MapFlags::MAP_LOCKED
                 | MapFlags::MAP_NONBLOCK
                 | MapFlags::MAP_SYNC
                 | MapFlags::MAP_HUGETLB
                 | MapFlags::MAP_HUGE_2MB
-                | MapFlags::MAP_HUGE_1GB
-                | MapFlags::MAP_FIXED_NOREPLACE,
+                | MapFlags::MAP_HUGE_1GB,
         ) {
             todo!("Unsupported flags {:?}", flags);
         }
@@ -307,6 +449,115 @@ mod tests {
         task.sys_munmap(new_addr, 0x2000).unwrap();
     }
 
+    #[test]
+    fn test_mmap_fixed_noreplace() {
+        let task = init_platform(None);
+
+        // First, create an initial mapping at a specific address away from boundaries
+        let base_addr = 0x1000_0000usize; // 256 MiB - safe middle ground
+        let addr1 = task
+            .sys_mmap(
+                base_addr,
+                0x2000,
+                ProtFlags::PROT_READ | ProtFlags::PROT_WRITE,
+                MapFlags::MAP_ANON | MapFlags::MAP_PRIVATE | MapFlags::MAP_FIXED_NOREPLACE,
+                -1,
+                0,
+            )
+            .unwrap();
+        assert_eq!(
+            addr1.as_usize(),
+            base_addr,
+            "First mapping should be at exact address"
+        );
+
+        // Test 1: Full overlap - should fail with EEXIST
+        let err = task
+            .sys_mmap(
+                addr1.as_usize(),
+                0x1000,
+                ProtFlags::PROT_READ,
+                MapFlags::MAP_ANON | MapFlags::MAP_PRIVATE | MapFlags::MAP_FIXED_NOREPLACE,
+                -1,
+                0,
+            )
+            .unwrap_err();
+        assert_eq!(err, Errno::EEXIST);
+
+        // Test 2: Partial overlap at end - should fail with EEXIST
+        // Existing: [addr1, addr1 + 0x2000), New: [addr1 + 0x1000, addr1 + 0x3000)
+        let err = task
+            .sys_mmap(
+                addr1.as_usize() + 0x1000,
+                0x2000,
+                ProtFlags::PROT_READ,
+                MapFlags::MAP_ANON | MapFlags::MAP_PRIVATE | MapFlags::MAP_FIXED_NOREPLACE,
+                -1,
+                0,
+            )
+            .unwrap_err();
+        assert_eq!(err, Errno::EEXIST);
+
+        // Test 3: Partial overlap at start - should fail with EEXIST
+        // Existing: [addr1, addr1 + 0x2000), New: [addr1 - 0x1000, addr1 + 0x1000)
+        let err = task
+            .sys_mmap(
+                addr1.as_usize() - 0x1000,
+                0x2000,
+                ProtFlags::PROT_READ,
+                MapFlags::MAP_ANON | MapFlags::MAP_PRIVATE | MapFlags::MAP_FIXED_NOREPLACE,
+                -1,
+                0,
+            )
+            .unwrap_err();
+        assert_eq!(err, Errno::EEXIST);
+
+        // Test 4: Adjacent mapping (right after) - should succeed
+        let addr2 = task
+            .sys_mmap(
+                addr1.as_usize() + 0x2000,
+                0x1000,
+                ProtFlags::PROT_READ | ProtFlags::PROT_WRITE,
+                MapFlags::MAP_ANON | MapFlags::MAP_PRIVATE | MapFlags::MAP_FIXED_NOREPLACE,
+                -1,
+                0,
+            )
+            .unwrap();
+        assert_eq!(addr2.as_usize(), addr1.as_usize() + 0x2000);
+
+        // Test 5: Adjacent mapping (right before) - should succeed
+        let addr3 = task
+            .sys_mmap(
+                addr1.as_usize() - 0x1000,
+                0x1000,
+                ProtFlags::PROT_READ | ProtFlags::PROT_WRITE,
+                MapFlags::MAP_ANON | MapFlags::MAP_PRIVATE | MapFlags::MAP_FIXED_NOREPLACE,
+                -1,
+                0,
+            )
+            .unwrap();
+        assert_eq!(addr3.as_usize(), addr1.as_usize() - 0x1000);
+
+        // Test 6: Zero address with MAP_FIXED_NOREPLACE - should fail with EPERM
+        // (matches Linux behavior where vm.mmap_min_addr prevents mapping at address 0)
+        let err = task
+            .sys_mmap(
+                0,
+                0x1000,
+                ProtFlags::PROT_READ,
+                MapFlags::MAP_ANON | MapFlags::MAP_PRIVATE | MapFlags::MAP_FIXED_NOREPLACE,
+                -1,
+                0,
+            )
+            .unwrap_err();
+        assert_eq!(err, Errno::EPERM);
+
+        // Clean up
+        task.sys_munmap(addr3, 0x1000).unwrap();
+        task.sys_munmap(addr1, 0x2000).unwrap();
+        task.sys_munmap(addr2, 0x1000).unwrap();
+    }
+
     #[cfg(any(
         feature = "platform_linux_userland",
         feature = "platform_windows_userland"
@@ -400,6 +651,94 @@ mod tests {
             )
             .unwrap_err();
         assert_eq!(err, Errno::ENOMEM);
+    }
+
+    #[test]
+    fn test_map_shared_anonymous() {
+        let task = init_platform(None);
+
+        // MAP_SHARED | MAP_ANON with PROT_READ should succeed
+        let addr = task
+            .sys_mmap(
+                0,
+                0x2000,
+                ProtFlags::PROT_READ,
+                MapFlags::MAP_ANON | MapFlags::MAP_SHARED,
+                -1,
+                0,
+            )
+            .unwrap();
+
+        // Reading should work
+        let _val: u8 = addr.read_at_offset(0).unwrap();
+
+        // Anonymous shared mappings allow permission changes including write
+        task.sys_mprotect(addr, 0x2000, ProtFlags::PROT_READ | ProtFlags::PROT_WRITE)
+            .unwrap();
+        addr.write_slice_at_offset(0, &[0xab; 0x10]).unwrap();
+        assert_eq!(addr.read_at_offset(0).unwrap(), 0xab_u8);
+
+        // mprotect to read-only or read-exec should also succeed
+        task.sys_mprotect(addr, 0x2000, ProtFlags::PROT_READ)
+            .unwrap();
+        task.sys_mprotect(addr, 0x2000, ProtFlags::PROT_READ_EXEC)
+            .unwrap();
+
+        task.sys_munmap(addr, 0x2000).unwrap();
+    }
+
+    #[test]
+    fn test_map_shared_anonymous_writable() {
+        let task = init_platform(None);
+
+        // MAP_SHARED | MAP_ANON with PROT_WRITE should succeed
+        let addr = task
+            .sys_mmap(
+                0,
+                0x1000,
+                ProtFlags::PROT_READ | ProtFlags::PROT_WRITE,
+                MapFlags::MAP_ANON | MapFlags::MAP_SHARED,
+                -1,
+                0,
+            )
+            .unwrap();
+
+        addr.write_slice_at_offset(0, &[0xcd; 0x10]).unwrap();
+        assert_eq!(addr.read_at_offset(0).unwrap(), 0xcd_u8);
+
+        task.sys_munmap(addr, 0x1000).unwrap();
+    }
+
+    #[test]
+    fn test_map_shared_readonly_file() {
+        let task = init_platform(None);
+
+        let content = b"Hello, shared!";
+        let fd = task
+            .sys_open("shared.txt", OFlags::RDWR | OFlags::CREAT, Mode::RWXU)
+            .unwrap();
+        let fd = i32::try_from(fd).unwrap();
+        assert_eq!(task.sys_write(fd, content, None).unwrap(), content.len());
+
+        // MAP_SHARED with PROT_READ on a file should succeed
+        let addr = task
+            .sys_mmap(0, 0x1000, ProtFlags::PROT_READ, MapFlags::MAP_SHARED, fd, 0)
+            .unwrap();
+
+        // Data should match
+        assert_eq!(
+            addr.to_owned_slice(content.len()).unwrap().as_ref(),
+            content.as_slice(),
+        );
+
+        // mprotect to add write permission should fail
+        let err = task
+            .sys_mprotect(addr, 0x1000, ProtFlags::PROT_READ | ProtFlags::PROT_WRITE)
+            .unwrap_err();
+        assert_eq!(err, Errno::EACCES);
+
+        task.sys_munmap(addr, 0x1000).unwrap();
+        task.sys_close(fd).unwrap();
     }
 
     #[test]
