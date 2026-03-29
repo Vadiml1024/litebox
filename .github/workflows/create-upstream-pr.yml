@@ -1,0 +1,61 @@
+name: Create Upstream PR
+
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+    inputs:
+      title:
+        description: 'PR title'
+        required: false
+        default: 'Sync changes from Vadiml1024/litebox fork'
+      body:
+        description: 'PR body'
+        required: false
+        default: 'This PR brings fork-specific changes from Vadiml1024/litebox into the upstream repository.'
+  workflow_run:
+    workflows: ["Sync Branch"]
+    types:
+      - completed
+
+jobs:
+  create-pr:
+    name: Create PR against microsoft/litebox
+    runs-on: ubuntu-latest
+    # When triggered by workflow_run, only proceed if the sync succeeded
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Create or update upstream PR
+        env:
+          GH_TOKEN: ${{ secrets.UPSTREAM_PAT }}
+          PR_TITLE: ${{ github.event.inputs.title || 'Sync changes from Vadiml1024/litebox fork' }}
+          PR_BODY: ${{ github.event.inputs.body || 'This PR brings fork-specific changes from Vadiml1024/litebox into the upstream repository.' }}
+        run: |
+          # Check whether an open PR already exists from this fork's sync-branch
+          EXISTING_PR=$(gh pr list \
+            --repo microsoft/litebox \
+            --head "Vadiml1024:sync-branch" \
+            --base main \
+            --state open \
+            --json number \
+            --jq '.[0].number' 2>/dev/null || echo "")
+
+          if [ -n "$EXISTING_PR" ]; then
+            echo "Open PR #${EXISTING_PR} already exists — skipping creation."
+          else
+            gh pr create \
+              --repo microsoft/litebox \
+              --head "Vadiml1024:sync-branch" \
+              --base main \
+              --title "$PR_TITLE" \
+              --body "$PR_BODY"
+            echo "PR created successfully."
+          fi
